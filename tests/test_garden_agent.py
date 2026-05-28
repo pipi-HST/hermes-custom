@@ -78,7 +78,7 @@ def test_create_garden_card(repo):
     ).fetchone()
     assert row is not None
     assert row["title"] == "测试卡片"
-    assert row["status"] == "growing"
+    assert row["status"] == "seed"
 
 
 def test_update_garden_card(repo):
@@ -100,7 +100,7 @@ def test_update_garden_card(repo):
         "SELECT * FROM garden_cards WHERE id = ?", (card_id,)
     ).fetchone()
     assert row["title"] == "更新标题"
-    assert row["status"] == "growing"
+    assert row["status"] == "seed"
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")

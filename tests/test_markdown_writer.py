@@ -45,7 +45,23 @@ def test_write_note_slug_generation() -> None:
 def test_write_note_file_naming(tmp_path: Path, sample_meta: NoteMeta) -> None:
     body = "test content"
     file_path = write_note(tmp_path, sample_meta, body)
-    assert file_path == "captures/2026-05-26-ai-agent.md"
+    assert file_path == "captures/AI Agent 入门指南-2026-05-26-test-001.md"
+
+
+def test_write_note_filename_sanitizes_title_and_keeps_title_first(
+    tmp_path: Path, sample_meta: NoteMeta
+) -> None:
+    meta = NoteMeta(
+        id="abcdef123456",
+        title='AI Harness深度解析：用/最便宜的模型？"可靠性"',
+        date="2026-05-28",
+        created=sample_meta.created,
+        source=sample_meta.source,
+        source_type=sample_meta.source_type,
+    )
+    file_path = write_note(tmp_path, meta, "body")
+
+    assert file_path == "captures/AI Harness深度解析：用最便宜的模型可靠性-2026-05-28-abcdef12.md"
 
 
 def test_write_note_overwrite_existing(

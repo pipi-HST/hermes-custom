@@ -1,0 +1,3 @@
+# Use Agent Result Envelopes for Hermes agent handoffs
+
+Hermes agents are used through chat channels such as WeChat, where message length is limited, and their results may pass through a gateway/main agent that can otherwise rephrase or reinterpret tool output. We will have bridges and tools return a stable Agent Result Envelope with separate fields for chat preview, durable artifacts, source map, next actions, warnings, errors, and metadata. This is more structured than returning plain strings or agent-specific dictionaries, but it preserves citations, prevents long artifacts from being lost to chat truncation, and lets the gateway route results without changing knowledge meaning.

@@ -15,6 +15,9 @@ config.yaml
 data/*.db
 data/*.db-*
 data/*.log
+data/backups/
+data/repair_reports/
+data/reports/
 
 dashboard/node_modules/
 dashboard/.next/

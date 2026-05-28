@@ -99,19 +99,41 @@ def _make_slug(title: str) -> str:
     return f"note-{hashlib.sha1(title.encode('utf-8')).hexdigest()[:8]}"
 
 
+def make_note_filename(title: str, date: str, capture_id: str) -> str:
+    """Build a readable filename: title first, then date and short id."""
+    safe_title = _safe_filename_title(title)
+    safe_date = _date_prefix(date)
+    short_id = (capture_id or "no-id")[:8]
+    return f"{safe_title}-{safe_date}-{short_id}.md"
+
+
+def _safe_filename_title(title: str) -> str:
+    text = (title or "未命名").strip() or "未命名"
+    text = re.sub(r'[/\\:*?"<>|？]', "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:40] or "未命名"
+
+
+def _date_prefix(value: str | None) -> str:
+    text = (value or "").strip().strip("'\"")
+    match = re.search(r"\d{4}-\d{2}-\d{2}", text)
+    if match:
+        return match.group(0)
+    return datetime.now().strftime("%Y-%m-%d")
+
+
 def write_note(
     vault_path: Path, meta: NoteMeta, body: str, stage: str = "captures"
 ) -> str:
     """Write a note as Markdown file with YAML frontmatter.
 
-    Creates ``{vault_path}/{stage}/{date}-{slug}.md`` and returns the
-    relative path (e.g. ``captures/2026-05-26-slug.md``).
+    Creates ``{vault_path}/{stage}/{title}-{date}-{short_id}.md`` and returns
+    the relative path.
     """
     stage_dir = vault_path / stage
     stage_dir.mkdir(parents=True, exist_ok=True)
 
-    slug = _make_slug(meta.title)
-    filename = f"{meta.date}-{slug}.md"
+    filename = make_note_filename(meta.title, meta.date, meta.id)
     filepath = stage_dir / filename
 
     if stage == "raw":

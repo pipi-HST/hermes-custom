@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import load_config
 from agents.markdown_writer import read_note
 from agents.garden_agent import GardenAgent, create_garden_card, update_garden_card
+from bridge.result_envelope import artifact_ref, error_envelope, next_action, success_envelope
 from db.schema import init_db
 from db.repo import CaptureRepo
 
@@ -43,7 +44,7 @@ def synthesize_garden(capture_ids: list[str] = None,
         title: 可选标题，不填则由 LLM 生成
 
     Returns:
-        {success, card_id, title, one_liner, markdown} 或 {success: False, error}
+        Agent Result Envelope.
     """
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     repo = CaptureRepo(init_db(config.db_path))
@@ -56,14 +57,22 @@ def synthesize_garden(capture_ids: list[str] = None,
             "SELECT * FROM pending_questions WHERE id = ?", (question_id,)
         ).fetchone()
         if not q_row:
-            return {"success": False, "error": f"问题 {question_id} 不存在"}
+            return error_envelope(
+                agent="garden",
+                intent="synthesize_garden",
+                error=f"问题 {question_id} 不存在",
+            )
         try:
             capture_ids = json.loads(q_row["related_capture_ids"])
         except (json.JSONDecodeError, TypeError):
             capture_ids = []
 
     if not capture_ids:
-        return {"success": False, "error": "未指定要合成的内容，请提供 capture_ids 或 question_id"}
+        return error_envelope(
+            agent="garden",
+            intent="synthesize_garden",
+            error="未指定要合成的内容，请提供 capture_ids 或 question_id",
+        )
 
     # 获取并 hydrate captures
     raw_rows = []
@@ -73,7 +82,11 @@ def synthesize_garden(capture_ids: list[str] = None,
             raw_rows.append(dict(row))
 
     if not raw_rows:
-        return {"success": False, "error": "未找到任何有效的 capture"}
+        return error_envelope(
+            agent="garden",
+            intent="synthesize_garden",
+            error="未找到任何有效的 capture",
+        )
 
     captures = [_hydrate_capture(vault_path, r) for r in raw_rows]
 
@@ -91,7 +104,11 @@ def synthesize_garden(capture_ids: list[str] = None,
     result = agent.synthesize(captures, existing_cards, title=title)
 
     if "error" in result:
-        return {"success": False, "error": result["error"]}
+        return error_envelope(
+            agent="garden",
+            intent="synthesize_garden",
+            error=result["error"],
+        )
 
     # 写入 garden_cards 表
     garden_data = {
@@ -118,11 +135,32 @@ def synthesize_garden(capture_ids: list[str] = None,
     md_path = garden_dir / f"{card_id}.md"
     md_path.write_text(result.get("markdown", ""), encoding="utf-8")
 
-    return {
-        "success": True,
-        "card_id": card_id,
-        "title": result.get("title", ""),
-        "one_liner": result.get("one_liner", ""),
-        "markdown": result.get("markdown", ""),
-        "message": f"已生成知识卡片《{result.get('title', '')}》：{result.get('one_liner', '')}",
-    }
+    title_text = result.get("title", "")
+    one_liner = result.get("one_liner", "")
+    return success_envelope(
+        agent="garden",
+        intent="synthesize_garden",
+        chat_preview=f"已生成知识卡片《{title_text}》：{one_liner}",
+        durable_artifacts=[
+            artifact_ref(
+                type="garden_card",
+                id=card_id,
+                title=title_text,
+                path=f"garden/{card_id}.md",
+                status="seed",
+            )
+        ],
+        next_actions=[
+            next_action(
+                label="确认采用观点",
+                intent="accept_garden_card",
+                payload={"card_id": card_id},
+                requires_confirmation=True,
+            )
+        ],
+        meta={
+            "title": title_text,
+            "one_liner": one_liner,
+            "capture_ids": capture_ids,
+        },
+    )

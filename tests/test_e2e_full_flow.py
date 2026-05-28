@@ -5,6 +5,7 @@
 """
 
 import os
+import json
 import sys
 import tempfile
 import time
@@ -14,6 +15,14 @@ import pytest
 
 sys.path.insert(0, "/Users/pipi/hermes-custom")
 sys.path.insert(0, "/Users/pipi/Downloads/hermes-agent-main")
+
+
+def _tool_envelope(result: str) -> dict:
+    from bridge.result_envelope import ENVELOPE_FIELDS
+
+    envelope = json.loads(result)
+    assert list(envelope.keys()) == list(ENVELOPE_FIELDS)
+    return envelope
 
 
 # ═══════════════════════════════════════════════════════
@@ -85,9 +94,11 @@ class TestToolHandlerToAgent:
             ),
             "instruction": "总结全文核心观点",
         })
-        assert "已生成" in result
-        assert "满意的话回复" in result
-        assert "存库" in result
+        envelope = _tool_envelope(result)
+        assert envelope["status"] == "success"
+        assert "已生成" in envelope["chat_preview"]
+        assert "满意的话回复" in envelope["chat_preview"]
+        assert envelope["next_actions"][0]["intent"] == "commit_capture_draft"
 
     def test_capture_tool_handler_with_url(self):
         """tool handler 处理 URL 输入"""
@@ -95,20 +106,25 @@ class TestToolHandlerToAgent:
         result = _handler({
             "content": "https://mp.weixin.qq.com/s/Esk0AFhP-apyWY8eWruv-Q",
         })
-        assert isinstance(result, str) and len(result) > 10
-        assert ("已提取" in result) or ("失败" in result)
+        envelope = _tool_envelope(result)
+        assert envelope["status"] in {"success", "error"}
+        assert len(envelope["chat_preview"]) > 0
 
     def test_capture_tool_handler_empty_content(self):
         """tool handler 处理空 content"""
         from tools.capture_tool import _handler
         result = _handler({"content": ""})
-        assert isinstance(result, str) and len(result) > 0
+        envelope = _tool_envelope(result)
+        assert envelope["status"] == "error"
+        assert len(envelope["errors"]) > 0
 
     def test_capture_tool_handler_no_content_key(self):
         """tool handler 处理缺少 content key 的参数"""
         from tools.capture_tool import _handler
         result = _handler({})
-        assert isinstance(result, str) and len(result) > 0
+        envelope = _tool_envelope(result)
+        assert envelope["status"] == "error"
+        assert len(envelope["errors"]) > 0
 
 
 # ═══════════════════════════════════════════════════════
@@ -184,9 +200,11 @@ class TestBridgeToMarkdownE2E:
 
         result = capture_content(TEST_CONTENT)
 
-        assert result["success"] is True
-        assert result.get("draft_id", ""), "No draft id from bridge.capture_content"
-        assert result["status"] == "raw_extracted"
+        assert result["status"] == "success"
+        artifacts = result["durable_artifacts"]
+        assert artifacts and artifacts[0]["type"] == "capture_draft"
+        assert artifacts[0]["id"], "No draft id from bridge.capture_content"
+        assert artifacts[0]["status"] == "raw_extracted"
 
     def test_reprocess_updates_draft_and_commit_writes_markdown(self, mock_summarize, monkeypatch):
         # Mock LLM call to avoid real API call

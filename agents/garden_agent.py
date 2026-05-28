@@ -190,7 +190,7 @@ def create_garden_card(repo, garden_data: dict) -> str:
         """INSERT INTO garden_cards (id, title, one_liner, core_arguments,
            knowledge_links, key_materials, my_view, status, capture_ids,
            created_at, updated_at, review_interval)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'growing', ?, ?, ?, '1d')""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'seed', ?, ?, ?, '1d')""",
         (
             card_id,
             garden_data.get("title", ""),
@@ -220,7 +220,7 @@ def update_garden_card(repo, card_id: str, garden_data: dict) -> Optional[dict]:
     # 简化实现：覆盖更新
     repo.conn.execute(
         """UPDATE garden_cards SET title=?, one_liner=?, core_arguments=?,
-           knowledge_links=?, key_materials=?, updated_at=?, status='growing'
+           knowledge_links=?, key_materials=?, updated_at=?, status='seed'
            WHERE id=?""",
         (
             garden_data.get("title", existing["title"]),

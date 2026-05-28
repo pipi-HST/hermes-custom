@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS garden_cards (
     knowledge_links TEXT NOT NULL DEFAULT '[]',
     key_materials TEXT NOT NULL DEFAULT '[]',
     my_view TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'growing',
+    status TEXT NOT NULL DEFAULT 'seed',
     capture_ids TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),

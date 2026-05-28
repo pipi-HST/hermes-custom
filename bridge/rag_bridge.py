@@ -10,6 +10,7 @@ from agents.markdown_writer import read_note
 from agents.capture_agent import load_config
 from agents.rag_agent import RagAgent, format_answer
 from agents.embedder import Embedder
+from bridge.result_envelope import source_ref, success_envelope
 from db.vector_search import search as vector_search
 from db.schema import init_db
 from db.repo import CaptureRepo
@@ -65,7 +66,12 @@ def search_knowledge_base(query: str) -> dict:
     if not results:
         _log("NO_RESULTS")
         logger.info("[RAG] no results found")
-        return {"answer": "知识库中没有找到相关信息。", "sources": []}
+        return success_envelope(
+            agent="rag",
+            intent="search_knowledge_base",
+            chat_preview="知识库中没有找到相关信息。",
+            meta={"query": query, "result_count": 0},
+        )
 
     titles = [r.get("title") or r.get("file_path", "?") for r in results]
     _log(f"SOURCES: {json.dumps(titles, ensure_ascii=False)}")
@@ -80,11 +86,27 @@ def search_knowledge_base(query: str) -> dict:
     _log(f"ANSWER: {len(resp.get('answer', ''))} chars")
     logger.info("[RAG] answer generated (%d chars)", len(resp.get("answer", "")))
 
-    return {
-        "answer": resp["answer"],
-        "sources": resp["sources"],
-        "formatted": format_answer(resp["answer"], resp["sources"]),
-    }
+    return success_envelope(
+        agent="rag",
+        intent="search_knowledge_base",
+        chat_preview=format_answer(resp["answer"], resp["sources"]),
+        source_map=[
+            source_ref(
+                role="evidence",
+                type="capture_note",
+                id=item.get("id", ""),
+                title=item.get("title") or item.get("file_path", ""),
+                path=item.get("file_path", ""),
+            )
+            for item in results
+        ],
+        meta={
+            "query": query,
+            "answer": resp["answer"],
+            "used_fallback": used_fallback,
+            "result_count": len(results),
+        },
+    )
 
 
 def _hydrate_capture(vault_path: str, row: dict) -> dict:

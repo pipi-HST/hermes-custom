@@ -12,6 +12,7 @@ Layer 3 (Real API): 真实 LLM/Embedding — 手动触发
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from unittest.mock import patch
@@ -20,6 +21,23 @@ import pytest
 
 sys.path.insert(0, "/Users/pipi/hermes-custom")
 HERMES_DIR = "/Users/pipi/Downloads/hermes-agent-main"
+
+
+def _artifact(result: dict, artifact_type: str = "capture_draft") -> dict:
+    matches = [
+        item for item in result.get("durable_artifacts", [])
+        if item.get("type") == artifact_type
+    ]
+    assert matches, f"missing {artifact_type} artifact in {result}"
+    return matches[0]
+
+
+def _tool_envelope(result: str) -> dict:
+    from bridge.result_envelope import ENVELOPE_FIELDS
+
+    envelope = json.loads(result)
+    assert list(envelope.keys()) == list(ENVELOPE_FIELDS)
+    return envelope
 
 
 def _skip_if_no_hermes():
@@ -54,7 +72,7 @@ def test_hermes_capture_schema_has_content():
     assert "content" in props, f"missing content, props={list(props.keys())}"
     assert "instruction" in props, f"missing instruction, props={list(props.keys())}"
     assert "content" in params.get("required", [])
-    assert "微信预览版" in description
+    assert "微信" in description
     assert "完整草稿" in description
 
 
@@ -63,7 +81,7 @@ def test_hermes_draft_tools_registered():
     tools = _get_hermes_tools()
     assert "revise_capture_draft" in tools
     assert "commit_capture_draft" in tools
-    assert "微信预览版" in tools["revise_capture_draft"].schema.get("description", "")
+    assert "微信" in tools["revise_capture_draft"].schema.get("description", "")
     assert "完整草稿" in tools["refine_capture"].schema.get("description", "")
 
 
@@ -99,8 +117,9 @@ def test_hermes_capture_handler_with_content():
     sys.path.insert(0, HERMES_DIR)
     from tools.capture_tool import _handler
     result = _handler({"content": "AI Agent 四个核心组件"})
-    assert "已提取" in result or "捕获失败" in result
-    assert len(result) > 20
+    envelope = _tool_envelope(result)
+    assert envelope["status"] in {"success", "error"}
+    assert len(envelope["chat_preview"]) > 0
 
 
 def test_hermes_capture_handler_empty_args_no_crash():
@@ -108,7 +127,56 @@ def test_hermes_capture_handler_empty_args_no_crash():
     sys.path.insert(0, HERMES_DIR)
     from tools.capture_tool import _handler
     result = _handler({})
-    assert isinstance(result, str) and len(result) > 0
+    envelope = _tool_envelope(result)
+    assert envelope["status"] == "error"
+    assert len(envelope["chat_preview"]) > 0
+
+
+def test_hermes_capture_dispatch_exception_returns_envelope(monkeypatch):
+    _skip_if_no_hermes()
+    sys.path.insert(0, HERMES_DIR)
+    import tools.capture_tool as capture_tool
+    from tools.registry import registry
+
+    monkeypatch.setattr(
+        capture_tool,
+        "do_capture",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    result = registry.dispatch("capture_content", {"content": "测试"})
+    envelope = _tool_envelope(result)
+
+    assert envelope["status"] == "error"
+    assert "boom" in " ".join(envelope["errors"])
+    assert envelope["chat_preview"]
+
+
+def test_hermes_capture_handler_preserves_next_actions(monkeypatch):
+    _skip_if_no_hermes()
+    sys.path.insert(0, HERMES_DIR)
+    from bridge.result_envelope import next_action, success_envelope
+    import tools.capture_tool as capture_tool
+
+    expected = success_envelope(
+        agent="capture",
+        intent="create_capture_draft",
+        chat_preview="已生成草稿。",
+        next_actions=[
+            next_action(
+                label="存库",
+                intent="commit_capture_draft",
+                payload={"draft_id": "d1"},
+                requires_confirmation=True,
+            )
+        ],
+    )
+    monkeypatch.setattr(capture_tool, "do_capture", lambda *args, **kwargs: expected)
+
+    envelope = _tool_envelope(capture_tool._handler({"content": "测试"}))
+
+    assert envelope["chat_preview"] == "已生成草稿。"
+    assert envelope["next_actions"][0]["requires_confirmation"] is True
 
 
 def test_hermes_commit_handler_empty_args_no_crash():
@@ -116,7 +184,47 @@ def test_hermes_commit_handler_empty_args_no_crash():
     sys.path.insert(0, HERMES_DIR)
     from tools.commit_capture_draft_tool import _handler
     result = _handler({})
-    assert isinstance(result, str) and len(result) > 0
+    envelope = _tool_envelope(result)
+    assert envelope["status"] in {"success", "error"}
+    assert len(envelope["chat_preview"]) > 0
+
+
+def test_hermes_revise_handler_preserves_envelope(monkeypatch):
+    _skip_if_no_hermes()
+    sys.path.insert(0, HERMES_DIR)
+    from bridge.result_envelope import success_envelope
+    import tools.revise_capture_draft_tool as revise_tool
+
+    expected = success_envelope(
+        agent="capture",
+        intent="revise_capture_draft",
+        chat_preview="已更新草稿。",
+    )
+    monkeypatch.setattr(revise_tool, "revise_capture_draft", lambda *args: expected)
+
+    envelope = _tool_envelope(revise_tool._handler({"instruction": "改短"}))
+
+    assert envelope["intent"] == "revise_capture_draft"
+    assert envelope["chat_preview"] == "已更新草稿。"
+
+
+def test_hermes_refine_handler_preserves_envelope(monkeypatch):
+    _skip_if_no_hermes()
+    sys.path.insert(0, HERMES_DIR)
+    from bridge.result_envelope import success_envelope
+    import tools.refine_capture_tool as refine_tool
+
+    expected = success_envelope(
+        agent="capture",
+        intent="revise_capture_draft",
+        chat_preview="已加工草稿。",
+    )
+    monkeypatch.setattr(refine_tool, "do_revise", lambda *args: expected)
+
+    envelope = _tool_envelope(refine_tool._handler({"instruction": "改短"}))
+
+    assert envelope["intent"] == "revise_capture_draft"
+    assert envelope["chat_preview"] == "已加工草稿。"
 
 
 def test_hermes_search_handler_runs():
@@ -124,7 +232,39 @@ def test_hermes_search_handler_runs():
     sys.path.insert(0, HERMES_DIR)
     from tools.search_notes_tool import _handler
     result = _handler({"query": "测试查询"})
-    assert isinstance(result, str) and len(result) > 0
+    envelope = _tool_envelope(result)
+    assert envelope["agent"] == "rag"
+    assert len(envelope["chat_preview"]) > 0
+    assert "handler_instruction" in envelope["meta"]
+
+
+def test_hermes_search_handler_preserves_source_map(monkeypatch):
+    _skip_if_no_hermes()
+    sys.path.insert(0, HERMES_DIR)
+    from bridge.result_envelope import source_ref, success_envelope
+    import tools.search_notes_tool as search_notes_tool
+
+    expected = success_envelope(
+        agent="rag",
+        intent="search_knowledge_base",
+        chat_preview="答案 [1]",
+        source_map=[
+            source_ref(
+                role="evidence",
+                type="capture_note",
+                id="cap1",
+                title="来源",
+                path="captures/source.md",
+            )
+        ],
+    )
+    monkeypatch.setattr(search_notes_tool, "do_search", lambda query: expected)
+
+    envelope = _tool_envelope(search_notes_tool._handler({"query": "测试"}))
+
+    assert envelope["chat_preview"] == "答案 [1]"
+    assert envelope["source_map"][0]["id"] == "cap1"
+    assert "handler_instruction" in envelope["meta"]
 
 
 def test_hermes_theme_scan_handler_runs():
@@ -132,7 +272,116 @@ def test_hermes_theme_scan_handler_runs():
     sys.path.insert(0, HERMES_DIR)
     from tools.theme_scan_tool import _handler
     result = _handler({})
-    assert isinstance(result, str) and len(result) > 0
+    envelope = _tool_envelope(result)
+    assert envelope["agent"] == "theme"
+    assert len(envelope["chat_preview"]) > 0
+
+
+def test_hermes_tool_executor_uses_chat_preview_for_model_content():
+    _skip_if_no_hermes()
+    sys.path.insert(0, HERMES_DIR)
+    from agent.hermes_custom_envelope_adapter import agent_result_envelope_content_for_model
+    from bridge.result_envelope import envelope_json, source_ref, success_envelope
+
+    result = envelope_json(
+        success_envelope(
+            agent="rag",
+            intent="search_knowledge_base",
+            chat_preview="这是给用户看的短回答 [1]",
+            source_map=[
+                source_ref(
+                    role="evidence",
+                    type="capture_note",
+                    id="cap1",
+                    title="来源",
+                    path="captures/source.md",
+                )
+            ],
+        )
+    )
+    content = agent_result_envelope_content_for_model(result)
+
+    assert content is not None
+    assert content.startswith("USER_VISIBLE_REPLY:\n这是给用户看的短回答 [1]")
+    assert "STRUCTURED_AGENT_RESULT_DO_NOT_REWRITE" in content
+    assert '"source_map"' in content
+    assert '"chat_preview"' not in content
+
+
+def test_hermes_graph_report_handler_preserves_artifacts(monkeypatch):
+    _skip_if_no_hermes()
+    sys.path.insert(0, HERMES_DIR)
+    from bridge.result_envelope import artifact_ref, success_envelope
+    import tools.graph_report_tool as graph_report_tool
+
+    expected = success_envelope(
+        agent="theme",
+        intent="run_graph_report",
+        chat_preview="报告",
+        durable_artifacts=[
+            artifact_ref(
+                type="librarian_report",
+                id="r1",
+                title="知识图谱健康报告",
+                path="data/reports/r1.md",
+                status="reported",
+            )
+        ],
+    )
+    monkeypatch.setattr(graph_report_tool, "run_graph_report", lambda: expected)
+
+    envelope = _tool_envelope(graph_report_tool._handler({}))
+
+    assert envelope["durable_artifacts"][0]["type"] == "librarian_report"
+
+
+def test_hermes_daily_review_handler_preserves_envelope(monkeypatch):
+    _skip_if_no_hermes()
+    sys.path.insert(0, HERMES_DIR)
+    from bridge.result_envelope import success_envelope
+    import tools.daily_review_tool as daily_review_tool
+
+    expected = success_envelope(
+        agent="review",
+        intent="run_daily_review",
+        chat_preview="今日复习",
+        meta={"item_count": 1},
+    )
+    monkeypatch.setattr(daily_review_tool, "run_daily_review", lambda: expected)
+
+    envelope = _tool_envelope(daily_review_tool._handler({}))
+
+    assert envelope["agent"] == "review"
+    assert envelope["meta"]["item_count"] == 1
+
+
+def test_hermes_synthesize_garden_handler_preserves_confirmation(monkeypatch):
+    _skip_if_no_hermes()
+    sys.path.insert(0, HERMES_DIR)
+    from bridge.result_envelope import next_action, success_envelope
+    import tools.synthesize_garden_tool as garden_tool
+
+    expected = success_envelope(
+        agent="garden",
+        intent="synthesize_garden",
+        chat_preview="已生成知识卡片。",
+        next_actions=[
+            next_action(
+                label="确认采用观点",
+                intent="accept_garden_card",
+                payload={"card_id": "g1"},
+                requires_confirmation=True,
+            )
+        ],
+    )
+    monkeypatch.setattr(garden_tool, "do_synthesize", lambda **kwargs: expected)
+
+    envelope = _tool_envelope(
+        garden_tool._handler({"capture_ids": ["c1"]}, task_id="t1", user_task="u1")
+    )
+
+    assert envelope["agent"] == "garden"
+    assert envelope["next_actions"][0]["requires_confirmation"] is True
 
 
 def test_hermes_toolset_has_6_tools():
@@ -166,8 +415,10 @@ def test_bridge_capture_url(mock_extract, mock_summarize):
         "title": "标题", "summary": "摘要", "tags": ["ai"],
     }
     r = capture_content("https://mp.weixin.qq.com/s/test")
-    assert r["success"] and r["status"] == "raw_extracted" and r["draft_id"]
-    assert "raw_path" not in r
+    assert r["status"] == "success"
+    assert _artifact(r)["status"] == "raw_extracted"
+    assert _artifact(r)["id"]
+    assert not any(a["type"] == "raw_evidence" for a in r["durable_artifacts"])
 
 
 @patch("agents.capture_agent.Summarizer.summarize")
@@ -179,7 +430,9 @@ def test_bridge_capture_text(mock_summarize):
         "个人知识管理有三个层次：捕获、整理、内化。这需要长期坚持和积累。"
         "补充：人工智能技术正在快速发展，深度学习模型取得了显著成果。"
         "从图像识别到自然语言处理，AI应用越来越广泛地改变着我们的世界。")
-    assert r["success"] and r["status"] == "raw_extracted" and r["draft_id"]
+    assert r["status"] == "success"
+    assert _artifact(r)["status"] == "raw_extracted"
+    assert _artifact(r)["id"]
 
 
 @patch("agents.capture_agent.CaptureAgent._call_llm")
@@ -195,10 +448,11 @@ def test_bridge_capture_text_with_instruction_returns_draft(mock_summarize, mock
         "从图像识别到自然语言处理，AI应用越来越广泛地改变着我们的世界。",
         instruction="总结全文核心观点",
     )
-    assert r["success"] and r["status"] == "draft_ready"
-    assert "核心观点" in r["draft_text"]
-    assert "完整草稿" in r["message"]
-    assert "__HERMES_DIRECT_REPLY__" not in r["message"]
+    assert r["status"] == "success"
+    assert _artifact(r)["status"] == "draft_ready"
+    assert "完整草稿已保存" in r["chat_preview"]
+    assert "核心观点" not in r["chat_preview"]
+    assert "__HERMES_DIRECT_REPLY__" not in r["chat_preview"]
 
 
 @patch("agents.capture_agent.CaptureAgent._call_llm")
@@ -218,11 +472,11 @@ def test_bridge_capture_with_instruction_truncates_long_message_but_keeps_full_d
         instruction="总结全文核心观点",
     )
 
-    assert r["success"] and r["status"] == "draft_ready"
-    assert r["draft_text"] == long_draft
-    assert long_draft not in r["message"]
-    assert "微信预览版" in r["message"]
-    assert "完整草稿" in r["message"]
+    assert r["status"] == "success"
+    assert _artifact(r)["status"] == "draft_ready"
+    assert r["meta"]["preview_truncated"] is True
+    assert long_draft not in r["chat_preview"]
+    assert "完整草稿已保存" in r["chat_preview"]
 
 
 @patch("agents.capture_agent.CaptureAgent._call_llm")
@@ -242,12 +496,12 @@ def test_bridge_revise_no_direct_reply_marker(mock_summarize, mock_llm):
         "补充文本确保内容长度足够通过质量检测，并覆盖政策、制度和行为机制。"
     )
 
-    revised = revise_capture_draft(draft["draft_id"], "提炼核心要点")
+    revised = revise_capture_draft(_artifact(draft)["id"], "提炼核心要点")
 
-    assert revised["success"] is True
-    assert "__HERMES_DIRECT_REPLY__" not in revised["message"]
-    assert "完整草稿" in revised["message"]
-    assert "核心观点" in revised["message"]
+    assert revised["status"] == "success"
+    assert "__HERMES_DIRECT_REPLY__" not in revised["chat_preview"]
+    assert "完整草稿已保存" in revised["chat_preview"]
+    assert "核心观点" not in revised["chat_preview"]
 
 
 @patch("agents.capture_agent.CaptureAgent._call_llm")
@@ -269,13 +523,12 @@ def test_bridge_revise_truncates_long_message_but_keeps_full_draft(mock_summariz
         "以便测试草稿工作流能够通过最小内容质量门槛并进入修订阶段。"
     )
 
-    revised = revise_capture_draft(draft["draft_id"], "扩写")
+    revised = revise_capture_draft(_artifact(draft)["id"], "扩写")
 
-    assert revised["success"] is True
-    assert revised["draft_text"] == long_draft
-    assert long_draft not in revised["message"]
-    assert "微信预览版" in revised["message"]
-    assert "完整草稿" in revised["message"]
+    assert revised["status"] == "success"
+    assert revised["meta"]["preview_truncated"] is True
+    assert long_draft not in revised["chat_preview"]
+    assert "完整草稿已保存" in revised["chat_preview"]
 
 
 @patch("bridge.rag_bridge.vector_search")
@@ -289,19 +542,26 @@ def test_bridge_rag(mock_embed, mock_query, mock_vector_search):
         "answer": "四个模块", "sources": [{"title": "T", "summary": "S", "feishu_doc_url": ""}],
     }
     r = search_knowledge_base("Agent 架构")
-    assert "四个模块" in r["answer"] and r["sources"][0]["title"] == "T"
+    assert r["status"] == "success"
+    assert "四个模块" in r["chat_preview"]
+    assert r["source_map"][0]["id"] == "1"
+    assert r["source_map"][0]["type"] == "capture_note"
 
 
 def test_bridge_theme_scan_runs(real_db):
     from bridge.theme_bridge import run_theme_scan
     result = run_theme_scan()
-    assert isinstance(result, str) and len(result) > 0
+    assert result["status"] == "success"
+    assert result["agent"] == "theme"
+    assert len(result["chat_preview"]) > 0
 
 
 def test_bridge_review_imports_and_runs():
     from bridge.review_bridge import run_daily_review
     result = run_daily_review()
-    assert isinstance(result, str)
+    assert result["status"] == "success"
+    assert result["agent"] == "review"
+    assert isinstance(result["chat_preview"], str)
 
 
 # ═══════ Layer 3: Real API (manual trigger only) ═══════
@@ -311,7 +571,7 @@ def test_real_capture_wechat_url():
         pytest.skip("RUN_REAL_TESTS=1 to run")
     from bridge.capture_bridge import capture_content
     r = capture_content("https://mp.weixin.qq.com/s/Esk0AFhP-apyWY8eWruv-Q")
-    assert r["success"] and len(r["title"]) > 0 and len(r["summary"]) > 0
+    assert r["status"] == "success" and len(r["meta"]["title"]) > 0 and len(r["meta"]["summary"]) > 0
 
 
 def test_real_rag_query():
@@ -319,7 +579,7 @@ def test_real_rag_query():
         pytest.skip("RUN_REAL_TESTS=1 to run")
     from bridge.rag_bridge import search_knowledge_base
     r = search_knowledge_base("Agent 架构")
-    assert len(r["answer"]) > 0
+    assert len(r["chat_preview"]) > 0
 
 # Patch: skip theme_scan tests that need real DB
 # (These work locally but fail in test env without migration)

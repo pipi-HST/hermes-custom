@@ -7,10 +7,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import load_config
 from agents.markdown_writer import append_links, read_note, update_moc, write_moc
 from agents.theme_agent import ThemeAgent, create_pending_question
+from bridge.result_envelope import artifact_ref, success_envelope
 from db.schema import init_db
 from db.repo import CaptureRepo
 
 logger = logging.getLogger(__name__)
+
+
+def _graph_report_preview(report: str) -> str:
+    lines = [line.strip() for line in report.splitlines() if line.strip()]
+    if not lines:
+        return "知识图谱健康报告已生成。"
+    return "\n".join(lines[:6])
 
 
 def _hydrate_capture(vault_path: Path, row: dict) -> dict:
@@ -111,7 +119,7 @@ def _evolve_themes(vault_path: Path, agent, unclustered_caps: list[dict]) -> int
     return updated
 
 
-def run_theme_scan() -> str:
+def run_theme_scan() -> dict:
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     repo = CaptureRepo(init_db(config.db_path))
     conn = repo.conn
@@ -122,7 +130,12 @@ def run_theme_scan() -> str:
     ).fetchall()
 
     if not rows:
-        return "没有待扫描的新内容。"
+        return success_envelope(
+            agent="theme",
+            intent="run_theme_scan",
+            chat_preview="没有待扫描的新内容。",
+            meta={"scanned_count": 0},
+        )
 
     vault_path = Path(config.vault_path).expanduser()
     new_caps = [_hydrate_capture(vault_path, dict(r)) for r in rows]
@@ -140,14 +153,25 @@ def run_theme_scan() -> str:
     # Layer 2: create MOC pages for clusters with ≥3 captures.
     links_injected = 0
     mocs_created = 0
+    theme_artifacts = []
     for cluster in clusters:
         try:
             links_injected += _inject_wiki_links(vault_path, cluster)
         except Exception as e:
             logger.warning(f"Wiki-link injection failed: {e}")
         try:
-            if _create_moc(vault_path, agent, cluster):
+            moc_path = _create_moc(vault_path, agent, cluster)
+            if moc_path:
                 mocs_created += 1
+                theme_artifacts.append(
+                    artifact_ref(
+                        type="theme_page",
+                        id=moc_path,
+                        title=Path(moc_path).stem,
+                        path=moc_path,
+                        status="created",
+                    )
+                )
         except Exception as e:
             logger.warning(f"MOC creation failed: {e}")
 
@@ -178,14 +202,27 @@ def run_theme_scan() -> str:
                      (now_iso, c["id"]))
     conn.commit()
 
-    return (
+    chat_preview = (
         f"Theme 扫描完成: {len(new_caps)} 条, {len(results)} 个聚类, "
         f"{links_injected} 条 wiki-link, {mocs_created} 个 MOC 创建, "
         f"{mocs_updated} 个 MOC 更新。"
     )
+    return success_envelope(
+        agent="theme",
+        intent="run_theme_scan",
+        chat_preview=chat_preview,
+        durable_artifacts=theme_artifacts,
+        meta={
+            "scanned_count": len(new_caps),
+            "cluster_count": len(results),
+            "links_injected": links_injected,
+            "theme_pages_created": mocs_created,
+            "theme_pages_updated": mocs_updated,
+        },
+    )
 
 
-def run_graph_report() -> str:
+def run_graph_report() -> dict:
     """Generate a knowledge graph health report (cron entry point)."""
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     vault_path = Path(config.vault_path).expanduser()
@@ -195,4 +232,24 @@ def run_graph_report() -> str:
         llm_model=config.llm_model,
         llm_base_url=config.llm_base_url or "https://api.deepseek.com",
     )
-    return agent.graph_report(vault_path)
+    report = agent.graph_report(vault_path)
+    report_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    report_rel_path = f"data/reports/graph-report-{report_id}.md"
+    report_path = Path(__file__).parent.parent / report_rel_path
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(report, encoding="utf-8")
+    return success_envelope(
+        agent="theme",
+        intent="run_graph_report",
+        chat_preview=_graph_report_preview(report),
+        durable_artifacts=[
+            artifact_ref(
+                type="librarian_report",
+                id=report_id,
+                title="知识图谱健康报告",
+                path=report_rel_path,
+                status="reported",
+            )
+        ],
+        meta={"report_length": len(report)},
+    )
