@@ -2,7 +2,13 @@
 
 This checkpoint preserves the external Hermes files changed during Phase 7.
 
-`/Users/pipi/Downloads/hermes-agent-main` is not a Git checkout on this machine, so the live gateway changes cannot be committed from that directory directly. The files in this folder are an overlay copy with the same relative paths:
+As of 2026-05-29, `/Users/pipi/Downloads/hermes-agent-main` is also versioned directly as a private GitHub repository:
+
+- Repository: `https://github.com/pipi-HST/hermes-agent-main`
+- Branch: `main`
+- Checkpoint commit: `e01abb0 Initial Hermes agent runtime checkpoint`
+
+The overlay below is kept as an extra recovery copy inside `hermes-custom`. The canonical runtime checkpoint is now the private `hermes-agent-main` repository above.
 
 - `agent/hermes_custom_envelope_adapter.py`
 - `agent/tool_executor.py`
