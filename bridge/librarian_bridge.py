@@ -29,7 +29,7 @@ def run_librarian_audit(*, apply: bool = False) -> dict[str, Any]:
     )
     database_sync = agent.maintain_database_sync(apply=apply)
     outlines = agent.maintain_outlines(apply=apply)
-    property_gaps = agent.audit_property_gaps()
+    property_gaps = agent.maintain_property_gaps(apply=apply)
     summary = _summarize(database_sync, outlines, property_gaps, apply=apply)
     report_path = _write_librarian_report(
         db_path=config.db_path,
@@ -111,11 +111,15 @@ def _summarize(
     outline_updated = int(outlines.get("updated") or 0)
     action_count = len(planned_actions)
     needs_confirmation = action_count > 0 or outline_needs > 0
-    property_gap_count = int(property_gaps.get("capture_gap_count") or 0) + int(
-        property_gaps.get("raw_gap_count") or 0
+    property_after = property_gaps.get("after") or {}
+    property_action_count = int(property_gaps.get("planned_action_count") or 0)
+    property_gap_count = int(property_after.get("capture_gap_count") or 0) + int(
+        property_after.get("raw_gap_count") or 0
     )
+    if apply:
+        property_action_count = 0
     return {
-        "needs_confirmation": needs_confirmation,
+        "needs_confirmation": needs_confirmation or property_action_count > 0,
         "has_property_gaps": property_gap_count > 0,
         "database_sync": {
             "capture_count": int(after.get("captures") or before.get("captures") or 0),
@@ -132,12 +136,10 @@ def _summarize(
             "errors": int(outlines.get("errors") or 0),
         },
         "property_gaps": {
-            "capture_notes_scanned": int(property_gaps.get("capture_notes_scanned") or 0),
-            "raw_notes_scanned": int(property_gaps.get("raw_notes_scanned") or 0),
-            "capture_gap_count": int(property_gaps.get("capture_gap_count") or 0),
-            "raw_gap_count": int(property_gaps.get("raw_gap_count") or 0),
-            "capture_gaps": property_gaps.get("capture_gaps") or [],
-            "raw_gaps": property_gaps.get("raw_gaps") or [],
+            "planned_action_count": int(property_gaps.get("planned_action_count") or 0),
+            "applied_action_count": int(property_gaps.get("applied_action_count") or 0),
+            "before": property_gaps.get("before") or {},
+            "after": property_after,
         },
         "applied": apply,
     }
@@ -173,11 +175,23 @@ def _chat_preview(summary: dict[str, Any], report_path: str, *, apply: bool) -> 
             f"已补 {outlines['updated']} 篇, "
             f"错误 {outlines['errors']}。"
         )
+        after = props["after"]
+        if props["planned_action_count"] or props["applied_action_count"]:
+            property_action_text = (
+                f"已自动补 {props['applied_action_count']} 项"
+                if apply
+                else f"可自动补 {props['planned_action_count']} 项"
+            )
+        else:
+            property_action_text = "没有可机械补齐项"
         lines.append(
             "Properties: "
-            f"capture 缺口 {props['capture_gap_count']} 篇, "
-            f"raw 缺口 {props['raw_gap_count']} 篇（只报告，不自动改）。"
+            f"{property_action_text}; "
+            f"剩余 capture 缺口 {int(after.get('capture_gap_count') or 0)} 篇, "
+            f"raw 缺口 {int(after.get('raw_gap_count') or 0)} 篇。"
         )
+        if summary["has_property_gaps"]:
+            lines.append("剩余是判断字段或没有可推导来源的字段，不影响使用，不需要手动处理。")
     if report_path:
         lines.append(f"报告: {report_path}")
     if apply:

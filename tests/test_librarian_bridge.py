@@ -53,6 +53,66 @@ def _outline_report(*, dry_run: bool, updated: int = 0) -> dict:
     }
 
 
+def _property_report(*, dry_run: bool, actions: list[dict] | None = None) -> dict:
+    has_gaps = actions is None or bool(actions)
+    planned_actions = (
+        [
+            {
+                "type": "backfill_capture_properties",
+                "file_path": "captures/a.md",
+                "fields": {"type": "capture", "status": "processed"},
+            },
+            {
+                "type": "backfill_raw_properties",
+                "file_path": "_archive/raw/a.md",
+                "fields": {"type": "raw", "capture_id": "cap-1"},
+            },
+        ]
+        if actions is None
+        else actions
+    )
+    return {
+        "dry_run": dry_run,
+        "planned_action_count": len(planned_actions),
+        "applied_action_count": 0 if dry_run else len(planned_actions),
+        "planned_actions": planned_actions,
+        "before": {
+            "capture_notes_scanned": 3,
+            "raw_notes_scanned": 2,
+            "capture_gap_count": 1 if has_gaps else 0,
+            "raw_gap_count": 1 if has_gaps else 0,
+            "capture_gaps": (
+                [{"file_path": "captures/a.md", "missing_fields": ["type"]}]
+                if has_gaps
+                else []
+            ),
+            "raw_gaps": (
+                [{"file_path": "_archive/raw/a.md", "missing_fields": ["capture_id"]}]
+                if has_gaps
+                else []
+            ),
+        },
+        "after": {
+            "capture_notes_scanned": 3,
+            "raw_notes_scanned": 2,
+            "capture_gap_count": (
+                0 if (not dry_run and planned_actions) or not has_gaps else 1
+            ),
+            "raw_gap_count": 0 if (not dry_run and planned_actions) or not has_gaps else 1,
+            "capture_gaps": (
+                []
+                if (not dry_run and planned_actions) or not has_gaps
+                else [{"file_path": "captures/a.md", "missing_fields": ["type"]}]
+            ),
+            "raw_gaps": (
+                []
+                if (not dry_run and planned_actions) or not has_gaps
+                else [{"file_path": "_archive/raw/a.md", "missing_fields": ["capture_id"]}]
+            ),
+        },
+    }
+
+
 class FakeLibraryAgent:
     calls: list[dict] = []
 
@@ -68,16 +128,9 @@ class FakeLibraryAgent:
         self.calls.append({"method": "outlines", "apply": apply})
         return _outline_report(dry_run=not apply, updated=1 if apply else 0)
 
-    def audit_property_gaps(self) -> dict:
-        self.calls.append({"method": "property_gaps", "apply": False})
-        return {
-            "capture_notes_scanned": 3,
-            "raw_notes_scanned": 2,
-            "capture_gap_count": 1,
-            "raw_gap_count": 1,
-            "capture_gaps": [{"file_path": "captures/a.md", "missing_fields": ["type"]}],
-            "raw_gaps": [{"file_path": "_archive/raw/a.md", "missing_fields": ["capture_id"]}],
-        }
+    def maintain_property_gaps(self, *, apply: bool = False) -> dict:
+        self.calls.append({"method": "property_gaps", "apply": apply})
+        return _property_report(dry_run=not apply)
 
 
 def test_librarian_audit_is_dry_run_by_default(monkeypatch) -> None:
@@ -122,9 +175,13 @@ def test_librarian_audit_is_dry_run_by_default(monkeypatch) -> None:
     assert envelope["meta"]["dry_run"] is True
     assert envelope["meta"]["database_sync"]["planned_action_count"] == 2
     assert envelope["meta"]["outlines"]["needs_outline"] == 1
-    assert envelope["meta"]["property_gaps"]["capture_gap_count"] == 1
-    assert written_reports[0]["property_gaps"]["capture_gap_count"] == 1
-    assert written_reports[0]["database_sync"]["raw_report_path"] == "data/repair_reports/repair-test.json"
+    assert envelope["meta"]["property_gaps"]["planned_action_count"] == 2
+    assert envelope["meta"]["property_gaps"]["after"]["capture_gap_count"] == 1
+    assert written_reports[0]["property_gaps"]["planned_action_count"] == 2
+    assert (
+        written_reports[0]["database_sync"]["raw_report_path"]
+        == "data/repair_reports/repair-test.json"
+    )
     assert FakeLibraryAgent.calls == [
         {"method": "database_sync", "apply": False},
         {"method": "outlines", "apply": False},
@@ -167,10 +224,11 @@ def test_librarian_apply_runs_confirmed_repairs(monkeypatch) -> None:
     assert envelope["next_actions"] == []
     assert envelope["meta"]["dry_run"] is False
     assert envelope["meta"]["outlines"]["updated"] == 1
+    assert envelope["meta"]["property_gaps"]["applied_action_count"] == 2
     assert FakeLibraryAgent.calls == [
         {"method": "database_sync", "apply": True},
         {"method": "outlines", "apply": True},
-        {"method": "property_gaps", "apply": False},
+        {"method": "property_gaps", "apply": True},
     ]
 
 
@@ -195,15 +253,8 @@ def test_librarian_clean_report_has_no_apply_action(monkeypatch) -> None:
                 "items": [],
             }
 
-        def audit_property_gaps(self) -> dict:
-            return {
-                "capture_notes_scanned": 3,
-                "raw_notes_scanned": 2,
-                "capture_gap_count": 0,
-                "raw_gap_count": 0,
-                "capture_gaps": [],
-                "raw_gaps": [],
-            }
+        def maintain_property_gaps(self, *, apply: bool = False) -> dict:
+            return _property_report(dry_run=not apply, actions=[])
 
     monkeypatch.setattr(librarian_bridge, "LibraryAgent", CleanLibraryAgent)
     monkeypatch.setattr(
@@ -264,8 +315,42 @@ def test_librarian_property_gaps_do_not_create_apply_action(monkeypatch) -> None
     )
     monkeypatch.setattr(librarian_bridge, "Outliner", lambda **_kwargs: object())
 
+    class JudgmentOnlyLibraryAgent(PropertyOnlyLibraryAgent):
+        def maintain_property_gaps(self, *, apply: bool = False) -> dict:
+            return {
+                **_property_report(dry_run=not apply, actions=[]),
+                "before": {
+                    "capture_notes_scanned": 3,
+                    "raw_notes_scanned": 2,
+                    "capture_gap_count": 1,
+                    "raw_gap_count": 0,
+                    "capture_gaps": [
+                        {
+                            "file_path": "captures/a.md",
+                            "missing_fields": ["reviewable", "importance"],
+                        }
+                    ],
+                    "raw_gaps": [],
+                },
+                "after": {
+                    "capture_notes_scanned": 3,
+                    "raw_notes_scanned": 2,
+                    "capture_gap_count": 1,
+                    "raw_gap_count": 0,
+                    "capture_gaps": [
+                        {
+                            "file_path": "captures/a.md",
+                            "missing_fields": ["reviewable", "importance"],
+                        }
+                    ],
+                    "raw_gaps": [],
+                },
+            }
+
+    monkeypatch.setattr(librarian_bridge, "LibraryAgent", JudgmentOnlyLibraryAgent)
+
     envelope = librarian_bridge.run_librarian_audit()
 
     assert "当前干净" not in envelope["chat_preview"]
-    assert "Properties" in envelope["chat_preview"]
+    assert "不需要手动处理" in envelope["chat_preview"]
     assert envelope["next_actions"] == []

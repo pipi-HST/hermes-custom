@@ -1,6 +1,7 @@
 """Tests for Library Agent vault maintenance."""
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -203,6 +204,7 @@ def test_library_maintenance_runner_uses_configured_vault(
     assert report["dry_run"] is True
     assert report["database_sync"]["dry_run"] is True
     assert report["outlines"]["needs_outline"] == 1
+    assert report["property_gaps"]["planned_action_count"] == 1
     assert sync_calls == [
         {
             "db_path": Path(Config.db_path),
@@ -273,3 +275,95 @@ def test_library_agent_reports_capture_and_raw_property_gaps(tmp_path: Path) -> 
     assert raw_gap["file_path"] == "_archive/raw/raw.md"
     assert "type" in raw_gap["missing_fields"]
     assert "capture_id" in raw_gap["missing_fields"]
+
+
+def _write_raw_for_property_test(vault: Path, rel_path: str) -> None:
+    raw_path = vault / rel_path
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_text(
+        "\n".join(
+            [
+                "---",
+                "id: raw-1",
+                "title: 原文",
+                "date: '2026-05-29'",
+                "source: https://example.com",
+                "source_type: link",
+                "---",
+                "",
+                "原文",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_property_test_db(db_path: Path, capture_rel: str, raw_rel: str) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE captures (id TEXT PRIMARY KEY, file_path TEXT, raw_path TEXT)")
+    conn.execute(
+        "INSERT INTO captures (id, file_path, raw_path) VALUES (?, ?, ?)",
+        ("cap-1", capture_rel, raw_rel),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_library_agent_dry_run_reports_safe_property_backfills_without_writing(
+    tmp_path: Path,
+) -> None:
+    capture_rel = _write_capture(tmp_path, name="cap-1.md", body="# 笔记\n\n正文")
+    raw_rel = "_archive/raw/raw-1.md"
+    raw_path = tmp_path / raw_rel
+    _write_raw_for_property_test(tmp_path, raw_rel)
+    db_path = tmp_path / "captures.db"
+    _write_property_test_db(db_path, capture_rel, raw_rel)
+    before = raw_path.read_text(encoding="utf-8")
+
+    report = LibraryAgent(
+        tmp_path,
+        outliner=FakeOutliner(),
+        db_path=db_path,
+    ).maintain_property_gaps()
+
+    assert report["dry_run"] is True
+    assert report["planned_action_count"] == 2
+    assert {
+        (action["file_path"], tuple(action["fields"].keys()))
+        for action in report["planned_actions"]
+    } == {
+        ("captures/cap-1.md", ("type", "status")),
+        ("_archive/raw/raw-1.md", ("type", "status", "capture_id")),
+    }
+    assert raw_path.read_text(encoding="utf-8") == before
+
+
+def test_library_agent_apply_backfills_only_safe_property_fields(tmp_path: Path) -> None:
+    capture_rel = _write_capture(tmp_path, name="cap-1.md", body="# 笔记\n\n正文")
+    raw_rel = "_archive/raw/raw-1.md"
+    _write_raw_for_property_test(tmp_path, raw_rel)
+    db_path = tmp_path / "captures.db"
+    _write_property_test_db(db_path, capture_rel, raw_rel)
+
+    report = LibraryAgent(
+        tmp_path,
+        outliner=FakeOutliner(),
+        db_path=db_path,
+    ).maintain_property_gaps(apply=True)
+
+    assert report["dry_run"] is False
+    assert report["applied_action_count"] == 2
+    capture_frontmatter, _capture_body = read_note(tmp_path, capture_rel)
+    raw_frontmatter, _raw_body = read_note(tmp_path, raw_rel)
+    assert capture_frontmatter["type"] == "capture"
+    assert capture_frontmatter["status"] == "processed"
+    assert "reviewable" not in capture_frontmatter
+    assert "importance" not in capture_frontmatter
+    assert raw_frontmatter["type"] == "raw"
+    assert raw_frontmatter["status"] == "archived"
+    assert raw_frontmatter["capture_id"] == "cap-1"
+    assert report["after"]["capture_gap_count"] == 1
+    assert report["after"]["capture_gaps"][0]["missing_fields"] == [
+        "reviewable",
+        "importance",
+    ]

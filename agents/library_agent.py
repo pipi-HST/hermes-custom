@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +59,11 @@ class LibraryAgent:
         rename_readable: bool = True,
     ) -> dict[str, Any]:
         if self.db_path is None:
-            return {"dry_run": not apply, "skipped": True, "reason": "db_path_not_configured"}
+            return {
+                "dry_run": not apply,
+                "skipped": True,
+                "reason": "db_path_not_configured",
+            }
         return repair_data(
             self.db_path,
             self.vault_path,
@@ -85,6 +90,84 @@ class LibraryAgent:
             "capture_gaps": capture_gaps[:20],
             "raw_gaps": raw_gaps[:20],
         }
+
+    def maintain_property_gaps(self, *, apply: bool = False) -> dict[str, Any]:
+        before = self.audit_property_gaps()
+        actions = self._property_backfill_actions()
+        applied_count = 0
+
+        if apply:
+            for action in actions:
+                if _apply_property_backfill(self.vault_path, action):
+                    applied_count += 1
+
+        return {
+            "dry_run": not apply,
+            "planned_action_count": len(actions),
+            "applied_action_count": applied_count,
+            "planned_actions": actions[:50],
+            "before": before,
+            "after": self.audit_property_gaps() if apply else before,
+        }
+
+    def _property_backfill_actions(self) -> list[dict[str, Any]]:
+        actions: list[dict[str, Any]] = []
+        raw_capture_ids = self._raw_capture_id_map()
+
+        for path in sorted((self.vault_path / "captures").glob("*.md")):
+            rel_path = path.relative_to(self.vault_path).as_posix()
+            parsed = _read_markdown_parts(path)
+            frontmatter = parsed[0] if parsed else {}
+            fields = _missing_field_values(
+                frontmatter,
+                {"type": "capture", "status": "processed"},
+            )
+            if fields:
+                actions.append(
+                    {
+                        "type": "backfill_capture_properties",
+                        "file_path": rel_path,
+                        "fields": fields,
+                    }
+                )
+
+        for path in sorted((self.vault_path / "_archive" / "raw").glob("*.md")):
+            rel_path = path.relative_to(self.vault_path).as_posix()
+            parsed = _read_markdown_parts(path)
+            frontmatter = parsed[0] if parsed else {}
+            defaults = {"type": "raw", "status": "archived"}
+            capture_id = raw_capture_ids.get(rel_path)
+            if capture_id:
+                defaults["capture_id"] = capture_id
+            fields = _missing_field_values(frontmatter, defaults)
+            if fields:
+                actions.append(
+                    {
+                        "type": "backfill_raw_properties",
+                        "file_path": rel_path,
+                        "fields": fields,
+                    }
+                )
+
+        return actions
+
+    def _raw_capture_id_map(self) -> dict[str, str]:
+        if self.db_path is None or not self.db_path.exists():
+            return {}
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            rows = conn.execute(
+                "SELECT id, raw_path FROM captures "
+                "WHERE raw_path IS NOT NULL AND raw_path != ''"
+            ).fetchall()
+        except sqlite3.Error:
+            return {}
+        finally:
+            try:
+                conn.close()
+            except UnboundLocalError:
+                pass
+        return {str(raw_path): str(capture_id) for capture_id, raw_path in rows}
 
     def maintain_outlines(self, *, apply: bool = False) -> dict[str, Any]:
         report: dict[str, Any] = {
@@ -264,6 +347,40 @@ def _property_gaps(
         if missing:
             gaps.append({"file_path": rel_path, "missing_fields": missing})
     return gaps
+
+
+def _missing_field_values(
+    frontmatter: dict[str, Any],
+    defaults: dict[str, str],
+) -> dict[str, str]:
+    return {
+        field: value
+        for field, value in defaults.items()
+        if field not in frontmatter or frontmatter.get(field) in (None, "")
+    }
+
+
+def _apply_property_backfill(vault_path: Path, action: dict[str, Any]) -> bool:
+    rel_path = str(action.get("file_path") or "")
+    fields = action.get("fields") or {}
+    if not rel_path or not fields:
+        return False
+
+    path = vault_path / rel_path
+    parsed = _read_markdown_parts(path)
+    if parsed is None:
+        return False
+
+    frontmatter, body = parsed
+    changed = False
+    for field, value in fields.items():
+        if field not in frontmatter or frontmatter.get(field) in (None, ""):
+            frontmatter[field] = value
+            changed = True
+
+    if changed:
+        _write_markdown_parts(path, frontmatter, body)
+    return changed
 
 
 def _markdown_count(root: Path) -> int:

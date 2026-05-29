@@ -40,6 +40,7 @@ def run_library_maintenance(
         "dry_run": not apply,
         "database_sync": agent.maintain_database_sync(apply=apply),
         "outlines": agent.maintain_outlines(apply=apply),
+        "property_gaps": agent.maintain_property_gaps(apply=apply),
     }
 
 
