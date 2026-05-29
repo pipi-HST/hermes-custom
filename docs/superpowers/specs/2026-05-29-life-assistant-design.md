@@ -31,10 +31,11 @@ The assistant is a lifestyle and reflection helper. It is not a medical diagnosi
 ## Assumptions
 
 - WeChat/Hermes is the main user-facing channel.
-- Mac activity data can be queried by a local activity source that reports active and inactive periods.
+- Mac activity data can be queried from macOS user idle time. The first version should treat keyboard, mouse, and trackpad input as user activity. Background processes, agents, downloads, builds, or sleep-prevention assertions do not count as user activity.
 - SQLite remains the first-version storage layer.
 - Life data should be queryable as structured time-series events, so raw life records should not be stored primarily as Markdown.
-- Important weekly reviews, reflections, or decisions may later be selectively synced to Obsidian, but that is optional.
+- Important weekly reviews, reflections, or decisions may later be selectively synced to Obsidian, but Obsidian export is not part of the first version.
+- Real WeChat notifications should be disabled by default during first implementation. The first usable version should run in dry-run mode until tests and real local idle logs look correct.
 
 ## Architecture
 
@@ -44,11 +45,18 @@ High-level components:
 
 - `life_agent`: parses user messages, records life events, handles reminder replies, and generates reviews.
 - `life_repo`: reads and writes the `life_*` tables.
-- `life_scheduler`: evaluates due reminders and review jobs.
-- `mac_activity_source`: reads Mac active and inactive windows for sedentary detection.
+- `life_scheduler`: evaluates due reminders and review jobs through a minute-level `life_tick`.
+- `mac_activity_source`: reads macOS idle time and interruption signals for sedentary detection.
 - `life_bridge`: exposes Hermes tool functions for recording, reminder checks, and reviews.
 
 This keeps the feature close to Hermes routing and WeChat delivery while isolating its data and behavior from the knowledge-management agents.
+
+The first version should expose at least two Hermes tools:
+
+- `record_life_event(message, received_at?)`: user-facing tool for natural-language life records.
+- `life_tick(now?, dry_run?)`: internal cron tool for reminders, reviews, and sedentary state updates.
+
+`life_tick` always returns a standard Agent Result Envelope. It must set `meta.should_notify=true` only when a WeChat message should be sent. The Hermes scheduling layer must inspect this flag and suppress user delivery when it is false.
 
 ## Data Model
 
@@ -70,6 +78,7 @@ Useful event types:
 - `reflection`
 - `life_note`
 - `decision`
+- `pending_decision`
 
 Important fields:
 
@@ -81,9 +90,18 @@ Important fields:
 - `source`
 - `raw_text`
 - `payload_json`
+- `status`
 - `created_at`
+- `updated_at`
 
 `payload_json` carries type-specific fields, such as meal content, exercise type, reminder id, decision rationale, or reflection text.
+
+Sedentary and sitting metrics use two first-version reporting fields:
+
+- `sitting_total_minutes`: all Mac-active sitting windows, including windows shorter than the sedentary threshold.
+- `sedentary_over_limit_minutes`: the full duration of each continuous active window whose duration is greater than or equal to 60 minutes. For an 80-minute window, count 80 minutes, not only the 20 minutes beyond the threshold.
+
+Sitting metrics are split by natural day. Sleep sessions are different: sleep is attributed to the wake date.
 
 ### `life_reminder_rules`
 
@@ -113,9 +131,29 @@ Important fields:
 - `status`
 - `user_response`
 - `resolved_at`
+- `dedupe_key`
+- `error`
 - `payload_json`
+- `created_at`
+- `updated_at`
 
-Expected statuses include `scheduled`, `sent`, `confirmed`, `snoozed`, `skipped`, `auto_resolved`, and `expired`.
+Expected statuses include `scheduled`, `sending`, `sent`, `confirmed`, `snoozed`, `skipped`, `auto_resolved`, `failed`, `expired`, and `missed`.
+
+`dedupe_key` should be unique enough to prevent duplicate sends for the same reminder instance.
+
+### `life_locks`
+
+Stores short-lived cross-process locks for `life_tick`.
+
+Important fields:
+
+- `name`
+- `owner`
+- `expires_at`
+- `created_at`
+- `updated_at`
+
+`life_tick` should acquire a lock with about a 50-second TTL before evaluating reminders. If the lock is held and not expired, the tick exits without user notification.
 
 ### `life_daily_reviews`
 
@@ -140,7 +178,7 @@ Important fields:
 - `week_start`
 - `week_end`
 - `summary`
-- `scores_json`
+- `labels_json`
 - `patterns_json`
 - `recommendations_json`
 - `created_at`
@@ -169,10 +207,16 @@ Sedentary reminders are stateful and stronger than ordinary reminders.
 
 Defaults:
 
-- Trigger after 60 minutes of continuous Mac activity.
+- Use macOS idle time as the core signal.
+- Treat `idle_time <= 5 minutes` as continuous activity.
+- Treat `idle_time > 5 minutes` as an activity break.
+- Lock, sleep, or logout also count as activity interruption.
+- If the Mac activity source fails, suspend sedentary reminders and record a warning. Do not infer from stale activity data.
+- Trigger after 60 minutes of continuous activity.
 - Once triggered, send a WeChat/Hermes reminder every 10 minutes.
-- Auto-resolve when Mac activity is interrupted for more than 5 minutes.
-- Also resolve if the user replies that they have moved or taken a break.
+- Auto-resolve only when Mac activity is interrupted for more than 5 minutes, or when lock, sleep, or logout is detected.
+- User replies do not resolve sedentary reminders. The user must act, not reply.
+- Allow explicit high-friction management commands such as `今天暂停久坐提醒` or `暂停久坐提醒 2 小时`. Pausing stops messages only; sitting and sedentary statistics continue to be recorded.
 
 State flow:
 
@@ -180,9 +224,11 @@ State flow:
 2. Hermes enters `sedentary_active`.
 3. Hermes sends reminders every 10 minutes.
 4. If Mac inactivity exceeds 5 minutes, Hermes records `sedentary_break` and auto-resolves the reminder state.
-5. If the user replies `已活动` or an equivalent phrase, Hermes records `sedentary_break` and resolves the reminder state.
+5. The current continuous sitting timer resets after the break, but the day's cumulative sitting metrics do not reset.
 
-The system should record the sedentary start time, reminder times, resolution time, total sedentary duration, and resolution source.
+If the user replies `已活动` or an equivalent phrase during an active sedentary reminder, Hermes should not resolve the reminder. It may explain once per sedentary session that the alert stops only after the user leaves the computer for more than 5 minutes.
+
+The system should record active-window start time, reminder times, resolution time, sitting duration, sedentary-over-limit duration, and resolution source.
 
 ### Water Reminder
 
@@ -193,6 +239,7 @@ Defaults:
 - Lightweight reminder only.
 - No required interaction.
 - If the user replies that they drank water, record a `water` event.
+- If a `water` event exists within 60 minutes before a planned water reminder, skip that reminder.
 
 ### Exercise Reminder
 
@@ -202,9 +249,17 @@ Defaults:
 - If the user does not respond and has not recorded exercise, remind every 2 hours.
 - Stop for the day when the user records exercise.
 - Stop for the day when the user says they will not exercise today.
-- If the user sets a specific exercise time, schedule the next reminder for that time.
+- If the user sets a specific exercise time, schedule the next reminder for that time. If the user still does not respond after that reminder, return to the 2-hour reminder loop.
 
-The reminder is interactive. Expected replies include completion, snooze, a specific future time, or skip for today.
+The reminder is interactive. Expected statuses include:
+
+- `completed`: the user records exercise.
+- `completed_unknown`: the user confirms exercise without type or duration.
+- `skipped`: the user says they will not exercise today.
+- `scheduled`: the user sets a later exercise time.
+- `unresolved`: the user has not responded.
+
+If the user replies `已运动` in an exercise reminder context without type or duration, stop today's exercise reminders, record `completed_unknown`, and ask once for optional details. Do not keep chasing the details.
 
 ### Sleep Reminder
 
@@ -225,6 +280,9 @@ Defaults:
 - Keeps the review lightweight.
 - Asks one or two questions.
 - Summarizes the day across sleep, exercise, sedentary time, meals, water, and reflection if data exists.
+- If a sitting window is still active at 00:00, send the review with an "active window still open" note and allow final sitting statistics to be corrected after the break.
+- If the review is blocked by higher-priority reminders until 02:00, mark it `missed` instead of sending it later in the night.
+- If there is no meal record for the day, ask about food only inside this light review. Do not send standalone meal reminders.
 
 ### Weekly Review
 
@@ -233,14 +291,53 @@ Defaults:
 - Runs Sunday at 21:30.
 - Produces a deeper lifestyle review.
 - Covers sleep regularity, exercise consistency, sedentary burden, meal timing/content notes, water reminder effectiveness, reflection themes, and next-week focus.
+- If the weekly review is blocked by higher-priority reminders until 23:30, mark it `missed`.
+- First version should give qualitative labels and recommendations, not numeric scores.
+- First version should not create next-week goals automatically.
+
+## Tick Arbitration
+
+`life_tick` runs once per minute from an external cron or Hermes scheduler. It is not a long-lived scheduler in the first version.
+
+Each tick should:
+
+1. Acquire the `life_tick` lock.
+2. Read current time, reminder state, and Mac idle time.
+3. Update state without sending messages: resolve sedentary state, split cross-midnight sitting windows, expire reminders, and mark missed review windows.
+4. Find due reminder candidates.
+5. Choose at most one candidate by priority.
+6. Create a `life_reminder_logs` row with `status='sending'` and a dedupe key.
+7. If dry-run or notifications are disabled, return an envelope with `meta.should_notify=false` and log the selected action.
+8. If real notifications are enabled, let the scheduling layer send the selected `chat_preview` only when `meta.should_notify=true`.
+9. Mark the log `sent` on success or `failed` on failure.
+
+Reminder priority:
+
+1. Sedentary strong reminder
+2. Exercise reminder
+3. Sleep reminder
+4. Water reminder
+5. Daily light review
+6. Weekly deep review
+
+Lower-priority reminders remain due if a higher-priority reminder is sent. They should compete again on the next tick instead of being delayed automatically.
+
+Send failure handling:
+
+- Write `sending` before delivery, then update to `sent` or `failed`.
+- Sedentary and exercise reminders get short retry behavior after send failure: retry after about 1 minute, up to 2 short retries, then fall back to their normal reminder cadence.
+- Water, sleep, and review messages do not need short retries in the first version.
 
 ## Conversation Strategy
 
 The first version should use a mixed parsing strategy:
 
+- Rule parsing first; LLM parsing only as fallback for more complex messages.
 - Clearly structured messages are parsed directly into structured events.
 - Ambiguous messages are stored as `life_note`.
 - The assistant only asks a follow-up when the ambiguity affects reminder state.
+- The Life Assistant should only handle high-confidence life-related messages. It must not broadly capture ordinary chat or knowledge-management messages.
+- `record_life_event` should reply with a short confirmation for every user-created record in the first version, including key parsed fields so the user can spot parsing errors.
 
 Examples:
 
@@ -250,15 +347,47 @@ Examples:
 - `午饭吃了牛肉饭` -> `meal`
 - `跑步 30 分钟` -> `exercise`
 - `喝了` -> `water` if the active context is a water reminder
-- `已活动` -> resolve active sedentary reminder and record `sedentary_break`
+- `已活动` -> if a sedentary reminder is active, explain once that the alert only stops after Mac idle time exceeds 5 minutes
 - `今天不练了` -> skip today's exercise reminder
 - `下午 4 点提醒我运动` -> schedule exercise reminder for that time
 - `今天有个反思...` -> `reflection`
-- `记录一个长期决定：...` -> `decision`
+- `记录一个长期决定：...` -> ask for review time, rationale, and expected outcome before creating a formal `decision`
+- `撤销上一条` -> undo the latest user-created `life_events` row within 30 minutes
+- `上一条改成加餐` -> modify the latest user-created `life_events` row within 30 minutes
+
+Short replies use active reminder context:
+
+- Keyword-clear replies can bind directly, such as `喝了` to water.
+- Ambiguous replies bind to the recent active reminder only when there is one clear candidate.
+- If multiple reminders are active and the reply is ambiguous, ask a short clarification.
+
+Sleep conflict handling:
+
+- If `我睡了` arrives while an unmatched sleep start exists, ask whether to close the previous sleep record or start over.
+- If `我醒了` arrives without an unmatched sleep start, ask for the approximate sleep start time.
+- Natural-language explicit times override message receive time. Otherwise, use the message receive time.
+- Sleep sessions are attributed to the wake date.
+
+Meal handling:
+
+- If the meal slot is explicit, use it.
+- If the meal slot is not explicit, infer from time and mark the slot as inferred.
+- Do not assume the user must eat three meals per day.
+- Do not provide instant health commentary for meals. Use daily or weekly review instead.
+
+Reflection handling:
+
+- First version stores reflections in `life_events`.
+- First version does not automatically create Garden Cards, write Obsidian notes, or trigger knowledge-management agents from reflections.
+
+Decision handling:
+
+- First version requires review time, rationale, and expected outcome for formal long-term decisions.
+- If the user does not answer the follow-up, keep the item as `pending_decision` or `life_note`; do not add it to the formal decision review queue.
 
 ## Review Behavior
 
-Daily review should be concise and low-friction. It should not try to produce a full report every night.
+Daily review should be concise and low-friction. It should not try to produce a full report every night, and it should not require a reply.
 
 Weekly review should be more analytical. It should identify patterns and propose small adjustments, while staying away from medical diagnosis.
 
@@ -272,6 +401,42 @@ Useful weekly review sections:
 - Water reminders
 - Reflection and thought progress
 - Suggested focus for next week
+
+Weekly review should not create goals in the first version. It may suggest one or more next steps, but those suggestions do not change reminder rules unless the user later gives an explicit command.
+
+## Configuration And Rollout
+
+First-version configuration should start from code defaults. Only limited same-day controls are supported from WeChat:
+
+- `今天暂停久坐提醒`
+- `暂停久坐提醒 2 小时`
+- `今天不练了`
+- exercise reminder rescheduling, such as `下午 4 点提醒我运动`
+
+Permanent reminder configuration changes through WeChat are out of scope for the first version.
+
+Real notifications must be off by default. Initial rollout steps:
+
+1. Run all unit and state-machine tests.
+2. Run `life_tick` in dry-run mode.
+3. Observe real local macOS idle logs for 15-30 minutes.
+4. Confirm state transitions and due reminder decisions look correct.
+5. Enable real WeChat notifications explicitly.
+
+## Observability
+
+Add a dedicated `data/life.log` for Life Assistant decisions. Each tick should log key facts in a compact structured form:
+
+- tick time
+- idle seconds or activity-source failure
+- current sedentary state
+- due candidates
+- selected reminder
+- `should_notify`
+- send result
+- warnings or errors
+
+The SQLite event and reminder tables remain the durable source of state. The log is for debugging and operations.
 
 ## Safety Boundaries
 
@@ -297,15 +462,40 @@ For severe or persistent symptoms, the assistant should recommend seeking qualif
 - The user can record sleep start and end from WeChat, and Hermes calculates sleep duration.
 - The user can record meals, exercise, water, reflections, and lightweight decisions from WeChat.
 - Sedentary strong reminders repeat every 10 minutes after 60 minutes of continuous Mac activity and stop after more than 5 minutes of inactivity.
+- Sedentary reminders cannot be resolved by replying. They stop only after macOS idle time exceeds 5 minutes, lock, sleep, logout, or explicit reminder pause.
+- Daily statistics include exactly two sitting metrics: `sitting_total_minutes` and `sedentary_over_limit_minutes`.
 - Exercise reminders begin at 10:30, repeat every 2 hours when unresolved, and stop after exercise is recorded or skipped for the day.
 - Water reminders occur twice during the day and do not require interaction.
+- Water reminders skip if a water event was recorded within 60 minutes before the planned reminder.
 - Sleep reminders are lightweight and non-interactive.
 - Daily reviews run at 00:00.
 - Weekly reviews run Sunday at 21:30.
 - Life Assistant data is stored in `life_*` tables and does not pollute existing knowledge-management tables.
+- `life_tick` sends at most one reminder per tick and suppresses user delivery unless `meta.should_notify=true`.
+- `life_tick` uses a SQLite lock and reminder dedupe keys to avoid duplicate sends.
+- First rollout starts in dry-run mode and requires explicit enablement before real WeChat notifications.
+- `data/life.log` records tick decisions and failures.
 
-## Open Implementation Choices
+## Test Focus
 
-- `mac_activity_source` must expose active and inactive windows; the exact macOS API or command can be selected during implementation.
-- Daily and weekly reviews should be stored in SQLite first. Obsidian export can be added later unless implementation reveals that Markdown export is required for Hermes review.
-- Reminder rules should start from code defaults. YAML editing can be added later if the defaults become annoying to change.
+The first implementation should emphasize state-machine tests, not only repository and parser tests:
+
+- SQLite schema and additive migration for `life_*` tables only.
+- Sleep start/end calculation and conflict prompts.
+- Meal slot inference without assuming three meals per day.
+- Exercise reminder states: unresolved, scheduled, completed, completed_unknown, skipped.
+- Water reminder skip when recent water is recorded.
+- Sedentary trigger at `>= 60 minutes`, 10-minute repeat, action-only resolution after idle time exceeds 5 minutes, pause behavior, and activity-source failure.
+- Cross-midnight sitting split by natural day.
+- Sleep attribution to wake date.
+- `life_tick` priority arbitration with at most one selected reminder.
+- `meta.should_notify=false` suppression for no-op and dry-run ticks.
+- SQLite tick lock and reminder dedupe behavior.
+- Send failure state transitions and short retry behavior for sedentary and exercise reminders.
+- 30-minute undo/modify window for the latest user-created life event.
+
+## Remaining Implementation Choices
+
+- `mac_activity_source` should probably read macOS HID idle time, but the exact command/API wrapper should be selected and tested during implementation.
+- Daily and weekly reviews should be stored in SQLite first. Obsidian export is not part of the first version.
+- Exact wording for each reminder message can be tuned during implementation, but wording must match each reminder's interaction model.
