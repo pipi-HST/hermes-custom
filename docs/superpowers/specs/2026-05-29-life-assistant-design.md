@@ -343,6 +343,20 @@ Fallback output schema:
 
 The fallback should keep `fields` minimal and intent-specific. It should not add new top-level keys in the first version.
 
+Minimum required fields by intent:
+
+- `sleep`: at least one of `start_at` or `end_at`; a complete sleep session requires both.
+- `meal`: `occurred_at` and `content`; `meal_slot` may be inferred.
+- `exercise`: `occurred_at`; `type` and `duration_minutes` may be missing, in which case the record is `completed_unknown`.
+- `water`: `occurred_at`.
+- `exercise_skip`: no required fields beyond the intent and current day.
+- `exercise_reschedule`: `scheduled_for`.
+- `sedentary_pause`: `pause_until` or `duration_minutes`.
+- `undo`: no required fields.
+- `modify`: `target` and `changes`.
+- `health_consultation`: no Life Event is created.
+- `unsupported`: no Life Event is created.
+
 Follow-up policy:
 
 - Ask at most one follow-up for a single user message.
