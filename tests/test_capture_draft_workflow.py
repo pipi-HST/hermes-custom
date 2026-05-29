@@ -103,7 +103,7 @@ def test_prompt_allows_model_to_choose_draft_strategy(agent: CaptureAgent, monke
     assert prompt.count(TEST_CONTENT) == 1
 
 
-def test_medium_density_prompt_preserves_structure_without_hard_word_count(agent: CaptureAgent):
+def test_medium_density_prompt_preserves_argument_function_without_hard_rules(agent: CaptureAgent):
     intent = agent._build_capture_intent("总结全文核心内容").to_dict()
 
     prompt = agent._build_revision_prompt(
@@ -115,9 +115,14 @@ def test_medium_density_prompt_preserves_structure_without_hard_word_count(agent
 
     assert "这不是几句话摘要" in prompt
     assert "主要论证层次" in prompt
-    assert "代表性例子" in prompt
     assert "重要转折" in prompt
+    assert "论证中的功能" in prompt
+    assert "推进主线" in prompt
+    assert "支撑结论" in prompt
+    assert "区分概念" in prompt
     assert "根据材料复杂度决定篇幅" in prompt
+    assert "至少一个" not in prompt
+    assert "每个模块" not in prompt
     assert "2000" not in prompt
     assert "8 个小标题" not in prompt
     assert "是什么 / 为什么 / 边界" not in prompt
