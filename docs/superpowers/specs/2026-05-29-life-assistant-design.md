@@ -329,6 +329,13 @@ The first version should use a rule-first parsing strategy with a restricted LLM
 - Health consultations such as `我最近睡不好，是不是身体有问题？` must not be stored and must not produce diagnosis. Reply with the safety boundary and recommend qualified help when appropriate.
 - The fallback may use the current message and the minimum necessary recent reminder context. It must not read Knowledge context data or create Knowledge artifacts.
 
+Fallback entry gate:
+
+- The LLM fallback may run only after a Life prefilter marks the message as a life-related candidate, such as sleep, meal, exercise, water, sedentary behavior, pause, undo, or modify.
+- The LLM fallback may also run when there is an active Life reminder context and the user sends a short reply that could refer to it.
+- Ordinary chat, knowledge capture, reading notes, source material, viewpoints, and writing ideas should not enter the Life fallback by default.
+- If a message is not a Life candidate, route it through the existing Hermes or Knowledge path instead of asking the Life fallback to classify it.
+
 Fallback output schema:
 
 ```json
