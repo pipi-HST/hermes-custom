@@ -22,7 +22,7 @@ def run_library_maintenance(
     vault_path: str | None = None,
     apply: bool = False,
     min_outline_chars: int = DEFAULT_OUTLINE_CHAR_THRESHOLD,
-    outline_model: str = "deepseek-chat",
+    outline_model: str = "deepseek-v4-flash",
 ) -> dict[str, Any]:
     config = load_config(config_path)
     outliner = Outliner(
@@ -33,9 +33,14 @@ def run_library_maintenance(
     agent = LibraryAgent(
         vault_path or config.vault_path,
         outliner=outliner,
+        db_path=config.db_path,
         min_outline_chars=min_outline_chars,
     )
-    return agent.maintain_outlines(apply=apply)
+    return {
+        "dry_run": not apply,
+        "database_sync": agent.maintain_database_sync(apply=apply),
+        "outlines": agent.maintain_outlines(apply=apply),
+    }
 
 
 def main() -> None:
@@ -46,7 +51,7 @@ def main() -> None:
     parser.add_argument("--vault", default=None)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--min-outline-chars", type=int, default=DEFAULT_OUTLINE_CHAR_THRESHOLD)
-    parser.add_argument("--outline-model", default="deepseek-chat")
+    parser.add_argument("--outline-model", default="deepseek-v4-flash")
     args = parser.parse_args()
 
     report = run_library_maintenance(

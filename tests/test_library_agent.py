@@ -167,6 +167,7 @@ def test_library_maintenance_runner_uses_configured_vault(
 
     class Config:
         vault_path = str(tmp_path)
+        db_path = str(tmp_path / "captures.db")
         llm_api_key = "sk-test"
         llm_model = "test-model"
         llm_base_url = "https://example.com"
@@ -178,7 +179,21 @@ def test_library_maintenance_runner_uses_configured_vault(
         created_models.append(kwargs["model"])
         return FakeOutliner()
 
+    sync_calls: list[dict] = []
+
+    def fake_repair_data(db_path, vault_path, *, apply, rename_readable):
+        sync_calls.append(
+            {
+                "db_path": db_path,
+                "vault_path": vault_path,
+                "apply": apply,
+                "rename_readable": rename_readable,
+            }
+        )
+        return {"dry_run": not apply, "planned_actions": []}
+
     monkeypatch.setattr(library_maintenance, "Outliner", fake_outliner)
+    monkeypatch.setattr("agents.library_agent.repair_data", fake_repair_data)
 
     report = library_maintenance.run_library_maintenance(
         config_path="test.yaml",
@@ -186,5 +201,49 @@ def test_library_maintenance_runner_uses_configured_vault(
     )
 
     assert report["dry_run"] is True
-    assert report["needs_outline"] == 1
-    assert created_models == ["deepseek-chat"]
+    assert report["database_sync"]["dry_run"] is True
+    assert report["outlines"]["needs_outline"] == 1
+    assert sync_calls == [
+        {
+            "db_path": Path(Config.db_path),
+            "vault_path": Path(Config.vault_path),
+            "apply": False,
+            "rename_readable": True,
+        }
+    ]
+    assert created_models == ["deepseek-v4-flash"]
+
+
+def test_library_agent_database_sync_delegates_to_repair_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict] = []
+
+    def fake_repair_data(db_path, vault_path, *, apply, rename_readable):
+        calls.append(
+            {
+                "db_path": db_path,
+                "vault_path": vault_path,
+                "apply": apply,
+                "rename_readable": rename_readable,
+            }
+        )
+        return {"dry_run": not apply, "planned_actions": [{"type": "delete_missing_capture"}]}
+
+    monkeypatch.setattr("agents.library_agent.repair_data", fake_repair_data)
+
+    report = LibraryAgent(
+        tmp_path,
+        outliner=FakeOutliner(),
+        db_path=tmp_path / "captures.db",
+    ).maintain_database_sync(apply=True)
+
+    assert report["planned_actions"] == [{"type": "delete_missing_capture"}]
+    assert calls == [
+        {
+            "db_path": tmp_path / "captures.db",
+            "vault_path": tmp_path,
+            "apply": True,
+            "rename_readable": True,
+        }
+    ]

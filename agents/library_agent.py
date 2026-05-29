@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from scripts.repair_data import repair_data
+
 
 DEFAULT_OUTLINE_CHAR_THRESHOLD = 2000
 DIRECTORY_HEADING = "## 目录纲要"
@@ -20,11 +22,28 @@ class LibraryAgent:
         vault_path: str | Path,
         *,
         outliner: Any,
+        db_path: str | Path | None = None,
         min_outline_chars: int = DEFAULT_OUTLINE_CHAR_THRESHOLD,
     ) -> None:
         self.vault_path = Path(vault_path).expanduser()
         self.outliner = outliner
+        self.db_path = Path(db_path).expanduser() if db_path else None
         self.min_outline_chars = min_outline_chars
+
+    def maintain_database_sync(
+        self,
+        *,
+        apply: bool = False,
+        rename_readable: bool = True,
+    ) -> dict[str, Any]:
+        if self.db_path is None:
+            return {"dry_run": not apply, "skipped": True, "reason": "db_path_not_configured"}
+        return repair_data(
+            self.db_path,
+            self.vault_path,
+            apply=apply,
+            rename_readable=rename_readable,
+        )
 
     def maintain_outlines(self, *, apply: bool = False) -> dict[str, Any]:
         report: dict[str, Any] = {
