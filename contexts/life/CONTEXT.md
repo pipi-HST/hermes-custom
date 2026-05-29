@@ -12,10 +12,6 @@ _Avoid_: health bot, doctor, knowledge capture agent.
 A time-stamped record of something the user did, reported, or decided in the Life Assistant context.
 _Avoid_: capture, note, chat message, reminder, review.
 
-**Life Note**:
-An unstructured **Life Event** used when a user intentionally records life-related content that is not confidently parsed into a more specific event type.
-_Avoid_: Capture Note, Raw Evidence, Garden Card.
-
 **Sitting Window**:
 A Mac-activity-inferred sitting period where idle time indicates the user is actively using the computer, ending when idle time exceeds the break threshold or the Mac locks, sleeps, or logs out.
 _Avoid_: session, work session, Mac usage as the canonical term.
@@ -80,6 +76,7 @@ _Avoid_: medical assessment, performance score, reply prompt.
 - **Daily Light Review** and **Weekly Deep Review** are derived review records, not **Life Events**.
 - **Daily Light Review** and **Weekly Deep Review** are one-way outputs. They do not create reply contexts and do not collect replies.
 - **Water Reminder**, **Exercise Reminder**, **Sleep Reminder**, and **Sedentary Alert** are reminder records, not **Life Events**.
+- Life Assistant P1 does not support unstructured notes. Unsupported or ambiguous records should not become **Life Events**.
 - **Life Assistant** and Knowledge may share one code repository, but they should not share domain ownership. Life Assistant owns life rhythm and lifestyle records; Knowledge owns captures, notes, themes, and viewpoints.
 - Reflection and Long-Term Decision are P2 concepts, not first-version Life Assistant concepts.
 
