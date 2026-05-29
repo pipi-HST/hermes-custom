@@ -166,7 +166,7 @@ Important fields:
 - `review_date`
 - `summary`
 - `metrics_json`
-- `questions_json`
+- `notes_json`
 - `created_at`
 
 ### `life_weekly_reviews`
@@ -279,12 +279,12 @@ Defaults:
 
 - Runs at 00:00.
 - Keeps the review lightweight.
-- Asks one or two questions.
+- Outputs a short one-way summary.
 - Summarizes the day across sleep, exercise, sedentary time, meals, water, and reflection if data exists.
-- Replies within 2 hours of the Daily Light Review prompt are treated as review-context answers and recorded by default. If the reply can be parsed as a Reflection, store it as `reflection`; otherwise store it as `life_note`.
+- It does not ask for or collect replies.
 - If a sitting window is still active at 00:00, send the review with an "active window still open" note and allow final sitting statistics to be corrected after the break.
 - If the review is blocked by higher-priority reminders until 02:00, mark it `missed` instead of sending it later in the night.
-- If there is no meal record for the day, ask about food only inside this light review. Do not send standalone meal reminders.
+- If there is no meal record for the day, mention that the meal record is missing. Do not ask for a reply and do not send standalone meal reminders.
 
 ### Weekly Review
 
@@ -293,6 +293,7 @@ Defaults:
 - Runs Sunday at 21:30.
 - Produces a deeper lifestyle review.
 - Covers sleep regularity, exercise consistency, sedentary burden, meal timing/content notes, water reminder effectiveness, reflection themes, and next-week focus.
+- It does not ask for or collect replies.
 - If the weekly review is blocked by higher-priority reminders until 23:30, mark it `missed`.
 - First version should give qualitative labels and recommendations, not numeric scores.
 - First version should not create next-week goals automatically.
@@ -336,7 +337,7 @@ The first version should use a mixed parsing strategy:
 
 - Rule parsing first; LLM parsing only as fallback for more complex messages.
 - Clearly structured messages are parsed directly into structured events.
-- Ambiguous messages are stored as `life_note` only when the user shows recording intent or is replying inside a scheduled review context.
+- Ambiguous messages are stored as `life_note` only when the user shows recording intent.
 - The assistant only asks a follow-up when the ambiguity affects reminder state.
 - The Life Assistant should only handle high-confidence life-related messages. It must not broadly capture ordinary chat or knowledge-management messages.
 - `record_life_event` should reply with a short confirmation for every user-created record in the first version, including key parsed fields so the user can spot parsing errors.

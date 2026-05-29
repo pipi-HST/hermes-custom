@@ -13,7 +13,7 @@ A time-stamped record of something the user did, reported, or decided in the Lif
 _Avoid_: capture, note, chat message, reminder, review.
 
 **Life Note**:
-An unstructured **Life Event** used when a user intentionally records life-related content that is not confidently parsed into a more specific event type, or when the user answers a scheduled review prompt.
+An unstructured **Life Event** used when a user intentionally records life-related content that is not confidently parsed into a more specific event type.
 _Avoid_: Capture Note, Raw Evidence, Garden Card.
 
 **Sitting Window**:
@@ -61,12 +61,12 @@ A **Life Event** describing when and what the user ate, with an explicit or infe
 _Avoid_: nutrition analysis, calorie record.
 
 **Daily Light Review**:
-A low-friction daily review that summarizes the day and may ask one or two optional questions.
-_Avoid_: full report, required check-in.
+A low-friction one-way daily review that summarizes the day.
+_Avoid_: full report, required check-in, reply prompt.
 
 **Weekly Deep Review**:
-A qualitative weekly lifestyle review that identifies patterns and small suggestions without numeric scores or automatic goal creation.
-_Avoid_: medical assessment, performance score.
+A one-way qualitative weekly lifestyle review that identifies patterns and small suggestions without numeric scores or automatic goal creation.
+_Avoid_: medical assessment, performance score, reply prompt.
 
 **Reflection**:
 A **Life Event** that captures a thought, lesson, or self-review item inside the Life Assistant context only.
@@ -90,7 +90,7 @@ _Avoid_: completed decision.
 - `久坐超标时长` counts the full over-limit **Sitting Window**, not only the minutes beyond the sedentary threshold.
 - "Review" exists in the Knowledge context as recall practice. Resolved: Life Assistant uses **Daily Light Review** and **Weekly Deep Review** for lifestyle reflection; Knowledge uses Review Items.
 - **Daily Light Review** and **Weekly Deep Review** are derived review records, not **Life Events**.
-- A reply within 2 hours of a **Daily Light Review** prompt is a review-context answer and may become a **Reflection** or **Life Note**.
+- **Daily Light Review** and **Weekly Deep Review** are one-way outputs. They do not create reply contexts and do not collect replies.
 - **Water Reminder**, **Exercise Reminder**, **Sleep Reminder**, and **Sedentary Alert** are reminder records, not **Life Events**.
 - **Reflection** is not a **Garden Card**. It remains inside Life Assistant and does not promote into the Knowledge context in the first version.
 - **Life Assistant** and Knowledge may share one code repository, but they should not share domain ownership. Life Assistant owns life rhythm and lifestyle records; Knowledge owns captures, notes, themes, and viewpoints.
