@@ -39,6 +39,8 @@ def _clip_text_with_flag(text: str, limit: int) -> tuple[str, bool]:
 
 
 def _draft_saved_preview(result: dict, action: str) -> tuple[str, bool]:
+    if _is_full_text_draft(result):
+        return _full_text_saved_preview(result, action)
     raw_title = result.get("title") or "无标题"
     raw_summary = result.get("summary") or "完整草稿已保存在草稿区，等待你确认。"
     title, title_truncated = _clip_text_with_flag(raw_title, 100)
@@ -59,6 +61,33 @@ def _draft_saved_preview(result: dict, action: str) -> tuple[str, bool]:
         ]
     )
     return message, preview_truncated
+
+
+def _is_full_text_draft(result: dict) -> bool:
+    capture_intent = result.get("capture_intent")
+    if isinstance(capture_intent, str):
+        try:
+            capture_intent = json.loads(capture_intent)
+        except json.JSONDecodeError:
+            return False
+    if not isinstance(capture_intent, dict):
+        return False
+    return capture_intent.get("output_shape") == ["full_text"]
+
+
+def _full_text_saved_preview(result: dict, action: str) -> tuple[str, bool]:
+    title, title_truncated = _clip_text_with_flag(result.get("title") or "无标题", 100)
+    word_count = result.get("word_count", 0)
+    summary, summary_truncated = _clip_text_with_flag(result.get("summary") or "全文已提取。", 260)
+    message = (
+        f"已{action}全文草稿。\n\n"
+        f"标题：{title}\n\n"
+        f"正文将按全文入库（{word_count} 字），不做压缩总结。\n\n"
+        f"摘要：{summary}\n\n"
+        "回复「展开草稿」抽查正文；满意回复「存库」。"
+    )
+    message, message_truncated = _clip_text_with_flag(message, PREVIEW_LIMIT)
+    return message, any([title_truncated, summary_truncated, message_truncated])
 
 
 def _key_response_preview(result: dict) -> str:

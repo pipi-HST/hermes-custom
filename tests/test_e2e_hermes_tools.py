@@ -489,6 +489,33 @@ def test_bridge_capture_text_with_instruction_returns_draft(mock_summarize, mock
     assert "__HERMES_DIRECT_REPLY__" not in r["chat_preview"]
 
 
+@patch("agents.capture_agent.CaptureAgent._call_llm")
+@patch("agents.capture_agent.Summarizer.summarize")
+def test_bridge_capture_full_text_save_does_not_summarize_body(mock_summarize, mock_llm):
+    from bridge.capture_bridge import capture_content
+
+    mock_llm.side_effect = AssertionError("full text save should not call LLM")
+    mock_summarize.return_value = {
+        "title": "全文保存",
+        "summary": "原文全文已保存。",
+        "tags": ["source-archive"],
+    }
+
+    r = capture_content(
+        "知识管理的核心是将碎片信息转化为可复用的认知资产。"
+        "个人知识管理有三个层次：捕获、整理、内化。这需要长期坚持和积累。"
+        "补充：人工智能技术正在快速发展，深度学习模型取得了显著成果。"
+        "从图像识别到自然语言处理，AI应用越来越广泛地改变着我们的世界。",
+        instruction="全文存进数据库",
+    )
+
+    assert r["status"] == "success"
+    assert _artifact(r)["status"] == "draft_ready"
+    assert "全文草稿" in r["chat_preview"]
+    assert "满意回复「存库」" in r["chat_preview"]
+    assert r["meta"]["capture_intent"]["output_shape"] == ["full_text"]
+
+
 def test_draft_preview_key_response_uses_user_emphasis():
     from bridge.capture_bridge import _draft_saved_preview
 

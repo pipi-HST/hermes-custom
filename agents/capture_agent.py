@@ -20,7 +20,6 @@ from agents.extractors.link_extractor import LinkExtractor
 from agents.extractors.text_extractor import TextExtractor
 from agents.extractors.voice_extractor import VoiceExtractor
 from agents.extractors.image_extractor import ImageExtractor
-from agents.outliner import Outliner
 from db.repo import CaptureDraftRepo, CaptureRepo
 from db.schema import init_db
 
@@ -33,8 +32,6 @@ CAPTURE_LONG_READING_CHAR_THRESHOLD = 8000
 CAPTURE_LONG_CHUNK_CHAR_LIMIT = 8000
 CAPTURE_SECTION_NOTE_CHAR_LIMIT = 1500
 CAPTURE_INTERNAL_PLAN_BUDGET_RATIO = 0.45
-CAPTURE_OUTLINE_CHAR_THRESHOLD = 2000
-CAPTURE_DIRECTORY_HEADING = "## 目录纲要"
 
 
 @dataclass
@@ -78,55 +75,6 @@ class LLMResult:
     incomplete: bool = False
 
 
-def _normalize_outline(outline: list[dict]) -> list[dict]:
-    normalized: list[dict] = []
-    if not isinstance(outline, list):
-        return normalized
-
-    for item in outline:
-        if not isinstance(item, dict):
-            continue
-        title = str(item.get("title", "")).strip()
-        if not title:
-            continue
-        normalized_item = {
-            "level": _normalize_outline_level(item.get("level", 1)),
-            "title": title,
-        }
-        summary = str(item.get("summary", "")).strip()
-        if summary:
-            normalized_item["summary"] = summary
-        section_range = str(item.get("range", "")).strip()
-        if section_range:
-            normalized_item["range"] = section_range
-        normalized.append(normalized_item)
-
-    return normalized
-
-
-def _normalize_outline_level(value) -> int:
-    try:
-        level = int(value)
-    except (TypeError, ValueError):
-        return 1
-    return min(max(level, 1), 3)
-
-
-def _has_directory_section(body: str) -> bool:
-    return re.search(r"^##\s+目录纲要\s*$", body, re.MULTILINE) is not None
-
-
-def _render_directory_section(outline: list[dict]) -> str:
-    lines = [CAPTURE_DIRECTORY_HEADING]
-    for item in outline:
-        indent = "  " * max(int(item.get("level", 1)) - 1, 0)
-        line = f"{indent}- {item['title']}"
-        if item.get("summary"):
-            line += f" — {item['summary']}"
-        lines.append(line)
-    return "\n".join(lines)
-
-
 def load_config(config_path: str = "config.yaml") -> CaptureConfig:
     with open(config_path) as f:
         cfg = yaml.safe_load(f) or {}
@@ -155,11 +103,6 @@ class CaptureAgent:
             provider=config.llm_provider,
             model=config.llm_model,
             base_url=config.llm_base_url or None,
-        )
-        self.outliner = Outliner(
-            api_key=config.llm_api_key,
-            model=config.llm_model,
-            base_url=config.llm_base_url or "https://api.deepseek.com",
         )
         self.extractors: list[BaseExtractor] = [
             LinkExtractor(),
@@ -192,6 +135,18 @@ class CaptureAgent:
             capture_intent=capture_intent,
         )
         if instruction.strip():
+            if self._is_full_text_save_intent(capture_intent):
+                existing_tags = self._get_existing_tags(Path(self.config.vault_path).expanduser())
+                tag_result = self.summarizer.summarize(cleaned, existing_tags)
+                return self.draft_repo.update(
+                    draft["id"],
+                    draft_text=cleaned,
+                    instruction=instruction,
+                    capture_intent=capture_intent,
+                    summary=tag_result.get("summary", ""),
+                    tags=tag_result.get("tags", []),
+                    status="draft_ready",
+                )
             try:
                 return self.revise_draft(draft["id"], instruction)
             except (httpx.TimeoutException, TimeoutError) as exc:
@@ -276,14 +231,26 @@ class CaptureAgent:
             "main_thread",
             "user_named_focus",
         ]
+        output_shape = ["full_text"] if self._is_full_text_save_request(user_request) else ["natural_draft"]
         return CaptureIntent(
             user_request=user_request,
             task_type=task_type,
             coverage=coverage,
             emphasis=emphasis,
             must_preserve=must_preserve,
-            output_shape=["natural_draft"],
+            output_shape=output_shape,
             detail_level=self._detect_detail_level(user_request),
+        )
+
+    def _is_full_text_save_intent(self, capture_intent: dict) -> bool:
+        return capture_intent.get("output_shape") == ["full_text"]
+
+    def _is_full_text_save_request(self, user_request: str) -> bool:
+        return bool(
+            re.search(
+                r"(全文|原文).{0,8}(保存|入库|存库|归档|存进数据库|存到数据库|进数据库)",
+                user_request or "",
+            )
         )
 
     def _detect_detail_level(self, user_request: str) -> str:
@@ -711,7 +678,6 @@ class CaptureAgent:
             tag_result = self.summarizer.summarize(body, self._get_existing_tags(vault_path))
             summary = tag_result.get("summary", "")
             tags = tag_result.get("tags", [])
-        outline, body = self._prepare_committed_capture_body(body)
 
         capture = self.repo.insert()
         meta = NoteMeta(
@@ -733,7 +699,6 @@ class CaptureAgent:
             tags=tags,
             story=summary,
             word_count=len(body),
-            outline=outline,
         )
         file_path = write_note(vault_path, capture_meta, body, stage="captures")
         self.repo.update(capture["id"], raw_path=raw_path, file_path=file_path)
@@ -756,24 +721,6 @@ class CaptureAgent:
             "raw_path": raw_path,
             "file_path": file_path,
         }
-
-    def _prepare_committed_capture_body(self, body: str) -> tuple[list[dict], str]:
-        """Add retrieval-friendly outline metadata for long committed notes."""
-        if not body or len(body) <= CAPTURE_OUTLINE_CHAR_THRESHOLD:
-            return [], body
-
-        try:
-            outline = self.outliner.generate(body, len(body))
-        except Exception as exc:
-            logger.warning("Capture outline generation failed: %s", exc)
-            return [], body
-
-        outline = _normalize_outline(outline)
-        if not outline:
-            return [], body
-        if _has_directory_section(body):
-            return outline, body
-        return outline, f"{_render_directory_section(outline)}\n\n{body}"
 
     def _extract_and_clean(self, raw_input: str, source_url: str = "",
                            source_type: str = ""):

@@ -4,6 +4,8 @@
 
 **Goal:** Make medium/long committed Capture notes easier for RAG and Review agents to inspect by adding Obsidian-friendly outline metadata and a concise `## 目录纲要` section only when the note is long enough to need it.
 
+**Status:** Superseded for Capture Agent. The outline responsibility has been moved out of Capture and should belong to a future Library Agent maintenance pass. Capture Agent should preserve full-text save requests without compression; Library Agent should later scan long notes and add outline metadata.
+
 **Architecture:** Keep WeChat preview unchanged. At commit time, Capture Agent asks the existing `Outliner` for a compact outline, saves that outline in Capture frontmatter, and prepends a directory section to the Markdown body if one is not already present. If outline generation fails, commit still succeeds without blocking the user.
 
 **Tech Stack:** Python, SQLite draft/capture repos, YAML frontmatter, existing `agents.outliner.Outliner`, pytest.
