@@ -122,6 +122,58 @@ def test_write_note_stage_captures_full_frontmatter(
     assert "word_count:" in content
 
 
+def test_write_note_stage_captures_includes_outline_when_present(
+    tmp_path: Path, sample_meta: NoteMeta
+) -> None:
+    meta = NoteMeta(
+        id=sample_meta.id,
+        title=sample_meta.title,
+        date=sample_meta.date,
+        created=sample_meta.created,
+        source=sample_meta.source,
+        source_type=sample_meta.source_type,
+        tags=sample_meta.tags,
+        story=sample_meta.story,
+        word_count=sample_meta.word_count,
+        outline=[
+            {
+                "level": 1,
+                "title": "算力瓶颈",
+                "range": "段1-3",
+                "summary": "解释电力基础设施为什么成为AI扩张瓶颈。",
+            }
+        ],
+    )
+
+    file_path = write_note(tmp_path, meta, "body", stage="captures")
+    result = read_note(tmp_path, file_path)
+
+    assert result is not None
+    frontmatter, _body = result
+    assert frontmatter["outline"] == meta.outline
+
+
+def test_write_note_stage_raw_omits_outline(
+    tmp_path: Path, sample_meta: NoteMeta
+) -> None:
+    meta = NoteMeta(
+        id=sample_meta.id,
+        title=sample_meta.title,
+        date=sample_meta.date,
+        created=sample_meta.created,
+        source=sample_meta.source,
+        source_type=sample_meta.source_type,
+        outline=[{"level": 1, "title": "原文结构"}],
+    )
+
+    file_path = write_note(tmp_path, meta, "raw body", stage="raw")
+    result = read_note(tmp_path, file_path)
+
+    assert result is not None
+    frontmatter, _body = result
+    assert "outline" not in frontmatter
+
+
 def test_read_note_roundtrip(tmp_path: Path, sample_meta: NoteMeta) -> None:
     body = "Roundtrip test body content."
     file_path = write_note(tmp_path, sample_meta, body)

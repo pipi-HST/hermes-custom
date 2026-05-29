@@ -7,6 +7,7 @@ import pytest
 
 from agents.capture_agent import CaptureAgent, CaptureConfig, LLMResult
 from agents.extractors.text_extractor import TextExtractor
+from agents.markdown_writer import read_note
 
 
 TEST_CONTENT = (
@@ -518,6 +519,147 @@ def test_commit_draft_writes_raw_and_capture_files(agent: CaptureAgent, tmp_path
     record = agent.repo.get_by_id(committed["capture_id"])
     assert record["raw_path"] == committed["raw_path"]
     assert record["file_path"] == committed["file_path"]
+
+
+def test_commit_long_draft_adds_outline_frontmatter_and_directory(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+):
+    outline = [
+        {
+            "level": 1,
+            "title": "电力成为AI瓶颈",
+            "range": "段1-4",
+            "summary": "说明电网和数据中心扩张之间的矛盾。",
+        },
+        {
+            "level": 2,
+            "title": "中国变压器供应链",
+            "range": "段5-8",
+            "summary": "解释设备交付周期如何影响算力扩张。",
+        },
+    ]
+
+    draft = agent.create_draft(TEST_CONTENT)
+    agent.draft_repo.update(
+        draft["id"],
+        draft_text="整理稿正文。" + ("长文段落。" * 800),
+        status="draft_ready",
+    )
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {"summary": "长文整理。", "tags": ["ai-energy"]},
+    )
+    monkeypatch.setattr(agent.outliner, "generate", lambda text, word_count: outline)
+
+    committed = agent.commit_draft(draft["id"])
+    result = read_note(tmp_path, committed["file_path"])
+
+    assert result is not None
+    frontmatter, body = result
+    assert frontmatter["outline"] == outline
+    assert body.startswith("## 目录纲要")
+    assert "- 电力成为AI瓶颈 — 说明电网和数据中心扩张之间的矛盾。" in body
+    assert "  - 中国变压器供应链 — 解释设备交付周期如何影响算力扩张。" in body
+
+
+def test_commit_short_draft_does_not_force_outline(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+):
+    draft = agent.create_draft(TEST_CONTENT)
+    agent.draft_repo.update(
+        draft["id"],
+        draft_text="短整理稿。",
+        status="draft_ready",
+    )
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {"summary": "短文整理。", "tags": ["ai-energy"]},
+    )
+    monkeypatch.setattr(
+        agent.outliner,
+        "generate",
+        lambda text, word_count: pytest.fail("short capture should not call outliner"),
+    )
+
+    committed = agent.commit_draft(draft["id"])
+    result = read_note(tmp_path, committed["file_path"])
+
+    assert result is not None
+    frontmatter, body = result
+    assert "outline" not in frontmatter
+    assert "## 目录纲要" not in body
+
+
+def test_commit_long_draft_outliner_failure_does_not_block_commit(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+):
+    draft = agent.create_draft(TEST_CONTENT)
+    agent.draft_repo.update(
+        draft["id"],
+        draft_text="整理稿正文。" + ("长文段落。" * 800),
+        status="draft_ready",
+    )
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {"summary": "长文整理。", "tags": ["ai-energy"]},
+    )
+
+    def fail_outline(text: str, word_count: int) -> list[dict]:
+        raise RuntimeError("outline service unavailable")
+
+    monkeypatch.setattr(agent.outliner, "generate", fail_outline)
+
+    committed = agent.commit_draft(draft["id"])
+    result = read_note(tmp_path, committed["file_path"])
+
+    assert committed["status"] == "committed"
+    assert result is not None
+    frontmatter, body = result
+    assert "outline" not in frontmatter
+    assert "## 目录纲要" not in body
+
+
+def test_commit_long_draft_does_not_duplicate_existing_directory(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+):
+    draft = agent.create_draft(TEST_CONTENT)
+    agent.draft_repo.update(
+        draft["id"],
+        draft_text="## 目录纲要\n- 原有目录\n\n## 正文\n" + ("长文段落。" * 800),
+        status="draft_ready",
+    )
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {"summary": "长文整理。", "tags": ["ai-energy"]},
+    )
+    monkeypatch.setattr(
+        agent.outliner,
+        "generate",
+        lambda text, word_count: [
+            {"level": 1, "title": "新目录", "summary": "不应重复写入正文。"}
+        ],
+    )
+
+    committed = agent.commit_draft(draft["id"])
+    content = (tmp_path / committed["file_path"]).read_text(encoding="utf-8")
+    result = read_note(tmp_path, committed["file_path"])
+
+    assert content.count("## 目录纲要") == 1
+    assert result is not None
+    frontmatter, _body = result
+    assert frontmatter["outline"][0]["title"] == "新目录"
 
 
 def test_revise_committed_capture_id_creates_revision_draft(

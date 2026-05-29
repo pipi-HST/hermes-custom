@@ -24,6 +24,7 @@ class NoteMeta:
     tags: list[str] = field(default_factory=list)
     story: str = ""
     word_count: int = 0
+    outline: list[dict] = field(default_factory=list)
 
 
 # Chinese tech terms mapped to English equivalents for slug generation.
@@ -158,6 +159,8 @@ def write_note(
             "story": meta.story,
             "word_count": meta.word_count,
         }
+        if meta.outline:
+            frontmatter["outline"] = meta.outline
 
     content = (
         f"---\n{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False)}"
