@@ -65,7 +65,7 @@ A qualitative weekly lifestyle review that identifies patterns and small suggest
 _Avoid_: medical assessment, performance score.
 
 **Reflection**:
-A **Life Event** that captures a thought, lesson, or self-review item inside the Life Assistant context.
+A **Life Event** that captures a thought, lesson, or self-review item inside the Life Assistant context only.
 _Avoid_: Garden Card, Accepted Garden Card.
 
 **Long-Term Decision**:
@@ -82,7 +82,8 @@ _Avoid_: completed decision.
 - A user saying "已活动" is not an **Activity Break**. Resolved: an **Activity Break** must be proven by Mac idle time, lock, sleep, or logout.
 - "久坐时间" can mean all sitting or only risky sitting. Resolved: use **Sitting Total** for all sitting windows and **Sedentary Over-Limit Total** for sitting windows at or above the threshold.
 - "Review" exists in the Knowledge context as recall practice. Resolved: Life Assistant uses **Daily Light Review** and **Weekly Deep Review** for lifestyle reflection; Knowledge uses Review Items.
-- **Reflection** is not a **Garden Card** in the first version. It remains inside Life Assistant unless the user explicitly asks to promote it to the Knowledge context later.
+- **Reflection** is not a **Garden Card**. It remains inside Life Assistant and does not promote into the Knowledge context in the first version.
+- **Life Assistant** and Knowledge may share one code repository, but they should not share domain ownership. Life Assistant owns life rhythm and lifestyle records; Knowledge owns captures, notes, themes, and viewpoints.
 - **Long-Term Decision** is not a goal system in the first version. It is a decision record with a review time, rationale, and expected outcome.
 
 ## Example Dialogue
@@ -105,7 +106,7 @@ Domain expert: "No. Meal Records are low-friction records. Commentary belongs in
 
 Dev: "Can a reflection become a Garden Card automatically?"
 
-Domain expert: "Not in the first version. Reflection belongs to Life Assistant; Garden Card belongs to Knowledge."
+Domain expert: "No. Reflection belongs to Life Assistant; Garden Card belongs to Knowledge. The first version keeps the systems separate."
 
 Dev: "Can a long-term decision be saved without a review date?"
 

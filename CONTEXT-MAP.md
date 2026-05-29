@@ -9,4 +9,5 @@
 
 - **Knowledge and Life Assistant share Hermes delivery**: both contexts may return Agent Result Envelopes to the Hermes gateway, but their domain objects stay separate.
 - **Knowledge does not own life events**: Life Assistant records personal rhythm and lifestyle events; Knowledge records source material, notes, themes, and viewpoints.
-- **Life Assistant does not automatically create knowledge artifacts**: first-version reflections and decisions stay in the Life Assistant context unless the user later asks to promote them into the Knowledge context.
+- **Life Assistant does not create knowledge artifacts**: first-version reflections and decisions stay in the Life Assistant context and do not promote into the Knowledge context.
+- **Code may share a repository, but the contexts should not depend on each other**: shared Hermes delivery is infrastructure; it is not a domain relationship between the two systems.
