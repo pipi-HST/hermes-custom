@@ -43,20 +43,19 @@ The recommended implementation is Scheme A: add the Life Assistant as a separate
 
 High-level components:
 
-- `agents/life_agent.py`: parses user messages, records life events, handles reminder replies, answers life status queries, and generates reviews.
+- `agents/life_agent.py`: parses user messages, records life events, handles reminder replies, and generates reviews.
 - `db/life_repo.py`: reads and writes Life Assistant data.
 - `db/life_schema.py`: owns Life Assistant table definitions and additive migrations.
 - `life_scheduler`: evaluates due reminders and review jobs through a minute-level `life_tick`.
 - `mac_activity_source`: reads macOS idle time and interruption signals for sedentary detection.
-- `bridge/life_bridge.py`: exposes Hermes tool functions for recording, ticking, status queries, and reviews.
+- `bridge/life_bridge.py`: exposes Hermes tool functions for recording, ticking, and reviews.
 
 This keeps the feature close to Hermes routing and WeChat delivery while isolating its data and behavior from the knowledge-management agents.
 
-The first version should expose three Hermes tools:
+The first version should expose two Hermes tools:
 
 - `record_life_event(message, received_at?)`: user-facing tool for natural-language life records.
 - `life_tick(now?, dry_run?)`: internal cron tool for reminders, reviews, and sedentary state updates.
-- `life_status(range?)`: read-only status query for today or the current week.
 
 `life_tick` always returns a standard Agent Result Envelope. It must set `meta.should_notify=true` only when a WeChat message should be sent. The Hermes scheduling layer must inspect this flag and suppress user delivery when it is false.
 
