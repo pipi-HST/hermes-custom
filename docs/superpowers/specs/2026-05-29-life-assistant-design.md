@@ -19,12 +19,27 @@ The assistant is a lifestyle rhythm helper. It is not a medical diagnosis tool a
 - Run a deeper weekly lifestyle review on Sunday evening.
 - Keep life-assistant data isolated from the existing knowledge-management `captures` domain.
 
+## Product Flow Principles
+
+The first-version success experience is reliable reminders, low-friction records, and useful scheduled reviews. It should not optimize for complete life logging.
+
+- Reminder flow is the product spine. User records support reminders and reviews, but do not turn the assistant into a general journal.
+- The assistant initiates conversation only for reminders and scheduled reviews. It should not proactively chat outside those flows.
+- Reviews help the user see lifestyle trends and small adjustment opportunities. They should not score, judge, or pressure the user.
+- First-version same-day controls are allowed for exercise and Sedentary Alerts, but long-term configuration management is out of scope.
+- When parsing is uncertain, prefer not recording over recording wrong data.
+- Life Assistant and Knowledge stay internally isolated. The user does not need to see that boundary unless routing is ambiguous or they use an explicit Life prefix.
+- Reminders and records should stay restrained. Health-coach tone belongs mainly in Daily Light Review and Weekly Deep Review, not in every confirmation.
+- Automation should be controlled first. Real notifications remain disabled until dry-run behavior and local activity logs look correct.
+- P1 should finish the reminder-record-review pipeline before adding manual queries, richer configuration, Reflection, or Long-Term Decision.
+
 ## Non-Goals
 
 - No medical diagnosis, disease judgment, medication advice, or treatment planning.
 - No Apple Health, watch, phone, or wearable data sync in the first version.
 - No precise calorie, macro, or nutrition calculation.
 - No standalone app and no Mac local notifications in the first version.
+- No proactive open-ended chat outside reminder and scheduled review flows.
 - No Reflection support in the first version; defer it to P2.
 - No Long-Term Decision support in the first version; defer it to P2.
 - No changes to the existing knowledge-management capture workflow unless needed for shared Hermes routing.
@@ -495,6 +510,8 @@ First-version configuration should start from code defaults. Only limited same-d
 
 Permanent reminder configuration changes through WeChat are out of scope for the first version.
 
+After P1, the next natural expansion is richer configuration and manual queries. Reflection and Long-Term Decision should remain P2 concepts until the reminder-record-review pipeline is stable.
+
 Real notifications must be off by default. Initial rollout steps:
 
 1. Run all unit and state-machine tests.
@@ -555,6 +572,7 @@ For severe or persistent symptoms, the assistant should recommend seeking qualif
 - `life_tick` uses a SQLite lock and reminder dedupe keys to avoid duplicate sends.
 - First rollout starts in dry-run mode and requires explicit enablement before real WeChat notifications.
 - `data/life.log` records tick choices and failures.
+- The first usable version demonstrates reliable reminders, low-friction records, and scheduled reviews without manual query support.
 
 ## Test Focus
 
