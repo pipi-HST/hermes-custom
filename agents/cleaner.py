@@ -94,13 +94,26 @@ def format_for_display(text: str) -> str:
 
 
 def is_meaningful_content(text: str) -> bool:
-    """判断文本是否像真正的文章正文（有完整中文句子）。"""
+    """判断文本是否像真正的文章正文。"""
     if not text or not text.strip():
         return False
     t = text.strip()
-    # 至少有一句以。！？结尾的完整中文句子
-    import re
-    has_sentence = bool(re.search(r'[一-鿿].*[。！？]', t))
-    # 至少有 100 个中文字符
+
+    failure_markers = (
+        "[内容未能提取]",
+        "请复制粘贴正文给我",
+        "内容提取失败",
+    )
+    if any(marker in t for marker in failure_markers):
+        return False
+
+    # 中文正文：至少有一句完整中文句子，且中文字符数量足够。
+    has_chinese_sentence = bool(re.search(r"[一-鿿].*[。！？]", t))
     chinese_chars = len(re.findall(r'[一-鿿]', t))
-    return has_sentence and chinese_chars >= 50
+    if has_chinese_sentence and chinese_chars >= 50:
+        return True
+
+    # 英文/外文正文：不依赖中文字符，使用句子数量和词数避免误收短导航。
+    latin_words = re.findall(r"[A-Za-z][A-Za-z'-]*", t)
+    latin_sentences = re.findall(r"[A-Za-z][^.!?]{20,}[.!?]", t)
+    return len(latin_words) >= 40 and len(latin_sentences) >= 2

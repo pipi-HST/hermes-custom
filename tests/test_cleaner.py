@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from agents.cleaner import clean_text
+from agents.cleaner import clean_text, is_meaningful_content
 
 
 def test_removes_ads_and_navigation():
@@ -66,3 +66,24 @@ Agent 是一种能够自主规划和执行任务的智能系统。
     assert "自主规划" in result
     assert "ChatBot" in result
     assert "长期记忆" in result
+
+
+def test_meaningful_content_accepts_english_articles():
+    text = (
+        "Over the past year, we have worked with dozens of teams building "
+        "large language model agents across industries. Consistently, the "
+        "most successful implementations were not using complex frameworks "
+        "or specialized libraries. Instead, they were building with simple, "
+        "composable patterns that make the system easier to inspect and improve."
+    )
+
+    assert is_meaningful_content(text) is True
+
+
+def test_meaningful_content_rejects_extraction_failure_placeholder():
+    text = (
+        "[内容未能提取] https://www.anthropic.com/engineering/building-effective-agents\n"
+        "请复制粘贴正文给我。"
+    )
+
+    assert is_meaningful_content(text) is False
