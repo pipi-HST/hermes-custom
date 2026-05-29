@@ -1,11 +1,11 @@
 # Hermes Life Assistant Context
 
-Hermes Life Assistant is a personal life-rhythm and reflection context. It uses Hermes/WeChat to record daily behavior, run reminders, and support lightweight reflection without becoming a medical diagnosis system or a knowledge-management capture workflow.
+Hermes Life Assistant is a personal life-rhythm context. It uses Hermes/WeChat to record daily behavior and run reminders without becoming a medical diagnosis system or a knowledge-management capture workflow.
 
 ## Language
 
 **Life Assistant**:
-The Hermes domain that tracks personal rhythm, lifestyle records, reminders, reviews, and lightweight long-term decisions.
+The Hermes domain that tracks personal rhythm, lifestyle records, reminders, and reviews.
 _Avoid_: health bot, doctor, knowledge capture agent.
 
 **Life Event**:
@@ -68,18 +68,6 @@ _Avoid_: full report, required check-in, reply prompt.
 A one-way qualitative weekly lifestyle review that identifies patterns and small suggestions without numeric scores or automatic goal creation.
 _Avoid_: medical assessment, performance score, reply prompt.
 
-**Reflection**:
-A **Life Event** that captures a thought, lesson, or self-review item inside the Life Assistant context only.
-_Avoid_: Garden Card, Accepted Garden Card.
-
-**Long-Term Decision**:
-A formal Life Assistant record of a decision that includes review time, rationale, and expected outcome.
-_Avoid_: casual note, goal.
-
-**Pending Decision**:
-A provisional record created when the user starts a long-term decision but has not yet provided review time, rationale, and expected outcome.
-_Avoid_: completed decision.
-
 ## Flagged Ambiguities
 
 - "Activity" can mean exercise or Mac activity. Resolved: use **Exercise** for deliberate physical activity, and **Sitting Window** or **Activity Break** for Mac-idle-derived behavior.
@@ -88,13 +76,12 @@ _Avoid_: completed decision.
 - `久坐提醒` may be accepted as a user-input alias, but system-facing language should use **Sedentary Alert** (`久坐警报`).
 - "久坐时间" can mean all sitting or only risky sitting. Resolved: use **Sitting Total** for all sitting windows and **Sedentary Over-Limit Total** for sitting windows at or above the threshold.
 - `久坐超标时长` counts the full over-limit **Sitting Window**, not only the minutes beyond the sedentary threshold.
-- "Review" exists in the Knowledge context as recall practice. Resolved: Life Assistant uses **Daily Light Review** and **Weekly Deep Review** for lifestyle reflection; Knowledge uses Review Items.
+- "Review" exists in the Knowledge context as recall practice. Resolved: Life Assistant uses **Daily Light Review** and **Weekly Deep Review** for lifestyle rhythm review; Knowledge uses Review Items.
 - **Daily Light Review** and **Weekly Deep Review** are derived review records, not **Life Events**.
 - **Daily Light Review** and **Weekly Deep Review** are one-way outputs. They do not create reply contexts and do not collect replies.
 - **Water Reminder**, **Exercise Reminder**, **Sleep Reminder**, and **Sedentary Alert** are reminder records, not **Life Events**.
-- **Reflection** is not a **Garden Card**. It remains inside Life Assistant and does not promote into the Knowledge context in the first version.
 - **Life Assistant** and Knowledge may share one code repository, but they should not share domain ownership. Life Assistant owns life rhythm and lifestyle records; Knowledge owns captures, notes, themes, and viewpoints.
-- **Long-Term Decision** is not a goal system in the first version. It is a decision record with a review time, rationale, and expected outcome.
+- Reflection and Long-Term Decision are P2 concepts, not first-version Life Assistant concepts.
 
 ## Example Dialogue
 
@@ -118,10 +105,6 @@ Dev: "Do reminders belong in the Life Event stream?"
 
 Domain expert: "No. Life Events record life facts. Reminder history belongs to reminder records."
 
-Dev: "Can a reflection become a Garden Card automatically?"
+Dev: "Should the first version record long-term decisions?"
 
-Domain expert: "No. Reflection belongs to Life Assistant; Garden Card belongs to Knowledge. The first version keeps the systems separate."
-
-Dev: "Can a long-term decision be saved without a review date?"
-
-Domain expert: "No. It stays a Pending Decision until review time, rationale, and expected outcome are provided."
+Domain expert: "No. Long-Term Decision is a P2 concept. First version focuses on the life-rhythm pipeline."

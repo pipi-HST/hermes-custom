@@ -4,16 +4,16 @@ Date: 2026-05-29
 
 ## Positioning
 
-The Life Assistant is an independent Hermes agent domain for personal life rhythm and reflection. It uses the existing WeChat/Hermes conversation entry point to remind, record, and review daily behavior.
+The Life Assistant is an independent Hermes agent domain for personal life rhythm. It uses the existing WeChat/Hermes conversation entry point to remind, record, and review daily behavior.
 
-The first version focuses on body rhythm: sedentary breaks, water, exercise, sleep, meals, and lightweight reflection. It also keeps a thin path for long-term decisions, but it does not become a full decision-management system in the first release.
+The first version focuses on body rhythm: sedentary breaks, water, exercise, sleep, and meals. Reflection and long-term decisions are deferred to P2.
 
-The assistant is a lifestyle and reflection helper. It is not a medical diagnosis tool and must not make disease claims, medication decisions, or treatment recommendations.
+The assistant is a lifestyle rhythm helper. It is not a medical diagnosis tool and must not make disease claims, medication decisions, or treatment recommendations.
 
 ## Goals
 
 - Remind the user about sedentary breaks, water, exercise, and sleep through WeChat/Hermes.
-- Let the user record sleep, meals, exercise, water, sedentary breaks, reflections, and long-term decisions in natural language.
+- Let the user record sleep, meals, exercise, water, and sedentary breaks in natural language.
 - Calculate useful derived values, especially sleep duration, exercise duration, sedentary duration, reminder completion, and skipped reminders.
 - Run a lightweight daily review at midnight.
 - Run a deeper weekly lifestyle review on Sunday evening.
@@ -25,7 +25,8 @@ The assistant is a lifestyle and reflection helper. It is not a medical diagnosi
 - No Apple Health, watch, phone, or wearable data sync in the first version.
 - No precise calorie, macro, or nutrition calculation.
 - No standalone app and no Mac local notifications in the first version.
-- No heavy long-term decision system in the first version.
+- No Reflection support in the first version; defer it to P2.
+- No Long-Term Decision support in the first version; defer it to P2.
 - No changes to the existing knowledge-management capture workflow unless needed for shared Hermes routing.
 
 ## Assumptions
@@ -76,10 +77,7 @@ Useful event types:
 - `water`
 - `sedentary_start`
 - `sedentary_break`
-- `reflection`
 - `life_note`
-- `decision`
-- `pending_decision`
 
 Important fields:
 
@@ -95,7 +93,7 @@ Important fields:
 - `created_at`
 - `updated_at`
 
-`payload_json` carries type-specific fields, such as meal content, exercise type, reminder id, decision rationale, or reflection text.
+`payload_json` carries type-specific fields, such as meal content, exercise type, or reminder id.
 
 Sedentary and sitting metrics use two first-version reporting fields:
 
@@ -184,22 +182,6 @@ Important fields:
 - `recommendations_json`
 - `created_at`
 
-### `life_decisions`
-
-Stores lightweight long-term decisions.
-
-Important fields:
-
-- `id`
-- `title`
-- `decision_text`
-- `rationale`
-- `expected_outcome`
-- `review_on`
-- `status`
-- `created_at`
-- `updated_at`
-
 ## Reminder Rules
 
 ### Sedentary Strong Reminder
@@ -280,7 +262,7 @@ Defaults:
 - Runs at 00:00.
 - Keeps the review lightweight.
 - Outputs a short one-way summary.
-- Summarizes the day across sleep, exercise, sedentary time, meals, water, and reflection if data exists.
+- Summarizes the day across sleep, exercise, sedentary time, meals, and water if data exists.
 - It does not ask for or collect replies.
 - If a sitting window is still active at 00:00, send the review with an "active window still open" note and allow final sitting statistics to be corrected after the break.
 - If the review is blocked by higher-priority reminders until 02:00, mark it `missed` instead of sending it later in the night.
@@ -292,7 +274,7 @@ Defaults:
 
 - Runs Sunday at 21:30.
 - Produces a deeper lifestyle review.
-- Covers sleep regularity, exercise consistency, sedentary burden, meal timing/content notes, water reminder effectiveness, reflection themes, and next-week focus.
+- Covers sleep regularity, exercise consistency, sedentary burden, meal timing/content notes, water reminder effectiveness, and next-week focus.
 - It does not ask for or collect replies.
 - If the weekly review is blocked by higher-priority reminders until 23:30, mark it `missed`.
 - First version should give qualitative labels and recommendations, not numeric scores.
@@ -356,8 +338,6 @@ Examples:
 - `已活动` -> if a Sedentary Alert is active, explain once that the alert only stops after Mac idle time exceeds 5 minutes
 - `今天不练了` -> skip today's exercise reminder
 - `下午 4 点提醒我运动` -> schedule exercise reminder for that time
-- `今天有个反思...` -> `reflection`
-- `记录一个长期决定：...` -> ask for review time, rationale, and expected outcome before creating a formal `decision`
 - `撤销上一条` -> undo the latest user-created `life_events` row within 30 minutes
 - `上一条改成加餐` -> modify the latest user-created `life_events` row within 30 minutes
 
@@ -381,16 +361,6 @@ Meal handling:
 - Do not assume the user must eat three meals per day.
 - Do not provide instant health commentary for meals. Use daily or weekly review instead.
 
-Reflection handling:
-
-- First version stores reflections in `life_events`.
-- First version does not automatically create Garden Cards, write Obsidian notes, or trigger knowledge-management agents from reflections.
-
-Decision handling:
-
-- First version requires review time, rationale, and expected outcome for formal long-term decisions.
-- If the user does not answer the follow-up, keep the item as `pending_decision` or `life_note`; do not add it to the formal decision review queue.
-
 ## Review Behavior
 
 Daily review should be concise and low-friction. It should not try to produce a full report every night, and it should not require a reply.
@@ -405,7 +375,6 @@ Useful weekly review sections:
 - Sedentary risk
 - Meal observations
 - Water reminders
-- Reflection themes
 - Suggested focus for next week
 
 Weekly review should not create goals in the first version. It may suggest one or more next steps, but those suggestions do not change reminder rules unless the user later gives an explicit command.
@@ -426,12 +395,12 @@ Real notifications must be off by default. Initial rollout steps:
 1. Run all unit and state-machine tests.
 2. Run `life_tick` in dry-run mode.
 3. Observe real local macOS idle logs for 15-30 minutes.
-4. Confirm state transitions and due reminder decisions look correct.
+4. Confirm state transitions and due reminder choices look correct.
 5. Enable real WeChat notifications explicitly.
 
 ## Observability
 
-Add a dedicated `data/life.log` for Life Assistant decisions. Each tick should log key facts in a compact structured form:
+Add a dedicated `data/life.log` for Life Assistant tick choices. Each tick should log key facts in a compact structured form:
 
 - tick time
 - idle seconds or activity-source failure
@@ -466,7 +435,7 @@ For severe or persistent symptoms, the assistant should recommend seeking qualif
 ## Success Criteria
 
 - The user can record sleep start and end from WeChat, and Hermes calculates sleep duration.
-- The user can record meals, exercise, water, reflections, and lightweight decisions from WeChat.
+- The user can record meals, exercise, and water from WeChat.
 - Sedentary strong reminders repeat every 10 minutes after 60 minutes of continuous Mac activity and stop after more than 5 minutes of inactivity.
 - Sedentary Alerts cannot be resolved by replying. They stop only after macOS idle time exceeds 5 minutes, lock, sleep, logout, or explicit alert pause.
 - Daily statistics include exactly two sitting metrics: `sitting_total_minutes` and `sedentary_over_limit_minutes`.
@@ -480,7 +449,7 @@ For severe or persistent symptoms, the assistant should recommend seeking qualif
 - `life_tick` sends at most one reminder per tick and suppresses user delivery unless `meta.should_notify=true`.
 - `life_tick` uses a SQLite lock and reminder dedupe keys to avoid duplicate sends.
 - First rollout starts in dry-run mode and requires explicit enablement before real WeChat notifications.
-- `data/life.log` records tick decisions and failures.
+- `data/life.log` records tick choices and failures.
 
 ## Test Focus
 
