@@ -265,6 +265,7 @@ Defaults:
 - It does not ask for or collect replies.
 - If a sitting window is still active at 00:00, send the review with an "active window still open" note and allow final sitting statistics to be corrected after the break.
 - If the review is blocked by higher-priority reminders until 02:00, mark it `missed` instead of sending it later in the night.
+- A missed Daily Review is not backfilled the next day.
 - If there is no meal record for the day, mention that the meal record is missing. Do not ask for a reply and do not send standalone meal reminders.
 
 ### Weekly Review
@@ -276,12 +277,15 @@ Defaults:
 - Covers sleep regularity, exercise consistency, sedentary burden, meal timing/content notes, water reminder effectiveness, and next-week focus.
 - It does not ask for or collect replies.
 - If the weekly review is blocked by higher-priority reminders until 23:30, mark it `missed`.
+- A missed Weekly Review is not backfilled.
 - First version should give qualitative labels and recommendations, not numeric scores.
 - First version should not create next-week goals automatically.
 
 ## Tick Arbitration
 
 `life_tick` runs once per minute from an external cron or Hermes scheduler. It is not a long-lived scheduler in the first version.
+
+`life_tick` must be idempotent. If it runs more than once in the same minute, the SQLite lock and reminder dedupe keys should prevent duplicate state changes and duplicate notifications.
 
 Each tick should:
 
@@ -305,6 +309,8 @@ Reminder priority:
 6. Weekly deep review
 
 Lower-priority reminders remain due if a higher-priority reminder is sent. They should compete again on the next tick instead of being delayed automatically.
+
+If a Sedentary Alert and Exercise Reminder are due at the same time, the Sedentary Alert always wins because it has higher priority.
 
 Send failure handling:
 
@@ -463,6 +469,8 @@ Daily review should be concise and low-friction. It should not try to produce a 
 Weekly review should be more analytical. It should identify patterns and propose small adjustments, while staying away from medical diagnosis.
 
 Daily and weekly review text may use an LLM in the first version, but only over Life Assistant aggregate metrics and Life records. Reviews must not read Knowledge data, Obsidian content, or long-term chat history, and they must not ask follow-up questions.
+
+When an LLM is used for review text, store the aggregate metrics, qualitative labels, and pattern summary used for generation in the review row. Do not store the full LLM prompt in first-version review records.
 
 Useful weekly review sections:
 
