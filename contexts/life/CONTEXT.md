@@ -17,7 +17,7 @@ An unstructured **Life Event** used when a user message is life-related but not 
 _Avoid_: Capture Note, Raw Evidence, Garden Card.
 
 **Sitting Window**:
-A continuous period where Mac idle time indicates the user is actively using the computer, ending when idle time exceeds the break threshold or the Mac locks, sleeps, or logs out.
+A Mac-activity-inferred sitting period where idle time indicates the user is actively using the computer, ending when idle time exceeds the break threshold or the Mac locks, sleeps, or logs out.
 _Avoid_: session, work session, Mac usage as the canonical term.
 
 **Activity Break**:
@@ -80,6 +80,7 @@ _Avoid_: completed decision.
 
 - "Activity" can mean exercise or Mac activity. Resolved: use **Exercise** for deliberate physical activity, and **Sitting Window** or **Activity Break** for Mac-idle-derived behavior.
 - A user saying "已活动" is not an **Activity Break**. Resolved: an **Activity Break** must be proven by Mac idle time, lock, sleep, or logout.
+- A **Sitting Window** is inferred from Mac activity; it is not a direct body-position measurement.
 - "久坐时间" can mean all sitting or only risky sitting. Resolved: use **Sitting Total** for all sitting windows and **Sedentary Over-Limit Total** for sitting windows at or above the threshold.
 - "Review" exists in the Knowledge context as recall practice. Resolved: Life Assistant uses **Daily Light Review** and **Weekly Deep Review** for lifestyle reflection; Knowledge uses Review Items.
 - **Daily Light Review** and **Weekly Deep Review** are derived review records, not **Life Events**.
