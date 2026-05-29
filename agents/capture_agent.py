@@ -28,6 +28,8 @@ CAPTURE_LLM_TIMEOUT_SECONDS = 300
 CAPTURE_LLM_MAX_TOKENS = 8000
 CAPTURE_LLM_MAX_CONTINUATIONS = 2
 CAPTURE_SOURCE_CHAR_LIMIT = 24000
+CAPTURE_LONG_CHUNK_CHAR_LIMIT = 8000
+CAPTURE_SECTION_NOTE_CHAR_LIMIT = 1500
 CAPTURE_INTERNAL_PLAN_BUDGET_RATIO = 0.45
 
 
@@ -155,13 +157,12 @@ class CaptureAgent:
             return {"error": f"草稿已{'入库' if draft['status'] == 'committed' else '废弃'}，无法修改"}
         current_text = draft.get("draft_text") or draft.get("raw_text", "")
         capture_intent = self._build_capture_intent(instruction).to_dict()
-        prompt = self._build_revision_prompt(
+        llm_result = self._revise_with_llm(
             instruction=instruction,
             capture_intent=capture_intent,
             current_text=current_text,
             raw_text=draft.get("raw_text", ""),
         )
-        llm_result = self._call_llm(prompt)
         if isinstance(llm_result, LLMResult):
             new_text = llm_result.text
             incomplete = llm_result.incomplete
@@ -287,6 +288,237 @@ class CaptureAgent:
             text[:head_limit].rstrip()
             + "\n\n[中间内容因上下文预算截断，已保留开头和结尾。]\n\n"
             + text[-tail_limit:].lstrip()
+        )
+
+    def _revise_with_llm(
+        self,
+        *,
+        instruction: str,
+        capture_intent: dict,
+        current_text: str,
+        raw_text: str,
+    ) -> str | LLMResult:
+        source_text = (raw_text or current_text or "").strip()
+        if len(source_text) > CAPTURE_SOURCE_CHAR_LIMIT:
+            return self._revise_long_source(
+                instruction=instruction,
+                capture_intent=capture_intent,
+                current_text=current_text,
+                source_text=source_text,
+            )
+        prompt = self._build_revision_prompt(
+            instruction=instruction,
+            capture_intent=capture_intent,
+            current_text=current_text,
+            raw_text=raw_text,
+        )
+        return self._call_llm(prompt)
+
+    def _revise_long_source(
+        self,
+        *,
+        instruction: str,
+        capture_intent: dict,
+        current_text: str,
+        source_text: str,
+    ) -> str | LLMResult:
+        notes_result = self._build_long_source_notes(
+            source_text=source_text,
+            instruction=instruction,
+            capture_intent=capture_intent,
+        )
+        if notes_result.incomplete:
+            return notes_result
+        prompt = self._build_long_revision_prompt(
+            instruction=instruction,
+            capture_intent=capture_intent,
+            current_text="" if (current_text or "").strip() == source_text else current_text,
+            section_notes=notes_result.text,
+        )
+        return self._call_llm(prompt)
+
+    def _build_long_source_notes(
+        self,
+        *,
+        source_text: str,
+        instruction: str,
+        capture_intent: dict,
+    ) -> LLMResult:
+        chunks = self._split_long_source_text(source_text)
+        notes: list[str] = []
+        incomplete = False
+        for index, chunk in enumerate(chunks, start=1):
+            prompt = self._build_section_note_prompt(
+                instruction=instruction,
+                capture_intent=capture_intent,
+                chunk=chunk,
+                index=index,
+                total=len(chunks),
+            )
+            result = self._call_llm(prompt, return_meta=True)
+            if not isinstance(result, LLMResult):
+                result = LLMResult(
+                    text=result,
+                    incomplete=getattr(self, "_last_llm_incomplete", False),
+                )
+            note = self._clip_section_note(result.text)
+            notes.append(f"## 分段 {index}/{len(chunks)}\n{note}")
+            if result.incomplete:
+                incomplete = True
+                break
+        joined_notes = "\n\n".join(notes).strip()
+        if incomplete:
+            return LLMResult(
+                text=(
+                    "长文分段整理未完整完成，暂不能作为最终草稿入库。\n\n"
+                    f"{joined_notes}"
+                ),
+                incomplete=True,
+            )
+        return LLMResult(text=joined_notes, incomplete=False)
+
+    def _split_long_source_text(
+        self,
+        text: str,
+        max_chars: int = CAPTURE_LONG_CHUNK_CHAR_LIMIT,
+    ) -> list[str]:
+        text = (text or "").strip()
+        if not text:
+            return []
+        units = self._split_source_units(text, max_chars)
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len = 0
+        for unit in units:
+            unit_len = len(unit)
+            separator_len = 2 if current else 0
+            if current and current_len + separator_len + unit_len > max_chars:
+                chunks.append("\n\n".join(current).strip())
+                current = [unit]
+                current_len = unit_len
+            else:
+                current.append(unit)
+                current_len += separator_len + unit_len
+        if current:
+            chunks.append("\n\n".join(current).strip())
+        return chunks
+
+    def _split_source_units(self, text: str, max_chars: int) -> list[str]:
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+        if len(paragraphs) <= 1:
+            paragraphs = [text]
+        units: list[str] = []
+        for paragraph in paragraphs:
+            if len(paragraph) <= max_chars:
+                units.append(paragraph)
+            else:
+                units.extend(self._split_oversized_unit(paragraph, max_chars))
+        return units
+
+    def _split_oversized_unit(self, text: str, max_chars: int) -> list[str]:
+        sentences = [s for s in re.split(r"(?<=[。！？!?；;])", text) if s.strip()]
+        if len(sentences) <= 1:
+            return [
+                text[i:i + max_chars].strip()
+                for i in range(0, len(text), max_chars)
+                if text[i:i + max_chars].strip()
+            ]
+        units: list[str] = []
+        current = ""
+        for sentence in sentences:
+            if len(sentence) > max_chars:
+                if current:
+                    units.append(current.strip())
+                    current = ""
+                units.extend(
+                    sentence[i:i + max_chars].strip()
+                    for i in range(0, len(sentence), max_chars)
+                    if sentence[i:i + max_chars].strip()
+                )
+                continue
+            if current and len(current) + len(sentence) > max_chars:
+                units.append(current.strip())
+                current = sentence
+            else:
+                current += sentence
+        if current:
+            units.append(current.strip())
+        return units
+
+    def _clip_section_note(self, note: str) -> str:
+        note = (note or "").strip()
+        if len(note) <= CAPTURE_SECTION_NOTE_CHAR_LIMIT:
+            return note
+        return note[:CAPTURE_SECTION_NOTE_CHAR_LIMIT].rstrip() + "\n[分段笔记已压缩截断]"
+
+    def _build_section_note_prompt(
+        self,
+        *,
+        instruction: str,
+        capture_intent: dict,
+        chunk: str,
+        index: int,
+        total: int,
+    ) -> str:
+        emphasis = capture_intent.get("emphasis", [])
+        emphasis_rule = ""
+        if emphasis:
+            emphasis_rule = (
+                f"- 用户点名关注：{', '.join(emphasis)}。如果本段相关，明确记下依据；"
+                "如果不相关，简单说明无明显相关即可。\n"
+            )
+        return (
+            f"用户要求：{instruction}\n\n"
+            "任务信息：\n"
+            f"{json.dumps(capture_intent, ensure_ascii=False)}\n\n"
+            f"这是长文分段阅读，第 {index}/{total} 段。"
+            "这一步不是写最终稿，而是为最终整理保留本段信息。\n"
+            "请输出紧凑分段笔记，覆盖：本段主题、关键事实/数字/实体、"
+            "和全文主线的关系、与用户要求相关的信息。\n"
+            "- 不要逐句搬运原文。\n"
+            "- 不要写成最终文章。\n"
+            "- 控制在约 800 中文字以内。\n"
+            f"{emphasis_rule}\n"
+            f"分段原文：\n{chunk}\n\n"
+            "请输出这一段的分段阅读笔记。"
+        )
+
+    def _build_long_revision_prompt(
+        self,
+        *,
+        instruction: str,
+        capture_intent: dict,
+        current_text: str,
+        section_notes: str,
+    ) -> str:
+        current = (current_text or "").strip()
+        current_context = ""
+        if current:
+            current_context = (
+                "当前草稿或已有整理（仅供判断用户想怎么改，不要被它限制）：\n"
+                f"{current[:6000].strip()}\n\n"
+            )
+        emphasis = capture_intent.get("emphasis", [])
+        emphasis_rule = ""
+        if emphasis:
+            emphasis_rule = (
+                f"- 用户点名关注：{', '.join(emphasis)}。这些是用户问题的重点关切，"
+                "不是整篇文章标题意义上的“重点”。请在最终整理稿里回应到位，但不要因此丢掉全文主线。\n"
+            )
+        return (
+            f"用户要求：{instruction}\n\n"
+            "任务信息：\n"
+            f"{json.dumps(capture_intent, ensure_ascii=False)}\n\n"
+            "你已经按原文顺序得到的分段阅读笔记，笔记覆盖了全文，不要再假设只有开头和结尾。\n"
+            f"{current_context}"
+            "工作方式：\n"
+            "- 基于分段笔记直接写最终整理稿，由你决定详略、结构和自然小标题。\n"
+            "- 不要机械套模板；不要输出内部计划；不要输出标签、摘要、目录或任务合同。\n"
+            "- 不要逐段搬运分段笔记；把它们综合成一篇可读的整理稿。\n"
+            "- 如果用户明确说“只要/仅保留/删除其他内容”，才只处理指定部分。\n"
+            f"{emphasis_rule}\n"
+            f"分段阅读笔记：\n{section_notes}\n\n"
+            "请直接输出最终整理稿。"
         )
 
     def _build_revision_prompt(

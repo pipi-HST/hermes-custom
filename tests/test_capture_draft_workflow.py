@@ -194,6 +194,80 @@ def test_near_budget_content_gets_internal_planning_instruction(agent: CaptureAg
     assert "末尾关键观点" in prompt
 
 
+def test_long_source_is_read_in_chunks_before_final_draft(agent: CaptureAgent, monkeypatch):
+    long_text = (
+        "开头主线：文章讨论AI产品竞争。\n\n"
+        + ("第一部分讲模型能力和产品节奏。" * 900)
+        + "\n\nMIDDLE_UNIQUE：中段讨论Terminal-Bench故意没补的坑。\n\n"
+        + ("第三部分讲开发者生态和商业化选择。" * 900)
+        + "\n\n结尾判断：战略转向Dynamic Workflows。"
+    )
+    draft = agent.create_draft(long_text)
+    calls: list[tuple[str, bool]] = []
+
+    def fake_llm(prompt: str, return_meta: bool = False):
+        calls.append((prompt, return_meta))
+        if "长文分段阅读" in prompt:
+            marker = "MIDDLE_UNIQUE" if "MIDDLE_UNIQUE" in prompt else "普通段落"
+            return LLMResult(text=f"分段笔记：{marker}", incomplete=False)
+        assert "按原文顺序得到的分段阅读笔记" in prompt
+        assert "MIDDLE_UNIQUE" in prompt
+        assert "中间内容因上下文预算截断" not in prompt
+        return "最终整理稿：Terminal-Bench 是关键线索。"
+
+    monkeypatch.setattr(agent, "_call_llm", fake_llm)
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {
+            "summary": "长文整理。",
+            "tags": ["ai-agent"],
+        },
+    )
+
+    revised = agent.revise_draft(
+        draft["id"],
+        "提取重点，关于Terminal-Bench故意没补的坑要详细阐述",
+    )
+
+    section_calls = [prompt for prompt, return_meta in calls if return_meta]
+    assert revised["status"] == "draft_ready"
+    assert len(section_calls) >= 2
+    assert any("MIDDLE_UNIQUE" in prompt for prompt in section_calls)
+    assert calls[-1][1] is False
+    assert revised["draft_text"] == "最终整理稿：Terminal-Bench 是关键线索。"
+
+
+def test_long_source_incomplete_section_note_marks_draft_incomplete(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    long_text = (
+        "开头。\n\n"
+        + ("第一段材料。" * 1500)
+        + "\n\n"
+        + ("第二段材料。" * 1500)
+        + "\n\n"
+        + ("第三段材料。" * 1500)
+        + "\n\n结尾。"
+    )
+    draft = agent.create_draft(long_text)
+
+    def fake_llm(prompt: str, return_meta: bool = False):
+        if "第 2/" in prompt:
+            return LLMResult(text="第二段半截笔记", incomplete=True)
+        return LLMResult(text="完整分段笔记", incomplete=False)
+
+    monkeypatch.setattr(agent, "_call_llm", fake_llm)
+
+    revised = agent.revise_draft(draft["id"], "总结全文")
+
+    assert revised["status"] == "draft_incomplete"
+    assert revised["revision_error"] == "llm_output_incomplete"
+    assert "长文分段整理未完整完成" in revised["draft_text"]
+    assert "第二段半截笔记" in revised["draft_text"]
+
+
 def test_create_draft_with_instruction_keeps_raw_draft_when_llm_times_out(
     agent: CaptureAgent,
     monkeypatch,
