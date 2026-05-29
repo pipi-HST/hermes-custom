@@ -324,7 +324,7 @@ The first version should use a rule-first parsing strategy with a restricted LLM
 - The assistant only asks a follow-up when the ambiguity affects reminder state or a required field for a supported P1 record is missing.
 - The Life Assistant should only handle clearly life-related messages. It must not broadly capture ordinary chat or knowledge-management messages.
 - `record_life_event` should reply with a short confirmation for every user-created record in the first version, including key parsed fields so the user can spot parsing errors.
-- `record_life_event` is not a question-answering tool. It only handles life records, latest-record undo/modify commands, and active reminder replies.
+- `record_life_event` is not a user-facing query tool. It should be called only by Hermes routing for life records, latest-record undo/modify commands, and active reminder replies.
 - First version does not support manual status queries or ad-hoc reviews. Questions such as `我今天坐了多久？` or `今天状态怎么样？` should not be stored as Life Events; reply briefly that the first version will summarize them in the scheduled Daily Light Review or Weekly Deep Review.
 - Health consultations such as `我最近睡不好，是不是身体有问题？` must not be stored and must not produce diagnosis. Reply with the safety boundary and recommend qualified help when appropriate.
 - The fallback may use the current message and the minimum necessary recent reminder context. It must not read Knowledge context data or create Knowledge artifacts.
@@ -335,7 +335,10 @@ Fallback entry gate:
 - The LLM fallback may also run when there is an active Life reminder context and the user sends a short reply that could refer to it.
 - The user may explicitly route a message to Life Assistant with prefixes such as `生活：` or `健康：`; this bypasses the conservative keyword prefilter but not the fixed P1 intent set or required-field rules.
 - If an explicitly prefixed Life message does not match a supported P1 intent, return `unsupported` or a rejection instead of routing it back to Knowledge.
+- Strip explicit Life prefixes before parsing, but preserve the prefix value in fallback metadata as `explicit_prefix`.
+- `健康：我最近睡不好` and similar health-consultation messages should stay in Life routing and receive the safety-boundary response. They should not be rerouted to Knowledge.
 - Active Life reminder context only binds short replies, such as `喝了`, `不练了`, or `4点`. Long-form notes, reading notes, source material, viewpoints, and writing ideas should route to Knowledge even if a Life reminder is unresolved.
+- P1 does not extract embedded life records from long-form notes. For example, a reading note that ends with `今天跑了30分钟` should route to Knowledge unless it is explicitly prefixed and the whole message is intended as a Life record.
 - Ordinary chat, knowledge capture, reading notes, source material, viewpoints, and writing ideas should not enter the Life fallback by default.
 - If a message is not a Life candidate, route it through the existing Hermes or Knowledge path instead of asking the Life fallback to classify it.
 - The fallback context is limited to the current message, current time, explicit prefix if present, and the nearest relevant Life reminder summary. It must not use Knowledge data, Obsidian content, or long-term chat history.
@@ -365,7 +368,9 @@ Fallback output schema:
 
 The fallback should keep `fields` minimal and intent-specific. It should not add new top-level keys in the first version.
 
-When fallback creates a Life Event, store the fallback parse result in `payload_json` with `parser="llm_fallback"`, `intent`, `fields`, `missing_required_fields`, and `ambiguity_notes`. Do not store the full LLM prompt in first-version records.
+When fallback creates a Life Event, store the fallback parse result in `payload_json` with `parser="llm_fallback"`, `intent`, `fields`, `missing_required_fields`, `ambiguity_notes`, and `explicit_prefix` when present. Do not store the full LLM prompt in first-version records.
+
+When fallback rejects, clarifies, or cannot create a Life Event, write a lightweight entry to `data/life.log` with the selected intent, missing fields, ambiguity notes, and response type. Do not create a Life Event for failed fallback parses.
 
 Minimum required fields by intent:
 
