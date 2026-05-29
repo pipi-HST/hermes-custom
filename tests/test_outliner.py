@@ -93,6 +93,7 @@ def test_outliner_limits_source_text_and_uses_larger_output_budget(mock_post):
     payload = mock_post.call_args.kwargs["json"]
     assert len(payload["messages"][0]["content"]) < OUTLINE_SOURCE_CHAR_LIMIT + 300
     assert payload["max_tokens"] == OUTLINE_MAX_TOKENS
+    assert payload["thinking"] == {"type": "disabled"}
 
 
 @patch("agents.outliner.httpx.Client.post")

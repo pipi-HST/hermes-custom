@@ -63,6 +63,7 @@ class Outliner:
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
             "max_tokens": OUTLINE_MAX_TOKENS,
+            "thinking": {"type": "disabled"},
         }
         with httpx.Client(timeout=120) as client:
             resp = client.post(
