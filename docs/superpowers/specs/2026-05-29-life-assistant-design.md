@@ -211,12 +211,12 @@ Defaults:
 - Treat `idle_time <= 5 minutes` as continuous activity.
 - Treat `idle_time > 5 minutes` as an activity break.
 - Lock, sleep, or logout also count as activity interruption.
-- If the Mac activity source fails, suspend sedentary reminders and record a warning. Do not infer from stale activity data.
+- If the Mac activity source fails, suspend Sedentary Alerts and record a warning. Do not infer from stale activity data.
 - Trigger after 60 minutes of continuous activity.
 - Once triggered, send a WeChat/Hermes reminder every 10 minutes.
 - Auto-resolve only when Mac activity is interrupted for more than 5 minutes, or when lock, sleep, or logout is detected.
-- User replies do not resolve sedentary reminders. The user must act, not reply.
-- Allow explicit high-friction management commands such as `今天暂停久坐提醒` or `暂停久坐提醒 2 小时`. Pausing stops messages only; sitting and sedentary statistics continue to be recorded.
+- User replies do not resolve Sedentary Alerts. The user must act, not reply.
+- Allow explicit high-friction management commands such as `今天暂停久坐警报` or `暂停久坐警报 2 小时`. Pausing stops messages only; sitting and sedentary statistics continue to be recorded.
 
 State flow:
 
@@ -226,7 +226,7 @@ State flow:
 4. If Mac inactivity exceeds 5 minutes, Hermes records `sedentary_break` and auto-resolves the reminder state.
 5. The current continuous sitting timer resets after the break, but the day's cumulative sitting metrics do not reset.
 
-If the user replies `已活动` or an equivalent phrase during an active sedentary reminder, Hermes should not resolve the reminder. It may explain once per sedentary session that the alert stops only after the user leaves the computer for more than 5 minutes.
+If the user replies `已活动` or an equivalent phrase during an active Sedentary Alert, Hermes should not resolve it. It may explain once per sedentary session that the alert stops only after the user leaves the computer for more than 5 minutes.
 
 The system should record active-window start time, reminder times, resolution time, sitting duration, sedentary-over-limit duration, and resolution source.
 
@@ -347,7 +347,7 @@ Examples:
 - `午饭吃了牛肉饭` -> `meal`
 - `跑步 30 分钟` -> `exercise`
 - `喝了` -> `water` if the active context is a water reminder
-- `已活动` -> if a sedentary reminder is active, explain once that the alert only stops after Mac idle time exceeds 5 minutes
+- `已活动` -> if a Sedentary Alert is active, explain once that the alert only stops after Mac idle time exceeds 5 minutes
 - `今天不练了` -> skip today's exercise reminder
 - `下午 4 点提醒我运动` -> schedule exercise reminder for that time
 - `今天有个反思...` -> `reflection`
@@ -408,8 +408,8 @@ Weekly review should not create goals in the first version. It may suggest one o
 
 First-version configuration should start from code defaults. Only limited same-day controls are supported from WeChat:
 
-- `今天暂停久坐提醒`
-- `暂停久坐提醒 2 小时`
+- `今天暂停久坐警报`
+- `暂停久坐警报 2 小时`
 - `今天不练了`
 - exercise reminder rescheduling, such as `下午 4 点提醒我运动`
 
@@ -462,7 +462,7 @@ For severe or persistent symptoms, the assistant should recommend seeking qualif
 - The user can record sleep start and end from WeChat, and Hermes calculates sleep duration.
 - The user can record meals, exercise, water, reflections, and lightweight decisions from WeChat.
 - Sedentary strong reminders repeat every 10 minutes after 60 minutes of continuous Mac activity and stop after more than 5 minutes of inactivity.
-- Sedentary reminders cannot be resolved by replying. They stop only after macOS idle time exceeds 5 minutes, lock, sleep, logout, or explicit reminder pause.
+- Sedentary Alerts cannot be resolved by replying. They stop only after macOS idle time exceeds 5 minutes, lock, sleep, logout, or explicit alert pause.
 - Daily statistics include exactly two sitting metrics: `sitting_total_minutes` and `sedentary_over_limit_minutes`.
 - Exercise reminders begin at 10:30, repeat every 2 hours when unresolved, and stop after exercise is recorded or skipped for the day.
 - Water reminders occur twice during the day and do not require interaction.

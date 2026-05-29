@@ -28,7 +28,7 @@ _Avoid_: reply confirmation, claimed break.
 **Sedentary Alert**:
 A strong reminder created when a **Sitting Window** reaches the sedentary threshold; it repeats until an **Activity Break** occurs or a clear pause command is given.
 Chinese label: `久坐警报`.
-_Avoid_: reminder that can be dismissed by saying "done".
+_Avoid_: reminder that can be dismissed by saying "done"; user-facing system text should not call it `久坐提醒`.
 
 **Sitting Total**:
 The daily total of all **Sitting Windows**, including windows shorter than the sedentary threshold.
@@ -85,6 +85,7 @@ _Avoid_: completed decision.
 - "Activity" can mean exercise or Mac activity. Resolved: use **Exercise** for deliberate physical activity, and **Sitting Window** or **Activity Break** for Mac-idle-derived behavior.
 - A user saying "已活动" is not an **Activity Break** (`离座休息`). Resolved: an **Activity Break** must be proven by Mac idle time, lock, sleep, or logout.
 - A **Sitting Window** is inferred from Mac activity; it is not a direct body-position measurement.
+- `久坐提醒` may be accepted as a user-input alias, but system-facing language should use **Sedentary Alert** (`久坐警报`).
 - "久坐时间" can mean all sitting or only risky sitting. Resolved: use **Sitting Total** for all sitting windows and **Sedentary Over-Limit Total** for sitting windows at or above the threshold.
 - `久坐超标时长` counts the full over-limit **Sitting Window**, not only the minutes beyond the sedentary threshold.
 - "Review" exists in the Knowledge context as recall practice. Resolved: Life Assistant uses **Daily Light Review** and **Weekly Deep Review** for lifestyle reflection; Knowledge uses Review Items.
