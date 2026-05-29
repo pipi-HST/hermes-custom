@@ -334,8 +334,11 @@ Fallback entry gate:
 - The LLM fallback may run only after a Life prefilter marks the message as a life-related candidate, such as sleep, meal, exercise, water, sedentary behavior, pause, undo, or modify.
 - The LLM fallback may also run when there is an active Life reminder context and the user sends a short reply that could refer to it.
 - The user may explicitly route a message to Life Assistant with prefixes such as `生活：` or `健康：`; this bypasses the conservative keyword prefilter but not the fixed P1 intent set or required-field rules.
+- If an explicitly prefixed Life message does not match a supported P1 intent, return `unsupported` or a rejection instead of routing it back to Knowledge.
+- Active Life reminder context only binds short replies, such as `喝了`, `不练了`, or `4点`. Long-form notes, reading notes, source material, viewpoints, and writing ideas should route to Knowledge even if a Life reminder is unresolved.
 - Ordinary chat, knowledge capture, reading notes, source material, viewpoints, and writing ideas should not enter the Life fallback by default.
 - If a message is not a Life candidate, route it through the existing Hermes or Knowledge path instead of asking the Life fallback to classify it.
+- The fallback context is limited to the current message, current time, explicit prefix if present, and the nearest relevant Life reminder summary. It must not use Knowledge data, Obsidian content, or long-term chat history.
 
 Conservative Life prefilter keywords:
 
@@ -362,6 +365,8 @@ Fallback output schema:
 
 The fallback should keep `fields` minimal and intent-specific. It should not add new top-level keys in the first version.
 
+When fallback creates a Life Event, store the fallback parse result in `payload_json` with `parser="llm_fallback"`, `intent`, `fields`, `missing_required_fields`, and `ambiguity_notes`. Do not store the full LLM prompt in first-version records.
+
 Minimum required fields by intent:
 
 - `sleep`: at least one of `start_at` or `end_at`; a complete sleep session requires both.
@@ -384,6 +389,7 @@ Follow-up policy:
 - Ask once when multiple active reminder contexts could match an ambiguous short reply.
 - Do not ask follow-ups for health consultations, manual status queries, ad-hoc reviews, unsupported intents, or ordinary chat.
 - If the one follow-up does not produce a clear supported record, stop and do not create a Life Event.
+- Use a short standard rejection when fallback cannot create a record: `这条我暂时不能作为生活记录保存。`
 
 Examples:
 
