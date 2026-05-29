@@ -82,6 +82,7 @@ def test_update_capture_draft_and_get_latest_open(draft_repo):
         latest["id"],
         draft_text="提炼后的内容",
         instruction="总结全文",
+        capture_intent={"coverage": "full_article", "emphasis": ["电力"]},
         status="draft_ready",
         summary="摘要",
         tags=["ai", "energy"],
@@ -91,6 +92,8 @@ def test_update_capture_draft_and_get_latest_open(draft_repo):
     assert open_draft["id"] == latest["id"]
     assert open_draft["draft_text"] == "提炼后的内容"
     assert open_draft["tags"] == ["ai", "energy"]
+    assert open_draft["capture_intent"]["coverage"] == "full_article"
+    assert open_draft["capture_intent"]["emphasis"] == ["电力"]
 
     draft_repo.update(latest["id"], status="committed", committed_capture_id="abc123")
     open_draft = draft_repo.get_latest_open()

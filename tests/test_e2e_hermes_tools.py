@@ -74,7 +74,8 @@ def test_hermes_capture_schema_has_content():
     assert "instruction" in props, f"missing instruction, props={list(props.keys())}"
     assert "content" in params.get("required", [])
     assert "微信" in description
-    assert "完整草稿" in description
+    assert "待确认整理稿" in description
+    assert "USER_VISIBLE_REPLY" in description
 
 
 def test_hermes_draft_tools_registered():
@@ -85,7 +86,8 @@ def test_hermes_draft_tools_registered():
     assert "show_capture_draft" in tools
     assert "微信" in tools["revise_capture_draft"].schema.get("description", "")
     assert "展开草稿" in tools["show_capture_draft"].schema.get("description", "")
-    assert "完整草稿" in tools["refine_capture"].schema.get("description", "")
+    assert "待确认整理稿" in tools["refine_capture"].schema.get("description", "")
+    assert "USER_VISIBLE_REPLY" in tools["refine_capture"].schema.get("description", "")
 
 
 def test_hermes_search_schema_has_query():
@@ -326,6 +328,8 @@ def test_hermes_tool_executor_uses_chat_preview_for_model_content():
     assert content is not None
     assert content.startswith("USER_VISIBLE_REPLY:\n这是给用户看的短回答 [1]")
     assert "Return USER_VISIBLE_REPLY as-is" in content
+    assert "next_actions field is a list of user-facing options" in content
+    assert "do not call those tools unless the user explicitly asks" in content
     assert "STRUCTURED_AGENT_RESULT_DO_NOT_REWRITE" in content
     assert '"source_map"' in content
     assert '"chat_preview"' not in content
@@ -414,7 +418,7 @@ def test_hermes_toolset_has_6_tools():
     tools = TOOLSETS["personal-assistant"]["tools"]
     assert len(tools) >= 13, f"Expected draft tools, got {len(tools)}: {tools}"
     expected = {"capture_content", "refine_capture", "search_my_notes", "log_decision",
-                "wellness_check", "theme_scan", "graph_report", "web_extract", "send_message",
+                "wellness_check", "theme_scan", "graph_report", "send_message",
                 "revise_capture_draft", "commit_capture_draft", "synthesize_garden",
                 "daily_review", "show_capture_draft"}
     assert set(tools) == expected, f"Mismatch: {set(tools) ^ expected}"
@@ -474,9 +478,73 @@ def test_bridge_capture_text_with_instruction_returns_draft(mock_summarize, mock
     assert r["status"] == "success"
     assert _artifact(r)["status"] == "draft_ready"
     assert "完整草稿已保存" in r["chat_preview"]
-    assert "草稿预览" in r["chat_preview"]
+    assert "标题：" in r["chat_preview"]
+    assert "重点回应：" in r["chat_preview"]
+    assert "总结：" in r["chat_preview"]
+    assert "草稿预览" not in r["chat_preview"]
+    assert "标签：" not in r["chat_preview"]
+    assert "目录纲要" not in r["chat_preview"]
+    assert "参考来源" not in r["chat_preview"]
     assert "核心观点" in r["chat_preview"]
     assert "__HERMES_DIRECT_REPLY__" not in r["chat_preview"]
+
+
+def test_draft_preview_key_response_uses_user_emphasis():
+    from bridge.capture_bridge import _draft_saved_preview
+
+    message, _ = _draft_saved_preview(
+        {
+            "title": "Opus 4.8",
+            "summary": "这篇文章讨论 Opus 4.8 的战略转向。",
+            "status": "draft_ready",
+            "capture_intent": {
+                "emphasis": [
+                    "41天发版的另一层是节奏狙击",
+                    "Terminal-Bench那个故意没补的坑",
+                ],
+            },
+            "draft_text": (
+                "Anthropic 发布 Opus 4.8，表面看只是 benchmark 小幅提升，"
+                "但文章真正关心的是产品战略和 agentic coding 的变化。\n\n"
+                "## 41 天发版的另一层：节奏狙击\n\n"
+                "41 天发版不是普通补丁节奏，而是在 GPT-5.6 传言前切出中间态产品，"
+                "用 post-training 快速迭代形成市场卡位。\n\n"
+                "## Terminal-Bench 那个故意没补的坑\n\n"
+                "Terminal-Bench 落后说明 Anthropic 没有把纯终端能力当主战场，"
+                "它更愿意押注 IDE 风格的长链路 agent execution。"
+            ),
+        },
+        "生成",
+    )
+
+    key_response = message.split("重点回应：", 1)[1].split("\n\n总结：", 1)[0]
+    assert "41天发版的另一层是节奏狙击" in key_response
+    assert "Terminal-Bench那个故意没补的坑" in key_response
+    assert "benchmark 小幅提升" not in key_response
+
+
+@patch("agents.capture_agent.CaptureAgent._call_llm")
+def test_bridge_capture_instruction_timeout_returns_saved_raw_draft(mock_llm):
+    import httpx
+    from bridge.capture_bridge import capture_content
+
+    mock_llm.side_effect = httpx.ReadTimeout("timed out")
+
+    r = capture_content(
+        "知识管理的核心是将碎片信息转化为可复用的认知资产。"
+        "个人知识管理有三个层次：捕获、整理、内化。这需要长期坚持和积累。"
+        "补充：人工智能技术正在快速发展，深度学习模型取得了显著成果。"
+        "从图像识别到自然语言处理，AI应用越来越广泛地改变着我们的世界。",
+        instruction="总结全文核心观点",
+    )
+
+    assert r["status"] == "success"
+    assert _artifact(r)["status"] == "raw_extracted"
+    assert _artifact(r)["id"]
+    assert "已提取" in r["chat_preview"]
+    assert "稍后继续整理" in r["chat_preview"]
+    assert r["meta"]["draft_status"] == "raw_extracted"
+    assert r["meta"]["revision_error"] == "timed out"
 
 
 @patch("agents.capture_agent.CaptureAgent._call_llm")
@@ -505,6 +573,27 @@ def test_bridge_capture_with_instruction_truncates_long_message_but_keeps_full_d
 
 
 @patch("agents.capture_agent.CaptureAgent._call_llm")
+def test_bridge_capture_incomplete_draft_does_not_offer_commit(mock_llm):
+    from agents.capture_agent import LLMResult
+    from bridge.capture_bridge import capture_content
+
+    mock_llm.return_value = LLMResult(text="半截草稿，而是", incomplete=True)
+
+    r = capture_content(
+        "知识管理的核心是将碎片信息转化为可复用的认知资产。"
+        "个人知识管理有三个层次：捕获、整理、内化。这需要长期坚持和积累。"
+        "补充：人工智能技术正在快速发展，深度学习模型取得了显著成果。"
+        "从图像识别到自然语言处理，AI应用越来越广泛地改变着我们的世界。",
+        instruction="总结全文核心观点",
+    )
+
+    assert r["status"] == "success"
+    assert _artifact(r)["status"] == "draft_incomplete"
+    assert "暂不能存库" in r["chat_preview"]
+    assert all(action["intent"] != "commit_capture_draft" for action in r["next_actions"])
+
+
+@patch("agents.capture_agent.CaptureAgent._call_llm")
 @patch("agents.capture_agent.Summarizer.summarize")
 def test_bridge_revise_no_direct_reply_marker(mock_summarize, mock_llm):
     from bridge.capture_bridge import capture_content, revise_capture_draft
@@ -526,7 +615,10 @@ def test_bridge_revise_no_direct_reply_marker(mock_summarize, mock_llm):
     assert revised["status"] == "success"
     assert "__HERMES_DIRECT_REPLY__" not in revised["chat_preview"]
     assert "完整草稿已保存" in revised["chat_preview"]
-    assert "草稿预览" in revised["chat_preview"]
+    assert "标题：" in revised["chat_preview"]
+    assert "重点回应：" in revised["chat_preview"]
+    assert "总结：" in revised["chat_preview"]
+    assert "草稿预览" not in revised["chat_preview"]
     assert "核心观点" in revised["chat_preview"]
 
 

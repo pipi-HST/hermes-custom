@@ -33,3 +33,16 @@ def test_run_repair_invokes_apply_and_readable_rename(monkeypatch, tmp_path):
             "rename_readable": True,
         }
     ]
+
+
+def test_snapshot_vault_includes_archived_raw(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "captures").mkdir(parents=True)
+    (vault / "_archive" / "raw").mkdir(parents=True)
+    (vault / "captures" / "note.md").write_text("capture", encoding="utf-8")
+    (vault / "_archive" / "raw" / "source.md").write_text("raw", encoding="utf-8")
+
+    snapshot = watch_vault.snapshot_vault(vault)
+
+    assert "captures/note.md" in snapshot
+    assert "_archive/raw/source.md" in snapshot

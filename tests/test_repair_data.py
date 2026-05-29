@@ -242,11 +242,34 @@ def test_readable_rename_updates_capture_and_raw_paths(tmp_path):
 
     row = conn.execute("SELECT file_path, raw_path FROM captures WHERE id = 'abc123456789'").fetchone()
     assert row["file_path"] == "captures/AI Harness深度解析：用最便宜的模型-2026-05-28-abc12345.md"
-    assert row["raw_path"] == "raw/AI Harness深度解析：用最便宜的模型-2026-05-28-abc12345.md"
+    assert row["raw_path"] == "_archive/raw/AI Harness深度解析：用最便宜的模型-2026-05-28-abc12345.md"
     assert (vault_path / row["file_path"]).exists()
     assert (vault_path / row["raw_path"]).exists()
     assert not (vault_path / "captures/2026-05-28-generate.md").exists()
+    assert not (vault_path / "raw/AI Harness深度解析：用最便宜的模型-2026-05-28-abc12345.md").exists()
     assert any(a["type"] == "rename_capture_file" for a in result["planned_actions"])
+
+
+def test_readable_rename_preserves_archived_raw_folder(tmp_path):
+    db_path = tmp_path / "captures.db"
+    vault_path = tmp_path / "vault"
+    conn = init_db(str(db_path))
+    _write_note(vault_path, "captures/2026-05-28-generate.md", "abc123456789", "AI Harness深度解析")
+    _write_note(vault_path, "_archive/raw/2026-05-28-generate.md", "abc123456789", "AI Harness深度解析")
+    _insert_capture(
+        conn,
+        "abc123456789",
+        "captures/2026-05-28-generate.md",
+        raw_path="_archive/raw/2026-05-28-generate.md",
+        created_at="2026-05-28 12:00:00",
+    )
+
+    repair_data(db_path, vault_path, apply=True, rename_readable=True)
+
+    row = conn.execute("SELECT raw_path FROM captures WHERE id = 'abc123456789'").fetchone()
+    assert row["raw_path"] == "_archive/raw/AI Harness深度解析-2026-05-28-abc12345.md"
+    assert (vault_path / row["raw_path"]).exists()
+    assert not (vault_path / "raw/AI Harness深度解析-2026-05-28-abc12345.md").exists()
 
 
 def test_readable_rename_dry_run_does_not_move_files(tmp_path):

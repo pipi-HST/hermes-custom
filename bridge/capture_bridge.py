@@ -1,5 +1,6 @@
 """Capture Agent bridge."""
 from __future__ import annotations
+import json
 import re
 import sys
 from pathlib import Path
@@ -25,10 +26,6 @@ def _init():
     return _config, _agent
 
 
-def _format_tags(tags: list[str]) -> str:
-    return ", ".join(tags) if tags else "未标注"
-
-
 def _clip_text(text: str, limit: int) -> str:
     text = text.strip()
     if len(text) <= limit:
@@ -41,75 +38,132 @@ def _clip_text_with_flag(text: str, limit: int) -> tuple[str, bool]:
     return clipped, clipped != text.strip()
 
 
-def _draft_outline_preview(draft_text: str, limit: int = 900) -> tuple[str, bool]:
-    lines = [line.strip() for line in draft_text.splitlines() if line.strip()]
-    structured: list[str] = []
-    for line in lines:
-        cleaned = line.lstrip("#").strip()
-        if not cleaned:
-            continue
-        if (
-            line.startswith("#")
-            or re.match(r"^\d+[\.\)、]\s*", line)
-            or re.match(r"^[-*+]\s+", line)
-        ):
-            cleaned = re.sub(r"^\d+[\.\)、]\s*", "", cleaned).strip()
-            cleaned = re.sub(r"^[-*+]\s+", "", cleaned).strip()
-            structured.append(cleaned)
-        if len(structured) >= 8:
-            break
-
-    if structured:
-        item_truncated = any(_clip_text(item, 90) != item for item in structured)
-        bullets = [f"{idx}. {_clip_text(item, 90)}" for idx, item in enumerate(structured, 1)]
-        preview, preview_truncated = _clip_text_with_flag("\n".join(bullets), limit)
-        return preview, preview_truncated or item_truncated or len(lines) > len(structured)
-
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", draft_text) if p.strip()]
-    if not paragraphs:
-        paragraphs = lines
-    source_snippets = [p.replace("\n", " ") for p in paragraphs[:4]]
-    snippet_truncated = any(_clip_text(p, 180) != p for p in source_snippets)
-    snippets = [_clip_text(p, 180) for p in source_snippets]
-    preview, preview_truncated = _clip_text_with_flag(
-        "\n".join(f"{idx}. {item}" for idx, item in enumerate(snippets, 1)),
-        limit,
-    )
-    return preview, preview_truncated or snippet_truncated or len(paragraphs) > len(snippets)
-
-
 def _draft_saved_preview(result: dict, action: str) -> tuple[str, bool]:
     raw_title = result.get("title") or "无标题"
     raw_summary = result.get("summary") or "完整草稿已保存在草稿区，等待你确认。"
-    raw_tags = _format_tags(result.get("tags", []))
     title, title_truncated = _clip_text_with_flag(raw_title, 100)
     summary, summary_truncated = _clip_text_with_flag(raw_summary, 260)
-    tags, tags_truncated = _clip_text_with_flag(raw_tags, 160)
-    draft_text = result.get("draft_text", "")
-    outline, source_outline_truncated = (
-        _draft_outline_preview(draft_text, limit=PREVIEW_LIMIT) if draft_text else ("暂无可预览正文。", False)
-    )
-    header = (
-        f"已{action}《{title}》草稿。\n"
-        f"核心摘要：{summary}\n"
-        f"标签：{tags}\n"
-        f"草稿编号：{result.get('id', '')}\n"
-    )
-    section_label = "\n草稿预览：\n"
-    footer = "\n\n完整草稿已保存。回复「展开草稿」查看全文；回复修改意见继续改；满意回复「存库」。"
-    outline_limit = max(120, PREVIEW_LIMIT - len(header) - len(section_label) - len(footer))
-    outline, outline_truncated = _clip_text_with_flag(outline, outline_limit)
-    message = f"{header}{section_label}{outline}{footer}"
+    key_response, key_truncated = _clip_text_with_flag(_key_response_preview(result), 420)
+    header = f"已{action}草稿。\n\n标题：{title}\n\n重点回应：\n{key_response}\n\n总结：{summary}"
+    if result.get("status") == "draft_incomplete":
+        footer = "\n\n草稿还没生成完整，暂不能存库。回复「展开草稿」查看现有内容；回复「继续整理」或新的修改意见继续生成。"
+    else:
+        footer = "\n\n完整草稿已保存。回复「展开草稿」查看全文；回复修改意见继续改；满意回复「存库」。"
+    message, message_truncated = _clip_text_with_flag(f"{header}{footer}", PREVIEW_LIMIT)
     preview_truncated = any(
         [
             title_truncated,
             summary_truncated,
-            tags_truncated,
-            source_outline_truncated,
-            outline_truncated,
+            key_truncated,
+            message_truncated,
         ]
     )
     return message, preview_truncated
+
+
+def _key_response_preview(result: dict) -> str:
+    draft_text = result.get("draft_text", "")
+    emphasis = _preview_emphasis(result.get("capture_intent"))
+    if emphasis:
+        focused = _focused_emphasis_preview(draft_text, emphasis)
+        if focused:
+            return focused
+    return _first_meaningful_chunk(draft_text)
+
+
+def _preview_emphasis(capture_intent) -> list[str]:
+    if isinstance(capture_intent, str):
+        try:
+            capture_intent = json.loads(capture_intent)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(capture_intent, dict):
+        return []
+    emphasis = capture_intent.get("emphasis", [])
+    if not isinstance(emphasis, list):
+        return []
+    return [str(item).strip() for item in emphasis if str(item).strip()]
+
+
+def _focused_emphasis_preview(draft_text: str, emphasis: list[str]) -> str:
+    blocks = _preview_blocks(draft_text)
+    if not blocks:
+        return ""
+    lines = ["围绕你点名的重点，草稿主要回应："]
+    used: set[int] = set()
+    for item in emphasis[:3]:
+        match = _find_emphasis_block(blocks, item, used)
+        if not match:
+            continue
+        idx, snippet = match
+        used.add(idx)
+        lines.append(f"- {item}：{_clip_text(_first_sentence(snippet), 130)}")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def _preview_blocks(draft_text: str) -> list[str]:
+    text = (draft_text or "").strip()
+    if not text:
+        return []
+    return [_clean_preview_block(block) for block in re.split(r"\n\s*\n", text) if block.strip()]
+
+
+def _clean_preview_block(block: str) -> str:
+    block = re.sub(r"^#+\s*", "", block.strip())
+    block = re.sub(r"^\*\*(.+?)\*\*$", r"\1", block)
+    return block.strip()
+
+
+def _find_emphasis_block(blocks: list[str], emphasis: str, used: set[int]) -> tuple[int, str] | None:
+    for idx, block in enumerate(blocks):
+        if idx in used:
+            continue
+        if not _matches_emphasis(block, emphasis):
+            continue
+        snippet = block
+        if len(block) < 80 and idx + 1 < len(blocks):
+            snippet = f"{block}：{blocks[idx + 1]}"
+        return idx, snippet
+    return None
+
+
+def _matches_emphasis(text: str, emphasis: str) -> bool:
+    normalized_text = _normalize_match_text(text)
+    fragments = _emphasis_fragments(emphasis)
+    return any(fragment in normalized_text for fragment in fragments)
+
+
+def _emphasis_fragments(emphasis: str) -> list[str]:
+    fragments = [_normalize_match_text(emphasis)]
+    for part in re.split(r"(?:的|是|那个|这个|这|部分|一层)", emphasis):
+        normalized = _normalize_match_text(part)
+        if len(normalized) >= 2:
+            fragments.append(normalized)
+    return [fragment for fragment in fragments if len(fragment) >= 2]
+
+
+def _normalize_match_text(text: str) -> str:
+    return re.sub(r"[\W_]+", "", (text or "").lower())
+
+
+def _first_sentence(text: str) -> str:
+    text = re.sub(r"\s+", " ", text.strip())
+    match = re.search(r"^(.+?[。！？!?])", text)
+    return match.group(1).strip() if match else text
+
+
+def _first_meaningful_chunk(draft_text: str) -> str:
+    text = (draft_text or "").strip()
+    if not text:
+        return "暂无可预览正文。"
+    text = re.sub(r"^#+\s*.+$", "", text, count=1, flags=re.MULTILINE).strip()
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if paragraphs:
+        chunk = paragraphs[0]
+    else:
+        chunk = text
+    chunk = re.sub(r"^#+\s*", "", chunk).strip()
+    return chunk or "暂无可预览正文。"
 
 
 def capture_content(content: str, instruction: str = "") -> dict:
@@ -134,25 +188,34 @@ def capture_content(content: str, instruction: str = "") -> dict:
                 requires_confirmation=False,
             ),
             next_action(
-                label="存库",
-                intent="commit_capture_draft",
-                payload={"draft_id": result.get("id", "")},
-                requires_confirmation=True,
-            ),
-            next_action(
                 label="继续修改",
                 intent="revise_capture_draft",
                 payload={"draft_id": result.get("id", "")},
                 requires_confirmation=False,
             ),
         ]
+        if result.get("status") != "draft_incomplete":
+            actions.insert(
+                1,
+                next_action(
+                    label="存库",
+                    intent="commit_capture_draft",
+                    payload={"draft_id": result.get("id", "")},
+                    requires_confirmation=True,
+                ),
+            )
     else:
         preview_truncated = False
+        revision_error = result.get("revision_error", "")
+        if revision_error:
+            guidance = "整理草稿暂时超时，已保留原文草稿。稍后继续整理，或直接回复新的修改要求。"
+        else:
+            guidance = "想怎么整理？比如「提炼重点」「翻译成英文」「压缩到 500 字」"
         message = (
             f"已提取《{result.get('title') or '无标题'}》"
             f"（{result.get('word_count', 0)} 字）\n"
             f"草稿编号：{result.get('id', '')}\n"
-            f"想怎么整理？比如「提炼重点」「翻译成英文」「压缩到 500 字」"
+            f"{guidance}"
         )
         actions = [
             next_action(
@@ -181,7 +244,9 @@ def capture_content(content: str, instruction: str = "") -> dict:
             "draft_status": result.get("status", ""),
             "summary": result.get("summary", ""),
             "tags": result.get("tags", []),
+            "capture_intent": result.get("capture_intent", {}),
             "preview_truncated": preview_truncated,
+            "revision_error": result.get("revision_error", ""),
         },
     )
 
@@ -291,6 +356,30 @@ def revise_capture_draft(draft_id: str = "", instruction: str = "") -> dict:
             error=result["error"],
         )
     message, preview_truncated = _draft_saved_preview(result, "更新")
+    actions = [
+        next_action(
+            label="展开草稿",
+            intent="show_capture_draft",
+            payload={"draft_id": result.get("id", ""), "page": 1},
+            requires_confirmation=False,
+        ),
+        next_action(
+            label="继续修改",
+            intent="revise_capture_draft",
+            payload={"draft_id": result.get("id", "")},
+            requires_confirmation=False,
+        ),
+    ]
+    if result.get("status") != "draft_incomplete":
+        actions.insert(
+            1,
+            next_action(
+                label="存库",
+                intent="commit_capture_draft",
+                payload={"draft_id": result.get("id", "")},
+                requires_confirmation=True,
+            ),
+        )
     return success_envelope(
         agent="capture",
         intent="revise_capture_draft",
@@ -303,30 +392,12 @@ def revise_capture_draft(draft_id: str = "", instruction: str = "") -> dict:
                 status=result.get("status", ""),
             )
         ],
-        next_actions=[
-            next_action(
-                label="展开草稿",
-                intent="show_capture_draft",
-                payload={"draft_id": result.get("id", ""), "page": 1},
-                requires_confirmation=False,
-            ),
-            next_action(
-                label="存库",
-                intent="commit_capture_draft",
-                payload={"draft_id": result.get("id", "")},
-                requires_confirmation=True,
-            ),
-            next_action(
-                label="继续修改",
-                intent="revise_capture_draft",
-                payload={"draft_id": result.get("id", "")},
-                requires_confirmation=False,
-            ),
-        ],
+        next_actions=actions,
         meta={
             "title": result.get("title", ""),
             "summary": result.get("summary", ""),
             "tags": result.get("tags", []),
+            "capture_intent": result.get("capture_intent", {}),
             "draft_status": result.get("status", ""),
             "preview_truncated": preview_truncated,
         },

@@ -89,7 +89,7 @@ def test_write_note_stage_raw_minimal_frontmatter(
 
     full_path = tmp_path / file_path
     assert full_path.exists()
-    assert file_path.startswith("raw/")
+    assert file_path.startswith("_archive/raw/")
 
     content = full_path.read_text(encoding="utf-8")
     assert content.startswith("---")

@@ -376,7 +376,7 @@ def _readable_rename_actions(
         desired_raw = ""
         if raw_path and (vault_path / raw_path).exists():
             desired_raw = _readable_path(
-                "raw",
+                "_archive/raw",
                 capture_id,
                 frontmatter.get("title") or "",
                 frontmatter.get("date") or row["created_at"],

@@ -97,7 +97,10 @@ class TestToolHandlerToAgent:
         envelope = _tool_envelope(result)
         assert envelope["status"] == "success"
         assert "已生成" in envelope["chat_preview"]
-        assert "草稿预览" in envelope["chat_preview"]
+        assert "标题：" in envelope["chat_preview"]
+        assert "重点回应：" in envelope["chat_preview"]
+        assert "总结：" in envelope["chat_preview"]
+        assert "草稿预览" not in envelope["chat_preview"]
         assert "核心观点" in envelope["chat_preview"]
         assert "展开草稿" in envelope["chat_preview"]
         assert "满意回复「存库」" in envelope["chat_preview"]

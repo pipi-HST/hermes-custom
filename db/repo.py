@@ -102,6 +102,7 @@ class CaptureDraftRepo:
         word_count: int = 0,
         draft_text: str = "",
         instruction: str = "",
+        capture_intent: dict | None = None,
         summary: str = "",
         tags: list[str] | None = None,
         status: str = "raw_extracted",
@@ -110,8 +111,8 @@ class CaptureDraftRepo:
         self.conn.execute(
             """INSERT INTO capture_drafts
                (id, raw_text, source, source_type, title, word_count,
-                draft_text, instruction, summary, tags, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                draft_text, instruction, capture_intent, summary, tags, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 draft_id,
                 raw_text,
@@ -121,6 +122,7 @@ class CaptureDraftRepo:
                 word_count,
                 draft_text,
                 instruction,
+                json.dumps(capture_intent or {}, ensure_ascii=False),
                 summary,
                 json.dumps(tags or [], ensure_ascii=False),
                 status,
@@ -140,7 +142,7 @@ class CaptureDraftRepo:
     def get_latest_open(self) -> Optional[dict]:
         row = self.conn.execute(
             """SELECT * FROM capture_drafts
-               WHERE status IN ('raw_extracted', 'draft_ready', 'revision_requested')
+               WHERE status IN ('raw_extracted', 'draft_ready', 'revision_requested', 'draft_incomplete')
                ORDER BY datetime(replace(substr(created_at, 1, 19), 'T', ' ')) DESC,
                         rowid DESC
                LIMIT 1"""
@@ -151,7 +153,7 @@ class CaptureDraftRepo:
 
     def update(self, draft_id: str, **kwargs) -> Optional[dict]:
         allowed = {
-            "draft_text", "instruction", "summary", "tags", "status",
+            "draft_text", "instruction", "capture_intent", "summary", "tags", "status",
             "committed_capture_id", "title", "source", "source_type",
             "word_count", "raw_text",
         }
@@ -160,6 +162,8 @@ class CaptureDraftRepo:
             return self.get_by_id(draft_id)
         if "tags" in updates:
             updates["tags"] = json.dumps(updates["tags"] or [], ensure_ascii=False)
+        if "capture_intent" in updates:
+            updates["capture_intent"] = json.dumps(updates["capture_intent"] or {}, ensure_ascii=False)
         updates["updated_at"] = datetime.now(timezone.utc).isoformat()
         sets = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [draft_id]
@@ -175,4 +179,8 @@ class CaptureDraftRepo:
             result["tags"] = json.loads(result.get("tags") or "[]")
         except json.JSONDecodeError:
             result["tags"] = []
+        try:
+            result["capture_intent"] = json.loads(result.get("capture_intent") or "{}")
+        except json.JSONDecodeError:
+            result["capture_intent"] = {}
         return result

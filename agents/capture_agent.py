@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 from datetime import datetime
 from dataclasses import dataclass
@@ -23,6 +24,11 @@ from db.repo import CaptureDraftRepo, CaptureRepo
 from db.schema import init_db
 
 logger = logging.getLogger(__name__)
+CAPTURE_LLM_TIMEOUT_SECONDS = 300
+CAPTURE_LLM_MAX_TOKENS = 8000
+CAPTURE_LLM_MAX_CONTINUATIONS = 2
+CAPTURE_SOURCE_CHAR_LIMIT = 24000
+CAPTURE_INTERNAL_PLAN_BUDGET_RATIO = 0.45
 
 
 @dataclass
@@ -34,6 +40,34 @@ class CaptureConfig:
     qwen_api_key: str = ""
     vault_path: str = "~/Obsidian/hermes-vault"
     db_path: str = "./data/captures.db"
+
+
+@dataclass
+class CaptureIntent:
+    user_request: str
+    task_type: str
+    coverage: str
+    emphasis: list[str]
+    must_preserve: list[str]
+    output_shape: list[str]
+    draft_guidance: str = "let_model_decide"
+
+    def to_dict(self) -> dict:
+        return {
+            "user_request": self.user_request,
+            "task_type": self.task_type,
+            "coverage": self.coverage,
+            "emphasis": self.emphasis,
+            "must_preserve": self.must_preserve,
+            "output_shape": self.output_shape,
+            "draft_guidance": self.draft_guidance,
+        }
+
+
+@dataclass
+class LLMResult:
+    text: str
+    incomplete: bool = False
 
 
 def load_config(config_path: str = "config.yaml") -> CaptureConfig:
@@ -85,42 +119,248 @@ class CaptureAgent:
             return extracted
 
         title = _derive_title(extracted.title, cleaned)
+        capture_intent = self._build_capture_intent(instruction).to_dict()
         draft = self.draft_repo.create(
             raw_text=cleaned,
             source=extracted.source_url or source_url,
             source_type=extracted.source_type or source_type or "note",
             title=title,
             word_count=len(cleaned),
+            instruction=instruction,
+            capture_intent=capture_intent,
         )
         if instruction.strip():
-            return self.revise_draft(draft["id"], instruction)
+            try:
+                return self.revise_draft(draft["id"], instruction)
+            except (httpx.TimeoutException, TimeoutError) as exc:
+                saved = self.draft_repo.update(
+                    draft["id"],
+                    instruction=instruction,
+                    capture_intent=capture_intent,
+                    status="raw_extracted",
+                ) or draft
+                saved["revision_error"] = str(exc) or type(exc).__name__
+                return saved
         return draft
 
     def revise_draft(self, draft_id: str, instruction: str) -> Optional[dict]:
         """按用户指令生成或更新草稿，不写入正式知识库。"""
         draft = self.draft_repo.get_by_id(draft_id)
         if not draft:
-            return None
+            draft = self._create_revision_draft_from_capture(draft_id)
+            if not draft:
+                return None
+            draft_id = draft["id"]
         if draft.get("status") in ("committed", "abandoned"):
             return {"error": f"草稿已{'入库' if draft['status'] == 'committed' else '废弃'}，无法修改"}
         current_text = draft.get("draft_text") or draft.get("raw_text", "")
-
-        prompt = (
-            f"用户要求对以下文本执行操作：{instruction}\n\n"
-            f"当前草稿：\n{current_text}\n\n"
-            f"原文：\n{draft.get('raw_text', '')[:7000]}\n\n"
-            f"请执行用户要求的操作，直接输出处理后的文本。"
+        capture_intent = self._build_capture_intent(instruction).to_dict()
+        prompt = self._build_revision_prompt(
+            instruction=instruction,
+            capture_intent=capture_intent,
+            current_text=current_text,
+            raw_text=draft.get("raw_text", ""),
         )
-        new_text = self._call_llm(prompt)
+        llm_result = self._call_llm(prompt)
+        if isinstance(llm_result, LLMResult):
+            new_text = llm_result.text
+            incomplete = llm_result.incomplete
+        else:
+            new_text = llm_result
+            incomplete = getattr(self, "_last_llm_incomplete", False)
+
+        if incomplete:
+            updated = self.draft_repo.update(
+                draft_id,
+                draft_text=new_text,
+                instruction=instruction,
+                capture_intent=capture_intent,
+                status="draft_incomplete",
+            )
+            if updated is not None:
+                updated["revision_error"] = "llm_output_incomplete"
+            return updated
+
         existing_tags = self._get_existing_tags(Path(self.config.vault_path).expanduser())
         tag_result = self.summarizer.summarize(new_text, existing_tags)
         return self.draft_repo.update(
             draft_id,
             draft_text=new_text,
             instruction=instruction,
+            capture_intent=capture_intent,
             summary=tag_result.get("summary", ""),
             tags=tag_result.get("tags", []),
             status="draft_ready",
+        )
+
+    def _build_capture_intent(self, instruction: str) -> CaptureIntent:
+        user_request = (instruction or "").strip()
+        coverage = (
+            "selected_sections"
+            if re.search(r"(只要|仅保留|只保留|删除其他|不要其他|仅要)", user_request)
+            else "full_article"
+        )
+        if "翻译" in user_request:
+            task_type = "translate"
+        elif re.search(r"(改写|润色|扩写|压缩|缩短)", user_request):
+            task_type = "rewrite"
+        elif re.search(r"(提取|总结|整理|重点|概括)", user_request):
+            task_type = "organize"
+        else:
+            task_type = "capture"
+
+        emphasis = self._extract_emphasis(user_request)
+        must_preserve = [] if coverage == "selected_sections" else [
+            "source_fidelity",
+            "main_thread",
+            "user_named_focus",
+        ]
+        return CaptureIntent(
+            user_request=user_request,
+            task_type=task_type,
+            coverage=coverage,
+            emphasis=emphasis,
+            must_preserve=must_preserve,
+            output_shape=["natural_draft"],
+        )
+
+    def _extract_emphasis(self, user_request: str) -> list[str]:
+        if not user_request:
+            return []
+        generic_terms = {
+            "内容", "重点内容", "重点", "核心观点", "要点",
+            "展开", "阐述", "解释", "详细阐述", "详细解释",
+            "着重展开", "这两部分", "这两个部分",
+        }
+        items: list[str] = []
+        about_match = re.search(
+            r"关于(.+?)(?:这两部分|这两个部分|两个部分|两部分|这部分|部分)(?:应该|需要|要|进行|$)",
+            user_request,
+        )
+        if about_match:
+            about_text = about_match.group(1).strip("：:，,。；; ")
+            for item in re.split(r"\s*(?:和|以及|、|，|,)\s*", about_text):
+                item = self._clean_emphasis_item(item)
+                if item and item not in generic_terms and item not in items:
+                    items.append(item)
+        patterns = [
+            r"(?:特别)?着重(?:阐述|解释)?([^。；;，,\n]+)",
+            r"(?:重点|特别关注|聚焦)(?:阐述|解释|提取)?([^。；;，,\n]+)",
+            r"(?:只要|仅保留|只保留)([^。；;，,\n]+)",
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, user_request):
+                item = self._clean_emphasis_item(match.group(1))
+                if item and item not in generic_terms and item not in items:
+                    items.append(item)
+        return items
+
+    def _clean_emphasis_item(self, item: str) -> str:
+        item = (item or "").strip()
+        item = item.strip("「」『』“”\"' ")
+        item = re.sub(r"^(和|以及|：|:|\s)+", "", item).strip()
+        item = re.sub(r"(这两部分|这两个部分|两个部分|两部分|这部分|部分)$", "", item).strip()
+        item = item.strip("「」『』“”\"' ")
+        return item
+
+    def _needs_internal_plan(self, text: str) -> bool:
+        return len(text or "") >= int(CAPTURE_SOURCE_CHAR_LIMIT * CAPTURE_INTERNAL_PLAN_BUDGET_RATIO)
+
+    def _build_internal_plan_rule(self, source_text: str) -> str:
+        if not self._needs_internal_plan(source_text):
+            return (
+                "- 先在内部判断用户真正想要的整理方式，再直接写最终稿。"
+                "不要把内部计划输出给用户。\n"
+            )
+        return (
+            "- 材料较长或接近上下文预算。先在内部制定阅读计划：判断主线、重点、支线、"
+            "哪些部分要略读，哪些部分要精读。不要把内部计划输出给用户，只输出最终整理稿。\n"
+        )
+
+    def _clip_source_text(self, text: str) -> str:
+        text = text or ""
+        if len(text) <= CAPTURE_SOURCE_CHAR_LIMIT:
+            return text
+        head_limit = int(CAPTURE_SOURCE_CHAR_LIMIT * 0.7)
+        tail_limit = CAPTURE_SOURCE_CHAR_LIMIT - head_limit
+        return (
+            text[:head_limit].rstrip()
+            + "\n\n[中间内容因上下文预算截断，已保留开头和结尾。]\n\n"
+            + text[-tail_limit:].lstrip()
+        )
+
+    def _build_revision_prompt(
+        self,
+        *,
+        instruction: str,
+        capture_intent: dict,
+        current_text: str,
+        raw_text: str,
+    ) -> str:
+        """Build a revision prompt without duplicating the same source text."""
+        current = (current_text or "").strip()
+        raw = (raw_text or "").strip()
+        source_text = self._clip_source_text(current or raw)
+        if current and raw and current != raw:
+            material = f"当前草稿：\n{self._clip_source_text(current)}\n\n原文：\n{self._clip_source_text(raw)}"
+        else:
+            material = f"待处理文本：\n{source_text}"
+        emphasis = capture_intent.get("emphasis", [])
+        emphasis_rule = ""
+        if emphasis:
+            emphasis_rule = (
+                f"- 用户点名关注：{', '.join(emphasis)}。这些不是唯一内容，"
+                "但你需要在内部计划里给它们更高权重。\n"
+            )
+        return (
+            f"用户要求：{instruction}\n\n"
+            "任务信息：\n"
+            f"{json.dumps(capture_intent, ensure_ascii=False)}\n\n"
+            "工作方式：\n"
+            f"{self._build_internal_plan_rule(source_text)}"
+            "- 由你决定最终整理稿的详略和结构：可以精炼，可以保留必要细节，也可以使用少量自然小标题。\n"
+            "- 不要逐段搬运原文；不要为了格式而格式化；不要机械套用固定模板。\n"
+            "- 不要输出标签、摘要、提纲、目录或任务合同；这些元信息由系统另行处理。\n"
+            "- 如果用户明确说“只要/仅保留/删除其他内容”，才只处理指定部分。\n"
+            f"{emphasis_rule}\n"
+            f"{material}\n\n"
+            "请直接输出最终整理稿。"
+        )
+
+    def _create_revision_draft_from_capture(self, capture_id: str) -> Optional[dict]:
+        capture = self.repo.get_by_id(capture_id)
+        if not capture:
+            return None
+
+        vault_path = Path(self.config.vault_path).expanduser()
+        capture_note = read_note(vault_path, capture.get("file_path", ""))
+        raw_note = read_note(vault_path, capture.get("raw_path", ""))
+        if not capture_note and not raw_note:
+            return None
+
+        capture_frontmatter, capture_body = capture_note if capture_note else ({}, "")
+        raw_frontmatter, raw_body = raw_note if raw_note else ({}, "")
+        title = (
+            capture_frontmatter.get("title")
+            or raw_frontmatter.get("title")
+            or _derive_title("", capture_body or raw_body)
+        )
+        source = capture_frontmatter.get("source") or raw_frontmatter.get("source") or ""
+        source_type = capture_frontmatter.get("source_type") or raw_frontmatter.get("source_type") or "note"
+        raw_text = raw_body or capture_body
+        draft_text = capture_body if raw_body else ""
+        draft = self.draft_repo.create(
+            raw_text=raw_text,
+            source=source,
+            source_type=source_type,
+            title=title,
+            word_count=len(raw_text),
+            draft_text=draft_text,
+            status="revision_requested",
+        )
+        return self.draft_repo.update(
+            draft["id"],
+            committed_capture_id=capture_id,
         )
 
     def commit_draft(self, draft_id: str) -> Optional[dict]:
@@ -132,6 +372,8 @@ class CaptureAgent:
             return {"error": "草稿已入库，请勿重复提交"}
         if draft.get("status") == "abandoned":
             return {"error": "草稿已废弃，无法入库"}
+        if draft.get("status") == "draft_incomplete":
+            return {"error": "草稿还没生成完整，请先继续整理后再存库"}
 
         vault_path = Path(self.config.vault_path).expanduser()
         now = datetime.now()
@@ -248,28 +490,53 @@ class CaptureAgent:
                 else:
                     time.sleep([60, 300, 900][attempt])
 
-    def _call_llm(self, prompt: str) -> str:
+    def _call_llm(self, prompt: str, *, return_meta: bool = False) -> str | LLMResult:
         base_url = self.config.llm_base_url or "https://api.deepseek.com"
         headers = {
             "Authorization": f"Bearer {self.config.llm_api_key}",
             "Content-Type": "application/json",
         }
-        body = {
-            "model": self.config.llm_model,
-            "messages": [
-                {"role": "system", "content": "你是文本处理助手，按要求处理文本。"},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.3,
-            "max_tokens": 4000,
-        }
-        with httpx.Client(timeout=120) as client:
-            resp = client.post(
-                f"{base_url}/chat/completions",
-                headers=headers, json=body,
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+        messages = [
+            {"role": "system", "content": "你是文本处理助手，按要求处理文本。"},
+            {"role": "user", "content": prompt},
+        ]
+        parts: list[str] = []
+        incomplete = False
+        with httpx.Client(timeout=CAPTURE_LLM_TIMEOUT_SECONDS) as client:
+            for attempt in range(CAPTURE_LLM_MAX_CONTINUATIONS + 1):
+                body = {
+                    "model": self.config.llm_model,
+                    "messages": messages,
+                    "temperature": 0.3,
+                    "max_tokens": CAPTURE_LLM_MAX_TOKENS,
+                }
+                resp = client.post(
+                    f"{base_url}/chat/completions",
+                    headers=headers, json=body,
+                )
+                resp.raise_for_status()
+                choice = resp.json()["choices"][0]
+                content = choice["message"]["content"]
+                parts.append(content)
+                if choice.get("finish_reason") != "length":
+                    incomplete = False
+                    break
+                incomplete = True
+                if attempt >= CAPTURE_LLM_MAX_CONTINUATIONS:
+                    break
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "继续从上一条末尾写，不要重复已经写过的内容。"
+                        "保持同一篇整理稿的结构和语气，直接续写。"
+                    ),
+                })
+        text = "\n".join(part.strip() for part in parts if part.strip())
+        self._last_llm_incomplete = incomplete
+        if return_meta:
+            return LLMResult(text=text, incomplete=incomplete)
+        return text
 
 
 def _derive_title(extracted_title: str | None, text: str) -> str:

@@ -130,7 +130,8 @@ def write_note(
     Creates ``{vault_path}/{stage}/{title}-{date}-{short_id}.md`` and returns
     the relative path.
     """
-    stage_dir = vault_path / stage
+    relative_stage = "_archive/raw" if stage == "raw" else stage
+    stage_dir = vault_path / relative_stage
     stage_dir.mkdir(parents=True, exist_ok=True)
 
     filename = make_note_filename(meta.title, meta.date, meta.id)
@@ -164,7 +165,7 @@ def write_note(
     )
     filepath.write_text(content, encoding="utf-8")
 
-    return f"{stage}/{filename}"
+    return f"{relative_stage}/{filename}"
 
 
 def read_note(

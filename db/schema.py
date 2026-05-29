@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS capture_drafts (
     word_count INTEGER NOT NULL DEFAULT 0,
     draft_text TEXT NOT NULL DEFAULT '',
     instruction TEXT NOT NULL DEFAULT '',
+    capture_intent TEXT NOT NULL DEFAULT '{}',
     summary TEXT NOT NULL DEFAULT '',
     tags TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'raw_extracted',
@@ -120,6 +121,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute(CREATE_GARDEN_CARDS_TABLE)
     conn.execute(CREATE_PENDING_QUESTIONS_TABLE)
     conn.execute(CREATE_CAPTURE_DRAFTS_TABLE)
+    _migrate_capture_drafts_table(conn)
     conn.commit()
     return conn
 
@@ -160,3 +162,14 @@ def _migrate_captures_table(conn: sqlite3.Connection) -> None:
 
     conn.execute("DROP TABLE captures")
     conn.execute("ALTER TABLE captures_new RENAME TO captures")
+
+
+def _migrate_capture_drafts_table(conn: sqlite3.Connection) -> None:
+    existing = [
+        row[1] for row in conn.execute("PRAGMA table_info(capture_drafts)").fetchall()
+    ]
+    if "capture_intent" not in existing:
+        conn.execute(
+            "ALTER TABLE capture_drafts "
+            "ADD COLUMN capture_intent TEXT NOT NULL DEFAULT '{}'"
+        )
