@@ -320,6 +320,7 @@ The first version should use a rule-first parsing strategy with a restricted LLM
 - If rules cannot parse a message, the LLM fallback may only classify and extract fields for the fixed P1 intent set: sleep, meal, exercise, water, exercise skip, exercise reschedule, sedentary pause, latest-record undo or modify, health consultation, and unsupported.
 - The fallback must return structured output with intent, extracted fields, missing required fields, ambiguity notes, and a brief user-facing confirmation, clarification, or rejection.
 - Supported intents with complete required fields may create structured events. Unsupported intents, unclear intents, and records missing required fields are not stored as Life Events.
+- The fallback must not invent missing life facts. It may only use rule-defined defaults and inferences.
 - The assistant only asks a follow-up when the ambiguity affects reminder state or a required field for a supported P1 record is missing.
 - The Life Assistant should only handle clearly life-related messages. It must not broadly capture ordinary chat or knowledge-management messages.
 - `record_life_event` should reply with a short confirmation for every user-created record in the first version, including key parsed fields so the user can spot parsing errors.
@@ -341,6 +342,15 @@ Examples:
 - `下午 4 点提醒我运动` -> schedule exercise reminder for that time
 - `撤销上一条` -> undo the latest user-created `life_events` row within 30 minutes
 - `上一条改成加餐` -> modify the latest user-created `life_events` row within 30 minutes
+
+Field inference boundaries:
+
+- If time is missing, use message receive time unless the active reminder context provides a stricter scheduled time.
+- If meal slot is missing, infer it from time and mark the slot as inferred.
+- If the user says they exercised but gives no type or duration, record `completed_unknown`.
+- If sleep start or sleep end is missing, ask for the missing time instead of guessing.
+- If meal content is missing, do not create a meal record. Ask for the content or reject the record.
+- Do not infer facts such as exercise duration, meal content, or sleep start time from general phrasing.
 
 Short replies use active reminder context:
 
