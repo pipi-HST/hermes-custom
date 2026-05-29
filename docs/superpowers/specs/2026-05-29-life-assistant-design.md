@@ -339,6 +339,7 @@ The first version should use a mixed parsing strategy:
 - The assistant only asks a follow-up when the ambiguity affects reminder state.
 - The Life Assistant should only handle high-confidence life-related messages. It must not broadly capture ordinary chat or knowledge-management messages.
 - `record_life_event` should reply with a short confirmation for every user-created record in the first version, including key parsed fields so the user can spot parsing errors.
+- First version does not support manual status queries or ad-hoc reviews. Questions such as `我今天坐了多久？` or `今天状态怎么样？` should not be stored as Life Events; reply briefly that the first version will summarize them in the scheduled Daily Light Review or Weekly Deep Review.
 
 Examples:
 
