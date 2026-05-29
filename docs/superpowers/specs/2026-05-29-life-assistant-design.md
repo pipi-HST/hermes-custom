@@ -13,7 +13,7 @@ The assistant is a lifestyle rhythm helper. It is not a medical diagnosis tool a
 ## Goals
 
 - Remind the user about sedentary breaks, water, exercise, and sleep through WeChat/Hermes.
-- Let the user record sleep, meals, exercise, water, and sedentary breaks in natural language.
+- Let the user record sleep, meals, exercise, water, and sedentary breaks with supported life-rhythm phrases.
 - Calculate useful derived values, especially sleep duration, exercise duration, sedentary duration, reminder completion, and skipped reminders.
 - Run a lightweight daily review at midnight.
 - Run a deeper weekly lifestyle review on Sunday evening.
@@ -314,10 +314,10 @@ Send failure handling:
 
 ## Conversation Strategy
 
-The first version should use a mixed parsing strategy:
+The first version should use a deterministic parsing strategy:
 
-- Rule parsing first; LLM parsing only as fallback for more complex messages.
-- Clearly structured messages are parsed directly into structured events.
+- Use rule parsing and lightweight structured parsing only. Do not use an LLM fallback in the first version.
+- Supported messages are parsed directly into structured events.
 - Ambiguous messages are not stored in the first version. If a message cannot be parsed as a supported sleep, meal, exercise, water, or sedentary event, reply that the record type is not supported yet.
 - The assistant only asks a follow-up when the ambiguity affects reminder state.
 - The Life Assistant should only handle high-confidence life-related messages. It must not broadly capture ordinary chat or knowledge-management messages.
