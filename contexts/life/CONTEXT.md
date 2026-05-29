@@ -22,6 +22,7 @@ _Avoid_: session, work session, Mac usage as the canonical term.
 
 **Activity Break**:
 The end of a **Sitting Window**, proven by Mac idle time exceeding the break threshold or by lock, sleep, or logout.
+Chinese label: `离座休息`.
 _Avoid_: reply confirmation, claimed break.
 
 **Sedentary Alert**:
@@ -81,7 +82,7 @@ _Avoid_: completed decision.
 ## Flagged Ambiguities
 
 - "Activity" can mean exercise or Mac activity. Resolved: use **Exercise** for deliberate physical activity, and **Sitting Window** or **Activity Break** for Mac-idle-derived behavior.
-- A user saying "已活动" is not an **Activity Break**. Resolved: an **Activity Break** must be proven by Mac idle time, lock, sleep, or logout.
+- A user saying "已活动" is not an **Activity Break** (`离座休息`). Resolved: an **Activity Break** must be proven by Mac idle time, lock, sleep, or logout.
 - A **Sitting Window** is inferred from Mac activity; it is not a direct body-position measurement.
 - "久坐时间" can mean all sitting or only risky sitting. Resolved: use **Sitting Total** for all sitting windows and **Sedentary Over-Limit Total** for sitting windows at or above the threshold.
 - `久坐超标时长` counts the full over-limit **Sitting Window**, not only the minutes beyond the sedentary threshold.
