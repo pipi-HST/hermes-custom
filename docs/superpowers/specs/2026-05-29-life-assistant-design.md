@@ -329,6 +329,20 @@ The first version should use a rule-first parsing strategy with a restricted LLM
 - Health consultations such as `我最近睡不好，是不是身体有问题？` must not be stored and must not produce diagnosis. Reply with the safety boundary and recommend qualified help when appropriate.
 - The fallback may use the current message and the minimum necessary recent reminder context. It must not read Knowledge context data or create Knowledge artifacts.
 
+Fallback output schema:
+
+```json
+{
+  "intent": "meal | sleep | exercise | water | exercise_skip | exercise_reschedule | sedentary_pause | undo | modify | health_consultation | unsupported",
+  "fields": {},
+  "missing_required_fields": [],
+  "ambiguity_notes": [],
+  "response_type": "confirm | clarify | reject"
+}
+```
+
+The fallback should keep `fields` minimal and intent-specific. It should not add new top-level keys in the first version.
+
 Follow-up policy:
 
 - Ask at most one follow-up for a single user message.
