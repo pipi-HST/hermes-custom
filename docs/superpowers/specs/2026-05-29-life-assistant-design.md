@@ -336,6 +336,17 @@ Fallback entry gate:
 - Ordinary chat, knowledge capture, reading notes, source material, viewpoints, and writing ideas should not enter the Life fallback by default.
 - If a message is not a Life candidate, route it through the existing Hermes or Knowledge path instead of asking the Life fallback to classify it.
 
+Conservative Life prefilter keywords:
+
+- Sleep: `睡`, `醒`, `起床`, `入睡`, `昨晚`.
+- Meal: `吃`, `喝了水`, `早饭`, `早餐`, `午饭`, `午餐`, `晚饭`, `晚餐`, `夜宵`, `加餐`.
+- Exercise: `运动`, `跑步`, `健身`, `快走`, `散步`, `骑车`, `游泳`, `练`, `训练`.
+- Water: `喝水`, `喝了水`, `饮水`.
+- Sedentary: `久坐`, `坐太久`, `活动一下`, `暂停久坐警报`.
+- Operations: `撤销上一条`, `上一条改成`, `改成`, `今天不练了`, `提醒我运动`.
+
+The prefilter only decides whether Life fallback may run. It does not create Life Events by itself.
+
 Fallback output schema:
 
 ```json
