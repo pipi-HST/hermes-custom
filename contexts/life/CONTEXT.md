@@ -30,10 +30,12 @@ _Avoid_: reminder that can be dismissed by saying "done".
 
 **Sitting Total**:
 The daily total of all **Sitting Windows**, including windows shorter than the sedentary threshold.
+Chinese label: `累计坐着时长`.
 _Avoid_: Mac usage total.
 
 **Sedentary Over-Limit Total**:
 The daily total of full **Sitting Windows** whose duration is greater than or equal to the sedentary threshold.
+Chinese label: `久坐超标时长`.
 _Avoid_: minutes beyond the threshold, excess minutes.
 
 **Water Reminder**:
@@ -82,6 +84,7 @@ _Avoid_: completed decision.
 - A user saying "已活动" is not an **Activity Break**. Resolved: an **Activity Break** must be proven by Mac idle time, lock, sleep, or logout.
 - A **Sitting Window** is inferred from Mac activity; it is not a direct body-position measurement.
 - "久坐时间" can mean all sitting or only risky sitting. Resolved: use **Sitting Total** for all sitting windows and **Sedentary Over-Limit Total** for sitting windows at or above the threshold.
+- `久坐超标时长` counts the full over-limit **Sitting Window**, not only the minutes beyond the sedentary threshold.
 - "Review" exists in the Knowledge context as recall practice. Resolved: Life Assistant uses **Daily Light Review** and **Weekly Deep Review** for lifestyle reflection; Knowledge uses Review Items.
 - **Daily Light Review** and **Weekly Deep Review** are derived review records, not **Life Events**.
 - **Water Reminder**, **Exercise Reminder**, **Sleep Reminder**, and **Sedentary Alert** are reminder records, not **Life Events**.
