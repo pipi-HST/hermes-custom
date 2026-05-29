@@ -1,0 +1,108 @@
+"""Tests for Life Assistant schema and repository."""
+
+from __future__ import annotations
+
+import sqlite3
+
+import pytest
+
+from db.life_repo import LifeRepo
+from db.life_schema import init_life_db
+
+
+@pytest.fixture
+def life_repo(tmp_path):
+    conn = init_life_db(str(tmp_path / "life.db"))
+    return LifeRepo(conn)
+
+
+def test_life_schema_creates_isolated_life_tables(tmp_path) -> None:
+    conn = init_life_db(str(tmp_path / "life.db"))
+
+    tables = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+
+    assert {
+        "life_events",
+        "life_reminder_rules",
+        "life_reminder_logs",
+        "life_locks",
+        "life_daily_reviews",
+        "life_weekly_reviews",
+    }.issubset(tables)
+    assert "captures" in tables
+
+
+def test_life_schema_migrates_existing_connection(tmp_path) -> None:
+    db_path = tmp_path / "life.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE unrelated (id TEXT PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+
+    migrated = init_life_db(str(db_path))
+
+    assert migrated.execute("SELECT name FROM sqlite_master WHERE name='unrelated'").fetchone()
+    assert migrated.execute("SELECT name FROM sqlite_master WHERE name='life_events'").fetchone()
+
+
+def test_life_repo_records_and_fetches_events(life_repo: LifeRepo) -> None:
+    event = life_repo.create_event(
+        event_type="meal",
+        occurred_at="2026-05-29T12:10:00+08:00",
+        source="wechat",
+        raw_text="午饭吃了牛肉饭",
+        payload={"meal_slot": "lunch", "content": "牛肉饭"},
+    )
+
+    fetched = life_repo.get_event(event["id"])
+
+    assert fetched is not None
+    assert fetched["event_type"] == "meal"
+    assert fetched["payload_json"] == {"meal_slot": "lunch", "content": "牛肉饭"}
+
+
+def test_life_repo_lists_latest_user_event_within_window(life_repo: LifeRepo) -> None:
+    old = life_repo.create_event(
+        event_type="water",
+        occurred_at="2026-05-29T10:00:00+08:00",
+        source="wechat",
+        raw_text="喝水了",
+    )
+    latest = life_repo.create_event(
+        event_type="meal",
+        occurred_at="2026-05-29T12:00:00+08:00",
+        source="wechat",
+        raw_text="午饭吃了牛肉饭",
+    )
+
+    found = life_repo.latest_user_event(
+        now="2026-05-29T12:20:00+08:00",
+        window_minutes=30,
+    )
+
+    assert found is not None
+    assert found["id"] == latest["id"]
+    assert found["id"] != old["id"]
+
+
+def test_life_repo_dedupe_reminder_logs(life_repo: LifeRepo) -> None:
+    first = life_repo.create_reminder_log(
+        reminder_type="water",
+        scheduled_for="2026-05-29T10:00:00+08:00",
+        status="sending",
+        dedupe_key="water:2026-05-29:10:00",
+    )
+    second = life_repo.create_reminder_log(
+        reminder_type="water",
+        scheduled_for="2026-05-29T10:00:00+08:00",
+        status="sending",
+        dedupe_key="water:2026-05-29:10:00",
+    )
+
+    assert first["id"] == second["id"]
+    assert life_repo.count_reminder_logs("water") == 1

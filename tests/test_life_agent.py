@@ -1,0 +1,259 @@
+"""Tests for Life Assistant agent behavior."""
+
+from __future__ import annotations
+
+import pytest
+
+from agents.life_agent import ActivitySnapshot, LifeAgent
+from db.life_repo import LifeRepo
+from db.life_schema import init_life_db
+
+
+@pytest.fixture
+def agent(tmp_path):
+    conn = init_life_db(str(tmp_path / "life.db"))
+    return LifeAgent(LifeRepo(conn))
+
+
+def test_records_sleep_start_and_end_with_duration(agent: LifeAgent) -> None:
+    start = agent.record_life_event("我睡了", received_at="2026-05-29T00:30:00+08:00")
+    end = agent.record_life_event("我醒了", received_at="2026-05-29T08:00:00+08:00")
+
+    assert start["status"] == "recorded"
+    assert start["event"]["event_type"] == "sleep_start"
+    assert end["status"] == "recorded"
+    assert end["event"]["event_type"] == "sleep_end"
+    assert end["event"]["duration_minutes"] == 450
+    assert "7小时30分钟" in end["chat_preview"]
+
+
+def test_records_meal_with_inferred_slot(agent: LifeAgent) -> None:
+    result = agent.record_life_event(
+        "吃了牛肉饭",
+        received_at="2026-05-29T12:10:00+08:00",
+    )
+
+    assert result["status"] == "recorded"
+    assert result["event"]["event_type"] == "meal"
+    assert result["event"]["payload_json"]["meal_slot"] == "lunch"
+    assert result["event"]["payload_json"]["meal_slot_inferred"] is True
+
+
+def test_records_exercise_unknown_when_details_missing(agent: LifeAgent) -> None:
+    result = agent.record_life_event(
+        "已运动",
+        received_at="2026-05-29T18:00:00+08:00",
+    )
+
+    assert result["status"] == "recorded"
+    assert result["event"]["event_type"] == "exercise"
+    assert result["event"]["status"] == "completed_unknown"
+    assert "可以之后补充" in result["chat_preview"]
+
+
+def test_records_exercise_with_type_and_duration(agent: LifeAgent) -> None:
+    result = agent.record_life_event(
+        "跑步 30 分钟",
+        received_at="2026-05-29T18:00:00+08:00",
+    )
+
+    assert result["status"] == "recorded"
+    assert result["event"]["event_type"] == "exercise"
+    assert result["event"]["duration_minutes"] == 30
+    assert result["event"]["payload_json"]["exercise_type"] == "跑步"
+
+
+def test_skips_today_exercise_reminder(agent: LifeAgent) -> None:
+    result = agent.record_life_event(
+        "今天不练了",
+        received_at="2026-05-29T10:45:00+08:00",
+    )
+
+    assert result["status"] == "reminder_updated"
+    assert result["event"] is None
+    assert agent.repo.count_reminder_logs("exercise") == 1
+    assert "今天不练" in result["chat_preview"]
+
+
+def test_exercise_skip_stops_same_day_exercise_ticks(agent: LifeAgent) -> None:
+    agent.record_life_event(
+        "今天不练了",
+        received_at="2026-05-29T10:45:00+08:00",
+    )
+
+    result = agent.life_tick(
+        now="2026-05-29T12:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert result["selected"] is None
+
+
+def test_reschedules_exercise_reminder(agent: LifeAgent) -> None:
+    result = agent.record_life_event(
+        "下午 4 点提醒我运动",
+        received_at="2026-05-29T10:45:00+08:00",
+    )
+
+    assert result["status"] == "reminder_updated"
+    assert result["event"] is None
+    assert result["scheduled_for"] == "2026-05-29T16:00:00+08:00"
+    assert agent.repo.count_reminder_logs("exercise") == 1
+
+
+def test_exercise_reschedule_delays_next_tick_until_scheduled_time(agent: LifeAgent) -> None:
+    agent.record_life_event(
+        "下午 4 点提醒我运动",
+        received_at="2026-05-29T10:45:00+08:00",
+    )
+
+    early = agent.life_tick(
+        now="2026-05-29T12:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+    due = agent.life_tick(
+        now="2026-05-29T16:00:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert early["selected"] is None
+    assert due["selected"]["reminder_type"] == "exercise"
+
+
+def test_undo_latest_life_event(agent: LifeAgent) -> None:
+    event = agent.record_life_event(
+        "喝水了",
+        received_at="2026-05-29T10:00:00+08:00",
+    )["event"]
+
+    result = agent.record_life_event(
+        "撤销上一条",
+        received_at="2026-05-29T10:10:00+08:00",
+    )
+
+    assert result["status"] == "undone"
+    assert agent.repo.get_event(event["id"])["status"] == "undone"
+
+
+def test_rejects_manual_status_query_without_life_event(agent: LifeAgent) -> None:
+    result = agent.record_life_event(
+        "我今天坐了多久？",
+        received_at="2026-05-29T18:00:00+08:00",
+    )
+
+    assert result["status"] == "rejected"
+    assert result["event"] is None
+    assert "定时复盘" in result["chat_preview"]
+
+
+def test_life_tick_sends_sedentary_alert_before_exercise(agent: LifeAgent) -> None:
+    agent.repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-05-29T09:30:00+08:00",
+        source="mac_activity",
+        raw_text="",
+        status="active",
+    )
+
+    result = agent.life_tick(
+        now="2026-05-29T10:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=60, available=True),
+        dry_run=True,
+    )
+
+    assert result["selected"]["reminder_type"] == "sedentary"
+    assert result["meta"]["should_notify"] is False
+    assert "起来活动" in result["chat_preview"]
+
+
+def test_life_tick_starts_sitting_window_without_alert_before_threshold(agent: LifeAgent) -> None:
+    result = agent.life_tick(
+        now="2026-05-29T09:31:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=60, available=True),
+        dry_run=True,
+    )
+
+    assert result["selected"] is None
+    row = agent.repo.conn.execute(
+        "SELECT * FROM life_events WHERE event_type = 'sedentary_start'"
+    ).fetchone()
+    assert row is not None
+    assert row["status"] == "active"
+
+
+def test_life_tick_records_break_after_idle_exceeds_threshold(agent: LifeAgent) -> None:
+    agent.repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-05-29T09:10:00+08:00",
+        source="mac_activity",
+        raw_text="",
+        status="active",
+    )
+
+    result = agent.life_tick(
+        now="2026-05-29T10:20:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=360, available=True),
+        dry_run=True,
+    )
+
+    assert result["selected"] is None
+    break_row = agent.repo.conn.execute(
+        "SELECT * FROM life_events WHERE event_type = 'sedentary_break'"
+    ).fetchone()
+    assert break_row is not None
+    assert break_row["duration_minutes"] == 70
+
+
+def test_life_tick_continues_other_reminders_when_activity_unavailable(agent: LifeAgent) -> None:
+    result = agent.life_tick(
+        now="2026-05-29T10:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert result["selected"]["reminder_type"] == "exercise"
+    assert "运动" in result["chat_preview"]
+    assert result["warnings"] == ["mac_activity_unavailable"]
+
+
+def test_life_tick_sends_water_reminder(agent: LifeAgent) -> None:
+    result = agent.life_tick(
+        now="2026-05-29T10:00:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert result["selected"]["reminder_type"] == "water"
+    assert "喝水" in result["chat_preview"]
+
+
+def test_life_tick_sends_sleep_reminder(agent: LifeAgent) -> None:
+    agent.repo.create_event(
+        event_type="exercise",
+        occurred_at="2026-05-29T12:00:00+08:00",
+        source="wechat",
+        raw_text="跑步 30 分钟",
+    )
+
+    result = agent.life_tick(
+        now="2026-05-29T23:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert result["selected"]["reminder_type"] == "sleep"
+    assert "睡" in result["chat_preview"]
+
+
+def test_life_tick_sends_daily_review(agent: LifeAgent) -> None:
+    result = agent.life_tick(
+        now="2026-05-30T00:00:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert result["selected"]["reminder_type"] == "daily_review"
+    assert "复盘" in result["chat_preview"]
