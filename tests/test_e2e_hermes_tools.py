@@ -78,6 +78,25 @@ def test_hermes_capture_schema_has_content():
     assert "USER_VISIBLE_REPLY" in description
 
 
+def test_hermes_capture_schema_preserves_full_text_save_instruction():
+    _skip_if_no_hermes()
+    tools = _get_hermes_tools()
+    description = tools["capture_content"].schema.get("description", "")
+    instruction_description = (
+        tools["capture_content"]
+        .schema.get("parameters", {})
+        .get("properties", {})
+        .get("instruction", {})
+        .get("description", "")
+    )
+
+    assert "全文保存" in description
+    assert "全文存进数据库" in description
+    assert "不要只传 URL" in description
+    assert "全文存储" in instruction_description
+    assert "instruction" in instruction_description
+
+
 def test_hermes_draft_tools_registered():
     _skip_if_no_hermes()
     tools = _get_hermes_tools()
