@@ -1,5 +1,6 @@
 """Capture Agent bridge."""
 from __future__ import annotations
+import re
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -13,6 +14,8 @@ from bridge.result_envelope import (
 
 _config = None
 _agent = None
+PREVIEW_LIMIT = 1500
+DRAFT_PAGE_SIZE = 1400
 
 def _init():
     global _config, _agent
@@ -26,18 +29,87 @@ def _format_tags(tags: list[str]) -> str:
     return ", ".join(tags) if tags else "未标注"
 
 
-def _draft_saved_preview(result: dict, action: str) -> str:
-    title = result.get("title") or "无标题"
-    summary = result.get("summary") or "完整草稿已保存在草稿区，等待你确认。"
-    tags = _format_tags(result.get("tags", []))
-    return (
+def _clip_text(text: str, limit: int) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _clip_text_with_flag(text: str, limit: int) -> tuple[str, bool]:
+    clipped = _clip_text(text, limit)
+    return clipped, clipped != text.strip()
+
+
+def _draft_outline_preview(draft_text: str, limit: int = 900) -> tuple[str, bool]:
+    lines = [line.strip() for line in draft_text.splitlines() if line.strip()]
+    structured: list[str] = []
+    for line in lines:
+        cleaned = line.lstrip("#").strip()
+        if not cleaned:
+            continue
+        if (
+            line.startswith("#")
+            or re.match(r"^\d+[\.\)、]\s*", line)
+            or re.match(r"^[-*+]\s+", line)
+        ):
+            cleaned = re.sub(r"^\d+[\.\)、]\s*", "", cleaned).strip()
+            cleaned = re.sub(r"^[-*+]\s+", "", cleaned).strip()
+            structured.append(cleaned)
+        if len(structured) >= 8:
+            break
+
+    if structured:
+        item_truncated = any(_clip_text(item, 90) != item for item in structured)
+        bullets = [f"{idx}. {_clip_text(item, 90)}" for idx, item in enumerate(structured, 1)]
+        preview, preview_truncated = _clip_text_with_flag("\n".join(bullets), limit)
+        return preview, preview_truncated or item_truncated or len(lines) > len(structured)
+
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", draft_text) if p.strip()]
+    if not paragraphs:
+        paragraphs = lines
+    source_snippets = [p.replace("\n", " ") for p in paragraphs[:4]]
+    snippet_truncated = any(_clip_text(p, 180) != p for p in source_snippets)
+    snippets = [_clip_text(p, 180) for p in source_snippets]
+    preview, preview_truncated = _clip_text_with_flag(
+        "\n".join(f"{idx}. {item}" for idx, item in enumerate(snippets, 1)),
+        limit,
+    )
+    return preview, preview_truncated or snippet_truncated or len(paragraphs) > len(snippets)
+
+
+def _draft_saved_preview(result: dict, action: str) -> tuple[str, bool]:
+    raw_title = result.get("title") or "无标题"
+    raw_summary = result.get("summary") or "完整草稿已保存在草稿区，等待你确认。"
+    raw_tags = _format_tags(result.get("tags", []))
+    title, title_truncated = _clip_text_with_flag(raw_title, 100)
+    summary, summary_truncated = _clip_text_with_flag(raw_summary, 260)
+    tags, tags_truncated = _clip_text_with_flag(raw_tags, 160)
+    draft_text = result.get("draft_text", "")
+    outline, source_outline_truncated = (
+        _draft_outline_preview(draft_text, limit=PREVIEW_LIMIT) if draft_text else ("暂无可预览正文。", False)
+    )
+    header = (
         f"已{action}《{title}》草稿。\n"
-        f"摘要：{summary}\n"
+        f"核心摘要：{summary}\n"
         f"标签：{tags}\n"
         f"草稿编号：{result.get('id', '')}\n"
-        f"完整草稿已保存，不在微信里展开。\n"
-        f"满意的话回复「存库」，不满意可以继续说怎么改。"
     )
+    section_label = "\n草稿预览：\n"
+    footer = "\n\n完整草稿已保存。回复「展开草稿」查看全文；回复修改意见继续改；满意回复「存库」。"
+    outline_limit = max(120, PREVIEW_LIMIT - len(header) - len(section_label) - len(footer))
+    outline, outline_truncated = _clip_text_with_flag(outline, outline_limit)
+    message = f"{header}{section_label}{outline}{footer}"
+    preview_truncated = any(
+        [
+            title_truncated,
+            summary_truncated,
+            tags_truncated,
+            source_outline_truncated,
+            outline_truncated,
+        ]
+    )
+    return message, preview_truncated
 
 
 def capture_content(content: str, instruction: str = "") -> dict:
@@ -53,9 +125,14 @@ def capture_content(content: str, instruction: str = "") -> dict:
         )
     draft_text = result.get("draft_text", "")
     if draft_text:
-        preview_truncated = True
-        message = _draft_saved_preview(result, "生成")
+        message, preview_truncated = _draft_saved_preview(result, "生成")
         actions = [
+            next_action(
+                label="展开草稿",
+                intent="show_capture_draft",
+                payload={"draft_id": result.get("id", ""), "page": 1},
+                requires_confirmation=False,
+            ),
             next_action(
                 label="存库",
                 intent="commit_capture_draft",
@@ -109,6 +186,85 @@ def capture_content(content: str, instruction: str = "") -> dict:
     )
 
 
+def show_capture_draft(draft_id: str = "", page: int = 1) -> dict:
+    """显示最近或指定的待确认草稿正文；只读草稿，不入库。"""
+    _, agent = _init()
+    if not draft_id:
+        draft = agent.draft_repo.get_latest_open()
+    else:
+        draft = agent.draft_repo.get_by_id(draft_id)
+    if not draft:
+        return error_envelope(
+            agent="capture",
+            intent="show_capture_draft",
+            error="没有找到可查看的草稿，请先发送链接或文本。",
+        )
+
+    try:
+        page_num = int(page)
+    except (TypeError, ValueError):
+        page_num = 1
+    page_num = max(1, page_num)
+
+    body = (draft.get("draft_text") or draft.get("raw_text") or "").strip()
+    if not body:
+        return error_envelope(
+            agent="capture",
+            intent="show_capture_draft",
+            error=f"草稿 {draft.get('id', '')} 没有可显示正文。",
+        )
+
+    total_pages = max(1, (len(body) + DRAFT_PAGE_SIZE - 1) // DRAFT_PAGE_SIZE)
+    if page_num > total_pages:
+        return error_envelope(
+            agent="capture",
+            intent="show_capture_draft",
+            error=f"草稿《{draft.get('title') or '无标题'}》只有 {total_pages} 页，请输入 1 到 {total_pages}。",
+        )
+
+    start = (page_num - 1) * DRAFT_PAGE_SIZE
+    has_next = page_num < total_pages
+    title = _clip_text(draft.get("title") or "无标题", 80)
+    next_hint = "回复「继续看」查看下一页；" if has_next else ""
+    header = f"草稿《{title}》\n第 {page_num}/{total_pages} 页\n\n"
+    footer = f"\n\n{next_hint}回复修改意见继续改；满意回复「存库」。"
+    chunk_limit = max(200, PREVIEW_LIMIT - len(header) - len(footer))
+    chunk, preview_truncated = _clip_text_with_flag(body[start:start + DRAFT_PAGE_SIZE], chunk_limit)
+    message = f"{header}{chunk}{footer}"
+    actions = []
+    if has_next:
+        actions.append(
+            next_action(
+                label="继续看",
+                intent="show_capture_draft",
+                payload={"draft_id": draft.get("id", ""), "page": page_num + 1},
+                requires_confirmation=False,
+            )
+        )
+    return success_envelope(
+        agent="capture",
+        intent="show_capture_draft",
+        chat_preview=_clip_text(message, PREVIEW_LIMIT),
+        durable_artifacts=[
+            artifact_ref(
+                type="capture_draft",
+                id=draft.get("id", ""),
+                title=draft.get("title", ""),
+                status=draft.get("status", ""),
+            )
+        ],
+        next_actions=actions,
+        meta={
+            "draft_id": draft.get("id", ""),
+            "title": draft.get("title", ""),
+            "page": page_num,
+            "total_pages": total_pages,
+            "has_next": has_next,
+            "preview_truncated": preview_truncated,
+        },
+    )
+
+
 def revise_capture_draft(draft_id: str = "", instruction: str = "") -> dict:
     """按用户反馈修改最近或指定草稿，不写入正式库。"""
     _, agent = _init()
@@ -134,7 +290,7 @@ def revise_capture_draft(draft_id: str = "", instruction: str = "") -> dict:
             intent="revise_capture_draft",
             error=result["error"],
         )
-    message = _draft_saved_preview(result, "更新")
+    message, preview_truncated = _draft_saved_preview(result, "更新")
     return success_envelope(
         agent="capture",
         intent="revise_capture_draft",
@@ -148,6 +304,12 @@ def revise_capture_draft(draft_id: str = "", instruction: str = "") -> dict:
             )
         ],
         next_actions=[
+            next_action(
+                label="展开草稿",
+                intent="show_capture_draft",
+                payload={"draft_id": result.get("id", ""), "page": 1},
+                requires_confirmation=False,
+            ),
             next_action(
                 label="存库",
                 intent="commit_capture_draft",
@@ -166,7 +328,7 @@ def revise_capture_draft(draft_id: str = "", instruction: str = "") -> dict:
             "summary": result.get("summary", ""),
             "tags": result.get("tags", []),
             "draft_status": result.get("status", ""),
-            "preview_truncated": bool(result.get("draft_text", "")),
+            "preview_truncated": preview_truncated,
         },
     )
 

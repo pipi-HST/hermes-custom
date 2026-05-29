@@ -57,6 +57,7 @@ def _get_hermes_tools():
     import tools.refine_capture_tool  # noqa
     import tools.revise_capture_draft_tool  # noqa
     import tools.commit_capture_draft_tool  # noqa
+    import tools.show_capture_draft_tool  # noqa
     import tools.search_notes_tool  # noqa
     import tools.theme_scan_tool  # noqa
     from tools.registry import registry
@@ -81,7 +82,9 @@ def test_hermes_draft_tools_registered():
     tools = _get_hermes_tools()
     assert "revise_capture_draft" in tools
     assert "commit_capture_draft" in tools
+    assert "show_capture_draft" in tools
     assert "微信" in tools["revise_capture_draft"].schema.get("description", "")
+    assert "展开草稿" in tools["show_capture_draft"].schema.get("description", "")
     assert "完整草稿" in tools["refine_capture"].schema.get("description", "")
 
 
@@ -208,6 +211,25 @@ def test_hermes_revise_handler_preserves_envelope(monkeypatch):
     assert envelope["chat_preview"] == "已更新草稿。"
 
 
+def test_hermes_show_capture_draft_handler_preserves_envelope(monkeypatch):
+    _skip_if_no_hermes()
+    sys.path.insert(0, HERMES_DIR)
+    from bridge.result_envelope import success_envelope
+    import tools.show_capture_draft_tool as show_tool
+
+    expected = success_envelope(
+        agent="capture",
+        intent="show_capture_draft",
+        chat_preview="第 1/2 页\n草稿正文",
+    )
+    monkeypatch.setattr(show_tool, "show_capture_draft", lambda *args: expected)
+
+    envelope = _tool_envelope(show_tool._handler({"page": 1}))
+
+    assert envelope["intent"] == "show_capture_draft"
+    assert envelope["chat_preview"] == "第 1/2 页\n草稿正文"
+
+
 def test_hermes_refine_handler_preserves_envelope(monkeypatch):
     _skip_if_no_hermes()
     sys.path.insert(0, HERMES_DIR)
@@ -303,6 +325,7 @@ def test_hermes_tool_executor_uses_chat_preview_for_model_content():
 
     assert content is not None
     assert content.startswith("USER_VISIBLE_REPLY:\n这是给用户看的短回答 [1]")
+    assert "Return USER_VISIBLE_REPLY as-is" in content
     assert "STRUCTURED_AGENT_RESULT_DO_NOT_REWRITE" in content
     assert '"source_map"' in content
     assert '"chat_preview"' not in content
@@ -393,7 +416,7 @@ def test_hermes_toolset_has_6_tools():
     expected = {"capture_content", "refine_capture", "search_my_notes", "log_decision",
                 "wellness_check", "theme_scan", "graph_report", "web_extract", "send_message",
                 "revise_capture_draft", "commit_capture_draft", "synthesize_garden",
-                "daily_review"}
+                "daily_review", "show_capture_draft"}
     assert set(tools) == expected, f"Mismatch: {set(tools) ^ expected}"
 
 
@@ -451,7 +474,8 @@ def test_bridge_capture_text_with_instruction_returns_draft(mock_summarize, mock
     assert r["status"] == "success"
     assert _artifact(r)["status"] == "draft_ready"
     assert "完整草稿已保存" in r["chat_preview"]
-    assert "核心观点" not in r["chat_preview"]
+    assert "草稿预览" in r["chat_preview"]
+    assert "核心观点" in r["chat_preview"]
     assert "__HERMES_DIRECT_REPLY__" not in r["chat_preview"]
 
 
@@ -475,7 +499,8 @@ def test_bridge_capture_with_instruction_truncates_long_message_but_keeps_full_d
     assert r["status"] == "success"
     assert _artifact(r)["status"] == "draft_ready"
     assert r["meta"]["preview_truncated"] is True
-    assert long_draft not in r["chat_preview"]
+    assert "核心观点" in r["chat_preview"]
+    assert len(r["chat_preview"]) <= 1600
     assert "完整草稿已保存" in r["chat_preview"]
 
 
@@ -501,7 +526,8 @@ def test_bridge_revise_no_direct_reply_marker(mock_summarize, mock_llm):
     assert revised["status"] == "success"
     assert "__HERMES_DIRECT_REPLY__" not in revised["chat_preview"]
     assert "完整草稿已保存" in revised["chat_preview"]
-    assert "核心观点" not in revised["chat_preview"]
+    assert "草稿预览" in revised["chat_preview"]
+    assert "核心观点" in revised["chat_preview"]
 
 
 @patch("agents.capture_agent.CaptureAgent._call_llm")
@@ -527,8 +553,86 @@ def test_bridge_revise_truncates_long_message_but_keeps_full_draft(mock_summariz
 
     assert revised["status"] == "success"
     assert revised["meta"]["preview_truncated"] is True
-    assert long_draft not in revised["chat_preview"]
+    assert "核心观点" in revised["chat_preview"]
+    assert len(revised["chat_preview"]) <= 1600
     assert "完整草稿已保存" in revised["chat_preview"]
+
+
+def test_bridge_show_capture_draft_defaults_to_latest_open(monkeypatch):
+    from bridge.capture_bridge import show_capture_draft
+
+    class FakeDraftRepo:
+        def get_latest_open(self):
+            return {
+                "id": "draft1",
+                "title": "长草稿",
+                "draft_text": "第一段内容。" * 300,
+                "raw_text": "",
+                "status": "draft_ready",
+            }
+
+    class FakeAgent:
+        draft_repo = FakeDraftRepo()
+
+    monkeypatch.setattr("bridge.capture_bridge._init", lambda: (None, FakeAgent()))
+
+    result = show_capture_draft(page=1)
+
+    assert result["status"] == "success"
+    assert result["intent"] == "show_capture_draft"
+    assert "草稿《长草稿》" in result["chat_preview"]
+    assert "第 1/" in result["chat_preview"]
+    assert result["meta"]["has_next"] is True
+
+
+def test_bridge_show_capture_draft_page_out_of_range(monkeypatch):
+    from bridge.capture_bridge import show_capture_draft
+
+    class FakeDraftRepo:
+        def get_by_id(self, draft_id):
+            return {
+                "id": draft_id,
+                "title": "短草稿",
+                "draft_text": "短内容",
+                "raw_text": "",
+                "status": "draft_ready",
+            }
+
+    class FakeAgent:
+        draft_repo = FakeDraftRepo()
+
+    monkeypatch.setattr("bridge.capture_bridge._init", lambda: (None, FakeAgent()))
+
+    result = show_capture_draft("draft1", page=3)
+
+    assert result["status"] == "error"
+    assert "只有 1 页" in result["chat_preview"]
+
+
+def test_bridge_show_capture_draft_keeps_footer_with_long_title(monkeypatch):
+    from bridge.capture_bridge import show_capture_draft
+
+    class FakeDraftRepo:
+        def get_latest_open(self):
+            return {
+                "id": "draft1",
+                "title": "很长的标题" * 40,
+                "draft_text": "正文内容" * 220,
+                "raw_text": "",
+                "status": "draft_ready",
+            }
+
+    class FakeAgent:
+        draft_repo = FakeDraftRepo()
+
+    monkeypatch.setattr("bridge.capture_bridge._init", lambda: (None, FakeAgent()))
+
+    result = show_capture_draft(page=1)
+
+    assert result["status"] == "success"
+    assert len(result["chat_preview"]) <= 1500
+    assert "回复修改意见继续改" in result["chat_preview"]
+    assert not result["chat_preview"].endswith("…")
 
 
 @patch("bridge.rag_bridge.vector_search")

@@ -97,8 +97,13 @@ class TestToolHandlerToAgent:
         envelope = _tool_envelope(result)
         assert envelope["status"] == "success"
         assert "已生成" in envelope["chat_preview"]
-        assert "满意的话回复" in envelope["chat_preview"]
-        assert envelope["next_actions"][0]["intent"] == "commit_capture_draft"
+        assert "草稿预览" in envelope["chat_preview"]
+        assert "核心观点" in envelope["chat_preview"]
+        assert "展开草稿" in envelope["chat_preview"]
+        assert "满意回复「存库」" in envelope["chat_preview"]
+        intents = [action["intent"] for action in envelope["next_actions"]]
+        assert "show_capture_draft" in intents
+        assert "commit_capture_draft" in intents
 
     def test_capture_tool_handler_with_url(self):
         """tool handler 处理 URL 输入"""
