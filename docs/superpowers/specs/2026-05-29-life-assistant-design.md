@@ -55,7 +55,7 @@ This keeps the feature close to Hermes routing and WeChat delivery while isolati
 
 The first version should expose two Hermes tools:
 
-- `record_life_event(message, received_at?)`: user-facing tool for natural-language life records.
+- `record_life_event(message, received_at?)`: Hermes-routed tool for supported life records and reminder replies.
 - `life_tick(now?, dry_run?)`: internal cron tool for reminders, reviews, and sedentary state updates.
 
 `life_tick` always returns a standard Agent Result Envelope. It must set `meta.should_notify=true` only when a WeChat message should be sent. The Hermes scheduling layer must inspect this flag and suppress user delivery when it is false.
@@ -321,6 +321,7 @@ The first version should use a rule-first parsing strategy with a restricted LLM
 - The fallback must return structured output with intent, extracted fields, missing required fields, ambiguity notes, and a brief user-facing confirmation, clarification, or rejection.
 - Supported intents with complete required fields may create structured events. Unsupported intents, unclear intents, and records missing required fields are not stored as Life Events.
 - The fallback must not invent missing life facts. It may only use rule-defined defaults and inferences.
+- If the LLM fallback times out or fails, use the rule parser result if one exists; otherwise reject the message without blocking the main Hermes flow.
 - The assistant only asks a follow-up when the ambiguity affects reminder state or a required field for a supported P1 record is missing.
 - The Life Assistant should only handle clearly life-related messages. It must not broadly capture ordinary chat or knowledge-management messages.
 - `record_life_event` should reply with a short confirmation for every user-created record in the first version, including key parsed fields so the user can spot parsing errors.
@@ -386,6 +387,11 @@ Minimum required fields by intent:
 - `health_consultation`: no Life Event is created.
 - `unsupported`: no Life Event is created.
 
+Reminder state updates from fallback:
+
+- Fallback may update reminder state only for fixed P1 reminder intents: `exercise_skip`, `exercise_reschedule`, water confirmation, and `sedentary_pause`.
+- Fallback must not create new reminder rule types, modify review schedules, or change sedentary resolution rules.
+
 Follow-up policy:
 
 - Ask at most one follow-up for a single user message.
@@ -410,6 +416,11 @@ Examples:
 - `撤销上一条` -> undo the latest user-created `life_events` row within 30 minutes
 - `上一条改成加餐` -> modify the latest user-created `life_events` row within 30 minutes
 
+Record confirmation:
+
+- Every successful user-created Life Event should receive a short confirmation.
+- Confirmations should include key parsed fields, such as time, duration, meal content, exercise type, or `completed_unknown`, so the user can catch parsing errors.
+
 Field inference boundaries:
 
 - If time is missing, use message receive time unless the active reminder context provides a stricter scheduled time.
@@ -424,6 +435,12 @@ Short replies use active reminder context:
 - Keyword-clear replies can bind directly, such as `喝了` to water.
 - Ambiguous replies bind to the recent active reminder only when there is one clear candidate.
 - If multiple reminders are active and the reply is ambiguous, ask a short clarification.
+
+Undo and modify boundaries:
+
+- `undo` and `modify` only target the latest user-created Life Event.
+- The target event must be within 30 minutes and on the same natural day as the request.
+- P1 does not support cross-day undo or modify.
 
 Sleep conflict handling:
 
@@ -444,6 +461,8 @@ Meal handling:
 Daily review should be concise and low-friction. It should not try to produce a full report every night, and it should not require a reply.
 
 Weekly review should be more analytical. It should identify patterns and propose small adjustments, while staying away from medical diagnosis.
+
+Daily and weekly review text may use an LLM in the first version, but only over Life Assistant aggregate metrics and Life records. Reviews must not read Knowledge data, Obsidian content, or long-term chat history, and they must not ask follow-up questions.
 
 Useful weekly review sections:
 
