@@ -318,10 +318,10 @@ The first version should use a rule-first parsing strategy with a restricted LLM
 
 - Use rules for clear supported phrases first.
 - If rules cannot parse a message, the LLM fallback may only classify and extract fields for the fixed P1 intent set: sleep, meal, exercise, water, exercise skip, exercise reschedule, sedentary pause, latest-record undo or modify, health consultation, and unsupported.
-- The fallback must return structured output with intent, confidence, extracted fields, missing required fields, and a brief user-facing confirmation or rejection.
-- High-confidence fallback results may create structured events. Low-confidence results, unsupported intents, and records missing required fields are not stored as Life Events.
+- The fallback must return structured output with intent, extracted fields, missing required fields, ambiguity notes, and a brief user-facing confirmation, clarification, or rejection.
+- Supported intents with complete required fields may create structured events. Unsupported intents, unclear intents, and records missing required fields are not stored as Life Events.
 - The assistant only asks a follow-up when the ambiguity affects reminder state or a required field for a supported P1 record is missing.
-- The Life Assistant should only handle high-confidence life-related messages. It must not broadly capture ordinary chat or knowledge-management messages.
+- The Life Assistant should only handle clearly life-related messages. It must not broadly capture ordinary chat or knowledge-management messages.
 - `record_life_event` should reply with a short confirmation for every user-created record in the first version, including key parsed fields so the user can spot parsing errors.
 - `record_life_event` is not a question-answering tool. It only handles life records, latest-record undo/modify commands, and active reminder replies.
 - First version does not support manual status queries or ad-hoc reviews. Questions such as `我今天坐了多久？` or `今天状态怎么样？` should not be stored as Life Events; reply briefly that the first version will summarize them in the scheduled Daily Light Review or Weekly Deep Review.
