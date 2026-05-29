@@ -10,7 +10,7 @@ _Avoid_: health bot, doctor, knowledge capture agent.
 
 **Life Event**:
 A time-stamped record of something the user did, reported, or decided in the Life Assistant context.
-_Avoid_: capture, note, chat message.
+_Avoid_: capture, note, chat message, reminder, review.
 
 **Life Note**:
 An unstructured **Life Event** used when a user message is life-related but not confidently parsed into a more specific event type.
@@ -82,6 +82,8 @@ _Avoid_: completed decision.
 - A user saying "已活动" is not an **Activity Break**. Resolved: an **Activity Break** must be proven by Mac idle time, lock, sleep, or logout.
 - "久坐时间" can mean all sitting or only risky sitting. Resolved: use **Sitting Total** for all sitting windows and **Sedentary Over-Limit Total** for sitting windows at or above the threshold.
 - "Review" exists in the Knowledge context as recall practice. Resolved: Life Assistant uses **Daily Light Review** and **Weekly Deep Review** for lifestyle reflection; Knowledge uses Review Items.
+- **Daily Light Review** and **Weekly Deep Review** are derived review records, not **Life Events**.
+- **Water Reminder**, **Exercise Reminder**, **Sleep Reminder**, and **Sedentary Alert** are reminder records, not **Life Events**.
 - **Reflection** is not a **Garden Card**. It remains inside Life Assistant and does not promote into the Knowledge context in the first version.
 - **Life Assistant** and Knowledge may share one code repository, but they should not share domain ownership. Life Assistant owns life rhythm and lifestyle records; Knowledge owns captures, notes, themes, and viewpoints.
 - **Long-Term Decision** is not a goal system in the first version. It is a decision record with a review time, rationale, and expected outcome.
@@ -103,6 +105,10 @@ Domain expert: "All 80 minutes. We do not count only the 20 minutes beyond the t
 Dev: "Should a meal record judge whether the meal was healthy immediately?"
 
 Domain expert: "No. Meal Records are low-friction records. Commentary belongs in the Daily Light Review or Weekly Deep Review."
+
+Dev: "Do reminders belong in the Life Event stream?"
+
+Domain expert: "No. Life Events record life facts. Reminder history belongs to reminder records."
 
 Dev: "Can a reflection become a Garden Card automatically?"
 
