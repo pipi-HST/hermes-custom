@@ -76,7 +76,7 @@ _Avoid_: medical assessment, performance score, reply prompt.
 - **Daily Light Review** and **Weekly Deep Review** are derived review records, not **Life Events**.
 - **Daily Light Review** and **Weekly Deep Review** are one-way outputs. They do not create reply contexts and do not collect replies.
 - **Water Reminder**, **Exercise Reminder**, **Sleep Reminder**, and **Sedentary Alert** are reminder records, not **Life Events**.
-- Life Assistant P1 does not support unstructured notes. Unsupported or ambiguous records should not become **Life Events**.
+- Life Assistant P1 does not support unstructured notes. Unsupported records and low-confidence ambiguous records should not become **Life Events**.
 - **Life Assistant** and Knowledge may share one code repository, but they should not share domain ownership. Life Assistant owns life rhythm and lifestyle records; Knowledge owns captures, notes, themes, and viewpoints.
 - Reflection and Long-Term Decision are P2 concepts, not first-version Life Assistant concepts.
 

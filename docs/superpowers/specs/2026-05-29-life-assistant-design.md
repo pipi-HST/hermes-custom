@@ -314,17 +314,19 @@ Send failure handling:
 
 ## Conversation Strategy
 
-The first version should use a deterministic parsing strategy:
+The first version should use a rule-first parsing strategy with a restricted LLM fallback:
 
-- Use rule parsing and lightweight structured parsing only. Do not use an LLM fallback in the first version.
-- Supported messages are parsed directly into structured events.
-- Ambiguous messages are not stored in the first version. If a message cannot be parsed as a supported sleep, meal, exercise, water, or sedentary event, reply that the record type is not supported yet.
-- The assistant only asks a follow-up when the ambiguity affects reminder state.
+- Use rules for clear supported phrases first.
+- If rules cannot parse a message, the LLM fallback may only classify and extract fields for the fixed P1 intent set: sleep, meal, exercise, water, exercise skip, exercise reschedule, sedentary pause, latest-record undo or modify, health consultation, and unsupported.
+- The fallback must return structured output with intent, confidence, extracted fields, missing required fields, and a brief user-facing confirmation or rejection.
+- High-confidence fallback results may create structured events. Low-confidence results, unsupported intents, and records missing required fields are not stored as Life Events.
+- The assistant only asks a follow-up when the ambiguity affects reminder state or a required field for a supported P1 record is missing.
 - The Life Assistant should only handle high-confidence life-related messages. It must not broadly capture ordinary chat or knowledge-management messages.
 - `record_life_event` should reply with a short confirmation for every user-created record in the first version, including key parsed fields so the user can spot parsing errors.
 - `record_life_event` is not a question-answering tool. It only handles life records, latest-record undo/modify commands, and active reminder replies.
 - First version does not support manual status queries or ad-hoc reviews. Questions such as `我今天坐了多久？` or `今天状态怎么样？` should not be stored as Life Events; reply briefly that the first version will summarize them in the scheduled Daily Light Review or Weekly Deep Review.
 - Health consultations such as `我最近睡不好，是不是身体有问题？` must not be stored and must not produce diagnosis. Reply with the safety boundary and recommend qualified help when appropriate.
+- The fallback may use the current message and the minimum necessary recent reminder context. It must not read Knowledge context data or create Knowledge artifacts.
 
 Examples:
 
