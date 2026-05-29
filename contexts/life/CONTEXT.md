@@ -27,6 +27,7 @@ _Avoid_: reply confirmation, claimed break.
 
 **Sedentary Alert**:
 A strong reminder created when a **Sitting Window** reaches the sedentary threshold; it repeats until an **Activity Break** occurs or a clear pause command is given.
+Chinese label: `久坐警报`.
 _Avoid_: reminder that can be dismissed by saying "done".
 
 **Sitting Total**:
