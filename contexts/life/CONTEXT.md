@@ -1,6 +1,6 @@
 # Hermes Life Assistant Context
 
-Hermes Life Assistant is a personal life-rhythm and growth-review context. It uses Hermes/WeChat to record daily behavior, run reminders, and support lightweight reflection without becoming a medical diagnosis system or a knowledge-management capture workflow.
+Hermes Life Assistant is a personal life-rhythm and reflection context. It uses Hermes/WeChat to record daily behavior, run reminders, and support lightweight reflection without becoming a medical diagnosis system or a knowledge-management capture workflow.
 
 ## Language
 

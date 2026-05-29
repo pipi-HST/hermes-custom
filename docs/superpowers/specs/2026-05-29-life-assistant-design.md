@@ -4,7 +4,7 @@ Date: 2026-05-29
 
 ## Positioning
 
-The Life Assistant is an independent Hermes agent domain for personal life rhythm and growth review. It uses the existing WeChat/Hermes conversation entry point to remind, record, and review daily behavior.
+The Life Assistant is an independent Hermes agent domain for personal life rhythm and reflection. It uses the existing WeChat/Hermes conversation entry point to remind, record, and review daily behavior.
 
 The first version focuses on body rhythm: sedentary breaks, water, exercise, sleep, meals, and lightweight reflection. It also keeps a thin path for long-term decisions, but it does not become a full decision-management system in the first release.
 
@@ -34,7 +34,7 @@ The assistant is a lifestyle and reflection helper. It is not a medical diagnosi
 - Mac activity data can be queried from macOS user idle time. The first version should treat keyboard, mouse, and trackpad input as user activity. Background processes, agents, downloads, builds, or sleep-prevention assertions do not count as user activity.
 - SQLite remains the first-version storage layer.
 - Life data should be queryable as structured time-series events, so raw life records should not be stored primarily as Markdown.
-- Important weekly reviews, reflections, or decisions may later be selectively synced to Obsidian, but Obsidian export is not part of the first version.
+- Life Assistant records stay in the Life Assistant context in the first version. They are not synced to Obsidian or promoted into Knowledge artifacts.
 - Real WeChat notifications should be disabled by default during first implementation. The first usable version should run in dry-run mode until tests and real local idle logs look correct.
 
 ## Architecture
@@ -399,7 +399,7 @@ Useful weekly review sections:
 - Sedentary risk
 - Meal observations
 - Water reminders
-- Reflection and thought progress
+- Reflection themes
 - Suggested focus for next week
 
 Weekly review should not create goals in the first version. It may suggest one or more next steps, but those suggestions do not change reminder rules unless the user later gives an explicit command.
@@ -497,5 +497,5 @@ The first implementation should emphasize state-machine tests, not only reposito
 ## Remaining Implementation Choices
 
 - `mac_activity_source` should probably read macOS HID idle time, but the exact command/API wrapper should be selected and tested during implementation.
-- Daily and weekly reviews should be stored in SQLite first. Obsidian export is not part of the first version.
+- Daily and weekly reviews should be stored in the Life Assistant data store. Obsidian export is not part of the first version.
 - Exact wording for each reminder message can be tuned during implementation, but wording must match each reminder's interaction model.
