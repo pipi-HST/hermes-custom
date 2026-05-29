@@ -247,3 +247,29 @@ def test_library_agent_database_sync_delegates_to_repair_data(
             "rename_readable": True,
         }
     ]
+
+
+def test_library_agent_reports_capture_and_raw_property_gaps(tmp_path: Path) -> None:
+    capture_body = "# 长文\n\n正文"
+    _write_capture(tmp_path, name="cap.md", body=capture_body)
+    raw_dir = tmp_path / "_archive" / "raw"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "raw.md").write_text(
+        "---\nid: raw-1\ntitle: 原文\nstatus: raw\n---\n\n原文",
+        encoding="utf-8",
+    )
+
+    report = LibraryAgent(tmp_path, outliner=FakeOutliner()).audit_property_gaps()
+
+    assert report["capture_notes_scanned"] == 1
+    assert report["raw_notes_scanned"] == 1
+    assert report["capture_gap_count"] == 1
+    assert report["raw_gap_count"] == 1
+    capture_gap = report["capture_gaps"][0]
+    assert capture_gap["file_path"] == "captures/cap.md"
+    assert "type" in capture_gap["missing_fields"]
+    assert "reviewable" in capture_gap["missing_fields"]
+    raw_gap = report["raw_gaps"][0]
+    assert raw_gap["file_path"] == "_archive/raw/raw.md"
+    assert "type" in raw_gap["missing_fields"]
+    assert "capture_id" in raw_gap["missing_fields"]

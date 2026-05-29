@@ -401,6 +401,33 @@ def test_hermes_daily_review_handler_preserves_envelope(monkeypatch):
     assert envelope["meta"]["item_count"] == 1
 
 
+def test_hermes_audit_library_handler_preserves_confirmation(monkeypatch):
+    _skip_if_no_hermes()
+    sys.path.insert(0, HERMES_DIR)
+    from bridge.result_envelope import next_action, success_envelope
+    import tools.librarian_tool as librarian_tool
+
+    expected = success_envelope(
+        agent="librarian",
+        intent="audit_library",
+        chat_preview="Librarian 审计完成。",
+        next_actions=[
+            next_action(
+                label="执行安全修复",
+                intent="apply_librarian_repair",
+                requires_confirmation=True,
+            )
+        ],
+    )
+    monkeypatch.setattr(librarian_tool, "run_librarian_audit", lambda **kwargs: expected)
+
+    envelope = _tool_envelope(librarian_tool._handler({}))
+
+    assert envelope["agent"] == "librarian"
+    assert envelope["intent"] == "audit_library"
+    assert envelope["next_actions"][0]["requires_confirmation"] is True
+
+
 def test_hermes_synthesize_garden_handler_preserves_confirmation(monkeypatch):
     _skip_if_no_hermes()
     sys.path.insert(0, HERMES_DIR)
@@ -435,11 +462,11 @@ def test_hermes_toolset_has_6_tools():
     sys.path.insert(0, HERMES_DIR)
     from toolsets import TOOLSETS
     tools = TOOLSETS["personal-assistant"]["tools"]
-    assert len(tools) >= 13, f"Expected draft tools, got {len(tools)}: {tools}"
+    assert len(tools) >= 14, f"Expected draft tools, got {len(tools)}: {tools}"
     expected = {"capture_content", "refine_capture", "search_my_notes", "log_decision",
                 "wellness_check", "theme_scan", "graph_report", "send_message",
                 "revise_capture_draft", "commit_capture_draft", "synthesize_garden",
-                "daily_review", "show_capture_draft"}
+                "daily_review", "show_capture_draft", "audit_library"}
     assert set(tools) == expected, f"Mismatch: {set(tools) ^ expected}"
 
 

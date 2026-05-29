@@ -12,6 +12,27 @@ from scripts.repair_data import repair_data
 
 DEFAULT_OUTLINE_CHAR_THRESHOLD = 2000
 DIRECTORY_HEADING = "## 目录纲要"
+CAPTURE_REQUIRED_FIELDS = (
+    "type",
+    "status",
+    "id",
+    "title",
+    "date",
+    "source",
+    "source_type",
+    "reviewable",
+    "importance",
+)
+RAW_REQUIRED_FIELDS = (
+    "type",
+    "status",
+    "id",
+    "capture_id",
+    "title",
+    "date",
+    "source",
+    "source_type",
+)
 
 
 class LibraryAgent:
@@ -44,6 +65,26 @@ class LibraryAgent:
             apply=apply,
             rename_readable=rename_readable,
         )
+
+    def audit_property_gaps(self) -> dict[str, Any]:
+        capture_gaps = _property_gaps(
+            self.vault_path,
+            "captures",
+            CAPTURE_REQUIRED_FIELDS,
+        )
+        raw_gaps = _property_gaps(
+            self.vault_path,
+            "_archive/raw",
+            RAW_REQUIRED_FIELDS,
+        )
+        return {
+            "capture_notes_scanned": _markdown_count(self.vault_path / "captures"),
+            "raw_notes_scanned": _markdown_count(self.vault_path / "_archive" / "raw"),
+            "capture_gap_count": len(capture_gaps),
+            "raw_gap_count": len(raw_gaps),
+            "capture_gaps": capture_gaps[:20],
+            "raw_gaps": raw_gaps[:20],
+        }
 
     def maintain_outlines(self, *, apply: bool = False) -> dict[str, Any]:
         report: dict[str, Any] = {
@@ -197,3 +238,35 @@ def _render_directory(outline: list[dict]) -> str:
 
 def _single_line(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _property_gaps(
+    vault_path: Path,
+    folder: str,
+    required_fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    root = vault_path / folder
+    if not root.exists():
+        return []
+    gaps: list[dict[str, Any]] = []
+    for path in sorted(root.glob("*.md")):
+        rel_path = path.relative_to(vault_path).as_posix()
+        parsed = _read_markdown_parts(path)
+        if parsed is None:
+            gaps.append({"file_path": rel_path, "missing_fields": list(required_fields)})
+            continue
+        frontmatter, _body = parsed
+        missing = [
+            field
+            for field in required_fields
+            if field not in frontmatter or frontmatter.get(field) in (None, "")
+        ]
+        if missing:
+            gaps.append({"file_path": rel_path, "missing_fields": missing})
+    return gaps
+
+
+def _markdown_count(root: Path) -> int:
+    if not root.exists():
+        return 0
+    return sum(1 for _path in root.glob("*.md"))
