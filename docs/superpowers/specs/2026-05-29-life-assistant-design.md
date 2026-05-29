@@ -335,7 +335,7 @@ The first version should use a mixed parsing strategy:
 
 - Rule parsing first; LLM parsing only as fallback for more complex messages.
 - Clearly structured messages are parsed directly into structured events.
-- Ambiguous messages are stored as `life_note`.
+- Ambiguous messages are stored as `life_note` only when the user shows recording intent or is replying inside a scheduled review context.
 - The assistant only asks a follow-up when the ambiguity affects reminder state.
 - The Life Assistant should only handle high-confidence life-related messages. It must not broadly capture ordinary chat or knowledge-management messages.
 - `record_life_event` should reply with a short confirmation for every user-created record in the first version, including key parsed fields so the user can spot parsing errors.

@@ -13,7 +13,7 @@ A time-stamped record of something the user did, reported, or decided in the Lif
 _Avoid_: capture, note, chat message, reminder, review.
 
 **Life Note**:
-An unstructured **Life Event** used when a user message is life-related but not confidently parsed into a more specific event type.
+An unstructured **Life Event** used when a user intentionally records life-related content that is not confidently parsed into a more specific event type, or when the user answers a scheduled review prompt.
 _Avoid_: Capture Note, Raw Evidence, Garden Card.
 
 **Sitting Window**:
