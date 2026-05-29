@@ -281,6 +281,7 @@ Defaults:
 - Keeps the review lightweight.
 - Asks one or two questions.
 - Summarizes the day across sleep, exercise, sedentary time, meals, water, and reflection if data exists.
+- Replies within 2 hours of the Daily Light Review prompt are treated as review-context answers and recorded by default. If the reply can be parsed as a Reflection, store it as `reflection`; otherwise store it as `life_note`.
 - If a sitting window is still active at 00:00, send the review with an "active window still open" note and allow final sitting statistics to be corrected after the break.
 - If the review is blocked by higher-priority reminders until 02:00, mark it `missed` instead of sending it later in the night.
 - If there is no meal record for the day, ask about food only inside this light review. Do not send standalone meal reminders.
