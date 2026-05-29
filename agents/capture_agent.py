@@ -28,6 +28,7 @@ CAPTURE_LLM_TIMEOUT_SECONDS = 300
 CAPTURE_LLM_MAX_TOKENS = 8000
 CAPTURE_LLM_MAX_CONTINUATIONS = 2
 CAPTURE_SOURCE_CHAR_LIMIT = 24000
+CAPTURE_LONG_READING_CHAR_THRESHOLD = 8000
 CAPTURE_LONG_CHUNK_CHAR_LIMIT = 8000
 CAPTURE_SECTION_NOTE_CHAR_LIMIT = 1500
 CAPTURE_INTERNAL_PLAN_BUDGET_RATIO = 0.45
@@ -52,6 +53,7 @@ class CaptureIntent:
     emphasis: list[str]
     must_preserve: list[str]
     output_shape: list[str]
+    detail_level: str = "medium"
     draft_guidance: str = "let_model_decide"
 
     def to_dict(self) -> dict:
@@ -62,6 +64,7 @@ class CaptureIntent:
             "emphasis": self.emphasis,
             "must_preserve": self.must_preserve,
             "output_shape": self.output_shape,
+            "detail_level": self.detail_level,
             "draft_guidance": self.draft_guidance,
         }
 
@@ -223,7 +226,15 @@ class CaptureAgent:
             emphasis=emphasis,
             must_preserve=must_preserve,
             output_shape=["natural_draft"],
+            detail_level=self._detect_detail_level(user_request),
         )
+
+    def _detect_detail_level(self, user_request: str) -> str:
+        if re.search(r"(一句话|几句话|简短|简要|短摘要|快速概括)", user_request):
+            return "brief"
+        if re.search(r"(详细整理|详细总结|深度总结|尽量保留细节|不要漏细节|完整整理成笔记)", user_request):
+            return "deep"
+        return "medium"
 
     def _extract_emphasis(self, user_request: str) -> list[str]:
         if not user_request:
@@ -278,6 +289,21 @@ class CaptureAgent:
             "哪些部分要略读，哪些部分要精读。不要把内部计划输出给用户，只输出最终整理稿。\n"
         )
 
+    def _build_density_rule(self, capture_intent: dict) -> str:
+        detail_level = capture_intent.get("detail_level", "medium")
+        if detail_level == "brief":
+            return "- 用户要求偏简短：可以高度压缩，只保留结论和最核心理由。\n"
+        if detail_level == "deep":
+            return (
+                "- 用户要求偏详细：请保留更多分支、背景、案例、数字和论证细节，"
+                "但仍然不要逐段搬运原文。\n"
+            )
+        return (
+            "- 这不是几句话摘要。请根据材料复杂度决定篇幅；默认保留文章的"
+            "主要论证层次、关键概念、代表性例子、重要转折和最终判断。"
+            "删掉重复铺垫和口语冗余，但不要删掉支撑主线的细节。\n"
+        )
+
     def _clip_source_text(self, text: str) -> str:
         text = text or ""
         if len(text) <= CAPTURE_SOURCE_CHAR_LIMIT:
@@ -299,7 +325,7 @@ class CaptureAgent:
         raw_text: str,
     ) -> str | LLMResult:
         source_text = (raw_text or current_text or "").strip()
-        if len(source_text) > CAPTURE_SOURCE_CHAR_LIMIT:
+        if self._should_use_chunked_reading(source_text, capture_intent):
             return self._revise_long_source(
                 instruction=instruction,
                 capture_intent=capture_intent,
@@ -313,6 +339,14 @@ class CaptureAgent:
             raw_text=raw_text,
         )
         return self._call_llm(prompt)
+
+    def _should_use_chunked_reading(self, source_text: str, capture_intent: dict) -> bool:
+        text_len = len(source_text or "")
+        if text_len > CAPTURE_SOURCE_CHAR_LIMIT:
+            return True
+        if text_len >= CAPTURE_LONG_READING_CHAR_THRESHOLD:
+            return capture_intent.get("detail_level", "medium") in ("medium", "deep")
+        return False
 
     def _revise_long_source(
         self,
@@ -512,6 +546,7 @@ class CaptureAgent:
             "你已经按原文顺序得到的分段阅读笔记，笔记覆盖了全文，不要再假设只有开头和结尾。\n"
             f"{current_context}"
             "工作方式：\n"
+            f"{self._build_density_rule(capture_intent)}"
             "- 基于分段笔记直接写最终整理稿，由你决定详略、结构和自然小标题。\n"
             "- 不要机械套模板；不要输出内部计划；不要输出标签、摘要、目录或任务合同。\n"
             "- 不要逐段搬运分段笔记；把它们综合成一篇可读的整理稿。\n"
@@ -550,6 +585,7 @@ class CaptureAgent:
             f"{json.dumps(capture_intent, ensure_ascii=False)}\n\n"
             "工作方式：\n"
             f"{self._build_internal_plan_rule(source_text)}"
+            f"{self._build_density_rule(capture_intent)}"
             "- 由你决定最终整理稿的详略和结构：可以精炼，可以保留必要细节，也可以使用少量自然小标题。\n"
             "- 不要逐段搬运原文；不要为了格式而格式化；不要机械套用固定模板。\n"
             "- 不要输出标签、摘要、提纲、目录或任务合同；这些元信息由系统另行处理。\n"

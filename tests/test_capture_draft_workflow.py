@@ -103,6 +103,26 @@ def test_prompt_allows_model_to_choose_draft_strategy(agent: CaptureAgent, monke
     assert prompt.count(TEST_CONTENT) == 1
 
 
+def test_medium_density_prompt_preserves_structure_without_hard_word_count(agent: CaptureAgent):
+    intent = agent._build_capture_intent("总结全文核心内容").to_dict()
+
+    prompt = agent._build_revision_prompt(
+        instruction="总结全文核心内容",
+        capture_intent=intent,
+        current_text=TEST_CONTENT,
+        raw_text=TEST_CONTENT,
+    )
+
+    assert "这不是几句话摘要" in prompt
+    assert "主要论证层次" in prompt
+    assert "代表性例子" in prompt
+    assert "重要转折" in prompt
+    assert "根据材料复杂度决定篇幅" in prompt
+    assert "2000" not in prompt
+    assert "8 个小标题" not in prompt
+    assert "是什么 / 为什么 / 边界" not in prompt
+
+
 def test_only_instruction_sets_selected_sections_coverage(agent: CaptureAgent, monkeypatch):
     prompts: list[str] = []
 
@@ -149,6 +169,24 @@ def test_capture_intent_keeps_user_request_as_guidance_not_fixed_mode(agent: Cap
     assert intent["user_request"] == "完整整理成一篇详细笔记，尽量保留细节"
     assert intent["draft_guidance"] == "let_model_decide"
     assert intent["output_shape"] == ["natural_draft"]
+
+
+def test_capture_intent_defaults_summary_full_content_to_medium(agent: CaptureAgent):
+    intent = agent._build_capture_intent("总结全文核心内容").to_dict()
+
+    assert intent["detail_level"] == "medium"
+
+
+def test_capture_intent_detects_brief_detail_level(agent: CaptureAgent):
+    intent = agent._build_capture_intent("用几句话简短摘要一下").to_dict()
+
+    assert intent["detail_level"] == "brief"
+
+
+def test_capture_intent_detects_deep_detail_level(agent: CaptureAgent):
+    intent = agent._build_capture_intent("深度总结，尽量保留细节").to_dict()
+
+    assert intent["detail_level"] == "deep"
 
 
 def test_about_two_parts_instruction_extracts_real_emphasis(agent: CaptureAgent):
@@ -236,6 +274,41 @@ def test_long_source_is_read_in_chunks_before_final_draft(agent: CaptureAgent, m
     assert any("MIDDLE_UNIQUE" in prompt for prompt in section_calls)
     assert calls[-1][1] is False
     assert revised["draft_text"] == "最终整理稿：Terminal-Bench 是关键线索。"
+
+
+def test_medium_density_longish_source_uses_chunked_reading(agent: CaptureAgent, monkeypatch):
+    longish_text = (
+        "开头主线：生命不只是语言模型。\n\n"
+        + ("中心法则与序列化范式的局限。" * 300)
+        + "\n\nMIDDLE_LIFE_MODEL：4D全细胞模型和虚拟果蝇案例。\n\n"
+        + ("工具决定论与多模态数据的重要性。" * 300)
+        + "\n\n结尾判断：未来AI生物学要从预测生命走向运行生命。"
+    )
+    draft = agent.create_draft(longish_text)
+    calls: list[tuple[str, bool]] = []
+
+    def fake_llm(prompt: str, return_meta: bool = False):
+        calls.append((prompt, return_meta))
+        if "长文分段阅读" in prompt:
+            marker = "MIDDLE_LIFE_MODEL" if "MIDDLE_LIFE_MODEL" in prompt else "普通分段"
+            return LLMResult(text=f"分段笔记：{marker}", incomplete=False)
+        assert "按原文顺序得到的分段阅读笔记" in prompt
+        assert "MIDDLE_LIFE_MODEL" in prompt
+        return "中密度整理稿：覆盖4D全细胞模型和虚拟果蝇。"
+
+    monkeypatch.setattr(agent, "_call_llm", fake_llm)
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {"summary": "生命模型整理。", "tags": ["ai-biology"]},
+    )
+
+    revised = agent.revise_draft(draft["id"], "总结全文核心内容")
+
+    assert revised["status"] == "draft_ready"
+    assert any(return_meta for _prompt, return_meta in calls)
+    assert any("MIDDLE_LIFE_MODEL" in prompt for prompt, return_meta in calls if return_meta)
+    assert revised["draft_text"] == "中密度整理稿：覆盖4D全细胞模型和虚拟果蝇。"
 
 
 def test_long_source_incomplete_section_note_marks_draft_incomplete(
