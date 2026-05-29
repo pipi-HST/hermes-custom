@@ -333,6 +333,7 @@ Fallback entry gate:
 
 - The LLM fallback may run only after a Life prefilter marks the message as a life-related candidate, such as sleep, meal, exercise, water, sedentary behavior, pause, undo, or modify.
 - The LLM fallback may also run when there is an active Life reminder context and the user sends a short reply that could refer to it.
+- The user may explicitly route a message to Life Assistant with prefixes such as `生活：` or `健康：`; this bypasses the conservative keyword prefilter but not the fixed P1 intent set or required-field rules.
 - Ordinary chat, knowledge capture, reading notes, source material, viewpoints, and writing ideas should not enter the Life fallback by default.
 - If a message is not a Life candidate, route it through the existing Hermes or Knowledge path instead of asking the Life fallback to classify it.
 
