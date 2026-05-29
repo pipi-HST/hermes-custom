@@ -329,6 +329,15 @@ The first version should use a rule-first parsing strategy with a restricted LLM
 - Health consultations such as `我最近睡不好，是不是身体有问题？` must not be stored and must not produce diagnosis. Reply with the safety boundary and recommend qualified help when appropriate.
 - The fallback may use the current message and the minimum necessary recent reminder context. It must not read Knowledge context data or create Knowledge artifacts.
 
+Follow-up policy:
+
+- Ask at most one follow-up for a single user message.
+- Ask once when a supported sleep record is missing start or end time.
+- Ask once when a supported meal record is missing meal content.
+- Ask once when multiple active reminder contexts could match an ambiguous short reply.
+- Do not ask follow-ups for health consultations, manual status queries, ad-hoc reviews, unsupported intents, or ordinary chat.
+- If the one follow-up does not produce a clear supported record, stop and do not create a Life Event.
+
 Examples:
 
 - `我睡了` -> `sleep_start`

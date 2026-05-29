@@ -78,6 +78,7 @@ _Avoid_: medical assessment, performance score, reply prompt.
 - **Water Reminder**, **Exercise Reminder**, **Sleep Reminder**, and **Sedentary Alert** are reminder records, not **Life Events**.
 - Life Assistant P1 does not support unstructured notes. Unsupported records, unclear intents, and records missing required fields should not become **Life Events**.
 - LLM fallback may classify supported P1 intents and extract stated fields, but it must not invent missing life facts.
+- Life Assistant P1 may ask one clarification for a supported record or reminder reply, but it should not enter open-ended multi-turn clarification.
 - **Life Assistant** and Knowledge may share one code repository, but they should not share domain ownership. Life Assistant owns life rhythm and lifestyle records; Knowledge owns captures, notes, themes, and viewpoints.
 - Reflection and Long-Term Decision are P2 concepts, not first-version Life Assistant concepts.
 
