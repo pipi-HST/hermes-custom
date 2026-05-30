@@ -252,6 +252,50 @@ def test_rejects_manual_status_query_without_life_event(agent: LifeAgent) -> Non
     assert "定时复盘" in result["chat_preview"]
 
 
+def test_health_consultation_gets_safety_boundary_without_life_event(agent: LifeAgent) -> None:
+    result = agent.record_life_event(
+        "健康：我最近睡不好，是不是身体有问题？",
+        received_at="2026-05-30T18:00:00+08:00",
+    )
+
+    assert result["status"] == "rejected"
+    assert result["event"] is None
+    assert "不能做医学诊断" in result["chat_preview"]
+
+
+def test_sedentary_pause_suppresses_alert_but_keeps_sitting_window(agent: LifeAgent) -> None:
+    paused = agent.record_life_event(
+        "暂停久坐警报 2 小时",
+        received_at="2026-05-30T09:30:00+08:00",
+    )
+
+    first_tick = agent.life_tick(
+        now="2026-05-30T09:31:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=10, available=True),
+        dry_run=True,
+    )
+    paused_tick = agent.life_tick(
+        now="2026-05-30T10:40:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=30, available=True),
+        dry_run=True,
+    )
+    resumed_tick = agent.life_tick(
+        now="2026-05-30T11:31:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=30, available=True),
+        dry_run=True,
+    )
+
+    active_window = agent.repo.conn.execute(
+        "SELECT * FROM life_events WHERE event_type = 'sedentary_start'"
+    ).fetchone()
+    assert paused["status"] == "reminder_updated"
+    assert first_tick["selected"] is None
+    assert paused_tick["selected"]["reminder_type"] == "exercise"
+    assert resumed_tick["selected"]["reminder_type"] == "sedentary"
+    assert active_window is not None
+    assert active_window["status"] == "active"
+
+
 def test_life_tick_sends_sedentary_alert_before_exercise(agent: LifeAgent) -> None:
     agent.repo.create_event(
         event_type="sedentary_start",

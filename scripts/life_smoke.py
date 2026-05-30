@@ -143,15 +143,27 @@ def _reminder_scenarios(
         "我今天坐了多久？",
         received_at="2026-05-31T18:00:00+08:00",
     )
+    health = agent.record_life_event(
+        "健康：我最近睡不好，是不是身体有问题？",
+        received_at="2026-05-31T19:00:00+08:00",
+    )
+    sedentary_pause = agent.record_life_event(
+        "暂停久坐警报 2 小时",
+        received_at="2026-05-31T10:45:00+08:00",
+    )
 
     records["planned_exercise_time"] = planned.get("scheduled_for", "")
     records["exercise_skip_status"] = skip["status"]
     records["manual_query_status"] = query["status"]
+    records["health_consultation_status"] = health["status"]
+    records["sedentary_pause_until"] = sedentary_pause.get("scheduled_for", "")
 
     _check(checks, "planned exercise schedules reminder", planned["status"] == "reminder_updated")
     _check(checks, "planned exercise time is stored", planned.get("scheduled_for") == "2026-05-30T18:00:00+08:00")
     _check(checks, "exercise skip updates reminder state", skip["status"] == "reminder_updated")
     _check(checks, "manual query is not recorded", query["status"] == "rejected" and query["event"] is None)
+    _check(checks, "health consultation is not recorded", health["status"] == "rejected" and health["event"] is None)
+    _check(checks, "sedentary pause stores pause-until time", sedentary_pause.get("scheduled_for") == "2026-05-31T12:45:00+08:00")
 
 
 def _check(checks: list[dict[str, Any]], name: str, passed: bool) -> None:

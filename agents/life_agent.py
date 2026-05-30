@@ -55,6 +55,26 @@ class LifeAgent:
         if intent.intent == "manual_status_query":
             return _rejected("第一版不支持手动查询，我会在定时复盘里总结这些数据。")
 
+        if intent.intent == "health_consultation":
+            return _rejected("我不能做医学诊断；如果症状持续、明显影响生活，建议咨询医生或专业人士。")
+
+        if intent.intent == "pause_sedentary":
+            try:
+                pause_until = _parse_datetime(intent.scheduled_for)
+            except ValueError:
+                return _rejected("这条我暂时不能作为生活记录保存。")
+            self.repo.create_reminder_log(
+                reminder_type="sedentary",
+                scheduled_for=pause_until.isoformat(),
+                status="paused",
+                dedupe_key=f"sedentary_pause:{received.isoformat()}",
+                payload={"duration_minutes": intent.duration_minutes},
+            )
+            return {
+                **_reminder_updated(f"已暂停久坐警报到{_fmt_time(pause_until)}；坐姿统计仍会继续记录。"),
+                "scheduled_for": pause_until.isoformat(),
+            }
+
         if intent.intent == "skip_exercise":
             self.repo.create_reminder_log(
                 reminder_type="exercise",
@@ -310,6 +330,8 @@ class LifeAgent:
         sitting_minutes = max(0, round((current - started_at).total_seconds() / 60))
         if sitting_minutes < self.config.sedentary_threshold_minutes:
             return None
+        if self._is_sedentary_paused(current):
+            return None
 
         return {
             "priority": 1,
@@ -326,6 +348,14 @@ class LifeAgent:
                LIMIT 1"""
         ).fetchone()
         return self.repo._event_row_to_dict(row) if row else None
+
+    def _is_sedentary_paused(self, current: datetime) -> bool:
+        rows = self.repo.conn.execute(
+            """SELECT scheduled_for FROM life_reminder_logs
+               WHERE reminder_type = 'sedentary' AND status = 'paused'
+               ORDER BY scheduled_for DESC"""
+        ).fetchall()
+        return any(_parse_datetime(row["scheduled_for"]) > current for row in rows)
 
     def _close_sitting_window(
         self,

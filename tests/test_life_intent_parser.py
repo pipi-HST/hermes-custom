@@ -46,6 +46,31 @@ def test_parser_keeps_manual_status_query_out_of_records() -> None:
     assert intent.event_type == ""
 
 
+def test_parser_classifies_health_consultation_without_recording() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "健康：我最近睡不好，是不是身体有问题？",
+        received_at=datetime.fromisoformat("2026-05-30T18:00:00+08:00"),
+    )
+
+    assert intent.intent == "health_consultation"
+    assert intent.event_type == ""
+
+
+def test_parser_extracts_sedentary_pause_duration() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "暂停久坐警报 2 小时",
+        received_at=datetime.fromisoformat("2026-05-30T18:00:00+08:00"),
+    )
+
+    assert intent.intent == "pause_sedentary"
+    assert intent.scheduled_for == "2026-05-30T20:00:00+08:00"
+    assert intent.duration_minutes == 120
+
+
 def test_parser_extracts_planned_exercise_time_and_type() -> None:
     parser = LifeIntentParser()
 

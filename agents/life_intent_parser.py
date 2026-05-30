@@ -36,8 +36,19 @@ class LifeIntentParser:
         return fallback or intent
 
     def _parse_deterministic(self, text: str, received_at: datetime) -> LifeIntent:
+        if _is_health_consultation(text):
+            return LifeIntent(intent="health_consultation")
+
         if _is_manual_status_query(text):
             return LifeIntent(intent="manual_status_query")
+
+        sedentary_pause = _parse_sedentary_pause(text, received_at)
+        if sedentary_pause:
+            return LifeIntent(
+                intent="pause_sedentary",
+                scheduled_for=sedentary_pause["pause_until"].isoformat(),
+                duration_minutes=sedentary_pause["duration_minutes"],
+            )
 
         if text == "今天不练了":
             return LifeIntent(intent="skip_exercise")
@@ -171,7 +182,7 @@ class LifeIntentLLMFallback:
 
 _LLM_SYSTEM_PROMPT = """你是 Life Assistant 的意图解析器，只能输出 JSON 对象。
 把用户消息解析为:
-intent: record_event | skip_exercise | reschedule_exercise | undo_latest | manual_status_query | unknown
+intent: record_event | skip_exercise | reschedule_exercise | pause_sedentary | undo_latest | manual_status_query | health_consultation | unknown
 event_type: sleep_start | sleep_end | exercise | meal | water | ""
 occurred_at/scheduled_for: ISO 8601 字符串；没有就空字符串。
 duration_minutes: 整数或 null。
@@ -250,6 +261,27 @@ def _parse_exercise_schedule(text: str, received: datetime) -> dict[str, Any] | 
 def _parse_planned_exercise_type(text: str) -> str:
     match = re.search(r"练\s*([^。，,.！!\s]+)", text)
     return match.group(1) if match else ""
+
+
+def _parse_sedentary_pause(text: str, received: datetime) -> dict[str, Any] | None:
+    if "暂停久坐警报" not in text:
+        return None
+    match = re.search(r"([0-9一二两三四五六七八九十]{1,3})\s*(小时|分钟|分)", text)
+    if match:
+        amount = _parse_number(match.group(1))
+        if amount is None:
+            return None
+        duration = amount * 60 if match.group(2) == "小时" else amount
+    elif "今天" in text:
+        end_of_day = received.replace(hour=23, minute=59, second=0, microsecond=0)
+        duration = max(1, round((end_of_day - received).total_seconds() / 60))
+        return {"pause_until": end_of_day, "duration_minutes": duration}
+    else:
+        return None
+    return {
+        "pause_until": received + timedelta(minutes=duration),
+        "duration_minutes": duration,
+    }
 
 
 def _parse_sleep_start_time(text: str, received: datetime) -> datetime | None:
@@ -371,3 +403,9 @@ def _is_water(text: str) -> bool:
 
 def _is_manual_status_query(text: str) -> bool:
     return any(keyword in text for keyword in ("坐了多久", "状态怎么样", "今天状态"))
+
+
+def _is_health_consultation(text: str) -> bool:
+    if not (text.startswith("健康：") or text.startswith("健康:")):
+        return False
+    return any(keyword in text for keyword in ("身体", "问题", "病", "疼", "不舒服", "睡不好", "是不是"))
