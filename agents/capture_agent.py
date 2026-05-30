@@ -15,12 +15,15 @@ import yaml
 from agents.cleaner import clean_text, is_meaningful_content
 from agents.markdown_writer import write_note, read_note, NoteMeta
 from agents.summarizer import Summarizer
+from agents.capture_indexer import build_identity_index
+from agents.embedder import Embedder
 from agents.extractors.base import BaseExtractor
 from agents.extractors.link_extractor import LinkExtractor
 from agents.extractors.text_extractor import TextExtractor
 from agents.extractors.voice_extractor import VoiceExtractor
 from agents.extractors.image_extractor import ImageExtractor
 from db.repo import CaptureDraftRepo, CaptureRepo
+from db.embedding_repo import CaptureEmbeddingRepo
 from db.schema import init_db
 
 logger = logging.getLogger(__name__)
@@ -702,6 +705,7 @@ class CaptureAgent:
         )
         file_path = write_note(vault_path, capture_meta, body, stage="captures")
         self.repo.update(capture["id"], raw_path=raw_path, file_path=file_path)
+        self._index_committed_identity(capture["id"], file_path)
         self.draft_repo.update(
             draft_id,
             status="committed",
@@ -721,6 +725,32 @@ class CaptureAgent:
             "raw_path": raw_path,
             "file_path": file_path,
         }
+
+    def _index_committed_identity(self, capture_id: str, file_path: str) -> None:
+        """Build the identity embedding needed by Theme/RAG immediately after commit."""
+        if not self.config.qwen_api_key:
+            logger.warning(f"Identity embedding skipped for {capture_id}: qwen_api_key_not_configured")
+            return
+        vault_path = Path(self.config.vault_path).expanduser()
+        note = read_note(vault_path, file_path)
+        if not note:
+            return
+        frontmatter, body = note
+        index_item = build_identity_index(capture_id, file_path, frontmatter, body)
+        try:
+            embedding = Embedder(api_key=self.config.qwen_api_key).embed(index_item.index_text)
+            CaptureEmbeddingRepo(self.repo.conn).upsert(
+                capture_id=index_item.capture_id,
+                kind=index_item.kind,
+                section_id=index_item.section_id,
+                section_title=index_item.section_title,
+                index_text=index_item.index_text,
+                embedding=embedding,
+                source_hash=index_item.source_hash,
+                file_path=index_item.file_path,
+            )
+        except Exception as exc:
+            logger.warning(f"Identity embedding failed for {capture_id}: {exc}")
 
     def _extract_and_clean(self, raw_input: str, source_url: str = "",
                            source_type: str = ""):

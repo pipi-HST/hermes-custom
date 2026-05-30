@@ -301,6 +301,37 @@ def test_run_theme_scan_rescan_all_includes_previously_scanned_captures(
     assert set(seen_new_ids) == {"scanned-id", "fresh-id"}
 
 
+def test_run_theme_scan_reports_unindexed_new_captures(tmp_path: Path) -> None:
+    """未扫描但缺 identity embedding 的新文章，不应被误报为没有新内容。"""
+    from db.schema import init_db
+
+    db_path = str(tmp_path / "test.db")
+    conn = init_db(db_path)
+    cap_file = _write_note(tmp_path, "captures", "fresh.md", "新笔记", "新内容。")
+    conn.execute(
+        "INSERT INTO captures (id, file_path, created_at) VALUES (?, ?, datetime('now'))",
+        ("fresh-id", cap_file),
+    )
+    conn.commit()
+
+    with patch("bridge.theme_bridge.load_config") as mock_cfg:
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        from bridge.theme_bridge import run_theme_scan
+
+        result = run_theme_scan()
+
+    assert result["status"] == "success"
+    assert result["meta"]["scanned_count"] == 0
+    assert result["meta"]["unindexed_count"] == 1
+    assert "索引未完成" in result["chat_preview"]
+
+
 # ── _evolve_themes (Layer 3) ──
 
 

@@ -30,6 +30,25 @@ def _identity_index_map(conn) -> dict[str, dict]:
     return {str(row["capture_id"]): dict(row) for row in rows}
 
 
+def _unindexed_capture_count(conn, *, rescan_all: bool) -> int:
+    scan_filter = "" if rescan_all else "AND c.theme_scanned_at IS NULL"
+    row = conn.execute(
+        f"""SELECT COUNT(*) AS count
+            FROM captures c
+            WHERE c.file_path IS NOT NULL
+              AND c.file_path != ''
+              {scan_filter}
+              AND NOT EXISTS (
+                SELECT 1
+                FROM capture_embeddings e
+                WHERE e.capture_id = c.id
+                  AND e.kind = 'identity'
+                  AND e.embedding IS NOT NULL
+              )"""
+    ).fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
 def _identity_summary(index_text: str) -> str:
     for line in (index_text or "").splitlines():
         if line.startswith("摘要："):
@@ -208,11 +227,26 @@ def run_theme_scan(*, rescan_all: bool = False) -> dict:
     ).fetchall()
 
     if not rows:
+        unindexed_count = _unindexed_capture_count(conn, rescan_all=rescan_all)
+        if unindexed_count:
+            return success_envelope(
+                agent="theme",
+                intent="run_theme_scan",
+                chat_preview=(
+                    f"有 {unindexed_count} 篇新内容索引未完成，"
+                    "主题扫描暂时不会处理它们。请先执行知识库安全修复/索引维护。"
+                ),
+                meta={
+                    "scanned_count": 0,
+                    "rescan_all": rescan_all,
+                    "unindexed_count": unindexed_count,
+                },
+            )
         return success_envelope(
             agent="theme",
             intent="run_theme_scan",
             chat_preview="没有待扫描的新内容。",
-            meta={"scanned_count": 0, "rescan_all": rescan_all},
+            meta={"scanned_count": 0, "rescan_all": rescan_all, "unindexed_count": 0},
         )
 
     vault_path = Path(config.vault_path).expanduser()

@@ -549,6 +549,51 @@ def test_commit_draft_writes_raw_and_capture_files(agent: CaptureAgent, tmp_path
     assert record["file_path"] == committed["file_path"]
 
 
+def test_commit_draft_builds_identity_embedding_index(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """入库后应立即生成 Theme/RAG 可用的 capture identity 索引。"""
+
+    class FakeEmbedder:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+
+        def embed(self, text: str) -> bytes:
+            assert "标题：" in text
+            assert "摘要：AI发展受电力基础设施制约。" in text
+            return b"fake-identity-embedding"
+
+    agent.config.qwen_api_key = "sk-test-qwen"
+    monkeypatch.setattr("agents.capture_agent.Embedder", FakeEmbedder, raising=False)
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: "最终草稿：AI瓶颈在电力。")
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {
+            "title": "AI电力协议",
+            "summary": "AI发展受电力基础设施制约。",
+            "tags": ["ai-energy"],
+        },
+    )
+    draft = agent.create_draft(TEST_CONTENT, instruction="总结全文核心观点")
+
+    committed = agent.commit_draft(draft["id"])
+
+    row = agent.repo.conn.execute(
+        """SELECT kind, index_text, embedding, file_path
+           FROM capture_embeddings
+           WHERE capture_id = ? AND kind = 'identity'""",
+        (committed["capture_id"],),
+    ).fetchone()
+    assert row is not None
+    assert row["kind"] == "identity"
+    assert "标题：" in row["index_text"]
+    assert row["embedding"] == b"fake-identity-embedding"
+    assert row["file_path"] == committed["file_path"]
+
+
 def test_commit_full_text_save_writes_full_capture_without_outline(
     agent: CaptureAgent,
     tmp_path: Path,
