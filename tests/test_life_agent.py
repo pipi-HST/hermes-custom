@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from agents.life_agent import ActivitySnapshot, LifeAgent
+from agents.life_agent import ActivitySnapshot, LifeAgent, LifeConfig
 from db.life_repo import LifeRepo
 from db.life_schema import init_life_db
 
@@ -257,3 +257,18 @@ def test_life_tick_sends_daily_review(agent: LifeAgent) -> None:
 
     assert result["selected"]["reminder_type"] == "daily_review"
     assert "复盘" in result["chat_preview"]
+
+
+def test_life_tick_marks_sending_only_when_notification_will_send(tmp_path) -> None:
+    conn = init_life_db(str(tmp_path / "life.db"))
+    agent = LifeAgent(LifeRepo(conn), config=LifeConfig(notifications_enabled=False))
+
+    result = agent.life_tick(
+        now="2026-05-29T10:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=False,
+    )
+
+    row = conn.execute("SELECT status FROM life_reminder_logs LIMIT 1").fetchone()
+    assert result["meta"]["should_notify"] is False
+    assert row["status"] == "scheduled"

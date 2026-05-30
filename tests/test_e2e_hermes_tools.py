@@ -60,6 +60,8 @@ def _get_hermes_tools():
     import tools.show_capture_draft_tool  # noqa
     import tools.search_notes_tool  # noqa
     import tools.theme_scan_tool  # noqa
+    import tools.record_life_event_tool  # noqa
+    import tools.life_tick_tool  # noqa
     from tools.registry import registry
     return registry._tools
 
@@ -121,6 +123,21 @@ def test_hermes_theme_scan_schema():
     tools = _get_hermes_tools()
     params = tools["theme_scan"].schema.get("parameters", {})
     assert params.get("type") == "object"
+
+
+def test_hermes_life_tools_registered():
+    _skip_if_no_hermes()
+    tools = _get_hermes_tools()
+
+    assert "record_life_event" in tools
+    assert "life_tick" in tools
+    assert tools["record_life_event"].toolset == "personal-assistant"
+    assert tools["life_tick"].toolset == "personal-assistant"
+    record_description = tools["record_life_event"].schema.get("description", "")
+    assert "生活" in record_description
+    assert "不要用于知识笔记" in record_description
+    assert "手动状态查询" in record_description
+    assert "dry_run" in tools["life_tick"].schema.get("parameters", {}).get("properties", {})
 
 
 def test_hermes_tools_have_name_description_parameters():
@@ -401,6 +418,52 @@ def test_hermes_daily_review_handler_preserves_envelope(monkeypatch):
     assert envelope["meta"]["item_count"] == 1
 
 
+def test_hermes_record_life_event_handler_preserves_envelope(monkeypatch):
+    _skip_if_no_hermes()
+    sys.path.insert(0, HERMES_DIR)
+    from bridge.result_envelope import success_envelope
+    import tools.record_life_event_tool as life_tool
+
+    expected = success_envelope(
+        agent="life",
+        intent="record_life_event",
+        chat_preview="已记录午餐：牛肉饭。",
+        meta={"event_type": "meal", "should_notify": False},
+    )
+    monkeypatch.setattr(life_tool, "do_record_life_event", lambda *args, **kwargs: expected)
+
+    envelope = _tool_envelope(
+        life_tool._handler(
+            {"message": "午饭吃了牛肉饭", "received_at": "2026-05-30T12:00:00+08:00"}
+        )
+    )
+
+    assert envelope["agent"] == "life"
+    assert envelope["intent"] == "record_life_event"
+    assert envelope["meta"]["event_type"] == "meal"
+
+
+def test_hermes_life_tick_handler_preserves_should_notify(monkeypatch):
+    _skip_if_no_hermes()
+    sys.path.insert(0, HERMES_DIR)
+    from bridge.result_envelope import success_envelope
+    import tools.life_tick_tool as life_tick_tool
+
+    expected = success_envelope(
+        agent="life",
+        intent="life_tick",
+        chat_preview="Life Assistant 本次 tick 无需提醒。",
+        meta={"should_notify": False, "selected_reminder_type": ""},
+    )
+    monkeypatch.setattr(life_tick_tool, "do_life_tick", lambda *args, **kwargs: expected)
+
+    envelope = _tool_envelope(life_tick_tool._handler({"dry_run": True}))
+
+    assert envelope["agent"] == "life"
+    assert envelope["intent"] == "life_tick"
+    assert envelope["meta"]["should_notify"] is False
+
+
 def test_hermes_audit_library_handler_preserves_confirmation(monkeypatch):
     _skip_if_no_hermes()
     sys.path.insert(0, HERMES_DIR)
@@ -462,11 +525,12 @@ def test_hermes_toolset_has_6_tools():
     sys.path.insert(0, HERMES_DIR)
     from toolsets import TOOLSETS
     tools = TOOLSETS["personal-assistant"]["tools"]
-    assert len(tools) >= 14, f"Expected draft tools, got {len(tools)}: {tools}"
+    assert len(tools) >= 16, f"Expected draft and life tools, got {len(tools)}: {tools}"
     expected = {"capture_content", "refine_capture", "search_my_notes", "log_decision",
                 "wellness_check", "theme_scan", "graph_report", "send_message",
                 "revise_capture_draft", "commit_capture_draft", "synthesize_garden",
-                "daily_review", "show_capture_draft", "audit_library"}
+                "daily_review", "show_capture_draft", "audit_library",
+                "record_life_event", "life_tick"}
     assert set(tools) == expected, f"Mismatch: {set(tools) ^ expected}"
 
 

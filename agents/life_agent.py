@@ -196,7 +196,7 @@ class LifeAgent:
             self.repo.create_reminder_log(
                 reminder_type=selected["reminder_type"],
                 scheduled_for=current.isoformat(),
-                status="scheduled" if dry_run else "sending",
+                status="sending" if should_notify else "scheduled",
                 dedupe_key=selected["dedupe_key"],
                 payload={"dry_run": dry_run},
             )

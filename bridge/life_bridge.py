@@ -10,22 +10,23 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import yaml
 
-from agents.life_agent import ActivitySnapshot, LifeAgent
+from agents.life_agent import ActivitySnapshot, LifeAgent, LifeConfig
 from bridge.result_envelope import artifact_ref, success_envelope
 from db.life_repo import LifeRepo
 from db.life_schema import init_life_db
 
 _agent: LifeAgent | None = None
 _db_path: str | None = None
+_config_path = Path(__file__).parent.parent / "config.yaml"
 
 
 def _init() -> LifeAgent:
     global _agent, _db_path
     if _agent is None:
         if not _db_path:
-            _db_path = _load_db_path(Path(__file__).parent.parent / "config.yaml")
+            _db_path = _load_db_path(_config_path)
         conn = init_life_db(_db_path)
-        _agent = LifeAgent(LifeRepo(conn))
+        _agent = LifeAgent(LifeRepo(conn), config=_load_life_config(_config_path))
     return _agent
 
 
@@ -33,6 +34,15 @@ def _load_db_path(config_path: Path) -> str:
     with config_path.open() as f:
         cfg = yaml.safe_load(f) or {}
     return cfg.get("database", {}).get("path", "./data/captures.db")
+
+
+def _load_life_config(config_path: Path) -> LifeConfig:
+    with config_path.open() as f:
+        cfg = yaml.safe_load(f) or {}
+    life_cfg = cfg.get("life", {}) or {}
+    return LifeConfig(
+        notifications_enabled=bool(life_cfg.get("notifications_enabled", False)),
+    )
 
 
 def record_life_event(message: str, received_at: str = "") -> dict:
