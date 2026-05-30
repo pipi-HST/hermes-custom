@@ -1,0 +1,113 @@
+"""Tests for Life Assistant natural-language intent parsing."""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from agents.life_intent_parser import LifeIntent, LifeIntentLLMFallback, LifeIntentParser
+
+
+def test_parser_extracts_explicit_wake_time() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "中午13点半醒的",
+        received_at=datetime.fromisoformat("2026-05-30T13:40:00+08:00"),
+    )
+
+    assert intent.intent == "record_event"
+    assert intent.event_type == "sleep_end"
+    assert intent.occurred_at == "2026-05-30T13:30:00+08:00"
+
+
+def test_parser_extracts_meal_without_keyword_enum() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "午饭吃了腰果饼干",
+        received_at=datetime.fromisoformat("2026-05-30T12:20:00+08:00"),
+    )
+
+    assert intent.intent == "record_event"
+    assert intent.event_type == "meal"
+    assert intent.payload["meal_slot"] == "lunch"
+    assert intent.payload["content"] == "腰果饼干"
+
+
+def test_parser_keeps_manual_status_query_out_of_records() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "我今天坐了多久？",
+        received_at=datetime.fromisoformat("2026-05-30T18:00:00+08:00"),
+    )
+
+    assert intent.intent == "manual_status_query"
+    assert intent.event_type == ""
+
+
+def test_parser_uses_fallback_only_when_rules_do_not_match() -> None:
+    calls = []
+
+    def fallback(text, received_at):
+        calls.append((text, received_at))
+        return LifeIntent(
+            intent="record_event",
+            event_type="meal",
+            occurred_at=received_at.isoformat(),
+            payload={"meal_slot": "snack", "content": "一小把坚果"},
+        )
+
+    parser = LifeIntentParser(llm_fallback=fallback)
+    intent = parser.parse(
+        "刚补了一小把坚果",
+        received_at=datetime.fromisoformat("2026-05-30T15:10:00+08:00"),
+    )
+    deterministic = parser.parse(
+        "喝水了",
+        received_at=datetime.fromisoformat("2026-05-30T15:20:00+08:00"),
+    )
+
+    assert intent.intent == "record_event"
+    assert intent.event_type == "meal"
+    assert intent.payload["content"] == "一小把坚果"
+    assert deterministic.event_type == "water"
+    assert len(calls) == 1
+
+
+def test_llm_fallback_converts_json_response_to_intent() -> None:
+    requests = []
+
+    def post_json(url, *, headers, json, timeout):
+        requests.append((url, headers, json, timeout))
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"intent":"record_event","event_type":"meal",'
+                            '"occurred_at":"2026-05-30T15:10:00+08:00",'
+                            '"payload":{"meal_slot":"snack","content":"一小把坚果"}}'
+                        )
+                    }
+                }
+            ]
+        }
+
+    fallback = LifeIntentLLMFallback(
+        api_key="sk-test",
+        model="test-model",
+        base_url="https://example.com",
+        post_json=post_json,
+    )
+
+    intent = fallback(
+        "刚补了一小把坚果",
+        datetime.fromisoformat("2026-05-30T15:10:00+08:00"),
+    )
+
+    assert intent is not None
+    assert intent.intent == "record_event"
+    assert intent.event_type == "meal"
+    assert intent.payload["content"] == "一小把坚果"
+    assert requests[0][0] == "https://example.com/chat/completions"

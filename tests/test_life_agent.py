@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from agents.life_agent import ActivitySnapshot, LifeAgent, LifeConfig
+from agents.life_intent_parser import LifeIntent
 from db.life_repo import LifeRepo
 from db.life_schema import init_life_db
 
@@ -40,6 +41,60 @@ def test_records_wake_with_explicit_noon_time(agent: LifeAgent) -> None:
     assert end["event"]["occurred_at"] == "2026-05-29T13:30:00+08:00"
     assert end["event"]["duration_minutes"] == 690
     assert "11小时30分钟" in end["chat_preview"]
+
+
+class FakeParser:
+    def parse(self, message, *, received_at):
+        if message == "我睡了":
+            return LifeIntent(
+                intent="record_event",
+                event_type="sleep_start",
+                occurred_at=received_at.isoformat(),
+            )
+        return LifeIntent(
+            intent="record_event",
+            event_type="sleep_end",
+            occurred_at="2026-05-30T13:30:00+08:00",
+        )
+
+
+def test_life_agent_executes_structured_sleep_end_intent(tmp_path) -> None:
+    conn = init_life_db(str(tmp_path / "life.db"))
+    agent = LifeAgent(LifeRepo(conn), parser=FakeParser())
+    agent.record_life_event("我睡了", received_at="2026-05-30T02:00:00+08:00")
+
+    result = agent.record_life_event(
+        "随便一种醒来表达",
+        received_at="2026-05-30T13:40:00+08:00",
+    )
+
+    assert result["status"] == "recorded"
+    assert result["event"]["event_type"] == "sleep_end"
+    assert result["event"]["occurred_at"] == "2026-05-30T13:30:00+08:00"
+    assert result["event"]["duration_minutes"] == 690
+
+
+class IncompleteMealParser:
+    def parse(self, message, *, received_at):
+        return LifeIntent(
+            intent="record_event",
+            event_type="meal",
+            occurred_at=received_at.isoformat(),
+            payload={"meal_slot": "snack"},
+        )
+
+
+def test_life_agent_rejects_incomplete_structured_intent(tmp_path) -> None:
+    conn = init_life_db(str(tmp_path / "life.db"))
+    agent = LifeAgent(LifeRepo(conn), parser=IncompleteMealParser())
+
+    result = agent.record_life_event(
+        "刚补了一点东西",
+        received_at="2026-05-30T15:10:00+08:00",
+    )
+
+    assert result["status"] == "rejected"
+    assert result["event"] is None
 
 
 def test_records_meal_with_inferred_slot(agent: LifeAgent) -> None:

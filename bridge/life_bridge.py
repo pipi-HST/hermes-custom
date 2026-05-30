@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import yaml
 
 from agents.life_agent import ActivitySnapshot, LifeAgent, LifeConfig
+from agents.life_intent_parser import LifeIntentLLMFallback, LifeIntentParser
 from bridge.result_envelope import artifact_ref, success_envelope
 from db.life_repo import LifeRepo
 from db.life_schema import init_life_db
@@ -26,7 +27,11 @@ def _init() -> LifeAgent:
         if not _db_path:
             _db_path = _load_db_path(_config_path)
         conn = init_life_db(_db_path)
-        _agent = LifeAgent(LifeRepo(conn), config=_load_life_config(_config_path))
+        _agent = LifeAgent(
+            LifeRepo(conn),
+            config=_load_life_config(_config_path),
+            parser=_load_life_parser(_config_path),
+        )
     return _agent
 
 
@@ -43,6 +48,21 @@ def _load_life_config(config_path: Path) -> LifeConfig:
     return LifeConfig(
         notifications_enabled=bool(life_cfg.get("notifications_enabled", False)),
     )
+
+
+def _load_life_parser(config_path: Path) -> LifeIntentParser:
+    with config_path.open() as f:
+        cfg = yaml.safe_load(f) or {}
+    llm_cfg = cfg.get("llm", {}) or {}
+    api_key = llm_cfg.get("api_key", "")
+    fallback = None
+    if api_key:
+        fallback = LifeIntentLLMFallback(
+            api_key=api_key,
+            model=(cfg.get("life", {}) or {}).get("intent_model", "deepseek-v4-flash"),
+            base_url=llm_cfg.get("base_url", "https://api.deepseek.com"),
+        )
+    return LifeIntentParser(llm_fallback=fallback)
 
 
 def record_life_event(message: str, received_at: str = "") -> dict:

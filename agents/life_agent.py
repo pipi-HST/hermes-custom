@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from agents.life_intent_parser import LifeIntent, LifeIntentParser
 from db.life_repo import LifeRepo
 
 
@@ -32,9 +32,15 @@ class LifeConfig:
 
 
 class LifeAgent:
-    def __init__(self, repo: LifeRepo, config: LifeConfig | None = None):
+    def __init__(
+        self,
+        repo: LifeRepo,
+        config: LifeConfig | None = None,
+        parser: LifeIntentParser | None = None,
+    ):
         self.repo = repo
         self.config = config or LifeConfig()
+        self.parser = parser or LifeIntentParser()
 
     def record_life_event(
         self,
@@ -44,11 +50,12 @@ class LifeAgent:
     ) -> dict[str, Any]:
         received = _parse_datetime(received_at) if received_at else datetime.now()
         text = message.strip()
+        intent = self.parser.parse(text, received_at=received)
 
-        if _is_manual_status_query(text):
+        if intent.intent == "manual_status_query":
             return _rejected("第一版不支持手动查询，我会在定时复盘里总结这些数据。")
 
-        if text == "今天不练了":
+        if intent.intent == "skip_exercise":
             self.repo.create_reminder_log(
                 reminder_type="exercise",
                 scheduled_for=received.isoformat(),
@@ -58,8 +65,11 @@ class LifeAgent:
             )
             return _reminder_updated("今天不练已记录，今天不会继续追运动提醒。")
 
-        scheduled_for = _parse_exercise_reschedule(text, received)
-        if scheduled_for:
+        if intent.intent == "reschedule_exercise":
+            try:
+                scheduled_for = _parse_datetime(intent.scheduled_for)
+            except ValueError:
+                return _rejected("这条我暂时不能作为生活记录保存。")
             self.repo.create_reminder_log(
                 reminder_type="exercise",
                 scheduled_for=scheduled_for.isoformat(),
@@ -72,7 +82,7 @@ class LifeAgent:
                 "scheduled_for": scheduled_for.isoformat(),
             }
 
-        if text == "撤销上一条":
+        if intent.intent == "undo_latest":
             latest = self.repo.latest_user_event(
                 now=received.isoformat(),
                 window_minutes=30,
@@ -82,80 +92,94 @@ class LifeAgent:
             updated = self.repo.update_event(latest["id"], status="undone")
             return {"status": "undone", "event": updated, "chat_preview": "已撤销上一条生活记录。"}
 
-        if text in {"我睡了", "睡了", "准备睡了"}:
+        if intent.intent == "record_event":
+            return self._record_structured_event(intent, message, received)
+
+        return _rejected("这条我暂时不能作为生活记录保存。")
+
+    def _record_structured_event(
+        self,
+        intent: LifeIntent,
+        message: str,
+        received: datetime,
+    ) -> dict[str, Any]:
+        try:
+            occurred = _parse_datetime(intent.occurred_at) if intent.occurred_at else received
+        except ValueError:
+            return _rejected("这条我暂时不能作为生活记录保存。")
+
+        if intent.event_type == "sleep_start":
             event = self.repo.create_event(
                 event_type="sleep_start",
-                occurred_at=received.isoformat(),
+                occurred_at=occurred.isoformat(),
                 source="wechat",
                 raw_text=message,
+                payload=intent.payload or None,
             )
-            return _recorded(event, f"已记录睡觉时间：{_fmt_time(received)}。")
+            return _recorded(event, f"已记录睡觉时间：{_fmt_time(occurred)}。")
 
-        wake_time = _parse_wake_time(text, received)
-        if text in {"我醒了", "醒了", "起床了"} or wake_time:
-            occurred = wake_time or received
+        if intent.event_type == "sleep_end":
             start = self._latest_unmatched_sleep_start()
             duration = None
             if start:
                 started_at = _parse_datetime(start["occurred_at"])
                 duration = max(0, round((occurred - started_at).total_seconds() / 60))
+            payload = {"wake_date": occurred.date().isoformat(), **intent.payload}
             event = self.repo.create_event(
                 event_type="sleep_end",
                 occurred_at=occurred.isoformat(),
                 duration_minutes=duration,
                 source="wechat",
                 raw_text=message,
-                payload={"wake_date": occurred.date().isoformat()},
+                payload=payload,
             )
             if duration is None:
                 return _recorded(event, "已记录醒来时间；还缺睡觉时间，可以补一句大概几点睡。")
             return _recorded(event, f"已记录醒来时间：{_fmt_time(occurred)}，睡了{_fmt_duration(duration)}。")
 
-        if text in {"已运动", "运动了"}:
+        if intent.event_type == "exercise":
+            if intent.status != "completed_unknown":
+                if intent.duration_minutes is None or "exercise_type" not in intent.payload:
+                    return _rejected("这条我暂时不能作为生活记录保存。")
             event = self.repo.create_event(
                 event_type="exercise",
-                occurred_at=received.isoformat(),
+                occurred_at=occurred.isoformat(),
+                duration_minutes=intent.duration_minutes,
                 source="wechat",
                 raw_text=message,
-                status="completed_unknown",
-                payload={"completion": "completed_unknown"},
+                status=intent.status or "recorded",
+                payload=intent.payload or None,
             )
-            return _recorded(event, "已记录今天运动完成；可以之后补充类型和时长。")
+            if intent.status == "completed_unknown":
+                return _recorded(event, "已记录今天运动完成；可以之后补充类型和时长。")
+            return _recorded(
+                event,
+                f"已记录运动：{intent.payload['exercise_type']} {intent.duration_minutes} 分钟。",
+            )
 
-        exercise = _parse_exercise(text)
-        if exercise:
+        if intent.event_type == "meal":
+            if "meal_slot" not in intent.payload or "content" not in intent.payload:
+                return _rejected("这条我暂时不能作为生活记录保存。")
             event = self.repo.create_event(
-                event_type="exercise",
-                occurred_at=received.isoformat(),
-                duration_minutes=exercise["duration_minutes"],
+                event_type="meal",
+                occurred_at=occurred.isoformat(),
                 source="wechat",
                 raw_text=message,
-                payload={"exercise_type": exercise["exercise_type"]},
+                payload=intent.payload,
             )
             return _recorded(
                 event,
-                f"已记录运动：{exercise['exercise_type']} {exercise['duration_minutes']} 分钟。",
+                f"已记录{_meal_label(intent.payload['meal_slot'])}：{intent.payload['content']}。",
             )
 
-        meal = _parse_meal(text, received)
-        if meal:
-            event = self.repo.create_event(
-                event_type="meal",
-                occurred_at=received.isoformat(),
-                source="wechat",
-                raw_text=message,
-                payload=meal,
-            )
-            return _recorded(event, f"已记录{_meal_label(meal['meal_slot'])}：{meal['content']}。")
-
-        if _is_water(text):
+        if intent.event_type == "water":
             event = self.repo.create_event(
                 event_type="water",
-                occurred_at=received.isoformat(),
+                occurred_at=occurred.isoformat(),
                 source="wechat",
                 raw_text=message,
             )
-            return _recorded(event, f"已记录喝水：{_fmt_time(received)}。")
+            return _recorded(event, f"已记录喝水：{_fmt_time(occurred)}。")
 
         return _rejected("这条我暂时不能作为生活记录保存。")
 
@@ -411,107 +435,6 @@ def _rejected(chat_preview: str) -> dict[str, Any]:
 
 def _reminder_updated(chat_preview: str) -> dict[str, Any]:
     return {"status": "reminder_updated", "event": None, "chat_preview": chat_preview}
-
-
-def _parse_exercise(text: str) -> dict[str, Any] | None:
-    match = re.search(r"(跑步|健身|快走|散步|骑车|游泳|训练|运动|练)\s*(\d+)\s*(分钟|分|小时)", text)
-    if not match:
-        return None
-    duration = int(match.group(2))
-    if match.group(3) == "小时":
-        duration *= 60
-    return {"exercise_type": match.group(1), "duration_minutes": duration}
-
-
-def _parse_exercise_reschedule(text: str, received: datetime) -> datetime | None:
-    if "提醒我运动" not in text:
-        return None
-    match = re.search(r"(上午|中午|下午|晚上)?\s*(\d{1,2})\s*点", text)
-    if not match:
-        return None
-    hour = int(match.group(2))
-    period = match.group(1) or ""
-    if period in {"下午", "晚上"} and hour < 12:
-        hour += 12
-    if period == "中午" and hour < 11:
-        hour += 12
-    return received.replace(hour=hour, minute=0, second=0, microsecond=0)
-
-
-def _parse_wake_time(text: str, received: datetime) -> datetime | None:
-    if not any(keyword in text for keyword in ("醒", "起床", "睡到")):
-        return None
-    parsed = _parse_clock_time(text, received)
-    if parsed and parsed > received + timedelta(minutes=5):
-        parsed = parsed - timedelta(days=1)
-    return parsed
-
-
-def _parse_clock_time(text: str, received: datetime) -> datetime | None:
-    match = re.search(r"(凌晨|早上|上午|中午|下午|晚上)?\s*(\d{1,2})\s*点\s*(半|(\d{1,2})\s*分?)?", text)
-    if not match:
-        return None
-    period = match.group(1) or ""
-    hour = int(match.group(2))
-    minute = 30 if match.group(3) == "半" else int(match.group(4) or 0)
-    if period in {"下午", "晚上"} and hour < 12:
-        hour += 12
-    if period == "中午" and hour < 11:
-        hour += 12
-    if period in {"凌晨", "早上", "上午"} and hour == 12:
-        hour = 0
-    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
-        return None
-    return received.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-
-def _parse_meal(text: str, received: datetime) -> dict[str, Any] | None:
-    explicit_slots = {
-        "早饭": "breakfast",
-        "早餐": "breakfast",
-        "午饭": "lunch",
-        "午餐": "lunch",
-        "晚饭": "dinner",
-        "晚餐": "dinner",
-        "夜宵": "late_snack",
-        "加餐": "snack",
-    }
-    slot = ""
-    for keyword, value in explicit_slots.items():
-        if keyword in text:
-            slot = value
-            break
-    if "吃" not in text and not slot:
-        return None
-    content = re.sub(r"^(早饭|早餐|午饭|午餐|晚饭|晚餐|夜宵|加餐)?\s*吃了?", "", text).strip()
-    if not content:
-        return None
-    inferred = False
-    if not slot:
-        slot = _infer_meal_slot(received)
-        inferred = True
-    return {"meal_slot": slot, "meal_slot_inferred": inferred, "content": content}
-
-
-def _infer_meal_slot(received: datetime) -> str:
-    minutes = received.hour * 60 + received.minute
-    if 5 * 60 <= minutes < 10 * 60 + 30:
-        return "breakfast"
-    if 10 * 60 + 30 <= minutes < 15 * 60:
-        return "lunch"
-    if 17 * 60 <= minutes < 22 * 60:
-        return "dinner"
-    if minutes >= 22 * 60 or minutes < 5 * 60:
-        return "late_snack"
-    return "snack"
-
-
-def _is_water(text: str) -> bool:
-    return text in {"喝水", "喝水了", "喝了水", "饮水"}
-
-
-def _is_manual_status_query(text: str) -> bool:
-    return any(keyword in text for keyword in ("坐了多久", "状态怎么样", "今天状态"))
 
 
 def _parse_datetime(value: str) -> datetime:
