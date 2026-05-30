@@ -71,8 +71,8 @@ def test_hydrate_returns_row_unchanged_when_no_file(repo, tmp_path):
     assert "cached_text" not in result
 
 
-def test_synthesize_garden_returns_seed_card_with_accept_action(repo, tmp_path):
-    """合成 Garden Card 后应返回 seed artifact 和确认采用 action。"""
+def test_synthesize_garden_creates_reviewable_draft_not_card(repo, tmp_path):
+    """Garden 合成应先生成草稿，不直接写入 garden_cards 或 garden/*.md。"""
     from bridge.garden_bridge import synthesize_garden
 
     captures_dir = tmp_path / "captures"
@@ -90,10 +90,10 @@ def test_synthesize_garden_returns_seed_card_with_accept_action(repo, tmp_path):
     agent_result = {
         "title": "测试观点",
         "one_liner": "这是一个可继续演化的观点。",
-        "core_arguments": [],
+        "core_arguments": [{"claim": "观点要先审阅", "source_ids": ["cap1"]}],
         "key_materials": [],
         "knowledge_links": [],
-        "markdown": "# 测试观点\n",
+        "markdown": "# 测试观点\n\n正文",
     }
     db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
     with patch("bridge.garden_bridge.load_config") as mock_cfg, \
@@ -109,11 +109,107 @@ def test_synthesize_garden_returns_seed_card_with_accept_action(repo, tmp_path):
 
     assert result["status"] == "success"
     artifact = result["durable_artifacts"][0]
+    assert artifact["type"] == "garden_draft"
+    assert artifact["status"] == "draft_ready"
+    assert result["next_actions"][0]["intent"] == "commit_garden_draft"
+    assert result["next_actions"][0]["requires_confirmation"] is True
+    assert "确认" in result["chat_preview"]
+    assert "观点要先审阅" in result["chat_preview"]
+
+    draft = repo.conn.execute(
+        "SELECT * FROM garden_drafts WHERE id = ?",
+        (artifact["id"],),
+    ).fetchone()
+    card_count = repo.conn.execute("SELECT count(*) FROM garden_cards").fetchone()[0]
+    assert draft["title"] == "测试观点"
+    assert card_count == 0
+    assert not (tmp_path / "garden").exists()
+
+
+def test_commit_garden_draft_writes_card_file_and_marks_draft(repo, tmp_path):
+    """确认 Garden Draft 后才写 garden_cards 和 Obsidian 文件。"""
+    from agents.garden_agent import create_garden_draft
+    from bridge.garden_bridge import commit_garden_draft
+
+    draft_id = create_garden_draft(repo, {
+        "title": "确认后的观点",
+        "one_liner": "确认才进入 garden。",
+        "core_arguments": [{"claim": "先草稿后入库"}],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": "# 确认后的观点\n\n正文",
+        "capture_ids": ["cap1"],
+    })
+    db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
+
+    with patch("bridge.garden_bridge.load_config") as mock_cfg:
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        result = commit_garden_draft(draft_id)
+
+    assert result["status"] == "success"
+    artifact = result["durable_artifacts"][0]
     assert artifact["type"] == "garden_card"
     assert artifact["status"] == "seed"
-    assert result["next_actions"][0]["intent"] == "accept_garden_card"
-    assert result["next_actions"][0]["requires_confirmation"] is True
-    row = repo.conn.execute(
-        "SELECT status FROM garden_cards WHERE id = ?", (artifact["id"],)
+    assert artifact["path"].startswith("garden/")
+    assert (tmp_path / artifact["path"]).exists()
+    assert "# 确认后的观点" in (tmp_path / artifact["path"]).read_text(encoding="utf-8")
+
+    draft = repo.conn.execute(
+        "SELECT * FROM garden_drafts WHERE id=?",
+        (draft_id,),
     ).fetchone()
-    assert row["status"] == "seed"
+    assert draft["status"] == "committed"
+    assert draft["committed_card_id"] == artifact["id"]
+
+
+def test_revise_garden_draft_updates_latest_open_draft(repo, tmp_path):
+    """用户提出修改意见时，默认修改最近一个开放 Garden Draft。"""
+    from agents.garden_agent import create_garden_draft
+    from bridge.garden_bridge import revise_garden_draft
+
+    create_garden_draft(repo, {
+        "title": "旧观点",
+        "one_liner": "旧观点",
+        "core_arguments": [],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": "# 旧观点\n",
+        "capture_ids": ["cap1"],
+    })
+    agent_result = {
+        "title": "修改后的观点",
+        "one_liner": "修改后更贴近用户意见。",
+        "core_arguments": [{"claim": "保留原观点但强调边界"}],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": "# 修改后的观点\n\n新正文",
+    }
+    db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
+
+    with patch("bridge.garden_bridge.load_config") as mock_cfg, \
+            patch.object(GardenAgent, "synthesize", return_value=agent_result) as mock_synthesize:
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        result = revise_garden_draft(instruction="强调边界")
+
+    assert result["status"] == "success"
+    assert result["durable_artifacts"][0]["type"] == "garden_draft"
+    assert "保留原观点但强调边界" in result["chat_preview"]
+    row = repo.conn.execute("SELECT * FROM garden_drafts").fetchone()
+    assert row["title"] == "修改后的观点"
+    assert row["instruction"] == "强调边界"
+    assert any(
+        c.get("title") == "用户修改意见" and "强调边界" in c.get("cached_text", "")
+        for c in mock_synthesize.call_args.args[0]
+    )

@@ -207,6 +207,131 @@ def create_garden_card(repo, garden_data: dict) -> str:
     return card_id
 
 
+def _json_text(value) -> str:
+    return json.dumps(value or [], ensure_ascii=False)
+
+
+def _json_list(text: str) -> list:
+    try:
+        value = json.loads(text or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def create_garden_draft(repo, garden_data: dict) -> str:
+    """写入 garden_drafts 表，返回 draft ID。"""
+    draft_id = uuid.uuid4().hex[:12]
+    now = datetime.now(timezone.utc).isoformat()
+    repo.conn.execute(
+        """INSERT INTO garden_drafts (id, title, one_liner, core_arguments,
+           knowledge_links, key_materials, markdown, capture_ids, question_id,
+           instruction, status, committed_card_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_ready', '', ?, ?)""",
+        (
+            draft_id,
+            garden_data.get("title", ""),
+            garden_data.get("one_liner", ""),
+            _json_text(garden_data.get("core_arguments", [])),
+            _json_text(garden_data.get("knowledge_links", [])),
+            _json_text(garden_data.get("key_materials", [])),
+            garden_data.get("markdown", ""),
+            _json_text(garden_data.get("capture_ids", [])),
+            garden_data.get("question_id", ""),
+            garden_data.get("instruction", ""),
+            now,
+            now,
+        ),
+    )
+    repo.conn.commit()
+    return draft_id
+
+
+def get_garden_draft(repo, draft_id: str) -> Optional[dict]:
+    row = repo.conn.execute(
+        "SELECT * FROM garden_drafts WHERE id = ?",
+        (draft_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_latest_open_garden_draft(repo) -> Optional[dict]:
+    row = repo.conn.execute(
+        """SELECT * FROM garden_drafts
+           WHERE status IN ('draft_ready', 'revision_requested')
+           ORDER BY updated_at DESC, created_at DESC
+           LIMIT 1"""
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def update_garden_draft(
+    repo,
+    draft_id: str,
+    garden_data: dict,
+    status: str = "draft_ready",
+) -> Optional[dict]:
+    existing = get_garden_draft(repo, draft_id)
+    if not existing:
+        return None
+
+    now = datetime.now(timezone.utc).isoformat()
+    repo.conn.execute(
+        """UPDATE garden_drafts
+           SET title=?, one_liner=?, core_arguments=?, knowledge_links=?,
+               key_materials=?, markdown=?, instruction=?, status=?, updated_at=?
+           WHERE id=?""",
+        (
+            garden_data.get("title", existing["title"]),
+            garden_data.get("one_liner", existing["one_liner"]),
+            _json_text(
+                garden_data.get(
+                    "core_arguments", _json_list(existing["core_arguments"])
+                )
+            ),
+            _json_text(
+                garden_data.get(
+                    "knowledge_links", _json_list(existing["knowledge_links"])
+                )
+            ),
+            _json_text(
+                garden_data.get("key_materials", _json_list(existing["key_materials"]))
+            ),
+            garden_data.get("markdown", existing["markdown"]),
+            garden_data.get("instruction", existing["instruction"]),
+            status,
+            now,
+            draft_id,
+        ),
+    )
+    repo.conn.commit()
+    return get_garden_draft(repo, draft_id)
+
+
+def commit_garden_draft_to_card(repo, draft_id: str) -> Optional[str]:
+    draft = get_garden_draft(repo, draft_id)
+    if not draft or draft["status"] == "committed":
+        return None
+
+    card_id = create_garden_card(repo, {
+        "title": draft["title"],
+        "one_liner": draft["one_liner"],
+        "core_arguments": _json_list(draft["core_arguments"]),
+        "knowledge_links": _json_list(draft["knowledge_links"]),
+        "key_materials": _json_list(draft["key_materials"]),
+        "capture_ids": _json_list(draft["capture_ids"]),
+    })
+    now = datetime.now(timezone.utc).isoformat()
+    repo.conn.execute(
+        """UPDATE garden_drafts
+           SET status='committed', committed_card_id=?, updated_at=?
+           WHERE id=?""",
+        (card_id, now, draft_id),
+    )
+    repo.conn.commit()
+    return card_id
+
+
 def update_garden_card(repo, card_id: str, garden_data: dict) -> Optional[dict]:
     """更新已有 Garden Card。"""
     existing = repo.conn.execute(

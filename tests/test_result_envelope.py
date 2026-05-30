@@ -146,6 +146,7 @@ def test_next_action_has_stable_fields() -> None:
         "discard_capture_draft",
         "create_theme_page",
         "create_garden_card",
+        "commit_garden_draft",
         "accept_garden_card",
         "archive_garden_card",
         "apply_librarian_repair",

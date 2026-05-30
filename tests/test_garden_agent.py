@@ -6,7 +6,16 @@ import pytest
 from unittest.mock import patch, MagicMock
 from db.schema import init_db
 from db.repo import CaptureRepo
-from agents.garden_agent import GardenAgent, create_garden_card, update_garden_card
+from agents.garden_agent import (
+    GardenAgent,
+    commit_garden_draft_to_card,
+    create_garden_card,
+    create_garden_draft,
+    get_garden_draft,
+    get_latest_open_garden_draft,
+    update_garden_card,
+    update_garden_draft,
+)
 
 
 @pytest.fixture
@@ -101,6 +110,111 @@ def test_update_garden_card(repo):
     ).fetchone()
     assert row["title"] == "更新标题"
     assert row["status"] == "seed"
+
+
+def test_create_and_get_garden_draft(repo):
+    draft_id = create_garden_draft(repo, {
+        "title": "测试观点草稿",
+        "one_liner": "一个还没有确认的观点。",
+        "core_arguments": [{"claim": "观点一", "source_ids": ["cap1"]}],
+        "knowledge_links": ["gc1"],
+        "key_materials": [{"type": "quote", "content": "素材", "capture_id": "cap1"}],
+        "markdown": "# 测试观点草稿\n\n正文",
+        "capture_ids": ["cap1"],
+        "question_id": "q1",
+        "instruction": "从这批材料提炼观点",
+    })
+
+    row = get_garden_draft(repo, draft_id)
+
+    assert row is not None
+    assert row["title"] == "测试观点草稿"
+    assert row["status"] == "draft_ready"
+    assert json.loads(row["capture_ids"]) == ["cap1"]
+    assert json.loads(row["core_arguments"])[0]["claim"] == "观点一"
+
+
+def test_get_latest_open_garden_draft_skips_committed(repo):
+    old_id = create_garden_draft(repo, {
+        "title": "旧草稿",
+        "one_liner": "旧",
+        "core_arguments": [],
+        "knowledge_links": [],
+        "key_materials": [],
+        "markdown": "# 旧草稿\n",
+        "capture_ids": [],
+    })
+    new_id = create_garden_draft(repo, {
+        "title": "新草稿",
+        "one_liner": "新",
+        "core_arguments": [],
+        "knowledge_links": [],
+        "key_materials": [],
+        "markdown": "# 新草稿\n",
+        "capture_ids": [],
+    })
+    repo.conn.execute(
+        "UPDATE garden_drafts SET status='committed' WHERE id=?",
+        (new_id,),
+    )
+    repo.conn.commit()
+
+    latest = get_latest_open_garden_draft(repo)
+
+    assert latest["id"] == old_id
+
+
+def test_update_garden_draft_changes_content_and_instruction(repo):
+    draft_id = create_garden_draft(repo, {
+        "title": "原始草稿",
+        "one_liner": "原始",
+        "core_arguments": [],
+        "knowledge_links": [],
+        "key_materials": [],
+        "markdown": "# 原始草稿\n",
+        "capture_ids": ["cap1"],
+    })
+
+    updated = update_garden_draft(repo, draft_id, {
+        "title": "修改后草稿",
+        "one_liner": "修改后",
+        "core_arguments": [{"claim": "新观点"}],
+        "knowledge_links": [],
+        "key_materials": [],
+        "markdown": "# 修改后草稿\n",
+        "instruction": "更强调边界",
+    })
+
+    assert updated is not None
+    row = get_garden_draft(repo, draft_id)
+    assert row["title"] == "修改后草稿"
+    assert row["instruction"] == "更强调边界"
+    assert json.loads(row["core_arguments"])[0]["claim"] == "新观点"
+
+
+def test_commit_garden_draft_to_card_creates_card_and_marks_draft(repo):
+    draft_id = create_garden_draft(repo, {
+        "title": "可入库观点",
+        "one_liner": "确认后才能进入 garden。",
+        "core_arguments": [{"claim": "草稿先审阅"}],
+        "knowledge_links": [],
+        "key_materials": [],
+        "markdown": "# 可入库观点\n\n确认后内容。",
+        "capture_ids": ["cap1"],
+    })
+
+    card_id = commit_garden_draft_to_card(repo, draft_id)
+
+    assert card_id
+    card = repo.conn.execute(
+        "SELECT * FROM garden_cards WHERE id=?",
+        (card_id,),
+    ).fetchone()
+    draft = get_garden_draft(repo, draft_id)
+    assert card["title"] == "可入库观点"
+    assert card["status"] == "seed"
+    assert draft["status"] == "committed"
+    assert draft["committed_card_id"] == card_id
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")

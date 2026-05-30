@@ -135,3 +135,28 @@ def test_capture_metadata_table_exists(tmp_path):
         "updated_at",
     ]
     conn.close()
+
+
+def test_garden_drafts_table_exists(tmp_path):
+    from db.schema import init_db
+
+    conn = init_db(str(tmp_path / "test.db"))
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(garden_drafts)")]
+
+    assert cols == [
+        "id",
+        "title",
+        "one_liner",
+        "core_arguments",
+        "knowledge_links",
+        "key_materials",
+        "markdown",
+        "capture_ids",
+        "question_id",
+        "instruction",
+        "status",
+        "committed_card_id",
+        "created_at",
+        "updated_at",
+    ]
+    conn.close()

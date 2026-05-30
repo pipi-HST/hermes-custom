@@ -60,6 +60,25 @@ CREATE TABLE IF NOT EXISTS garden_cards (
 )
 """
 
+CREATE_GARDEN_DRAFTS_TABLE = """
+CREATE TABLE IF NOT EXISTS garden_drafts (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    one_liner TEXT NOT NULL DEFAULT '',
+    core_arguments TEXT NOT NULL DEFAULT '[]',
+    knowledge_links TEXT NOT NULL DEFAULT '[]',
+    key_materials TEXT NOT NULL DEFAULT '[]',
+    markdown TEXT NOT NULL DEFAULT '',
+    capture_ids TEXT NOT NULL DEFAULT '[]',
+    question_id TEXT NOT NULL DEFAULT '',
+    instruction TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'draft_ready',
+    committed_card_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 CREATE_PENDING_QUESTIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS pending_questions (
     id TEXT PRIMARY KEY,
@@ -173,6 +192,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
     _migrate_captures_table(conn)
     conn.execute(CREATE_CHANGE_LOG_TABLE)
     conn.execute(CREATE_GARDEN_CARDS_TABLE)
+    conn.execute(CREATE_GARDEN_DRAFTS_TABLE)
     conn.execute(CREATE_PENDING_QUESTIONS_TABLE)
     conn.execute(CREATE_CAPTURE_DRAFTS_TABLE)
     _migrate_capture_drafts_table(conn)

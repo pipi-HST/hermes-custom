@@ -60,6 +60,9 @@ def _get_hermes_tools():
     import tools.show_capture_draft_tool  # noqa
     import tools.search_notes_tool  # noqa
     import tools.theme_scan_tool  # noqa
+    import tools.synthesize_garden_tool  # noqa
+    import tools.revise_garden_draft_tool  # noqa
+    import tools.commit_garden_draft_tool  # noqa
     import tools.record_life_event_tool  # noqa
     import tools.life_tick_tool  # noqa
     from tools.registry import registry
@@ -497,18 +500,26 @@ def test_hermes_audit_library_handler_preserves_confirmation(monkeypatch):
 def test_hermes_synthesize_garden_handler_preserves_confirmation(monkeypatch):
     _skip_if_no_hermes()
     sys.path.insert(0, HERMES_DIR)
-    from bridge.result_envelope import next_action, success_envelope
+    from bridge.result_envelope import artifact_ref, next_action, success_envelope
     import tools.synthesize_garden_tool as garden_tool
 
     expected = success_envelope(
         agent="garden",
         intent="synthesize_garden",
-        chat_preview="已生成知识卡片。",
+        chat_preview="已生成 Garden 草稿。",
+        durable_artifacts=[
+            artifact_ref(
+                type="garden_draft",
+                id="d1",
+                title="观点草稿",
+                status="draft_ready",
+            )
+        ],
         next_actions=[
             next_action(
-                label="确认采用观点",
-                intent="accept_garden_card",
-                payload={"card_id": "g1"},
+                label="确认观点入库",
+                intent="commit_garden_draft",
+                payload={"draft_id": "d1"},
                 requires_confirmation=True,
             )
         ],
@@ -521,6 +532,38 @@ def test_hermes_synthesize_garden_handler_preserves_confirmation(monkeypatch):
 
     assert envelope["agent"] == "garden"
     assert envelope["next_actions"][0]["requires_confirmation"] is True
+    assert envelope["next_actions"][0]["intent"] == "commit_garden_draft"
+
+
+def test_hermes_commit_garden_draft_handler_preserves_artifact(monkeypatch):
+    _skip_if_no_hermes()
+    sys.path.insert(0, HERMES_DIR)
+    from bridge.result_envelope import artifact_ref, success_envelope
+    import tools.commit_garden_draft_tool as commit_tool
+
+    expected = success_envelope(
+        agent="garden",
+        intent="commit_garden_draft",
+        chat_preview="已存入知识花园。",
+        durable_artifacts=[
+            artifact_ref(
+                type="garden_card",
+                id="g1",
+                title="观点",
+                path="garden/观点-g1.md",
+                status="seed",
+            )
+        ],
+    )
+    monkeypatch.setattr(commit_tool, "do_commit", lambda **kwargs: expected)
+
+    envelope = _tool_envelope(
+        commit_tool._handler({"draft_id": "d1"}, task_id="t1", user_task="u1")
+    )
+
+    assert envelope["agent"] == "garden"
+    assert envelope["intent"] == "commit_garden_draft"
+    assert envelope["durable_artifacts"][0]["type"] == "garden_card"
 
 
 def test_hermes_toolset_has_6_tools():
@@ -532,7 +575,8 @@ def test_hermes_toolset_has_6_tools():
     expected = {"capture_content", "refine_capture", "search_my_notes", "log_decision",
                 "wellness_check", "theme_scan", "graph_report", "send_message",
                 "revise_capture_draft", "commit_capture_draft", "synthesize_garden",
-                "daily_review", "show_capture_draft", "audit_library",
+                "revise_garden_draft", "commit_garden_draft", "daily_review",
+                "show_capture_draft", "audit_library",
                 "record_life_event", "life_tick", "review_feedback", "review_followup"}
     assert set(tools) == expected, f"Mismatch: {set(tools) ^ expected}"
 
