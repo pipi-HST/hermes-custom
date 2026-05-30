@@ -53,10 +53,12 @@ LINK_PROMPT = """为以下新 Garden Card 寻找知识关联。
 已有 Garden Cards:
 {existing_cards}
 
-判断与哪些已有 Card 有知识关联。输出 JSON 数组：
+判断与哪些已有 Card 有知识关联。输出完整 id 的 JSON 数组：
 ["garden_card_id_1", "garden_card_id_2"]
 
 只输出 JSON，不要其他内容。没有关联输出 []。"""
+
+INVALID_FILENAME_CHARS = '/:*?"<>|'
 
 def _strip_json_fence(raw: str) -> str:
     text = (raw or "").strip()
@@ -124,11 +126,12 @@ class GardenAgent:
 
         # Step 2: 知识关联
         links = self._step2_link(extracted, existing_garden_cards)
+        links = _normalize_knowledge_links(links, existing_garden_cards)
 
         # 合并生成 Markdown
         title = title or self._generate_title(extracted, captures)
         markdown = self._build_synthesis_markdown(
-            title, extracted, links, captures,
+            title, extracted, links, captures, existing_garden_cards,
         )
 
         return {
@@ -158,7 +161,7 @@ class GardenAgent:
             f"- {a['claim']}" for a in extracted.get("core_arguments", [])[:5]
         )
         cards_text = "\n".join(
-            f"- id={c['id'][:8]} one_liner={c.get('one_liner','')[:60]}"
+            f"- id={c['id']} title={c.get('title','')} one_liner={c.get('one_liner','')[:60]}"
             for c in existing_cards[:20]
         )
         prompt = LINK_PROMPT.format(
@@ -187,7 +190,8 @@ class GardenAgent:
 
     def _build_synthesis_markdown(self, title: str, extracted: dict,
                                    links: list[str],
-                                   captures: list[dict]) -> str:
+                                   captures: list[dict],
+                                   existing_cards: list[dict]) -> str:
         one_liner = extracted.get("one_liner", "").strip() or "（待补充）"
         lines = [
             f"# {title}",
@@ -233,8 +237,9 @@ class GardenAgent:
 
         lines.extend(["", "## 知识关联"])
         if links:
+            card_lookup = {str(card.get("id", "")): card for card in existing_cards}
             for link in links[:8]:
-                lines.append(f"- {link}")
+                lines.append(f"- {_format_knowledge_link(link, card_lookup)}")
         else:
             lines.append("- 暂无关联")
 
@@ -263,6 +268,45 @@ class GardenAgent:
             )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
+
+
+def _safe_garden_file_stem(title: str, card_id: str) -> str:
+    cleaned = "".join(ch for ch in title if ch not in INVALID_FILENAME_CHARS).strip()
+    cleaned = cleaned[:48] or "未命名观点"
+    return f"{cleaned}-{card_id}"
+
+
+def _normalize_knowledge_links(links: list[str], existing_cards: list[dict]) -> list[str]:
+    card_ids = [
+        str(card.get("id", "")).strip()
+        for card in existing_cards
+        if str(card.get("id", "")).strip()
+    ]
+    normalized = []
+    for raw_link in links or []:
+        link = str(raw_link).strip()
+        if not link:
+            continue
+        match = _resolve_card_id(link, card_ids)
+        if match and match not in normalized:
+            normalized.append(match)
+    return normalized
+
+
+def _resolve_card_id(link: str, card_ids: list[str]) -> str:
+    if link in card_ids:
+        return link
+    matches = [card_id for card_id in card_ids if card_id.startswith(link)]
+    return matches[0] if len(matches) == 1 else ""
+
+
+def _format_knowledge_link(link: str, card_lookup: dict[str, dict]) -> str:
+    card = card_lookup.get(str(link).strip())
+    if not card:
+        return str(link).strip()
+    title = str(card.get("title", "")).strip() or str(link).strip()
+    target = _safe_garden_file_stem(title, str(link).strip())
+    return f"[[garden/{target}|{title}]]"
 
 
 def create_garden_card(repo, garden_data: dict) -> str:

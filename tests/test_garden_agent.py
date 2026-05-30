@@ -179,6 +179,38 @@ def test_synthesize_renders_focused_garden_card_instead_of_material_dump(mock_ca
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")
+def test_synthesize_renders_knowledge_links_as_obsidian_links(mock_call):
+    mock_call.side_effect = [
+        json.dumps({
+            "title": "AI 落地卡在工程底座",
+            "one_liner": "AI 落地需要工程底座和工作流承接。",
+            "core_arguments": [
+                {"claim": "没有工程约束，AI 会放大混乱。", "source_ids": ["cap1"]},
+            ],
+            "key_materials": [],
+        }),
+        json.dumps(["23a4f10b"]),
+    ]
+    agent = GardenAgent(llm_api_key="test")
+
+    result = agent.synthesize(
+        [{"id": "cap1", "title": "AI 企业落地", "cached_text": "内容"}],
+        [{
+            "id": "23a4f10bc173",
+            "title": "AI价值取决于工程底座与主动工作流整合",
+            "one_liner": "AI价值取决于工程底座与主动工作流整合",
+        }],
+    )
+
+    assert result["knowledge_links"] == ["23a4f10bc173"]
+    assert (
+        "- [[garden/AI价值取决于工程底座与主动工作流整合-23a4f10bc173|"
+        "AI价值取决于工程底座与主动工作流整合]]"
+    ) in result["markdown"]
+    assert "\n- 23a4f10b\n" not in result["markdown"]
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
 def test_step1_prompt_requires_precise_single_source_materials(mock_call):
     mock_call.return_value = json.dumps({
         "title": "来源要精确",
