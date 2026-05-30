@@ -93,6 +93,7 @@ def test_create_garden_card(repo):
 @patch("agents.garden_agent.GardenAgent._call_llm")
 def test_synthesize_renders_card_markdown_not_internal_prompt(mock_call):
     mock_call.return_value = json.dumps({
+        "title": "按不确定性调节 Agent 复杂度",
         "one_liner": "AI Agent 复杂度应按任务不确定性递增",
         "core_arguments": [
             {
@@ -116,11 +117,89 @@ def test_synthesize_renders_card_markdown_not_internal_prompt(mock_call):
         [],
     )
 
-    assert result["markdown"].startswith("# AI Agent 复杂度应按任务不确定性")
+    assert result["markdown"].startswith("# 按不确定性调节 Agent 复杂度")
     assert "先用简单工作流" in result["markdown"]
     assert "始终从最简单的方案开始" in result["markdown"]
     assert "将以下结构化信息" not in result["markdown"]
     assert "输出 Markdown" not in result["markdown"]
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
+def test_synthesize_uses_distinct_title_when_model_provides_one(mock_call):
+    mock_call.return_value = json.dumps({
+        "title": "AI 落地卡在工程底座",
+        "one_liner": "AI 的价值不是由模型单独决定，而是由工程底座和工作流整合决定。",
+        "core_arguments": [
+            {"claim": "模型能力只有嵌入真实流程才会转化为组织收益。", "source_ids": ["cap1"]},
+        ],
+        "key_materials": [],
+    })
+    agent = GardenAgent(llm_api_key="test")
+
+    result = agent.synthesize(
+        [{"id": "cap1", "title": "AI 企业落地", "cached_text": "内容"}],
+        [],
+    )
+
+    assert result["title"] == "AI 落地卡在工程底座"
+    assert result["title"] != result["one_liner"]
+    assert result["markdown"].startswith("# AI 落地卡在工程底座")
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
+def test_synthesize_renders_focused_garden_card_instead_of_material_dump(mock_call):
+    mock_call.return_value = json.dumps({
+        "title": "AI 落地卡在组织转译",
+        "one_liner": "AI 不是自动产生价值的工具，只有被转译进工程约束和日常流程才会产生组织收益。",
+        "core_arguments": [
+            {"claim": f"支撑判断 {idx}", "consensus": idx % 2 == 0, "source_ids": [f"cap{idx}"]}
+            for idx in range(1, 11)
+        ],
+        "key_materials": [
+            {"type": "quote", "content": f"关键材料 {idx}", "capture_id": f"cap{idx}"}
+            for idx in range(1, 9)
+        ],
+    })
+    agent = GardenAgent(llm_api_key="test")
+
+    result = agent.synthesize(
+        [{"id": f"cap{idx}", "title": f"材料 {idx}", "cached_text": "内容"}
+         for idx in range(1, 6)],
+        [],
+    )
+
+    markdown = result["markdown"]
+    assert "## 我的判断" in markdown
+    assert "## 为什么值得留下" in markdown
+    assert "## 依据" in markdown
+    assert "## 核心观点" not in markdown
+    assert "## 支撑材料" not in markdown
+    assert markdown.count("- 支撑判断") <= 4
+    assert markdown.count("- 关键材料") <= 4
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
+def test_step1_prompt_requires_precise_single_source_materials(mock_call):
+    mock_call.return_value = json.dumps({
+        "title": "来源要精确",
+        "one_liner": "Garden 依据必须能追溯到明确来源。",
+        "core_arguments": [],
+        "key_materials": [],
+    })
+    agent = GardenAgent(llm_api_key="test")
+
+    agent.synthesize(
+        [
+            {"id": "cap1", "title": "材料一", "cached_text": "84% 从未用过 AI"},
+            {"id": "cap2", "title": "材料二", "cached_text": "故障减少50%"},
+        ],
+        [],
+    )
+
+    prompt = mock_call.call_args.args[0]
+    assert "每条 key_materials 只能来自一篇 capture" in prompt
+    assert "混合多篇材料" in prompt
+    assert "capture_id 必须对应" in prompt
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")

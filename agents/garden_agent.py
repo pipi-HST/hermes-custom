@@ -18,14 +18,23 @@ EXTRACT_PROMPT = """分析以下知识库内容，提取结构化信息。
 
 输出 JSON（不要 markdown 代码块）：
 {{
-  "one_liner": "一句话核心结论（30字以内）",
+  "title": "观点标题（不要和 one_liner 重复，18字以内）",
+  "one_liner": "一句话判断。要表达因果、张力或边界，不要只是主题名。",
   "core_arguments": [
-    {{"claim": "论点", "consensus": true|false, "source_ids": ["capture_id"]}}
+    {{"claim": "支撑这个判断的关键理由，不要逐篇罗列材料", "consensus": true|false, "source_ids": ["capture_id"]}}
   ],
   "key_materials": [
-    {{"type": "quote|data|case", "content": "原文段落", "capture_id": "xxx"}}
+    {{"type": "quote|data|case", "content": "最能支撑判断的依据，不要收集所有材料", "capture_id": "xxx"}}
   ]
-}}"""
+}}
+
+要求：
+- 先提炼一个中心判断，再选材料支撑它。
+- Garden Card 不是摘要清单；不要把每篇文章的要点都摊开。
+- core_arguments 保留 3-5 条，key_materials 保留 3-5 条。
+- 每条 key_materials 只能来自一篇 capture；如果依据混合多篇材料，必须拆成多条。
+- capture_id 必须对应这条 key_materials 的真实来源，不要把别篇材料的数字或案例合并到同一个来源下。
+- title 是给人扫视的短标题，one_liner 是完整判断，两者不要复读。"""
 
 JSON_REPAIR_PROMPT = """下面文本本应是一个 JSON 对象，但格式不合法。
 
@@ -165,7 +174,15 @@ class GardenAgent:
             return []
 
     def _generate_title(self, extracted: dict, captures: list[dict]) -> str:
+        model_title = str(extracted.get("title", "")).strip()
         one_liner = extracted.get("one_liner", "")
+        if model_title and model_title != one_liner:
+            return model_title[:48]
+        claims = extracted.get("core_arguments", [])
+        for claim in claims:
+            text = str(claim.get("claim", "")).strip()
+            if text and text != one_liner:
+                return text[:24]
         return one_liner[:20] if one_liner else (captures[0].get("title", "")[:20] or "未命名")
 
     def _build_synthesis_markdown(self, title: str, extracted: dict,
@@ -175,29 +192,28 @@ class GardenAgent:
         lines = [
             f"# {title}",
             "",
-            "## 一句话",
+            "## 我的判断",
             one_liner,
             "",
-            "## 核心观点",
+            "## 为什么值得留下",
         ]
 
         arguments = extracted.get("core_arguments", [])
         if arguments:
-            for argument in arguments:
+            for argument in arguments[:4]:
                 claim = str(argument.get("claim", "")).strip()
                 if not claim:
                     continue
                 sources = argument.get("source_ids") or []
                 source_text = f"（来源：{', '.join(sources)}）" if sources else ""
-                prefix = "共识" if argument.get("consensus") else "观点"
-                lines.append(f"- [{prefix}] {claim}{source_text}")
+                lines.append(f"- {claim}{source_text}")
         else:
             lines.append("- （待补充）")
 
-        lines.extend(["", "## 支撑材料"])
+        lines.extend(["", "## 依据"])
         materials = extracted.get("key_materials", [])
         if materials:
-            for material in materials[:8]:
+            for material in materials[:4]:
                 material_type = str(material.get("type", "material")).strip()
                 content = str(material.get("content", "")).strip()
                 capture_id = str(material.get("capture_id", "")).strip()
