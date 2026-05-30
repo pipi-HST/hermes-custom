@@ -46,6 +46,19 @@ def test_parser_keeps_manual_status_query_out_of_records() -> None:
     assert intent.event_type == ""
 
 
+def test_parser_extracts_planned_exercise_time_and_type() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "我打算下午6点练八段锦。",
+        received_at=datetime.fromisoformat("2026-05-30T17:37:49+08:00"),
+    )
+
+    assert intent.intent == "reschedule_exercise"
+    assert intent.scheduled_for == "2026-05-30T18:00:00+08:00"
+    assert intent.payload["exercise_type"] == "八段锦"
+
+
 def test_parser_uses_fallback_only_when_rules_do_not_match() -> None:
     calls = []
 

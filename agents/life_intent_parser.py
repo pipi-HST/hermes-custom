@@ -42,11 +42,12 @@ class LifeIntentParser:
         if text == "今天不练了":
             return LifeIntent(intent="skip_exercise")
 
-        scheduled_for = _parse_exercise_reschedule(text, received_at)
-        if scheduled_for:
+        exercise_schedule = _parse_exercise_schedule(text, received_at)
+        if exercise_schedule:
             return LifeIntent(
                 intent="reschedule_exercise",
-                scheduled_for=scheduled_for.isoformat(),
+                scheduled_for=exercise_schedule["scheduled_for"].isoformat(),
+                payload=exercise_schedule.get("payload", {}),
             )
 
         if text == "撤销上一条":
@@ -57,6 +58,14 @@ class LifeIntentParser:
                 intent="record_event",
                 event_type="sleep_start",
                 occurred_at=received_at.isoformat(),
+            )
+
+        sleep_start_time = _parse_sleep_start_time(text, received_at)
+        if sleep_start_time:
+            return LifeIntent(
+                intent="record_event",
+                event_type="sleep_start",
+                occurred_at=sleep_start_time.isoformat(),
             )
 
         wake_time = _parse_wake_time(text, received_at)
@@ -221,19 +230,35 @@ def _parse_exercise(text: str) -> dict[str, Any] | None:
     return {"exercise_type": match.group(1), "duration_minutes": duration}
 
 
-def _parse_exercise_reschedule(text: str, received: datetime) -> datetime | None:
-    if "提醒我运动" not in text:
+def _parse_exercise_schedule(text: str, received: datetime) -> dict[str, Any] | None:
+    is_reminder_request = "提醒我运动" in text
+    is_planned_exercise = any(keyword in text for keyword in ("打算", "计划", "准备")) and any(
+        keyword in text for keyword in ("运动", "跑步", "健身", "快走", "散步", "骑车", "游泳", "练", "训练")
+    )
+    if not is_reminder_request and not is_planned_exercise:
         return None
-    match = re.search(r"(上午|中午|下午|晚上)?\s*(\d{1,2})\s*点", text)
-    if not match:
+    scheduled_for = _parse_clock_time(text, received)
+    if not scheduled_for:
         return None
-    hour = int(match.group(2))
-    period = match.group(1) or ""
-    if period in {"下午", "晚上"} and hour < 12:
-        hour += 12
-    if period == "中午" and hour < 11:
-        hour += 12
-    return received.replace(hour=hour, minute=0, second=0, microsecond=0)
+    payload: dict[str, Any] = {}
+    exercise_type = _parse_planned_exercise_type(text)
+    if exercise_type:
+        payload["exercise_type"] = exercise_type
+    return {"scheduled_for": scheduled_for, "payload": payload}
+
+
+def _parse_planned_exercise_type(text: str) -> str:
+    match = re.search(r"练\s*([^。，,.！!\s]+)", text)
+    return match.group(1) if match else ""
+
+
+def _parse_sleep_start_time(text: str, received: datetime) -> datetime | None:
+    if "睡" not in text or "睡到" in text:
+        return None
+    parsed = _parse_clock_time(text, received)
+    if parsed and parsed > received + timedelta(minutes=5):
+        parsed = parsed - timedelta(days=1)
+    return parsed
 
 
 def _parse_wake_time(text: str, received: datetime) -> datetime | None:
@@ -246,12 +271,17 @@ def _parse_wake_time(text: str, received: datetime) -> datetime | None:
 
 
 def _parse_clock_time(text: str, received: datetime) -> datetime | None:
-    match = re.search(r"(凌晨|早上|上午|中午|下午|晚上)?\s*(\d{1,2})\s*点\s*(半|(\d{1,2})\s*分?)?", text)
+    match = re.search(
+        r"(凌晨|早上|上午|中午|下午|晚上)?\s*([0-9一二两三四五六七八九十]{1,3})\s*点\s*(半|([0-9一二两三四五六七八九十]{1,3})\s*分?)?",
+        text,
+    )
     if not match:
         return None
     period = match.group(1) or ""
-    hour = int(match.group(2))
-    minute = 30 if match.group(3) == "半" else int(match.group(4) or 0)
+    hour = _parse_number(match.group(2))
+    minute = 30 if match.group(3) == "半" else _parse_number(match.group(4) or "0")
+    if hour is None or minute is None:
+        return None
     if period in {"下午", "晚上"} and hour < 12:
         hour += 12
     if period == "中午" and hour < 11:
@@ -261,6 +291,37 @@ def _parse_clock_time(text: str, received: datetime) -> datetime | None:
     if not 0 <= hour <= 23 or not 0 <= minute <= 59:
         return None
     return received.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def _parse_number(text: str) -> int | None:
+    if text.isdigit():
+        return int(text)
+    digits = {
+        "零": 0,
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    if text in digits:
+        return digits[text]
+    if text == "十":
+        return 10
+    if text.startswith("十") and len(text) == 2 and text[1] in digits:
+        return 10 + digits[text[1]]
+    if text.endswith("十") and len(text) == 2 and text[0] in digits:
+        return digits[text[0]] * 10
+    if "十" in text:
+        left, right = text.split("十", 1)
+        if left in digits and right in digits:
+            return digits[left] * 10 + digits[right]
+    return None
 
 
 def _parse_meal(text: str, received: datetime) -> dict[str, Any] | None:

@@ -70,15 +70,17 @@ class LifeAgent:
                 scheduled_for = _parse_datetime(intent.scheduled_for)
             except ValueError:
                 return _rejected("这条我暂时不能作为生活记录保存。")
+            payload = {"source": "user_reschedule", **intent.payload}
             self.repo.create_reminder_log(
                 reminder_type="exercise",
                 scheduled_for=scheduled_for.isoformat(),
                 status="scheduled",
                 dedupe_key=f"exercise_reschedule:{scheduled_for.isoformat()}",
-                payload={"source": "user_reschedule"},
+                payload=payload,
             )
+            exercise_type = payload.get("exercise_type", "运动")
             return {
-                **_reminder_updated(f"已把运动提醒改到{_fmt_time(scheduled_for)}。"),
+                **_reminder_updated(f"已把{exercise_type}提醒改到{_fmt_time(scheduled_for)}。"),
                 "scheduled_for": scheduled_for.isoformat(),
             }
 
@@ -116,6 +118,12 @@ class LifeAgent:
                 raw_text=message,
                 payload=intent.payload or None,
             )
+            paired_end = self._backfill_next_sleep_end(event)
+            if paired_end and paired_end.get("duration_minutes") is not None:
+                return _recorded(
+                    event,
+                    f"已记录睡觉时间：{_fmt_time(occurred)}，睡了{_fmt_duration(paired_end['duration_minutes'])}。",
+                )
             return _recorded(event, f"已记录睡觉时间：{_fmt_time(occurred)}。")
 
         if intent.event_type == "sleep_end":
@@ -250,6 +258,26 @@ class LifeAgent:
             (row["occurred_at"],),
         ).fetchone()
         return None if end else self.repo._event_row_to_dict(row)
+
+    def _backfill_next_sleep_end(self, sleep_start: dict[str, Any]) -> dict[str, Any] | None:
+        row = self.repo.conn.execute(
+            """SELECT * FROM life_events
+               WHERE event_type = 'sleep_end'
+                 AND duration_minutes IS NULL
+                 AND occurred_at > ?
+               ORDER BY occurred_at ASC, rowid ASC
+               LIMIT 1""",
+            (sleep_start["occurred_at"],),
+        ).fetchone()
+        if not row:
+            return None
+        sleep_end = self.repo._event_row_to_dict(row)
+        started_at = _parse_datetime(sleep_start["occurred_at"])
+        ended_at = _parse_datetime(sleep_end["occurred_at"])
+        if started_at.date() != ended_at.date():
+            return None
+        duration = max(0, round((ended_at - started_at).total_seconds() / 60))
+        return self.repo.update_event(sleep_end["id"], duration_minutes=duration)
 
     def _sedentary_candidate(
         self,

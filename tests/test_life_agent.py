@@ -43,6 +43,24 @@ def test_records_wake_with_explicit_noon_time(agent: LifeAgent) -> None:
     assert "11小时30分钟" in end["chat_preview"]
 
 
+def test_backfills_sleep_duration_when_start_is_recorded_after_wake(agent: LifeAgent) -> None:
+    wake = agent.record_life_event(
+        "中午13点半醒的",
+        received_at="2026-05-30T17:35:54+08:00",
+    )
+
+    start = agent.record_life_event(
+        "今天凌晨三点半睡的",
+        received_at="2026-05-30T17:36:41+08:00",
+    )
+
+    updated_wake = agent.repo.get_event(wake["event"]["id"])
+    assert start["status"] == "recorded"
+    assert start["event"]["event_type"] == "sleep_start"
+    assert updated_wake["duration_minutes"] == 600
+    assert "10小时" in start["chat_preview"]
+
+
 class FakeParser:
     def parse(self, message, *, received_at):
         if message == "我睡了":
@@ -170,6 +188,21 @@ def test_reschedules_exercise_reminder(agent: LifeAgent) -> None:
     assert result["event"] is None
     assert result["scheduled_for"] == "2026-05-29T16:00:00+08:00"
     assert agent.repo.count_reminder_logs("exercise") == 1
+
+
+def test_planned_exercise_time_creates_scheduled_exercise_reminder(agent: LifeAgent) -> None:
+    result = agent.record_life_event(
+        "我打算下午6点练八段锦。",
+        received_at="2026-05-30T17:37:49+08:00",
+    )
+
+    row = agent.repo.conn.execute(
+        "SELECT * FROM life_reminder_logs WHERE reminder_type = 'exercise'"
+    ).fetchone()
+    assert result["status"] == "reminder_updated"
+    assert result["scheduled_for"] == "2026-05-30T18:00:00+08:00"
+    assert row["scheduled_for"] == "2026-05-30T18:00:00+08:00"
+    assert "八段锦" in row["payload_json"]
 
 
 def test_exercise_reschedule_delays_next_tick_until_scheduled_time(agent: LifeAgent) -> None:
