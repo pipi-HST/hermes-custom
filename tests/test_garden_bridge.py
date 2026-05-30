@@ -126,6 +126,48 @@ def test_synthesize_garden_creates_reviewable_draft_not_card(repo, tmp_path):
     assert not (tmp_path / "garden").exists()
 
 
+def test_synthesize_garden_accepts_unique_capture_id_prefix(repo, tmp_path):
+    """Garden 合成应接受唯一 capture id 前缀，避免主 Agent 从文件名取短 id 后失败。"""
+    from bridge.garden_bridge import synthesize_garden
+
+    captures_dir = tmp_path / "captures"
+    captures_dir.mkdir()
+    (captures_dir / "cap.md").write_text(
+        "---\ntitle: 前缀素材\nstory: 摘要\n---\n\n正文内容\n",
+        encoding="utf-8",
+    )
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path, created_at) VALUES (?, ?, datetime('now'))",
+        ("2bafca34bdd7", "captures/cap.md"),
+    )
+    repo.conn.commit()
+
+    agent_result = {
+        "title": "前缀观点",
+        "one_liner": "短 id 也应解析到唯一 capture。",
+        "core_arguments": [{"claim": "避免无效重试", "source_ids": ["2bafca34bdd7"]}],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": "# 前缀观点\n\n正文",
+    }
+    db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
+
+    with patch("bridge.garden_bridge.load_config") as mock_cfg, \
+            patch.object(GardenAgent, "synthesize", return_value=agent_result) as mock_synthesize:
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        result = synthesize_garden(capture_ids=["2bafca34"])
+
+    assert result["status"] == "success"
+    assert result["meta"]["capture_ids"] == ["2bafca34bdd7"]
+    assert mock_synthesize.call_args.args[0][0]["id"] == "2bafca34bdd7"
+
+
 def test_commit_garden_draft_writes_card_file_and_marks_draft(repo, tmp_path):
     """确认 Garden Draft 后才写 garden_cards 和 Obsidian 文件。"""
     from agents.garden_agent import create_garden_draft

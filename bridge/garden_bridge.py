@@ -48,6 +48,22 @@ def _json_list(text: str) -> list:
     return value if isinstance(value, list) else []
 
 
+def _resolve_capture_row(conn, capture_id: str):
+    capture_id = (capture_id or "").strip()
+    if not capture_id:
+        return None
+    row = conn.execute("SELECT * FROM captures WHERE id = ?", (capture_id,)).fetchone()
+    if row:
+        return row
+    if len(capture_id) < 6:
+        return None
+    rows = conn.execute(
+        "SELECT * FROM captures WHERE id LIKE ? ORDER BY updated_at DESC LIMIT 2",
+        (f"{capture_id}%",),
+    ).fetchall()
+    return rows[0] if len(rows) == 1 else None
+
+
 def _draft_preview(title: str, one_liner: str, arguments: list[dict], draft_id: str) -> str:
     claims = []
     for item in arguments[:4]:
@@ -124,7 +140,7 @@ def synthesize_garden(capture_ids: list[str] = None,
     # 获取并 hydrate captures
     raw_rows = []
     for cid in capture_ids:
-        row = conn.execute("SELECT * FROM captures WHERE id = ?", (cid,)).fetchone()
+        row = _resolve_capture_row(conn, cid)
         if row:
             raw_rows.append(dict(row))
 
@@ -135,6 +151,7 @@ def synthesize_garden(capture_ids: list[str] = None,
             error="未找到任何有效的 capture",
         )
 
+    capture_ids = [r["id"] for r in raw_rows]
     captures = [_hydrate_capture(vault_path, r) for r in raw_rows]
 
     # 获取现有 garden cards（用于关联）
