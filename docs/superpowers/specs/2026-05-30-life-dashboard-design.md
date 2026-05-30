@@ -4,16 +4,19 @@ Date: 2026-05-30
 
 ## Positioning
 
-Life Dashboard is a read-only operational dashboard for Life Assistant. Its first job is to make the reminder-record pipeline visible: what was recorded, what was calculated, what reminders ran, and whether the scheduler is healthy.
+Life Dashboard is a read-only personal activity log for Life Assistant. Its first job is to make the user's real-life records visible: sitting windows, sleep, meals, water, exercise plans, and exercise completions.
 
-It is not a manual query tool, not a record editor, and not a new Life interaction channel. User-facing Life interactions still happen through WeChat/Hermes. The dashboard exists for inspection, debugging, and confidence.
+It is not an Agent activity log. Reminder attempts, dedupe keys, tick status, and other scheduler evidence are diagnostic details, not the main product surface.
+
+It is also not a manual query tool, record editor, or new Life interaction channel. User-facing Life interactions still happen through WeChat/Hermes. The dashboard exists for inspection, confidence, and lightweight lifestyle review.
 
 ## Goals
 
-- Show whether Life Assistant is actually writing `life_*` data.
-- Show daily sitting and sedentary metrics without reading SQLite manually.
-- Show sleep, exercise, water, and meal records in a scannable timeline.
-- Show reminder logs and latest tick evidence so repeated reminders or failed cron jobs are easy to diagnose.
+- Show detailed personal activity records without reading SQLite manually.
+- Show daily sitting and sedentary metrics, including each sitting window.
+- Show the active sitting window as a live timer that updates at least once per second.
+- Show sleep, exercise, water, and meal records with useful detail, not just counts.
+- Keep scheduler diagnostics available but visually secondary and collapsed by default.
 - Reuse the existing `dashboard/` Next.js app and `api/` FastAPI backend.
 - Keep Life dashboard code separate from existing knowledge/capture dashboard code.
 
@@ -25,6 +28,7 @@ It is not a manual query tool, not a record editor, and not a new Life interacti
 - No new standalone frontend service.
 - No changes to capture, theme, garden, or knowledge-management flows.
 - No Obsidian sync for Life records.
+- No Agent-log-first UI. The primary surface should be about the user's activity, not tool calls.
 
 ## Recommended Approach
 
@@ -39,34 +43,52 @@ This gives the user one local dashboard app while keeping the Life surface logic
 
 ## Page Structure
 
-The first page is a hybrid operations board.
+The first page is a module-based personal activity log.
 
 Top area:
 
 - Date controls: today, yesterday, previous day, next day, and 7-day quick range.
-- Health metric cards:
+- Compact daily summary:
   - accumulated sitting time
   - sedentary over-limit time
-  - exercise status
-  - sleep, water, and meal counts
+  - active sitting status
+  - sleep, water, meal, and exercise presence
 
 Middle area:
 
-- Life event timeline, sorted by `occurred_at`.
-- Each row shows time, event type, short summary, duration when available, source, and status.
+- Module sections:
+  - sitting records
+  - sleep records
+  - meal records
+  - water records
+  - exercise records
 
-Right or lower area:
+Sitting module:
 
-- Reminder and scheduler evidence:
-  - latest reminder logs
-  - reminder type
-  - scheduled time
-  - status
-  - dedupe key
-  - payload summary
-  - latest tick freshness indicator when available
+- Show the active sitting window prominently when present.
+- The active timer should update on the client every second and display hours, minutes, and seconds.
+- Show each completed sitting window as a row with start time, end time, duration, and whether it crossed the sedentary threshold.
+- Show total sitting time and sedentary over-limit time near the active timer.
 
-The page should favor dense but calm operational UI. It should look like a local debugging console with health context, not a marketing page.
+Sleep module:
+
+- Show individual sleep start and wake records.
+- Show paired sessions when possible.
+- Show unpaired records explicitly instead of hiding them behind a count.
+
+Meal, water, and exercise modules:
+
+- Show each record with time and content.
+- Meal rows show meal slot and content.
+- Water rows show the original water record and time.
+- Exercise rows show completed exercise records and scheduled exercise plans separately when available.
+
+Lower area:
+
+- A collapsed diagnostic section for reminder logs and scheduler evidence.
+- This section may show reminder type, scheduled time, status, dedupe key, payload, and errors, but it must not be the default reading experience.
+
+The page should favor dense but readable personal logging. It should feel like a lifestyle ledger with a real-time sitting panel, not a local debugging console and not a marketing page.
 
 ## Metrics
 
@@ -76,7 +98,8 @@ Sitting metrics:
 
 - `sitting_total_minutes`: sum of completed sitting windows for the selected day.
 - `sedentary_over_limit_minutes`: sum of completed sitting windows whose duration is at least 60 minutes.
-- Active sitting windows may be shown separately as "in progress" but should not be mixed into completed totals unless explicitly labeled.
+- `active_sitting_elapsed_seconds`: derived in the browser from active sitting `occurred_at` and current time.
+- The UI may show a real-time displayed total that adds active elapsed time to completed sitting time, but the label must make this clear.
 
 Record metrics:
 
@@ -90,6 +113,7 @@ Reminder metrics:
 - most recent reminders by type
 - statuses such as `scheduled`, `sending`, `skipped`, `paused`, `auto_resolved`, and `failed`
 - repeated reminder evidence via `dedupe_key`
+- reminder metrics are diagnostic-only in the main page.
 
 ## API Design
 
@@ -119,11 +143,14 @@ The page should:
 - show loading and empty states
 - show API failure as an inline diagnostic state
 - preserve readable Chinese labels
+- group visible content by personal activity module
+- render the active sitting timer with client-side per-second updates
+- keep reminder diagnostics collapsed by default
 - avoid changing the existing capture page route
 
 Visual tone:
 
-- utilitarian, compact, local-operations style
+- personal ledger, compact, readable
 - clear metric hierarchy
 - high information density without decorative hero sections
 - no nested cards inside cards
@@ -154,7 +181,9 @@ Backend tests:
 Frontend checks:
 
 - dashboard builds successfully
-- `/life` renders metric cards, timeline, and reminder evidence
+- `/life` renders module sections for sitting, sleep, meals, water, and exercise
+- active sitting timer renders from active sitting data
+- reminder diagnostics are present but collapsed by default
 - empty and error states are visible
 
 Manual verification:
@@ -167,9 +196,10 @@ Manual verification:
 ## Acceptance Criteria
 
 - The user can open `/life` and see today's Life records without touching SQLite.
-- Sitting total and sedentary over-limit time are visible.
-- Exercise, sleep, water, and meals are visible when recorded.
-- Reminder logs are visible enough to debug duplicate or failed reminders.
+- Sitting total, sedentary over-limit time, and current active sitting timer are visible.
+- Each completed sitting window is visible as its own row.
+- Exercise, sleep, water, and meals are visible with record details when recorded.
+- Reminder logs are available in a collapsed diagnostic section.
 - Existing dashboard home page still works.
 - No write actions are exposed.
 - Life code remains isolated from knowledge/capture code except for shared app shell and config loading.

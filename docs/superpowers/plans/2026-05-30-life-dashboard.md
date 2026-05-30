@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a read-only `/life` dashboard that shows Life Assistant daily metrics, records, and reminder evidence.
+**Goal:** Add a read-only `/life` dashboard that shows the user's Life Assistant activity records as a personal lifestyle log.
 
-**Architecture:** Add a Life-only FastAPI route module that reads `life_*` tables from the existing SQLite database. Add a Life-only Next.js page and API helper that render summary cards, event timeline, and reminder logs without changing the existing capture timeline.
+**Architecture:** Add a Life-only FastAPI route module that reads `life_*` tables from the existing SQLite database. Add a Life-only Next.js page and API helper that render module-based personal records: sitting, sleep, meals, water, and exercise. Reminder logs remain available only as collapsed diagnostics.
 
 **Tech Stack:** FastAPI, SQLite, pytest, Next.js Pages Router, React, Tailwind CSS.
 
@@ -30,7 +30,8 @@
 - Create: `dashboard/src/lib/lifeApi.ts`
 
 - [ ] Implement typed Life API helpers.
-- [ ] Implement `/life` page with Chinese labels, metric cards, timeline, reminder log panel, loading state, empty state, and error state.
+- [ ] Implement `/life` page with Chinese labels, module sections, live active-sitting timer, detailed sitting windows, detailed sleep/meal/water/exercise rows, loading state, empty state, and error state.
+- [ ] Keep reminder logs in a collapsed diagnostic section rather than the primary layout.
 - [ ] Run `npm run build` in `dashboard/` and fix any type/build errors.
 
 ### Task 3: Verification and Runtime
