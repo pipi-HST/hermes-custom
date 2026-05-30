@@ -22,7 +22,7 @@ def run_daily_review() -> dict:
         meta={
             "item_count": len(result),
             "review_item_ids": [
-                m["item_id"] for m in result if m.get("type") == "review_item"
+                m["item_id"] for m in result if m.get("type") == "review_explanation"
             ],
         },
     )
@@ -36,7 +36,7 @@ def record_review_feedback(item_id: str, outcome: str) -> dict:
     if not updated:
         chat_preview = f"没有找到复习项，或反馈类型不支持：{item_id}"
     else:
-        chat_preview = "已更新这条复习的进度。"
+        chat_preview = "已更新这条回顾偏好。"
     return success_envelope(
         agent="review",
         intent="record_review_feedback",
@@ -46,18 +46,25 @@ def record_review_feedback(item_id: str, outcome: str) -> dict:
 
 
 def _format_daily_review_preview(messages: list[dict]) -> str:
-    review_items = [m for m in messages if m.get("type") == "review_item"]
+    review_items = [m for m in messages if m.get("type") == "review_explanation"]
     garden_items = [m for m in messages if m.get("type") == "garden_review"]
     summaries = [m["text"] for m in messages if m.get("type") == "daily_summary"]
 
     lines: list[str] = []
     if review_items:
-        lines.append(f"今日复习 {len(review_items)} 条：")
-        for idx, item in enumerate(review_items, 1):
-            lines.append("")
-            lines.append(f"{idx}. {item.get('title') or '未命名'}")
-            lines.append(item.get("text", ""))
-            lines.append(f"复习项：{item.get('item_id', '')}")
+        item = review_items[0]
+        topic = item.get("topic") or item.get("title") or "未命名"
+        lines.append(f"今日回顾：{topic}")
+        lines.append("")
+        lines.append(f"来源：{item.get('source_path') or '未知来源'}")
+        lines.append(
+            f"这个点已讲过 {item.get('view_count', 0)} 次；"
+            f"这篇材料已被回顾 {item.get('capture_view_count', 0)} 次。"
+        )
+        lines.append("")
+        lines.append(item.get("text", ""))
+        lines.append("")
+        lines.append(f"复习项：{item.get('item_id', '')}")
 
     for item in garden_items:
         if lines:
@@ -72,5 +79,6 @@ def _format_daily_review_preview(messages: list[dict]) -> str:
     if not lines:
         return "今日无回顾项目。"
     lines.append("")
-    lines.append("回复“记得/忘了/跳过 + 复习项编号”，我会更新复习进度。")
+    lines.append("你可以继续问：展开一下 / 举例 / 和另一篇对比 / 这对我有什么启发。")
+    lines.append("也可以回复：有用 / 以后再讲 / 不用复习 + 复习项编号。")
     return "\n".join(lines)

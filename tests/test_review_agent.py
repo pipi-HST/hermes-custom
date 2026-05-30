@@ -46,6 +46,14 @@ def test_is_due_mastered():
     assert is_due("2020-01-01T00:00:00+00:00", "mastered") is False
 
 
+def test_review_items_schema_tracks_view_counts(repo):
+    columns = {
+        row[1] for row in repo.conn.execute("PRAGMA table_info(review_items)").fetchall()
+    }
+    assert "view_count" in columns
+    assert "last_viewed" in columns
+
+
 def test_review_agent_daily(repo):
     import json
     # Insert a Garden Card that's due
@@ -99,7 +107,20 @@ def test_daily_review_creates_one_item_for_short_capture(repo, tmp_path):
     assert items[0]["capture_id"] == "cap-short"
     assert items[0]["section_id"] == ""
     assert "AI 落地短文" in items[0]["question"]
-    assert any(m["type"] == "review_item" for m in result)
+    explanations = [m for m in result if m["type"] == "review_explanation"]
+    assert len(explanations) == 1
+    assert "复习问题" not in explanations[0]["text"]
+    assert explanations[0]["view_count"] == 1
+    assert explanations[0]["capture_view_count"] == 1
+
+    updated_item = repo.conn.execute(
+        "SELECT view_count, last_viewed FROM review_items WHERE capture_id = ?",
+        ("cap-short",),
+    ).fetchone()
+    assert updated_item["view_count"] == 1
+    assert updated_item["last_viewed"]
+    updated_capture = repo.get_by_id("cap-short")
+    assert updated_capture["review_count"] == 1
 
 
 def test_daily_review_creates_section_items_for_long_capture(repo, tmp_path):
@@ -136,7 +157,7 @@ def test_daily_review_creates_section_items_for_long_capture(repo, tmp_path):
         ("section-1", "方法论"),
         ("section-2", "案例"),
     ]
-    assert "方法论" in rows[0]["question"]
+    assert rows[0]["question"] == "方法论"
 
 
 def test_record_item_feedback_updates_schedule(repo):
@@ -158,20 +179,27 @@ def test_record_item_feedback_updates_schedule(repo):
     repo.conn.commit()
 
     agent = ReviewAgent(repo)
-    agent.record_item_feedback("ri1", "remembered")
+    agent.record_item_feedback("ri1", "useful")
     remembered = repo.conn.execute(
         "SELECT review_interval, review_count, review_state FROM review_items WHERE id='ri1'"
     ).fetchone()
-    assert remembered["review_interval"] == 3
+    assert remembered["review_interval"] == 14
     assert remembered["review_count"] == 1
-    assert remembered["review_state"] == "learning"
+    assert remembered["review_state"] == "seen"
 
-    agent.record_item_feedback("ri1", "forgotten")
-    forgotten = repo.conn.execute(
+    agent.record_item_feedback("ri1", "revisit")
+    revisit = repo.conn.execute(
         "SELECT review_interval, review_state FROM review_items WHERE id='ri1'"
     ).fetchone()
-    assert forgotten["review_interval"] == 1
-    assert forgotten["review_state"] == "learning"
+    assert revisit["review_interval"] == 3
+    assert revisit["review_state"] == "revisit"
+
+    agent.record_item_feedback("ri1", "mute")
+    muted = repo.conn.execute(
+        "SELECT review_state, next_review FROM review_items WHERE id='ri1'"
+    ).fetchone()
+    assert muted["review_state"] == "muted"
+    assert muted["next_review"] is None
 
 
 def test_daily_review_preview_includes_item_ids():
@@ -179,16 +207,22 @@ def test_daily_review_preview_includes_item_ids():
 
     preview = _format_daily_review_preview([
         {
-            "type": "review_item",
+            "type": "review_explanation",
             "item_id": "ri1",
             "title": "企业 AI 长文",
-            "text": "复习问题：方法论是什么？\n来源：captures/a.md#section-1",
+            "topic": "方法论",
+            "source_path": "captures/a.md",
+            "view_count": 2,
+            "capture_view_count": 5,
+            "text": "详细讲解：方法论不是工具清单，而是判断约束的顺序。",
         }
     ])
 
-    assert "今日复习 1 条" in preview
+    assert "今日回顾：方法论" in preview
+    assert "这个点已讲过 2 次" in preview
+    assert "这篇材料已被回顾 5 次" in preview
     assert "复习项：ri1" in preview
-    assert "方法论是什么" in preview
+    assert "详细讲解" in preview
 
 
 def test_handle_reply_confirmed(repo):

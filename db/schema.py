@@ -138,7 +138,9 @@ CREATE TABLE IF NOT EXISTS review_items (
     review_state TEXT NOT NULL DEFAULT 'new',
     review_interval INTEGER NOT NULL DEFAULT 1,
     review_count INTEGER NOT NULL DEFAULT 0,
+    view_count INTEGER NOT NULL DEFAULT 0,
     last_reviewed TEXT,
+    last_viewed TEXT,
     next_review TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -177,6 +179,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute(CREATE_CAPTURE_EMBEDDINGS_TABLE)
     conn.execute(CREATE_CAPTURE_METADATA_TABLE)
     conn.execute(CREATE_REVIEW_ITEMS_TABLE)
+    _migrate_review_items_table(conn)
     conn.commit()
     return conn
 
@@ -228,3 +231,16 @@ def _migrate_capture_drafts_table(conn: sqlite3.Connection) -> None:
             "ALTER TABLE capture_drafts "
             "ADD COLUMN capture_intent TEXT NOT NULL DEFAULT '{}'"
         )
+
+
+def _migrate_review_items_table(conn: sqlite3.Connection) -> None:
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(review_items)").fetchall()
+    }
+    if "view_count" not in existing:
+        conn.execute(
+            "ALTER TABLE review_items "
+            "ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0"
+        )
+    if "last_viewed" not in existing:
+        conn.execute("ALTER TABLE review_items ADD COLUMN last_viewed TEXT")

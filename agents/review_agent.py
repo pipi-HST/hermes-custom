@@ -17,7 +17,7 @@ EBBINGHAUS_INTERVALS = ["1d", "3d", "1w", "2w", "1m", "mastered"]
 INTERVAL_HOURS = {"1d": 24, "3d": 72, "1w": 168, "2w": 336, "1m": 720}
 REVIEW_INTERVAL_DAYS = [1, 3, 7, 14, 30, 90]
 DEFAULT_LONG_NOTE_CHARS = 2000
-DAILY_REVIEW_ITEM_LIMIT = 3
+DAILY_REVIEW_ITEM_LIMIT = 1
 
 
 def next_interval(current: str) -> str:
@@ -61,11 +61,16 @@ class ReviewAgent:
         messages: list[dict] = []
         now = datetime.now(timezone.utc).isoformat()
 
-        # 1. 艾宾浩斯抽查 Garden Cards
-        cards = self._get_due_garden_cards()
-        if cards:
-            selected = cards[:2]  # 每天最多 2 张
-            for card in selected:
+        # 1. 普通 Capture 回顾点：短文按整篇，长文按章节。
+        self.sync_review_items(now=now)
+        for item in self._get_due_review_items(limit=DAILY_REVIEW_ITEM_LIMIT, now=now):
+            messages.append(self._build_review_explanation(item, now))
+
+        # 2. 如果暂时没有 Capture 回顾点，再回顾 Garden Card。
+        if not any(m["type"] == "review_explanation" for m in messages):
+            cards = self._get_due_garden_cards()
+            if cards:
+                card = cards[0]
                 messages.append({
                     "type": "garden_review",
                     "card_id": card["id"],
@@ -73,28 +78,11 @@ class ReviewAgent:
                     "one_liner": card["one_liner"],
                     "interval": card["review_interval"],
                     "text": (
-                        f"该回顾『{card['title']}』了——"
-                        f"上次是{self._format_last(card.get('last_reviewed_at'))}。"
-                        f"一句话核心: {card['one_liner']}\n还记得要点吗？"
+                        f"今日回顾：{card['title']}\n"
+                        f"核心观点：{card['one_liner']}"
                     ),
                 })
-                # 标记为已推送（不推进 interval，等用户回复）
                 self._touch_card(card["id"], now)
-
-        # 2. 普通 Capture 复习项：短文按整篇，长文按章节。
-        self.sync_review_items(now=now)
-        for item in self._get_due_review_items(limit=DAILY_REVIEW_ITEM_LIMIT, now=now):
-            messages.append({
-                "type": "review_item",
-                "item_id": item["id"],
-                "capture_id": item["capture_id"],
-                "section_id": item["section_id"],
-                "title": item["title"],
-                "text": (
-                    f"复习问题：{item['question']}\n"
-                    f"来源：{self._format_source(item)}"
-                ),
-            })
 
         # 3. 每日摘要
         summary = self._daily_summary()
@@ -173,25 +161,25 @@ class ReviewAgent:
         current = int(row["review_interval"] or 1)
         normalized = (outcome or "").strip().lower()
 
-        if normalized in {"remembered", "confirmed", "记得", "会"}:
-            interval = _next_review_days(current)
-            state = _state_for_interval(interval)
+        if normalized in {"useful", "remembered", "confirmed", "有用", "记得", "会"}:
+            interval = 14
+            state = "seen"
             next_review = (now_dt + timedelta(days=interval)).isoformat()
             review_count_delta = 1
-        elif normalized in {"forgotten", "forgot", "忘了", "不会"}:
-            interval = 1
-            state = "learning"
+        elif normalized in {"revisit", "forgotten", "forgot", "以后再讲", "忘了", "不会"}:
+            interval = 3
+            state = "revisit"
             next_review = (now_dt + timedelta(days=interval)).isoformat()
             review_count_delta = 1
-        elif normalized in {"mastered", "掌握"}:
+        elif normalized in {"mute", "mastered", "skip", "不用复习", "别推", "掌握", "跳过"}:
             interval = current
-            state = "mastered"
+            state = "muted"
             next_review = None
             review_count_delta = 1
-        elif normalized in {"skip", "跳过"}:
+        elif normalized in {"deeper", "讲深一点", "展开"}:
             interval = current
             state = row["review_state"]
-            next_review = (now_dt + timedelta(days=1)).isoformat()
+            next_review = row["next_review"]
             review_count_delta = 0
         else:
             return False
@@ -220,7 +208,7 @@ class ReviewAgent:
 
     def _get_due_review_items(self, *, limit: int, now: str) -> list[dict]:
         rows = self.repo.conn.execute(
-            "SELECT * FROM review_items WHERE review_state != 'mastered'"
+            "SELECT * FROM review_items WHERE review_state NOT IN ('mastered', 'muted')"
         ).fetchall()
         due = []
         for row in rows:
@@ -236,6 +224,51 @@ class ReviewAgent:
             )
         )
         return due[:limit]
+
+    def _build_review_explanation(self, item: dict, now: str) -> dict:
+        view_count = int(item.get("view_count") or 0) + 1
+        interval = int(item.get("review_interval") or 7)
+        next_review = (datetime.fromisoformat(now) + timedelta(days=interval)).isoformat()
+
+        capture = self.repo.get_by_id(item["capture_id"]) or {}
+        capture_view_count = int(capture.get("review_count") or 0) + 1
+
+        self.repo.conn.execute(
+            """UPDATE review_items
+               SET view_count=?, last_viewed=?, last_reviewed=?,
+                   next_review=?, review_state='seen', updated_at=?
+               WHERE id=?""",
+            (view_count, now, now, next_review, now, item["id"]),
+        )
+        self.repo.conn.execute(
+            """UPDATE captures
+               SET review_count=review_count+1, last_reviewed=?, updated_at=?
+               WHERE id=?""",
+            (now, now, item["capture_id"]),
+        )
+        self.repo.conn.commit()
+
+        topic = item["question"] or item["title"]
+        explanation = _explanation_text(item.get("answer_hint"), topic)
+        source = self._format_source(item)
+        text = (
+            f"详细讲解：{explanation}\n\n"
+            f"为什么值得回顾：这个点能帮你重新连接材料里的关键判断，"
+            f"避免只记得标题、忘了它真正想说明的问题。\n"
+            f"来源：{source}"
+        )
+        return {
+            "type": "review_explanation",
+            "item_id": item["id"],
+            "capture_id": item["capture_id"],
+            "section_id": item["section_id"],
+            "title": item["title"],
+            "topic": topic,
+            "source_path": source,
+            "view_count": view_count,
+            "capture_view_count": capture_view_count,
+            "text": text,
+        }
 
     def _get_random_captures(self, n: int = 3) -> list[dict]:
         # 获取所有 Garden Card 包含的 capture IDs
@@ -298,7 +331,7 @@ class ReviewAgent:
                 capture_id=capture_id,
                 section_id="",
                 title=title,
-                question=f"不看原文，回忆一下《{title}》的核心观点是什么？",
+                question=title,
                 answer_hint=hint,
                 source_path=file_path,
                 importance=importance,
@@ -318,7 +351,7 @@ class ReviewAgent:
                 capture_id=capture_id,
                 section_id=section_id,
                 title=clean_title,
-                question=f"不看原文，回忆一下《{title}》里「{clean_title}」这一节主要讲了什么？",
+                question=clean_title,
                 answer_hint=_answer_hint(section_body),
                 source_path=file_path,
                 importance=importance,
@@ -353,9 +386,9 @@ class ReviewAgent:
         self.repo.conn.execute(
             """INSERT INTO review_items
                (id, object_type, object_id, capture_id, section_id, title,
-                question, answer_hint, source_path, importance, next_review,
+                question, answer_hint, source_path, importance, review_interval, next_review,
                 created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(object_type, object_id, section_id) DO UPDATE SET
                    title=excluded.title,
                    question=excluded.question,
@@ -374,6 +407,7 @@ class ReviewAgent:
                 answer_hint,
                 source_path,
                 importance,
+                7,
                 now,
                 now,
                 now,
@@ -485,6 +519,13 @@ def _markdown_sections(body: str) -> list[tuple[str, str]]:
 def _answer_hint(text) -> str:
     body = _single_line(str(text or ""))
     return body[:500].rstrip()
+
+
+def _explanation_text(text, topic: str) -> str:
+    hint = _answer_hint(text)
+    if hint:
+        return hint
+    return f"{topic} 是这篇材料里值得重新看的一点。"
 
 
 def _single_line(text: str) -> str:
