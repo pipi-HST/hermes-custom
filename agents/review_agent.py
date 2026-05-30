@@ -18,6 +18,7 @@ INTERVAL_HOURS = {"1d": 24, "3d": 72, "1w": 168, "2w": 336, "1m": 720}
 REVIEW_INTERVAL_DAYS = [1, 3, 7, 14, 30, 90]
 DEFAULT_LONG_NOTE_CHARS = 2000
 DAILY_REVIEW_ITEM_LIMIT = 1
+PLACEHOLDER_TEST_TITLE = "这是一段足够长的原始内容，用来生成待确认草稿"
 
 
 def next_interval(current: str) -> str:
@@ -150,11 +151,10 @@ class ReviewAgent:
 
     def record_item_feedback(self, item_id: str, outcome: str) -> bool:
         """Update one review item's schedule from user feedback."""
-        row = self.repo.conn.execute(
-            "SELECT * FROM review_items WHERE id = ?", (item_id,)
-        ).fetchone()
+        row = self._get_feedback_item(item_id)
         if not row:
             return False
+        resolved_item_id = row["id"]
 
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
@@ -176,11 +176,6 @@ class ReviewAgent:
             state = "muted"
             next_review = None
             review_count_delta = 1
-        elif normalized in {"deeper", "讲深一点", "展开"}:
-            interval = current
-            state = row["review_state"]
-            next_review = row["next_review"]
-            review_count_delta = 0
         else:
             return False
 
@@ -190,10 +185,23 @@ class ReviewAgent:
                    review_count=review_count+?, last_reviewed=?,
                    next_review=?, updated_at=?
                WHERE id=?""",
-            (state, interval, review_count_delta, now, next_review, now, item_id),
+            (state, interval, review_count_delta, now, next_review, now, resolved_item_id),
         )
         self.repo.conn.commit()
         return True
+
+    def _get_feedback_item(self, item_id: str):
+        normalized_id = (item_id or "").strip()
+        if normalized_id:
+            return self.repo.conn.execute(
+                "SELECT * FROM review_items WHERE id = ?", (normalized_id,)
+            ).fetchone()
+        return self.repo.conn.execute(
+            """SELECT * FROM review_items
+               WHERE last_viewed IS NOT NULL
+               ORDER BY last_viewed DESC, updated_at DESC
+               LIMIT 1"""
+        ).fetchone()
 
     def _get_due_garden_cards(self) -> list[dict]:
         rows = self.repo.conn.execute(
@@ -213,17 +221,39 @@ class ReviewAgent:
         due = []
         for row in rows:
             item = dict(row)
+            if _is_placeholder_test_item(item):
+                continue
             next_review = item.get("next_review")
             if not next_review or next_review <= now:
                 due.append(item)
+        reviewed_today = self._captures_reviewed_on_day(
+            {item.get("capture_id", "") for item in due},
+            now,
+        )
         due.sort(
             key=lambda item: (
+                item.get("capture_id", "") in reviewed_today,
                 -int(item.get("importance") or 1),
                 item.get("next_review") or "2000-01-01",
                 item.get("created_at") or "2000-01-01",
             )
         )
         return due[:limit]
+
+    def _captures_reviewed_on_day(self, capture_ids: set[str], now: str) -> set[str]:
+        capture_ids = {capture_id for capture_id in capture_ids if capture_id}
+        if not capture_ids:
+            return set()
+        day = _date_prefix(now)
+        placeholders = ",".join("?" for _ in capture_ids)
+        rows = self.repo.conn.execute(
+            f"SELECT id, last_reviewed FROM captures WHERE id IN ({placeholders})",
+            tuple(capture_ids),
+        ).fetchall()
+        return {
+            row["id"] for row in rows
+            if row["last_reviewed"] and _date_prefix(row["last_reviewed"]) == day
+        }
 
     def _build_review_explanation(self, item: dict, now: str) -> dict:
         view_count = int(item.get("view_count") or 0) + 1
@@ -320,6 +350,8 @@ class ReviewAgent:
         capture_id = row["id"]
         file_path = row.get("file_path", "")
         title = str(frontmatter.get("title") or "未命名").strip() or "未命名"
+        if _is_placeholder_test_capture(title, frontmatter, file_path):
+            return 0
         importance = _importance_value(frontmatter.get("importance"))
         sections = _markdown_sections(body)
 
@@ -468,6 +500,10 @@ def _next_review_days(current: int) -> int:
     return REVIEW_INTERVAL_DAYS[-1]
 
 
+def _date_prefix(value: str) -> str:
+    return str(value or "")[:10]
+
+
 def _state_for_interval(interval: int) -> str:
     if interval >= 90:
         return "mastered"
@@ -489,6 +525,24 @@ def _is_reviewable(frontmatter: dict) -> bool:
         return True
     text = str(value).strip().lower()
     return text not in {"false", "no", "0", "否", "不复习"}
+
+
+def _is_placeholder_test_capture(title: str, frontmatter: dict, file_path: str) -> bool:
+    return (
+        title == PLACEHOLDER_TEST_TITLE
+        or str(frontmatter.get("story") or "").strip() == "长草稿摘要"
+        and PLACEHOLDER_TEST_TITLE in str(file_path or "")
+    )
+
+
+def _is_placeholder_test_item(item: dict) -> bool:
+    values = [
+        item.get("title"),
+        item.get("question"),
+        item.get("source_path"),
+    ]
+    text = "\n".join(str(value or "") for value in values)
+    return PLACEHOLDER_TEST_TITLE in text
 
 
 def _importance_value(value) -> int:

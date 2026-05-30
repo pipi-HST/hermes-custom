@@ -202,7 +202,209 @@ def test_record_item_feedback_updates_schedule(repo):
     assert muted["next_review"] is None
 
 
-def test_daily_review_preview_includes_item_ids():
+def test_record_item_feedback_defaults_to_latest_viewed_item(repo):
+    now = datetime.now(timezone.utc)
+    old_viewed = (now - timedelta(hours=2)).isoformat()
+    latest_viewed = now.isoformat()
+    repo.conn.executemany(
+        """INSERT INTO review_items
+           (id, object_type, object_id, capture_id, title, question, answer_hint,
+            review_interval, next_review, last_viewed)
+           VALUES (?, 'capture', ?, ?, ?, ?, ?, 1, ?, ?)""",
+        [
+            (
+                "old-ri",
+                "cap-old",
+                "cap-old",
+                "旧主题",
+                "旧主题",
+                "旧提示",
+                old_viewed,
+                old_viewed,
+            ),
+            (
+                "latest-ri",
+                "cap-latest",
+                "cap-latest",
+                "最新主题",
+                "最新主题",
+                "最新提示",
+                latest_viewed,
+                latest_viewed,
+            ),
+        ],
+    )
+    repo.conn.commit()
+
+    agent = ReviewAgent(repo)
+    assert agent.record_item_feedback("", "revisit") is True
+
+    latest = repo.conn.execute(
+        "SELECT review_state FROM review_items WHERE id='latest-ri'"
+    ).fetchone()
+    old = repo.conn.execute(
+        "SELECT review_state FROM review_items WHERE id='old-ri'"
+    ).fetchone()
+    assert latest["review_state"] == "revisit"
+    assert old["review_state"] == "new"
+
+
+def test_record_item_feedback_does_not_treat_expand_as_feedback(repo):
+    repo.conn.execute(
+        """INSERT INTO review_items
+           (id, object_type, object_id, capture_id, title, question, answer_hint,
+            review_interval, next_review, last_viewed)
+           VALUES (?, 'capture', ?, ?, ?, ?, ?, 1, ?, ?)""",
+        (
+            "ri1",
+            "cap1",
+            "cap1",
+            "测试",
+            "问题",
+            "提示",
+            datetime.now(timezone.utc).isoformat(),
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    repo.conn.commit()
+
+    agent = ReviewAgent(repo)
+    assert agent.record_item_feedback("", "deeper") is False
+    assert agent.record_item_feedback("", "展开") is False
+
+
+def test_due_review_prefers_capture_not_reviewed_today(repo):
+    now = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+    due_at = (now - timedelta(hours=1)).isoformat()
+    repo.conn.executemany(
+        "INSERT INTO captures (id, file_path, last_reviewed) VALUES (?, ?, ?)",
+        [
+            ("cap-seen", "captures/seen.md", now.isoformat()),
+            ("cap-fresh", "captures/fresh.md", None),
+        ],
+    )
+    repo.conn.executemany(
+        """INSERT INTO review_items
+           (id, object_type, object_id, capture_id, title, question, answer_hint,
+            section_id, review_interval, next_review, created_at)
+           VALUES (?, 'capture', ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+        [
+            (
+                "ri-seen-1",
+                "cap-seen",
+                "cap-seen",
+                "同篇第一节",
+                "同篇第一节",
+                "提示",
+                "section-1",
+                due_at,
+                "2026-05-29T10:00:00+00:00",
+            ),
+            (
+                "ri-seen-2",
+                "cap-seen",
+                "cap-seen",
+                "同篇第二节",
+                "同篇第二节",
+                "提示",
+                "section-2",
+                due_at,
+                "2026-05-29T10:01:00+00:00",
+            ),
+            (
+                "ri-fresh",
+                "cap-fresh",
+                "cap-fresh",
+                "另一篇",
+                "另一篇",
+                "提示",
+                "",
+                due_at,
+                "2026-05-29T10:02:00+00:00",
+            ),
+        ],
+    )
+    repo.conn.commit()
+
+    items = ReviewAgent(repo)._get_due_review_items(limit=1, now=now.isoformat())
+
+    assert [item["id"] for item in items] == ["ri-fresh"]
+
+
+def test_due_review_skips_placeholder_test_items(repo):
+    now = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
+    due_at = (now - timedelta(hours=1)).isoformat()
+    repo.conn.executemany(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        [
+            ("cap-test", "captures/这是一段足够长的原始内容，用来生成待确认草稿.md"),
+            ("cap-real", "captures/real.md"),
+        ],
+    )
+    repo.conn.executemany(
+        """INSERT INTO review_items
+           (id, object_type, object_id, capture_id, title, question, answer_hint,
+            section_id, review_interval, next_review, created_at)
+           VALUES (?, 'capture', ?, ?, ?, ?, ?, '', 1, ?, ?)""",
+        [
+            (
+                "ri-test",
+                "cap-test",
+                "cap-test",
+                "这是一段足够长的原始内容，用来生成待确认草稿",
+                "这是一段足够长的原始内容，用来生成待确认草稿",
+                "长草稿摘要",
+                due_at,
+                "2026-05-29T10:00:00+00:00",
+            ),
+            (
+                "ri-real",
+                "cap-real",
+                "cap-real",
+                "真实知识点",
+                "真实知识点",
+                "有实际内容的讲解",
+                due_at,
+                "2026-05-29T10:01:00+00:00",
+            ),
+        ],
+    )
+    repo.conn.commit()
+
+    items = ReviewAgent(repo)._get_due_review_items(limit=2, now=now.isoformat())
+
+    assert [item["id"] for item in items] == ["ri-real"]
+
+
+def test_sync_review_items_skips_placeholder_test_captures(repo, tmp_path):
+    captures_dir = tmp_path / "captures"
+    captures_dir.mkdir()
+    (captures_dir / "placeholder.md").write_text(
+        "---\n"
+        "id: cap-placeholder\n"
+        "title: 这是一段足够长的原始内容，用来生成待确认草稿\n"
+        "story: 长草稿摘要\n"
+        "---\n\n"
+        "# 这是一段足够长的原始内容，用来生成待确认草稿\n\n"
+        "这是用于测试捕获功能的长内容。",
+        encoding="utf-8",
+    )
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap-placeholder", "captures/placeholder.md"),
+    )
+    repo.conn.commit()
+
+    created = ReviewAgent(repo, vault_path=str(tmp_path)).sync_review_items(
+        now=datetime.now(timezone.utc).isoformat()
+    )
+
+    rows = repo.conn.execute("SELECT * FROM review_items").fetchall()
+    assert created == 0
+    assert rows == []
+
+
+def test_daily_review_preview_hides_item_ids():
     from bridge.review_bridge import _format_daily_review_preview
 
     preview = _format_daily_review_preview([
@@ -221,8 +423,105 @@ def test_daily_review_preview_includes_item_ids():
     assert "今日回顾：方法论" in preview
     assert "这个点已讲过 2 次" in preview
     assert "这篇材料已被回顾 5 次" in preview
-    assert "复习项：ri1" in preview
+    assert "复习项" not in preview
+    assert "ri1" not in preview
+    assert "不用复习 + 复习项编号" not in preview
+    assert "不用复习" in preview
     assert "详细讲解" in preview
+
+
+def test_review_followup_uses_latest_viewed_item_only(monkeypatch, tmp_path):
+    from agents.capture_agent import CaptureConfig
+    from bridge import review_bridge
+
+    db_path = tmp_path / "captures.db"
+    vault = tmp_path / "vault"
+    captures_dir = vault / "captures"
+    captures_dir.mkdir(parents=True)
+    rel_path = "captures/effective-agents.md"
+    (vault / rel_path).write_text(
+        "---\n"
+        "id: cap1\n"
+        "title: Building Effective AI Agents\n"
+        "story: Anthropic 的 Agent 实践。\n"
+        "---\n\n"
+        "# Building Effective AI Agents\n\n"
+        "## 方法论\n\n"
+        "这里讲工作流和代理的区别，以及简单优先原则。\n\n"
+        "## 案例\n\n"
+        "这里讲另一个案例，不应该进入本次展开。\n",
+        encoding="utf-8",
+    )
+    conn = init_db(str(db_path))
+    conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap1", rel_path),
+    )
+    conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap2", "captures/opus.md"),
+    )
+    conn.execute(
+        """INSERT INTO review_items
+           (id, object_type, object_id, capture_id, section_id, title,
+            question, answer_hint, source_path, last_viewed)
+           VALUES (?, 'capture_section', ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "ri-latest",
+            "cap1",
+            "cap1",
+            "section-1",
+            "方法论",
+            "方法论",
+            "工作流和代理的区别。",
+            f"{rel_path}#section-1",
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    conn.commit()
+
+    class FakeRagAgent:
+        seen_captures: list[dict] = []
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def query(self, question: str, captures: list[dict]) -> dict:
+            FakeRagAgent.seen_captures = captures
+            return {
+                "answer": f"{question}：展开当前章节。[1]",
+                "sources": [
+                    {
+                        "title": captures[0]["title"],
+                        "story": captures[0].get("story", ""),
+                        "file_path": captures[0]["file_path"],
+                        "section_title": captures[0].get("section_title", ""),
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(
+        review_bridge,
+        "load_config",
+        lambda _path: CaptureConfig(
+            vault_path=str(vault),
+            db_path=str(db_path),
+            qwen_api_key="qwen-test",
+            llm_api_key="llm-test",
+        ),
+    )
+    monkeypatch.setattr(review_bridge, "RagAgent", FakeRagAgent)
+
+    result = review_bridge.expand_latest_review_followup("展开一下")
+
+    assert result["status"] == "success"
+    assert "展开当前章节" in result["chat_preview"]
+    assert len(result["source_map"]) == 1
+    assert result["source_map"][0]["id"] == "cap1"
+    assert result["source_map"][0]["section"] == "方法论"
+    assert len(FakeRagAgent.seen_captures) == 1
+    assert "简单优先原则" in FakeRagAgent.seen_captures[0]["body"]
+    assert "另一个案例" not in FakeRagAgent.seen_captures[0]["body"]
 
 
 def test_handle_reply_confirmed(repo):

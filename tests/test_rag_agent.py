@@ -17,6 +17,20 @@ def test_format_answer_with_sources():
     assert "[1]" in result
 
 
+def test_format_answer_only_lists_cited_sources():
+    answer = "这个回答只使用第一篇材料。[1]"
+    sources = [
+        {"title": "真正来源", "story": "被引用的材料", "file_path": "captures/real.md"},
+        {"title": "候选材料", "story": "只是检索候选", "file_path": "captures/candidate.md"},
+    ]
+
+    result = format_answer(answer, sources)
+
+    assert "[1] 真正来源" in result
+    assert "候选材料" not in result
+    assert "[2]" not in result
+
+
 def test_format_answer_without_url():
     sources = [{"title": "测试", "story": "概要", "file_path": ""}]
     result = format_answer("答案", sources)

@@ -1,6 +1,7 @@
 """RAG 问答：检索→LLM 生成→来源引用."""
 from __future__ import annotations
 
+import re
 import httpx
 
 RAG_SYSTEM_PROMPT = """你是个人知识助手。根据用户的知识库内容回答问题。
@@ -29,7 +30,13 @@ def format_answer(answer: str, sources: list[dict]) -> str:
         answer = answer[:597] + "..."
 
     lines = [answer, "", "📎 来源"]
-    for i, s in enumerate(sources, 1):
+    cited_indexes = _cited_source_indexes(answer, len(sources))
+    if cited_indexes:
+        selected = [(idx, sources[idx - 1]) for idx in cited_indexes]
+    else:
+        selected = [(idx, source) for idx, source in enumerate(sources[:3], 1)]
+
+    for i, s in selected:
         title = s.get("title") or "无标题"
         story = s.get("story", "") or s.get("summary", "")
         story = story[:30] + "..." if len(story) > 30 else story
@@ -43,6 +50,15 @@ def format_answer(answer: str, sources: list[dict]) -> str:
     if len(result) > 900:
         result = result[:897] + "..."
     return result
+
+
+def _cited_source_indexes(answer: str, source_count: int) -> list[int]:
+    indexes: list[int] = []
+    for match in re.finditer(r"\[(\d{1,3})\]", answer or ""):
+        idx = int(match.group(1))
+        if 1 <= idx <= source_count and idx not in indexes:
+            indexes.append(idx)
+    return indexes
 
 
 class RagAgent:
