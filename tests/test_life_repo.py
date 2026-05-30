@@ -90,6 +90,23 @@ def test_life_repo_lists_latest_user_event_within_window(life_repo: LifeRepo) ->
     assert found["id"] != old["id"]
 
 
+def test_life_repo_latest_user_event_handles_naive_existing_event_with_aware_now(life_repo: LifeRepo) -> None:
+    event = life_repo.create_event(
+        event_type="water",
+        occurred_at="2026-05-29T10:00:00",
+        source="wechat",
+        raw_text="喝水了",
+    )
+
+    found = life_repo.latest_user_event(
+        now="2026-05-29T10:10:00+08:00",
+        window_minutes=30,
+    )
+
+    assert found is not None
+    assert found["id"] == event["id"]
+
+
 def test_life_repo_dedupe_reminder_logs(life_repo: LifeRepo) -> None:
     first = life_repo.create_reminder_log(
         reminder_type="water",

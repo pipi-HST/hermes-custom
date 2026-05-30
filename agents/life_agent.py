@@ -24,6 +24,7 @@ class LifeConfig:
     sedentary_threshold_minutes: int = 60
     sedentary_repeat_minutes: int = 10
     break_threshold_minutes: int = 5
+    reminder_due_window_minutes: int = 15
     exercise_first_time: str = "10:30"
     exercise_repeat_hours: int = 2
     sleep_reminder_time: str = "23:30"
@@ -157,7 +158,7 @@ class LifeAgent:
             duration = None
             if start:
                 started_at = _parse_datetime(start["occurred_at"])
-                duration = max(0, round((occurred - started_at).total_seconds() / 60))
+                duration = _duration_minutes_between(started_at, occurred)
             payload = {"wake_date": occurred.date().isoformat(), **intent.payload}
             event = self.repo.create_event(
                 event_type="sleep_end",
@@ -176,7 +177,7 @@ class LifeAgent:
                 ended_at = _parse_datetime(str(intent.payload.get("ended_at", "")))
             except ValueError:
                 return _rejected("这条我暂时不能作为生活记录保存。")
-            duration = max(0, round((ended_at - occurred).total_seconds() / 60))
+            duration = _duration_minutes_between(occurred, ended_at)
             self.repo.create_event(
                 event_type="sleep_start",
                 occurred_at=occurred.isoformat(),
@@ -372,7 +373,7 @@ class LifeAgent:
         ended_at = _parse_datetime(sleep_end["occurred_at"])
         if started_at.date() != ended_at.date():
             return None
-        duration = max(0, round((ended_at - started_at).total_seconds() / 60))
+        duration = _duration_minutes_between(started_at, ended_at)
         return self.repo.update_event(sleep_end["id"], duration_minutes=duration)
 
     def _sedentary_candidate(
@@ -403,7 +404,7 @@ class LifeAgent:
             return None
 
         started_at = _parse_datetime(active_window["occurred_at"])
-        sitting_minutes = max(0, round((current - started_at).total_seconds() / 60))
+        sitting_minutes = _duration_minutes_between(started_at, current)
         if sitting_minutes < self.config.sedentary_threshold_minutes:
             return None
         if self._is_sedentary_paused(current):
@@ -440,7 +441,9 @@ class LifeAgent:
         resolution_source: str,
     ) -> None:
         started_at = _parse_datetime(active_window["occurred_at"])
-        duration_minutes = max(0, round((current - started_at).total_seconds() / 60))
+        if _seconds_between(started_at, current) < 0:
+            return
+        duration_minutes = _duration_minutes_between(started_at, current)
         self.repo.update_event(
             active_window["id"],
             ended_at=current.isoformat(),
@@ -483,32 +486,50 @@ class LifeAgent:
         }
 
     def _sleep_candidate(self, current: datetime) -> dict[str, Any] | None:
-        if current.strftime("%H:%M") != self.config.sleep_reminder_time:
+        due_at = _due_time_on_day(
+            current,
+            self.config.sleep_reminder_time,
+            window_minutes=self.config.reminder_due_window_minutes,
+        )
+        if not due_at:
             return None
         return {
             "priority": 3,
             "reminder_type": "sleep",
-            "dedupe_key": f"sleep:{current.strftime('%Y-%m-%d')}",
+            "dedupe_key": f"sleep:{due_at.strftime('%Y-%m-%d')}",
             "message": "睡眠提醒：差不多可以准备睡了。",
         }
 
     def _water_candidate(self, current: datetime) -> dict[str, Any] | None:
-        current_time = current.strftime("%H:%M")
-        if current_time not in self.config.water_times:
+        due_at = None
+        for water_time in self.config.water_times:
+            due_at = _due_time_on_day(
+                current,
+                water_time,
+                window_minutes=self.config.reminder_due_window_minutes,
+            )
+            if due_at:
+                break
+        if not due_at:
             return None
         if self._has_recent_event("water", current, minutes=60):
             return None
         return {
             "priority": 4,
             "reminder_type": "water",
-            "dedupe_key": f"water:{current.strftime('%Y-%m-%dT%H:%M')}",
+            "dedupe_key": f"water:{due_at.strftime('%Y-%m-%dT%H:%M')}",
             "message": "喝水提醒：白天补点水。",
         }
 
     def _daily_review_candidate(self, current: datetime) -> dict[str, Any] | None:
-        if current.strftime("%H:%M") != "00:00":
+        due_at = _due_time_on_day(
+            current,
+            "00:00",
+            window_minutes=self.config.reminder_due_window_minutes,
+        )
+        if not due_at:
             return None
-        review_date = (current - timedelta(days=1)).date().isoformat()
+        review_date = (due_at - timedelta(days=1)).date().isoformat()
         return {
             "priority": 5,
             "reminder_type": "daily_review",
@@ -561,7 +582,8 @@ class LifeAgent:
         ).fetchall()
         for row in rows:
             occurred = _parse_datetime(row["occurred_at"])
-            if 0 <= (current - occurred).total_seconds() <= minutes * 60:
+            elapsed_seconds = _seconds_between(occurred, current)
+            if 0 <= elapsed_seconds <= minutes * 60:
                 return True
         return False
 
@@ -593,6 +615,33 @@ def _fmt_duration(minutes: int) -> str:
     if hours:
         return f"{hours}小时"
     return f"{mins}分钟"
+
+
+def _duration_minutes_between(start: datetime, end: datetime) -> int:
+    return max(0, round(_seconds_between(start, end) / 60))
+
+
+def _seconds_between(start: datetime, end: datetime) -> float:
+    start, end = _compatible_datetime_pair(start, end)
+    return (end - start).total_seconds()
+
+
+def _compatible_datetime_pair(left: datetime, right: datetime) -> tuple[datetime, datetime]:
+    if _is_aware(left) == _is_aware(right):
+        return left, right
+    return left.replace(tzinfo=None), right.replace(tzinfo=None)
+
+
+def _is_aware(value: datetime) -> bool:
+    return value.tzinfo is not None and value.utcoffset() is not None
+
+
+def _due_time_on_day(current: datetime, time_text: str, *, window_minutes: int) -> datetime | None:
+    hour, minute = [int(part) for part in time_text.split(":", 1)]
+    due_at = current.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if due_at <= current <= due_at + timedelta(minutes=window_minutes):
+        return due_at
+    return None
 
 
 def _meal_label(slot: str) -> str:

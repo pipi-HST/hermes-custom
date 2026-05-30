@@ -65,7 +65,7 @@ def test_life_sedentary_scenario_requires_activity_break(tmp_path) -> None:
         dry_run=True,
     )
     break_tick = agent.life_tick(
-        now="2026-05-30T10:08:00+08:00",
+        now="2026-05-30T10:20:00+08:00",
         activity=ActivitySnapshot(idle_seconds=360, available=True),
         dry_run=True,
     )
@@ -76,4 +76,4 @@ def test_life_sedentary_scenario_requires_activity_break(tmp_path) -> None:
     assert first_tick["selected"] is None
     assert alert_tick["selected"]["reminder_type"] == "sedentary"
     assert break_tick["selected"] is None
-    assert break_row["duration_minutes"] == 68
+    assert break_row["duration_minutes"] == 80

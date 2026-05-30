@@ -118,7 +118,7 @@ def _sedentary_scenario(
         dry_run=True,
     )
     break_tick = agent.life_tick(
-        now="2026-05-30T10:08:00+08:00",
+        now="2026-05-30T10:20:00+08:00",
         activity=ActivitySnapshot(idle_seconds=360, available=True),
         dry_run=True,
     )
@@ -141,7 +141,7 @@ def _sedentary_scenario(
         (alert_tick["selected"] or {}).get("reminder_type") == "sedentary",
     )
     _check(checks, "sedentary break clears alert", break_tick["selected"] is None)
-    _check(checks, "sedentary break duration is stored", records["sedentary_break_minutes"] == 68)
+    _check(checks, "sedentary break duration is stored", records["sedentary_break_minutes"] == 80)
     _check(checks, "sedentary reply does not create event", reply["status"] == "rejected" and reply["event"] is None)
 
 
@@ -170,6 +170,16 @@ def _reminder_scenarios(
         "暂停久坐警报 2 小时",
         received_at="2026-05-31T10:45:00+08:00",
     )
+    offset_water_tick = agent.life_tick(
+        now="2026-05-28T10:09:20+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+    offset_daily_review_tick = agent.life_tick(
+        now="2026-05-28T00:09:20+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
     first_exercise_tick = agent.life_tick(
         now="2026-05-28T10:30:00+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
@@ -191,6 +201,8 @@ def _reminder_scenarios(
     records["manual_query_status"] = query["status"]
     records["health_consultation_status"] = health["status"]
     records["sedentary_pause_until"] = sedentary_pause.get("scheduled_for", "")
+    records["offset_water_reminder"] = (offset_water_tick["selected"] or {}).get("reminder_type", "")
+    records["offset_daily_review"] = (offset_daily_review_tick["selected"] or {}).get("reminder_type", "")
     records["exercise_repeat_first"] = (first_exercise_tick["selected"] or {}).get("reminder_type", "")
     records["exercise_repeat_too_soon"] = (too_soon_exercise_tick["selected"] or {}).get("reminder_type", "")
     records["exercise_repeat_due"] = (due_exercise_tick["selected"] or {}).get("reminder_type", "")
@@ -201,6 +213,8 @@ def _reminder_scenarios(
     _check(checks, "manual query is not recorded", query["status"] == "rejected" and query["event"] is None)
     _check(checks, "health consultation is not recorded", health["status"] == "rejected" and health["event"] is None)
     _check(checks, "sedentary pause stores pause-until time", sedentary_pause.get("scheduled_for") == "2026-05-31T12:45:00+08:00")
+    _check(checks, "water reminder tolerates cron offset", records["offset_water_reminder"] == "water")
+    _check(checks, "daily review tolerates cron offset", records["offset_daily_review"] == "daily_review")
     _check(checks, "exercise reminder starts", records["exercise_repeat_first"] == "exercise")
     _check(checks, "exercise reminder does not repeat too soon", records["exercise_repeat_too_soon"] == "")
     _check(checks, "exercise reminder repeats after interval", records["exercise_repeat_due"] == "exercise")

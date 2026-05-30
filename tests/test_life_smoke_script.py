@@ -17,9 +17,11 @@ def test_run_life_smoke_checks_core_scenarios(tmp_path) -> None:
     assert report["records"]["sleep_session_duration_minutes"] == 420
     assert report["records"]["modified_meal_slot"] == "snack"
     assert report["records"]["planned_exercise_time"] == "2026-05-30T18:00:00+08:00"
+    assert report["records"]["offset_water_reminder"] == "water"
+    assert report["records"]["offset_daily_review"] == "daily_review"
     assert report["records"]["exercise_repeat_too_soon"] == ""
     assert report["records"]["exercise_repeat_due"] == "exercise"
-    assert report["records"]["sedentary_break_minutes"] == 68
+    assert report["records"]["sedentary_break_minutes"] == 80
     assert report["records"]["sedentary_reply_status"] == "rejected"
     assert report["records"]["health_consultation_status"] == "rejected"
     assert report["records"]["sedentary_pause_until"] == "2026-05-31T12:45:00+08:00"

@@ -72,7 +72,7 @@ class LifeRepo:
             occurred = _parse_datetime(str(item["occurred_at"]))
             if occurred.date() != now_dt.date():
                 continue
-            elapsed_minutes = abs((now_dt - occurred).total_seconds()) / 60
+            elapsed_minutes = abs(_seconds_between(occurred, now_dt)) / 60
             if elapsed_minutes <= window_minutes:
                 return item
         return None
@@ -188,3 +188,18 @@ def _parse_datetime(value: str) -> datetime:
         return datetime.fromisoformat(normalized)
     except ValueError:
         return datetime.strptime(value[:19].replace("T", " "), "%Y-%m-%d %H:%M:%S")
+
+
+def _seconds_between(start: datetime, end: datetime) -> float:
+    start, end = _compatible_datetime_pair(start, end)
+    return (end - start).total_seconds()
+
+
+def _compatible_datetime_pair(left: datetime, right: datetime) -> tuple[datetime, datetime]:
+    if _is_aware(left) == _is_aware(right):
+        return left, right
+    return left.replace(tzinfo=None), right.replace(tzinfo=None)
+
+
+def _is_aware(value: datetime) -> bool:
+    return value.tzinfo is not None and value.utcoffset() is not None
