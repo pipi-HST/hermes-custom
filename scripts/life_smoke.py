@@ -163,12 +163,30 @@ def _reminder_scenarios(
         "暂停久坐警报 2 小时",
         received_at="2026-05-31T10:45:00+08:00",
     )
+    first_exercise_tick = agent.life_tick(
+        now="2026-05-28T10:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+    too_soon_exercise_tick = agent.life_tick(
+        now="2026-05-28T11:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+    due_exercise_tick = agent.life_tick(
+        now="2026-05-28T12:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
 
     records["planned_exercise_time"] = planned.get("scheduled_for", "")
     records["exercise_skip_status"] = skip["status"]
     records["manual_query_status"] = query["status"]
     records["health_consultation_status"] = health["status"]
     records["sedentary_pause_until"] = sedentary_pause.get("scheduled_for", "")
+    records["exercise_repeat_first"] = (first_exercise_tick["selected"] or {}).get("reminder_type", "")
+    records["exercise_repeat_too_soon"] = (too_soon_exercise_tick["selected"] or {}).get("reminder_type", "")
+    records["exercise_repeat_due"] = (due_exercise_tick["selected"] or {}).get("reminder_type", "")
 
     _check(checks, "planned exercise schedules reminder", planned["status"] == "reminder_updated")
     _check(checks, "planned exercise time is stored", planned.get("scheduled_for") == "2026-05-30T18:00:00+08:00")
@@ -176,6 +194,9 @@ def _reminder_scenarios(
     _check(checks, "manual query is not recorded", query["status"] == "rejected" and query["event"] is None)
     _check(checks, "health consultation is not recorded", health["status"] == "rejected" and health["event"] is None)
     _check(checks, "sedentary pause stores pause-until time", sedentary_pause.get("scheduled_for") == "2026-05-31T12:45:00+08:00")
+    _check(checks, "exercise reminder starts", records["exercise_repeat_first"] == "exercise")
+    _check(checks, "exercise reminder does not repeat too soon", records["exercise_repeat_too_soon"] == "")
+    _check(checks, "exercise reminder repeats after interval", records["exercise_repeat_due"] == "exercise")
 
 
 def _check(checks: list[dict[str, Any]], name: str, passed: bool) -> None:

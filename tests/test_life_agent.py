@@ -242,6 +242,28 @@ def test_exercise_reschedule_delays_next_tick_until_scheduled_time(agent: LifeAg
     assert due["selected"]["reminder_type"] == "exercise"
 
 
+def test_exercise_reminder_repeats_only_after_repeat_interval(agent: LifeAgent) -> None:
+    first = agent.life_tick(
+        now="2026-05-29T10:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+    too_soon = agent.life_tick(
+        now="2026-05-29T11:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+    due_again = agent.life_tick(
+        now="2026-05-29T12:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert first["selected"]["reminder_type"] == "exercise"
+    assert too_soon["selected"] is None
+    assert due_again["selected"]["reminder_type"] == "exercise"
+
+
 def test_undo_latest_life_event(agent: LifeAgent) -> None:
     event = agent.record_life_event(
         "喝水了",

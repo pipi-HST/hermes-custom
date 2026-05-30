@@ -414,9 +414,16 @@ class LifeAgent:
             return None
         if self._has_reminder_log_on_day("exercise", "skipped", current):
             return None
-        scheduled = self._latest_scheduled_exercise(current)
-        if scheduled and current < scheduled:
-            return None
+        scheduled_log = self._latest_scheduled_exercise_log(current)
+        if scheduled_log:
+            scheduled = _parse_datetime(scheduled_log["scheduled_for"])
+            if current < scheduled:
+                return None
+            payload = scheduled_log.get("payload_json") or {}
+            if payload.get("source") != "user_reschedule":
+                next_repeat = scheduled + timedelta(hours=self.config.exercise_repeat_hours)
+                if current < next_repeat:
+                    return None
         return {
             "priority": 2,
             "reminder_type": "exercise",
@@ -478,16 +485,16 @@ class LifeAgent:
         ).fetchall()
         return any(_parse_datetime(row["scheduled_for"]).date() == current.date() for row in rows)
 
-    def _latest_scheduled_exercise(self, current: datetime) -> datetime | None:
+    def _latest_scheduled_exercise_log(self, current: datetime) -> dict[str, Any] | None:
         rows = self.repo.conn.execute(
-            """SELECT scheduled_for FROM life_reminder_logs
+            """SELECT * FROM life_reminder_logs
                WHERE reminder_type = 'exercise' AND status = 'scheduled'
-               ORDER BY scheduled_for DESC"""
+               ORDER BY scheduled_for DESC, rowid DESC"""
         ).fetchall()
         for row in rows:
             scheduled = _parse_datetime(row["scheduled_for"])
             if scheduled.date() == current.date():
-                return scheduled
+                return self.repo._reminder_row_to_dict(row)
         return None
 
     def _has_recent_event(
