@@ -3,11 +3,17 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from agents.capture_indexer import build_identity_index, build_section_indexes
+from db.embedding_repo import CaptureEmbeddingRepo
+from db.metadata_repo import CaptureMetadataRepo
+from db.schema import init_db
 from scripts.repair_data import repair_data
 
 
@@ -45,11 +51,15 @@ class LibraryAgent:
         *,
         outliner: Any,
         db_path: str | Path | None = None,
+        db_conn: sqlite3.Connection | None = None,
+        embedder: Any | None = None,
         min_outline_chars: int = DEFAULT_OUTLINE_CHAR_THRESHOLD,
     ) -> None:
         self.vault_path = Path(vault_path).expanduser()
         self.outliner = outliner
         self.db_path = Path(db_path).expanduser() if db_path else None
+        self.db_conn = db_conn
+        self.embedder = embedder
         self.min_outline_chars = min_outline_chars
 
     def maintain_database_sync(
@@ -198,6 +208,151 @@ class LibraryAgent:
 
         return report
 
+    def maintain_embedding_index(self, *, apply: bool = False) -> dict[str, Any]:
+        report: dict[str, Any] = {
+            "dry_run": not apply,
+            "scanned": 0,
+            "missing_or_stale": 0,
+            "updated": 0,
+            "skipped_missing_file": 0,
+            "errors": 0,
+            "items": [],
+        }
+
+        conn = self._index_db_conn()
+        if conn is None:
+            return {
+                **report,
+                "skipped": True,
+                "reason": "db_not_configured",
+            }
+
+        repo = CaptureEmbeddingRepo(conn)
+        rows = conn.execute(
+            "SELECT id, file_path FROM captures ORDER BY created_at ASC"
+        ).fetchall()
+        for row in rows:
+            capture_id = str(row["id"])
+            file_path = str(row["file_path"] or "")
+            if not file_path:
+                continue
+            note_path = self.vault_path / file_path
+            if not note_path.exists():
+                report["skipped_missing_file"] += 1
+                continue
+            parsed = _read_markdown_parts(note_path)
+            if parsed is None:
+                report["errors"] += 1
+                report["items"].append(
+                    {"capture_id": capture_id, "file_path": file_path, "action": "parse_error"}
+                )
+                continue
+
+            report["scanned"] += 1
+            frontmatter, body = parsed
+            metadata = CaptureMetadataRepo(conn).get(capture_id)
+            metadata_outline = metadata.get("outline") if metadata else None
+            index_items = [
+                build_identity_index(
+                    capture_id,
+                    file_path,
+                    frontmatter,
+                    body,
+                    outline=metadata_outline,
+                ),
+                *build_section_indexes(capture_id, file_path, frontmatter, body),
+            ]
+            stale_items = [
+                item for item in index_items
+                if repo.needs_reindex(
+                    item.capture_id,
+                    item.kind,
+                    item.section_id,
+                    item.source_hash,
+                )
+            ]
+            if not stale_items:
+                continue
+
+            report["missing_or_stale"] += len(stale_items)
+            if not apply:
+                report["items"].append(
+                    {
+                        "capture_id": capture_id,
+                        "file_path": file_path,
+                        "action": "needs_embedding_index",
+                        "items": len(stale_items),
+                    }
+                )
+                continue
+
+            if self.embedder is None:
+                report["errors"] += 1
+                report["items"].append(
+                    {
+                        "capture_id": capture_id,
+                        "file_path": file_path,
+                        "action": "embedding_error",
+                        "error": "embedder_not_configured",
+                        "items": len(stale_items),
+                    }
+                )
+                continue
+
+            for item in stale_items:
+                try:
+                    embedding = self.embedder.embed(item.index_text)
+                    repo.upsert(
+                        capture_id=item.capture_id,
+                        kind=item.kind,
+                        section_id=item.section_id,
+                        section_title=item.section_title,
+                        index_text=item.index_text,
+                        embedding=embedding,
+                        source_hash=item.source_hash,
+                        file_path=item.file_path,
+                    )
+                    report["updated"] += 1
+                except Exception as exc:
+                    report["errors"] += 1
+                    report["items"].append(
+                        {
+                            "capture_id": capture_id,
+                            "file_path": file_path,
+                            "action": "embedding_error",
+                            "error": str(exc),
+                            "kind": item.kind,
+                            "section_id": item.section_id,
+                        }
+                    )
+
+        return report
+
+    def _index_db_conn(self) -> sqlite3.Connection | None:
+        if self.db_conn is not None:
+            return self.db_conn
+        if self.db_path is None:
+            return None
+        self.db_conn = init_db(str(self.db_path))
+        return self.db_conn
+
+    def _metadata_repo(self) -> CaptureMetadataRepo | None:
+        conn = self._index_db_conn()
+        return CaptureMetadataRepo(conn) if conn is not None else None
+
+    def _capture_id_for_file(self, rel_path: str, frontmatter: dict[str, Any]) -> str:
+        frontmatter_id = str(frontmatter.get("id") or "")
+        if frontmatter_id:
+            return frontmatter_id
+        conn = self._index_db_conn()
+        if conn is None:
+            return ""
+        row = conn.execute(
+            "SELECT id FROM captures WHERE file_path = ?",
+            (rel_path,),
+        ).fetchone()
+        return str(row["id"]) if row else ""
+
     def _maintain_one(
         self,
         note_path: Path,
@@ -214,13 +369,21 @@ class LibraryAgent:
             return
 
         frontmatter, body = parsed
-        if len(body) < self.min_outline_chars:
+        legacy_outline = frontmatter.get("outline") or []
+        is_short = len(body) < self.min_outline_chars
+        if is_short and not legacy_outline:
             report["skipped_short"] += 1
             return
 
-        has_frontmatter_outline = bool(frontmatter.get("outline"))
+        metadata_repo = self._metadata_repo()
+        capture_id = self._capture_id_for_file(rel_path, frontmatter)
+        metadata = metadata_repo.get(capture_id) if metadata_repo and capture_id else None
+        metadata_outline = metadata.get("outline") if metadata else []
+        outline = metadata_outline or legacy_outline
+        has_outline = bool(outline)
         has_directory = _has_directory(body)
-        if has_frontmatter_outline and has_directory:
+        has_sections = _has_real_markdown_sections(body)
+        if metadata_outline and not legacy_outline and has_directory and has_sections:
             report["skipped_existing"] += 1
             return
 
@@ -230,7 +393,8 @@ class LibraryAgent:
                 {
                     "file_path": rel_path,
                     "action": "needs_outline",
-                    "missing_frontmatter_outline": not has_frontmatter_outline,
+                    "missing_metadata_outline": not has_outline,
+                    "legacy_frontmatter_outline": bool(legacy_outline),
                     "missing_directory": not has_directory,
                     "body_chars": len(body),
                 }
@@ -238,7 +402,7 @@ class LibraryAgent:
             return
 
         try:
-            outline = frontmatter.get("outline") or self.outliner.generate(body, len(body))
+            outline = outline or self.outliner.generate(body, len(body))
         except Exception as exc:
             report["errors"] += 1
             report["items"].append(
@@ -256,8 +420,21 @@ class LibraryAgent:
             )
             return
 
-        frontmatter["outline"] = outline
-        updated_body = body if has_directory else _insert_directory(body, outline)
+        if metadata_repo and capture_id:
+            metadata_repo.upsert_outline(
+                capture_id,
+                outline,
+                source_hash=hashlib.sha256(body.encode("utf-8")).hexdigest(),
+                directory_rendered_at=(
+                    datetime.now(timezone.utc).isoformat()
+                    if has_directory or len(body) >= self.min_outline_chars
+                    else None
+                ),
+            )
+        frontmatter.pop("outline", None)
+        updated_body = body if has_directory or is_short else _insert_directory(body, outline)
+        if not is_short and not _has_real_markdown_sections(updated_body):
+            updated_body = _insert_outline_headings(updated_body, outline)
         _write_markdown_parts(note_path, frontmatter, updated_body)
         report["updated"] += 1
         report["items"].append(
@@ -297,6 +474,13 @@ def _has_directory(body: str) -> bool:
     return re.search(r"^##\s+目录纲要\s*$", body, flags=re.MULTILINE) is not None
 
 
+def _has_real_markdown_sections(body: str) -> bool:
+    for match in re.finditer(r"^#{2,3}\s+(.+?)\s*$", body or "", flags=re.MULTILINE):
+        if match.group(1).strip() != "目录纲要":
+            return True
+    return False
+
+
 def _insert_directory(body: str, outline: list[dict]) -> str:
     directory = _render_directory(outline)
     h1 = re.match(r"^(#\s+.+?)(\n{2,}|\n|$)", body, flags=re.DOTALL)
@@ -317,6 +501,179 @@ def _render_directory(outline: list[dict]) -> str:
         suffix = f"：{summary}" if summary else ""
         lines.append(f"{indent}- {title}{suffix}")
     return "\n".join(lines)
+
+
+def _insert_outline_headings(body: str, outline: list[dict]) -> str:
+    lines = body.splitlines()
+    directory_indexes = _directory_line_indexes(lines)
+    existing_titles = _existing_markdown_section_titles(body)
+    inserted_titles: set[str] = set()
+    updated: list[str] = []
+
+    for index, line in enumerate(lines):
+        item = _matching_outline_item(line, index, outline, directory_indexes, existing_titles)
+        if item:
+            title = _single_line(str(item.get("title") or "未命名章节"))
+            if title not in inserted_titles:
+                level = _heading_level(item)
+                if updated and updated[-1].strip():
+                    updated.append("")
+                updated.append(f"{level} {title}")
+                updated.append("")
+                inserted_titles.add(title)
+        updated.append(line)
+
+    result = "\n".join(updated)
+    if body.endswith("\n"):
+        result += "\n"
+    return _insert_inline_outline_headings(result, outline)
+
+
+def _insert_inline_outline_headings(body: str, outline: list[dict]) -> str:
+    directory_end = _directory_end_offset(body)
+    prefix = body[:directory_end]
+    suffix = body[directory_end:]
+
+    for item in outline:
+        title = _single_line(str(item.get("title") or ""))
+        if not title or title in _existing_markdown_section_titles(prefix + suffix):
+            continue
+        match = _inline_outline_match(suffix, title)
+        if match is None:
+            continue
+
+        level = _heading_level(item)
+        before = suffix[: match.start()].rstrip()
+        after = suffix[match.start() :].lstrip()
+        heading = f"{level} {title}"
+        if before:
+            suffix = f"{before}\n\n{heading}\n\n{after}"
+        else:
+            suffix = f"{heading}\n\n{after}"
+
+    return prefix + suffix
+
+
+def _inline_outline_match(text: str, title: str) -> re.Match[str] | None:
+    escaped = re.escape(title)
+    patterns = [
+        rf"[一二三四五六七八九十]+、\s*{escaped}",
+        rf"[（(]?[一二三四五六七八九十0-9]+[)）.、]\s*{escaped}",
+        rf"\*\*\s*{escaped}\s*\*\*",
+    ]
+    if re.match(r"^(第[一二三四五六七八九十零0-9]+[层部分章节幕]|策略|坑|阶段)", title):
+        patterns.append(escaped)
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match
+    return None
+
+
+def _directory_end_offset(body: str) -> int:
+    lines = body.splitlines(keepends=True)
+    in_directory = False
+    saw_item = False
+    offset = 0
+    for line in lines:
+        stripped = line.strip()
+        if re.fullmatch(r"##\s+目录纲要", stripped):
+            in_directory = True
+            saw_item = False
+        elif in_directory and stripped and saw_item and not _is_directory_line(stripped):
+            return offset
+
+        if in_directory and _is_directory_item(stripped):
+            saw_item = True
+        offset += len(line)
+    return len(body) if in_directory else 0
+
+
+def _directory_line_indexes(lines: list[str]) -> set[int]:
+    indexes: set[int] = set()
+    in_directory = False
+    saw_item = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if re.fullmatch(r"##\s+目录纲要", stripped):
+            in_directory = True
+            saw_item = False
+        if not in_directory:
+            continue
+        if index:
+            if stripped and saw_item and not _is_directory_line(stripped):
+                in_directory = False
+                continue
+            if _is_directory_item(stripped):
+                saw_item = True
+        indexes.add(index)
+    return indexes
+
+
+def _is_directory_line(stripped: str) -> bool:
+    return not stripped or _is_directory_item(stripped)
+
+
+def _is_directory_item(stripped: str) -> bool:
+    return bool(re.match(r"^[-*+]\s+", stripped) or re.match(r"^\d+[.)、]\s+", stripped))
+
+
+def _existing_markdown_section_titles(body: str) -> set[str]:
+    titles: set[str] = set()
+    for match in re.finditer(r"^#{2,3}\s+(.+?)\s*$", body or "", flags=re.MULTILINE):
+        title = _single_line(match.group(1))
+        if title and title != "目录纲要":
+            titles.add(title)
+    return titles
+
+
+def _matching_outline_item(
+    line: str,
+    index: int,
+    outline: list[dict],
+    directory_indexes: set[int],
+    existing_titles: set[str],
+) -> dict | None:
+    if index in directory_indexes:
+        return None
+    stripped = line.strip()
+    if not _is_heading_like_line(stripped):
+        return None
+    for item in outline:
+        title = _single_line(str(item.get("title") or ""))
+        if title and title not in existing_titles and title in stripped:
+            return item
+    return None
+
+
+def _is_heading_like_line(stripped: str) -> bool:
+    if not stripped or len(stripped) > 90:
+        return False
+    if stripped.startswith(("#", "-", "*", "+", ">", "|")):
+        return False
+    if re.search(r"[。！？；]$", stripped):
+        return False
+    return bool(
+        re.match(
+            r"^("
+            r"[一二三四五六七八九十]+、"
+            r"|[（(]?[一二三四五六七八九十0-9]+[)）.、]"
+            r"|第[一二三四五六七八九十零0-9]+[层部分章节幕]"
+            r"|策略[一二三四五六七八九十0-9]+[：:]"
+            r"|坑[一二三四五六七八九十0-9]+[：:]"
+            r"|阶段[一二三四五六七八九十0-9]+[：:]"
+            r")",
+            stripped,
+        )
+    )
+
+
+def _heading_level(item: dict) -> str:
+    try:
+        level = int(item.get("level") or 1)
+    except (TypeError, ValueError):
+        level = 1
+    return "##" if level <= 1 else "###"
 
 
 def _single_line(value: str) -> str:

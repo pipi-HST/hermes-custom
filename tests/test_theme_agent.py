@@ -125,6 +125,32 @@ def test_scan_confirm_rejects_all(mock_llm):
 
 
 @patch.object(ThemeAgent, "_call_llm")
+def test_scan_uses_strong_filter_when_confirm_output_is_unparseable(mock_llm):
+    """全文确认输出损坏时，不应丢弃前两层已经确认的 strong 关联。"""
+    call_count = [0]
+
+    def side_effect(prompt, max_tokens=1000):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return json.dumps([
+                {"capture_id": "a1", "related": True,
+                 "connection_type": "strong", "reason": "同一主题"},
+            ])
+        return ""
+
+    mock_llm.side_effect = side_effect
+
+    agent = ThemeAgent(llm_api_key="test")
+    new_caps = [_make_capture("n1", summary="Agent", embedding=_make_emb())]
+    all_caps = [_make_capture("a1", summary="Agent 工具", embedding=_make_emb(seed=1.0))]
+
+    clusters = agent.scan(new_caps, all_caps)
+
+    assert len(clusters) == 1
+    assert clusters[0]["related_captures"][0]["id"] == "a1"
+
+
+@patch.object(ThemeAgent, "_call_llm")
 def test_scan_llm_filter_exception_skips(mock_llm):
     """LLM filter 抛异常时应跳过该 new_cap。"""
     mock_llm.side_effect = RuntimeError("API timeout")
@@ -134,6 +160,27 @@ def test_scan_llm_filter_exception_skips(mock_llm):
     all_caps = [_make_capture("a1", summary="Y", embedding=_make_emb(seed=1.0))]
 
     assert agent.scan(new_caps, all_caps) == []
+
+
+@patch.object(ThemeAgent, "_call_llm")
+def test_llm_filter_extracts_json_array_from_fenced_text(mock_llm):
+    """LLM 输出带说明或代码块时，也应提取 JSON 数组。"""
+    mock_llm.return_value = (
+        "下面是判断结果：\n"
+        "```json\n"
+        "[{\"capture_id\":\"a1\",\"related\":true,"
+        "\"connection_type\":\"strong\",\"reason\":\"同一主题\"}]\n"
+        "```"
+    )
+
+    agent = ThemeAgent(llm_api_key="test")
+    result = agent._llm_filter(
+        {"summary": "新内容", "tags": []},
+        [{"id": "a1", "summary": "旧内容", "tags": []}],
+    )
+
+    assert result[0]["capture_id"] == "a1"
+    assert result[0]["connection_type"] == "strong"
 
 
 # ── generate_question ──
@@ -171,14 +218,28 @@ def test_generate_question_fallback_title():
 
 @patch.object(ThemeAgent, "_call_llm")
 def test_llm_confirm_handles_malformed_json(mock_llm):
-    """LLM 返回非法 JSON 时应返回空列表。"""
+    """LLM 返回非法 JSON 时应返回 None，让调用方保留前级判断。"""
     mock_llm.return_value = "这不是JSON"
     agent = ThemeAgent(llm_api_key="test")
     result = agent._llm_confirm(
         {"cached_text": "新内容"},
         [{"id": "abc12345", "cached_text": "候选内容"}],
     )
-    assert result == []
+    assert result is None
+
+
+@patch.object(ThemeAgent, "_call_llm")
+def test_llm_confirm_extracts_json_array_from_prefaced_text(mock_llm):
+    """全文确认返回带解释文本时，应提取其中的 ID 数组。"""
+    mock_llm.return_value = "确认相关：\n[\"abc12345\"]"
+
+    agent = ThemeAgent(llm_api_key="test")
+    result = agent._llm_confirm(
+        {"cached_text": "新内容"},
+        [{"id": "abc12345", "cached_text": "候选内容"}],
+    )
+
+    assert result == ["abc12345"]
 
 
 # ── create_pending_question ──
@@ -235,6 +296,25 @@ def test_generate_theme_name_strips_quotes(mock_llm):
     agent = ThemeAgent(llm_api_key="test")
     name = agent.generate_theme_name([{"title": "X", "summary": "Y", "tags": []}])
     assert name == "AI与教育变革"
+
+
+@patch.object(ThemeAgent, "_call_llm")
+def test_generate_theme_name_falls_back_when_llm_returns_empty(mock_llm):
+    """主题命名失败时不应创建 untitled MOC。"""
+    mock_llm.return_value = ""
+    captures = [
+        {"title": "Building Effective AI Agents", "summary": "", "tags": ["ai-agent"]},
+        {
+            "title": "AI Harness深度解析",
+            "summary": "",
+            "tags": ["ai-agent", "engineering-management"],
+        },
+    ]
+
+    agent = ThemeAgent(llm_api_key="test")
+    name = agent.generate_theme_name(captures)
+
+    assert name == "AI Agent工程化"
 
 
 # ── build_moc ──

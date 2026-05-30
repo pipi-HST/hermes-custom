@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -111,10 +112,13 @@ class ThemeAgent:
                 continue
 
             # 第三级：全文确认（仅确认 strong 的）
-            confirmed = self._llm_confirm(new_cap, [
+            strong_captures = [
                 c for c in top_captures
                 if c["id"] in {f["capture_id"] for f in strong}
-            ])
+            ]
+            confirmed = self._llm_confirm(new_cap, strong_captures)
+            if confirmed is None:
+                confirmed = [c["id"] for c in strong_captures]
             if confirmed:
                 clusters.append({
                     "new_capture": new_cap,
@@ -151,7 +155,10 @@ class ThemeAgent:
         )
         prompt = THEME_NAME_PROMPT.format(captures_text=captures_text)
         raw = self._call_llm(prompt, max_tokens=100)
-        return raw.strip().strip('"').strip("'")
+        name = raw.strip().strip('"').strip("'")
+        if not name or name.lower() in {"untitled", "无标题"}:
+            return _fallback_theme_name(captures)
+        return name
 
     def build_moc(self, theme_name: str, captures: list[dict]) -> str:
         """Build a MOC (Map of Content) markdown page for a theme."""
@@ -338,22 +345,24 @@ class ThemeAgent:
             new_tags=json.dumps(new_cap.get("tags", [])),
             candidates_text=candidates_text,
         )
-        raw = self._call_llm(prompt, max_tokens=1000)
-        return json.loads(raw.strip().lstrip("```json").rstrip("```"))
+        raw = self._call_llm(prompt, max_tokens=1800)
+        parsed = _parse_json_payload(raw)
+        return parsed if isinstance(parsed, list) else []
 
-    def _llm_confirm(self, new_cap: dict, strong_candidates: list[dict]) -> list[str]:
+    def _llm_confirm(self, new_cap: dict, strong_candidates: list[dict]) -> list[str] | None:
         """全文确认——读 cleaned_text 对比。返回确认相关的 capture IDs。"""
-        texts = [f"新内容：{new_cap.get('cached_text', '')[:3000]}"]
+        texts = [f"新内容：{_confirm_text(new_cap)}"]
         for c in strong_candidates:
-            texts.append(f"候选{c['id'][:8]}：{c.get('cached_text', '')[:3000]}")
+            texts.append(f"候选{c['id'][:8]}：{_confirm_text(c)}")
         prompt = "\n\n---\n\n".join(texts)
         prompt += "\n\n以上新内容与各候选内容是否确实在讲同一主题？只输出确认相关的 capture_id 列表 JSON 数组：[\"xxx\", \"yyy\"]"
 
         raw = self._call_llm(prompt, max_tokens=200)
         try:
-            return json.loads(raw.strip().lstrip("```json").rstrip("```"))
-        except json.JSONDecodeError:
-            return []
+            parsed = _parse_json_payload(raw)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, list) else []
 
     def _call_llm(self, prompt: str, max_tokens: int = 1000) -> str:
         headers = {
@@ -373,6 +382,60 @@ class ThemeAgent:
             )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
+
+
+def _parse_json_payload(raw: str):
+    """Parse JSON even when the model wraps it in prose or a fenced block."""
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text).strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    decoder = json.JSONDecoder()
+    starts = [index for index, char in enumerate(text) if char in "[{"]
+    for start in starts:
+        try:
+            parsed, _end = decoder.raw_decode(text[start:])
+            return parsed
+        except json.JSONDecodeError:
+            continue
+    raise ValueError("No JSON payload found")
+
+
+def _confirm_text(capture: dict) -> str:
+    return (
+        str(capture.get("index_text") or "").strip()
+        or str(capture.get("summary") or "").strip()
+        or str(capture.get("cached_text") or "").strip()[:1200]
+    )
+
+
+def _fallback_theme_name(captures: list[dict]) -> str:
+    tags: set[str] = set()
+    for capture in captures:
+        tags.update(str(tag) for tag in capture.get("tags") or [])
+
+    if "ai-agent" in tags and (
+        "engineering-management" in tags or "ai-product" in tags
+    ):
+        return "AI Agent工程化"
+    if "ai-agent" in tags:
+        return "AI Agent实践"
+    if "knowledge-management" in tags:
+        return "知识管理实践"
+    if "ai-product" in tags:
+        return "AI产品观察"
+
+    for capture in captures:
+        title = str(capture.get("title") or "").strip()
+        if title and title.lower() not in {"untitled", "无标题"}:
+            return title[:18]
+    return "未命名主题"
 
 
 def create_pending_question(repo, agent_type: str, question_text: str,

@@ -65,6 +65,7 @@ class RagAgent:
             "title": c.get("title", ""),
             "summary": c.get("story", ""),
             "file_path": c.get("file_path", ""),
+            "section_title": c.get("section_title", ""),
         } for c in captures]
         return {"answer": answer, "sources": sources}
 

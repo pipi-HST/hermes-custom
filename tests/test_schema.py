@@ -95,3 +95,43 @@ def test_capture_drafts_schema_exists():
         assert "status" in cols
         assert "committed_capture_id" in cols
         conn.close()
+
+
+def test_capture_embeddings_table_exists(tmp_path):
+    from db.schema import init_db
+
+    conn = init_db(str(tmp_path / "test.db"))
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(capture_embeddings)")]
+
+    assert cols == [
+        "id",
+        "capture_id",
+        "kind",
+        "section_id",
+        "section_title",
+        "index_text",
+        "embedding",
+        "source_hash",
+        "file_path",
+        "created_at",
+        "updated_at",
+    ]
+    conn.close()
+
+
+def test_capture_metadata_table_exists(tmp_path):
+    from db.schema import init_db
+
+    conn = init_db(str(tmp_path / "test.db"))
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(capture_metadata)")]
+
+    assert cols == [
+        "capture_id",
+        "outline_json",
+        "outline_source_hash",
+        "directory_rendered_at",
+        "metadata_json",
+        "created_at",
+        "updated_at",
+    ]
+    conn.close()

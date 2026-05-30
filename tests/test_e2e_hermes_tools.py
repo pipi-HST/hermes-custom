@@ -123,6 +123,9 @@ def test_hermes_theme_scan_schema():
     tools = _get_hermes_tools()
     params = tools["theme_scan"].schema.get("parameters", {})
     assert params.get("type") == "object"
+    props = params.get("properties", {})
+    assert "rescan_all" in props
+    assert "重建" in tools["theme_scan"].schema.get("description", "")
 
 
 def test_hermes_life_tools_registered():
@@ -864,12 +867,14 @@ def test_bridge_show_capture_draft_keeps_footer_with_long_title(monkeypatch):
     assert not result["chat_preview"].endswith("…")
 
 
+@patch("bridge.rag_bridge._indexed_search")
 @patch("bridge.rag_bridge.vector_search")
 @patch("agents.rag_agent.RagAgent.query")
 @patch("agents.embedder.Embedder.embed")
-def test_bridge_rag(mock_embed, mock_query, mock_vector_search):
+def test_bridge_rag(mock_embed, mock_query, mock_vector_search, mock_indexed_search):
     from bridge.rag_bridge import search_knowledge_base
     mock_embed.return_value = b"\x00" * 4096
+    mock_indexed_search.return_value = []
     mock_vector_search.return_value = [{"id": "1", "file_path": "", "raw_path": ""}]
     mock_query.return_value = {
         "answer": "四个模块", "sources": [{"title": "T", "summary": "S", "feishu_doc_url": ""}],

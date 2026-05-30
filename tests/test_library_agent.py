@@ -8,6 +8,7 @@ import pytest
 
 from agents.markdown_writer import read_note
 from agents.library_agent import LibraryAgent
+from db.schema import init_db
 
 
 class FakeOutliner:
@@ -34,6 +35,15 @@ class FakeOutliner:
         if self.fail:
             raise RuntimeError("outline failed")
         return self.outline
+
+
+class FakeEmbedder:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def embed(self, text: str) -> bytes:
+        self.calls.append(text)
+        return text[:8].encode("utf-8")
 
 
 def _write_capture(
@@ -88,44 +98,298 @@ def test_dry_run_reports_long_capture_without_writing(tmp_path: Path) -> None:
     assert outliner.calls == []
 
 
-def test_apply_adds_outline_frontmatter_and_directory_without_rewriting_body(
+def test_apply_stores_outline_in_db_and_removes_frontmatter_outline(
     tmp_path: Path,
 ) -> None:
     body = "# 测试长文\n\n第一段。\n\n第二段。\n\n" + "补充内容。\n\n" * 40
     rel_path = _write_capture(tmp_path, body=body)
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("long", rel_path))
+    conn.commit()
     outliner = FakeOutliner()
 
-    report = LibraryAgent(tmp_path, outliner=outliner, min_outline_chars=100).maintain_outlines(
-        apply=True
-    )
+    report = LibraryAgent(
+        tmp_path,
+        outliner=outliner,
+        min_outline_chars=100,
+        db_conn=conn,
+    ).maintain_outlines(apply=True)
 
     assert report["dry_run"] is False
     assert report["updated"] == 1
     note = read_note(tmp_path, rel_path)
     assert note is not None
     frontmatter, updated_body = note
-    assert frontmatter["outline"] == outliner.outline
+    assert "outline" not in frontmatter
     assert "## 目录纲要" in updated_body
     assert "- 战略转向：说明产品节奏背后的战略变化。" in updated_body
     assert "第一段。\n\n第二段。" in updated_body
     assert updated_body.count("## 目录纲要") == 1
+    row = conn.execute(
+        "SELECT outline_json FROM capture_metadata WHERE capture_id = ?",
+        ("long",),
+    ).fetchone()
+    assert row is not None
+    assert "战略转向" in row["outline_json"]
     assert outliner.calls and outliner.calls[0][0] == body
 
 
-def test_existing_outline_and_directory_are_not_duplicated(tmp_path: Path) -> None:
+def test_existing_metadata_outline_and_real_headings_are_not_duplicated(tmp_path: Path) -> None:
     outline = [{"level": 1, "title": "已有目录", "summary": "已经整理过。"}]
-    body = "# 测试长文\n\n## 目录纲要\n\n- 已有目录：已经整理过。\n\n正文。\n\n" + "更多。\n\n" * 40
-    rel_path = _write_capture(tmp_path, body=body, outline=outline)
+    body = (
+        "# 测试长文\n\n"
+        "## 目录纲要\n\n"
+        "- 已有目录：已经整理过。\n\n"
+        "## 已有目录\n\n"
+        "正文。\n\n"
+        + "更多。\n\n" * 40
+    )
+    rel_path = _write_capture(tmp_path, body=body)
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("long", rel_path))
+    conn.execute(
+        """INSERT INTO capture_metadata
+           (capture_id, outline_json, outline_source_hash)
+           VALUES (?, ?, ?)""",
+        ("long", '[{"level": 1, "title": "已有目录", "summary": "已经整理过。"}]', "hash"),
+    )
+    conn.commit()
     before = (tmp_path / rel_path).read_text(encoding="utf-8")
     outliner = FakeOutliner()
 
-    report = LibraryAgent(tmp_path, outliner=outliner, min_outline_chars=100).maintain_outlines(
-        apply=True
-    )
+    report = LibraryAgent(
+        tmp_path,
+        outliner=outliner,
+        min_outline_chars=100,
+        db_conn=conn,
+    ).maintain_outlines(apply=True)
 
     assert report["skipped_existing"] == 1
     assert (tmp_path / rel_path).read_text(encoding="utf-8") == before
     assert outliner.calls == []
+
+
+def test_apply_inserts_markdown_headings_for_unstructured_long_note(
+    tmp_path: Path,
+) -> None:
+    outline = [
+        {"level": 1, "title": "第一部分", "summary": "第一段内容。"},
+        {"level": 1, "title": "第二部分", "summary": "第二段内容。"},
+    ]
+    body = (
+        "# 测试长文\n\n"
+        "## 目录纲要\n\n"
+        "- 第一部分：第一段内容。\n"
+        "- 第二部分：第二段内容。\n\n"
+        "一、第一部分\n"
+        "这里是原来的第一段正文。\n\n"
+        "二、第二部分\n"
+        "这里是原来的第二段正文。\n"
+    )
+    rel_path = _write_capture(tmp_path, body=body)
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("long", rel_path))
+    conn.execute(
+        """INSERT INTO capture_metadata
+           (capture_id, outline_json, outline_source_hash)
+           VALUES (?, ?, ?)""",
+        (
+            "long",
+            '[{"level": 1, "title": "第一部分", "summary": "第一段内容。"}, '
+            '{"level": 1, "title": "第二部分", "summary": "第二段内容。"}]',
+            "hash",
+        ),
+    )
+    conn.commit()
+
+    report = LibraryAgent(
+        tmp_path,
+        outliner=FakeOutliner(outline=outline),
+        min_outline_chars=20,
+        db_conn=conn,
+    ).maintain_outlines(apply=True)
+
+    note = read_note(tmp_path, rel_path)
+    assert note is not None
+    _frontmatter, updated_body = note
+    assert report["updated"] == 1
+    assert "## 第一部分\n\n一、第一部分" in updated_body
+    assert "## 第二部分\n\n二、第二部分" in updated_body
+    assert "这里是原来的第一段正文。" in updated_body
+    assert "这里是原来的第二段正文。" in updated_body
+    assert updated_body.count("## 第一部分") == 1
+    assert updated_body.count("## 第二部分") == 1
+
+
+def test_repaired_long_note_builds_section_embeddings(tmp_path: Path) -> None:
+    outline = [
+        {"level": 1, "title": "第一部分", "summary": "第一段内容。"},
+        {"level": 1, "title": "第二部分", "summary": "第二段内容。"},
+    ]
+    body = (
+        "# 测试长文\n\n"
+        "## 目录纲要\n\n"
+        "- 第一部分：第一段内容。\n"
+        "- 第二部分：第二段内容。\n\n"
+        "一、第一部分\n"
+        "这里是原来的第一段正文。\n\n"
+        "二、第二部分\n"
+        "这里是原来的第二段正文。\n"
+    )
+    rel_path = _write_capture(tmp_path, body=body)
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("long", rel_path))
+    conn.execute(
+        """INSERT INTO capture_metadata
+           (capture_id, outline_json, outline_source_hash)
+           VALUES (?, ?, ?)""",
+        (
+            "long",
+            '[{"level": 1, "title": "第一部分", "summary": "第一段内容。"}, '
+            '{"level": 1, "title": "第二部分", "summary": "第二段内容。"}]',
+            "hash",
+        ),
+    )
+    conn.commit()
+    agent = LibraryAgent(
+        tmp_path,
+        outliner=FakeOutliner(outline=outline),
+        min_outline_chars=20,
+        db_conn=conn,
+        embedder=FakeEmbedder(),
+    )
+
+    agent.maintain_outlines(apply=True)
+    report = agent.maintain_embedding_index(apply=True)
+
+    rows = conn.execute(
+        "SELECT kind, section_title FROM capture_embeddings ORDER BY kind, section_id"
+    ).fetchall()
+    assert report["updated"] == 3
+    assert [(row["kind"], row["section_title"]) for row in rows] == [
+        ("identity", ""),
+        ("section", "第一部分"),
+        ("section", "第二部分"),
+    ]
+
+
+def test_apply_splits_inline_chinese_section_markers_without_rewriting(
+    tmp_path: Path,
+) -> None:
+    outline = [
+        {"level": 1, "title": "第一部分", "summary": "第一段内容。"},
+        {"level": 1, "title": "第二部分", "summary": "第二段内容。"},
+    ]
+    body = (
+        "# 测试长文\n\n"
+        "## 目录纲要\n\n"
+        "- 第一部分：第一段内容。\n"
+        "- 第二部分：第二段内容。\n\n"
+        "开头一句。一、第一部分这里是原来的第一段正文。"
+        "二、第二部分这里是原来的第二段正文。"
+    )
+    rel_path = _write_capture(tmp_path, body=body)
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("long", rel_path))
+    conn.execute(
+        """INSERT INTO capture_metadata
+           (capture_id, outline_json, outline_source_hash)
+           VALUES (?, ?, ?)""",
+        (
+            "long",
+            '[{"level": 1, "title": "第一部分", "summary": "第一段内容。"}, '
+            '{"level": 1, "title": "第二部分", "summary": "第二段内容。"}]',
+            "hash",
+        ),
+    )
+    conn.commit()
+
+    LibraryAgent(
+        tmp_path,
+        outliner=FakeOutliner(outline=outline),
+        min_outline_chars=20,
+        db_conn=conn,
+    ).maintain_outlines(apply=True)
+
+    note = read_note(tmp_path, rel_path)
+    assert note is not None
+    _frontmatter, updated_body = note
+    assert "开头一句。\n\n## 第一部分\n\n一、第一部分这里是原来的第一段正文。" in updated_body
+    assert "\n\n## 第二部分\n\n二、第二部分这里是原来的第二段正文。" in updated_body
+
+
+def test_apply_promotes_bold_section_labels_without_rewriting(tmp_path: Path) -> None:
+    outline = [
+        {"level": 1, "title": "第一部分", "summary": "第一段内容。"},
+        {"level": 1, "title": "第二部分", "summary": "第二段内容。"},
+    ]
+    body = (
+        "# 测试长文\n\n"
+        "## 目录纲要\n\n"
+        "- 第一部分：第一段内容。\n"
+        "- 第二部分：第二段内容。\n\n"
+        "**第一部分**\n\n"
+        "这里是原来的第一段正文。\n\n"
+        "**第二部分**\n\n"
+        "这里是原来的第二段正文。\n"
+    )
+    rel_path = _write_capture(tmp_path, body=body)
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("long", rel_path))
+    conn.execute(
+        """INSERT INTO capture_metadata
+           (capture_id, outline_json, outline_source_hash)
+           VALUES (?, ?, ?)""",
+        (
+            "long",
+            '[{"level": 1, "title": "第一部分", "summary": "第一段内容。"}, '
+            '{"level": 1, "title": "第二部分", "summary": "第二段内容。"}]',
+            "hash",
+        ),
+    )
+    conn.commit()
+
+    LibraryAgent(
+        tmp_path,
+        outliner=FakeOutliner(outline=outline),
+        min_outline_chars=20,
+        db_conn=conn,
+    ).maintain_outlines(apply=True)
+
+    note = read_note(tmp_path, rel_path)
+    assert note is not None
+    _frontmatter, updated_body = note
+    assert "## 第一部分\n\n**第一部分**" in updated_body
+    assert "## 第二部分\n\n**第二部分**" in updated_body
+
+
+def test_existing_frontmatter_outline_is_migrated_to_db_and_removed(tmp_path: Path) -> None:
+    outline = [{"level": 1, "title": "已有目录", "summary": "已经整理过。"}]
+    body = "# 测试长文\n\n## 目录纲要\n\n- 已有目录\n\n正文。\n\n" + "更多。\n\n" * 40
+    rel_path = _write_capture(tmp_path, body=body, outline=outline)
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("long", rel_path))
+    conn.commit()
+
+    report = LibraryAgent(
+        tmp_path,
+        outliner=FakeOutliner(),
+        min_outline_chars=100,
+        db_conn=conn,
+    ).maintain_outlines(apply=True)
+
+    note = read_note(tmp_path, rel_path)
+    assert note is not None
+    frontmatter, updated_body = note
+    assert "outline" not in frontmatter
+    assert updated_body.count("## 目录纲要") == 1
+    row = conn.execute(
+        "SELECT outline_json FROM capture_metadata WHERE capture_id = ?",
+        ("long",),
+    ).fetchone()
+    assert row is not None
+    assert "已有目录" in row["outline_json"]
+    assert report["updated"] == 1
 
 
 def test_short_capture_is_skipped_without_calling_outliner(tmp_path: Path) -> None:
@@ -138,6 +402,43 @@ def test_short_capture_is_skipped_without_calling_outliner(tmp_path: Path) -> No
 
     assert report["skipped_short"] == 1
     assert report["updated"] == 0
+    assert outliner.calls == []
+
+
+def test_short_capture_legacy_outline_is_migrated_without_directory(
+    tmp_path: Path,
+) -> None:
+    outline = [{"level": 1, "title": "短文结构", "summary": "只迁移到数据库。"}]
+    rel_path = _write_capture(
+        tmp_path,
+        name="short.md",
+        body="# 短文\n\n内容。",
+        outline=outline,
+    )
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("short", rel_path))
+    conn.commit()
+    outliner = FakeOutliner()
+
+    report = LibraryAgent(
+        tmp_path,
+        outliner=outliner,
+        min_outline_chars=100,
+        db_conn=conn,
+    ).maintain_outlines(apply=True)
+
+    note = read_note(tmp_path, rel_path)
+    assert note is not None
+    frontmatter, body = note
+    assert "outline" not in frontmatter
+    assert "## 目录纲要" not in body
+    row = conn.execute(
+        "SELECT outline_json FROM capture_metadata WHERE capture_id = ?",
+        ("short",),
+    ).fetchone()
+    assert row is not None
+    assert "短文结构" in row["outline_json"]
+    assert report["updated"] == 1
     assert outliner.calls == []
 
 
@@ -172,6 +473,7 @@ def test_library_maintenance_runner_uses_configured_vault(
         llm_api_key = "sk-test"
         llm_model = "test-model"
         llm_base_url = "https://example.com"
+        qwen_api_key = "qwen-test"
 
     monkeypatch.setattr(library_maintenance, "load_config", lambda _path: Config())
     created_models: list[str] = []
@@ -179,6 +481,8 @@ def test_library_maintenance_runner_uses_configured_vault(
     def fake_outliner(**kwargs):
         created_models.append(kwargs["model"])
         return FakeOutliner()
+
+    monkeypatch.setattr(library_maintenance, "Embedder", lambda api_key: FakeEmbedder())
 
     sync_calls: list[dict] = []
 
@@ -205,6 +509,7 @@ def test_library_maintenance_runner_uses_configured_vault(
     assert report["database_sync"]["dry_run"] is True
     assert report["outlines"]["needs_outline"] == 1
     assert report["property_gaps"]["planned_action_count"] == 1
+    assert "embedding_index" in report
     assert sync_calls == [
         {
             "db_path": Path(Config.db_path),
@@ -367,3 +672,72 @@ def test_library_agent_apply_backfills_only_safe_property_fields(tmp_path: Path)
         "reviewable",
         "importance",
     ]
+
+
+def test_library_agent_dry_run_reports_missing_embedding_index(tmp_path: Path) -> None:
+    rel_path = _write_capture(
+        tmp_path,
+        body="## 第一部分\n这是一篇关于 AI Agent 的长文。\n\n## 第二部分\n补充内容。",
+    )
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("cap1", rel_path))
+    conn.commit()
+    embedder = FakeEmbedder()
+
+    agent = LibraryAgent(
+        tmp_path,
+        outliner=FakeOutliner(),
+        db_conn=conn,
+        embedder=embedder,
+    )
+    report = agent.maintain_embedding_index(apply=False)
+
+    assert report["dry_run"] is True
+    assert report["scanned"] == 1
+    assert report["missing_or_stale"] == 3
+    assert report["updated"] == 0
+    assert report["items"][0]["action"] == "needs_embedding_index"
+    assert embedder.calls == []
+
+
+def test_library_agent_apply_builds_identity_and_section_embeddings(tmp_path: Path) -> None:
+    rel_path = _write_capture(
+        tmp_path,
+        body="## 第一部分\n内容 A。\n\n## 第二部分\n内容 B。",
+    )
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("cap1", rel_path))
+    conn.commit()
+    embedder = FakeEmbedder()
+
+    agent = LibraryAgent(
+        tmp_path,
+        outliner=FakeOutliner(),
+        db_conn=conn,
+        embedder=embedder,
+    )
+    report = agent.maintain_embedding_index(apply=True)
+
+    rows = conn.execute(
+        "SELECT kind, section_title FROM capture_embeddings ORDER BY kind, section_id"
+    ).fetchall()
+    assert report["dry_run"] is False
+    assert report["updated"] == 3
+    assert [row["kind"] for row in rows].count("identity") == 1
+    assert [row["kind"] for row in rows].count("section") == 2
+    assert len(embedder.calls) == 3
+
+
+def test_library_agent_apply_reports_missing_embedder_without_crashing(tmp_path: Path) -> None:
+    rel_path = _write_capture(tmp_path, body="## 第一部分\n内容 A。")
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("cap1", rel_path))
+    conn.commit()
+
+    agent = LibraryAgent(tmp_path, outliner=FakeOutliner(), db_conn=conn)
+    report = agent.maintain_embedding_index(apply=True)
+
+    assert report["errors"] == 1
+    assert report["updated"] == 0
+    assert report["items"][0]["action"] == "embedding_error"
+    assert "embedder_not_configured" in report["items"][0]["error"]

@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,7 @@ from agents.capture_agent import load_config
 from agents.rag_agent import RagAgent, format_answer
 from agents.embedder import Embedder
 from bridge.result_envelope import source_ref, success_envelope
+from db.embedding_repo import CaptureEmbeddingRepo
 from db.vector_search import search as vector_search
 from db.schema import init_db
 from db.repo import CaptureRepo
@@ -32,6 +34,8 @@ def _log(msg: str) -> None:
 _config = None
 _repo = None
 
+_HEADING_RE = re.compile(r"^(#{2,6})\s+(.+?)\s*$", re.MULTILINE)
+
 def _init():
     global _config, _repo
     if _config is None:
@@ -46,14 +50,26 @@ def search_knowledge_base(query: str) -> dict:
 
     embedder = Embedder(api_key=config.qwen_api_key)
     used_fallback = False
+    used_index = False
     try:
-        results = vector_search(query, repo, embedder, top_k=5)
-        _log(f"VECTOR: {len(results)} hits")
-        logger.info("[RAG] vector_search returned %d results", len(results))
+        results = _indexed_search(query, repo, embedder, limit=5)
+        used_index = bool(results)
+        _log(f"INDEX: {len(results)} hits")
+        logger.info("[RAG] index_search returned %d results", len(results))
     except Exception as e:
-        _log(f"VECTOR_FAIL: {e}")
-        logger.warning("[RAG] vector_search failed: %s", e)
+        _log(f"INDEX_FAIL: {e}")
+        logger.warning("[RAG] index_search failed: %s", e)
         results = []
+
+    if not results:
+        try:
+            results = vector_search(query, repo, embedder, top_k=5)
+            _log(f"VECTOR: {len(results)} hits")
+            logger.info("[RAG] vector_search returned %d results", len(results))
+        except Exception as e:
+            _log(f"VECTOR_FAIL: {e}")
+            logger.warning("[RAG] vector_search failed: %s", e)
+            results = []
 
     results = [_hydrate_capture(config.vault_path, item) for item in results]
 
@@ -93,20 +109,75 @@ def search_knowledge_base(query: str) -> dict:
         source_map=[
             source_ref(
                 role="evidence",
-                type="capture_note",
+                type=(
+                    "capture_section"
+                    if item.get("matched_kind") == "section"
+                    else "capture_note"
+                ),
                 id=item.get("id", ""),
                 title=item.get("title") or item.get("file_path", ""),
                 path=item.get("file_path", ""),
+                section=item.get("section_title", ""),
             )
             for item in results
         ],
         meta={
             "query": query,
             "answer": resp["answer"],
+            "used_index": used_index,
             "used_fallback": used_fallback,
             "result_count": len(results),
         },
     )
+
+
+def _indexed_search(
+    query: str,
+    repo: CaptureRepo,
+    embedder: Embedder,
+    *,
+    limit: int = 5,
+) -> list[dict]:
+    query_embedding = embedder.embed(query)
+    rows = CaptureEmbeddingRepo(repo.conn).search(
+        query_embedding,
+        kinds=("identity", "section"),
+        limit=limit * 4,
+    )
+    if not rows:
+        return []
+
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(row["capture_id"], []).append(row)
+
+    results: list[dict] = []
+    for capture_id, items in sorted(
+        grouped.items(),
+        key=lambda pair: max(item.get("score", 0) for item in pair[1]),
+        reverse=True,
+    ):
+        capture = repo.get_by_id(capture_id)
+        if not capture:
+            continue
+        section_hits = [item for item in items if item.get("kind") == "section"]
+        best = max(
+            section_hits or items,
+            key=lambda item: item.get("score", 0),
+        )
+        results.append(
+            {
+                **capture,
+                "matched_kind": best.get("kind", ""),
+                "section_id": best.get("section_id", ""),
+                "section_title": best.get("section_title", ""),
+                "index_text": best.get("index_text", ""),
+                "score": best.get("score", 0),
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results
 
 
 def _hydrate_capture(vault_path: str, row: dict) -> dict:
@@ -118,6 +189,9 @@ def _hydrate_capture(vault_path: str, row: dict) -> dict:
         note = read_note(vault, file_path)
         if note:
             frontmatter, body = note
+    section_title = row.get("section_title", "")
+    if row.get("matched_kind") == "section" and section_title:
+        body = _extract_section_body(body, section_title) or body
     return {
         **row,
         "title": frontmatter.get("title", ""),
@@ -125,6 +199,26 @@ def _hydrate_capture(vault_path: str, row: dict) -> dict:
         "tags": frontmatter.get("tags", []),
         "body": body,
     }
+
+
+def _extract_section_body(body: str, section_title: str) -> str:
+    headings = list(_HEADING_RE.finditer(body))
+    if not headings:
+        return ""
+    wanted = section_title.strip()
+    for index, match in enumerate(headings):
+        level = len(match.group(1))
+        title = match.group(2).strip()
+        if title != wanted:
+            continue
+        start = match.start()
+        end = len(body)
+        for later in headings[index + 1:]:
+            if len(later.group(1)) <= level:
+                end = later.start()
+                break
+        return body[start:end].strip()
+    return ""
 
 
 def _fallback_text_search(query: str, vault_path: str, repo: CaptureRepo) -> list[dict]:

@@ -122,7 +122,7 @@ def test_write_note_stage_captures_full_frontmatter(
     assert "word_count:" in content
 
 
-def test_write_note_stage_captures_includes_outline_when_present(
+def test_write_note_stage_captures_omits_agent_outline_from_frontmatter(
     tmp_path: Path, sample_meta: NoteMeta
 ) -> None:
     meta = NoteMeta(
@@ -149,8 +149,9 @@ def test_write_note_stage_captures_includes_outline_when_present(
     result = read_note(tmp_path, file_path)
 
     assert result is not None
-    frontmatter, _body = result
-    assert frontmatter["outline"] == meta.outline
+    frontmatter, body = result
+    assert "outline" not in frontmatter
+    assert body == "body"
 
 
 def test_write_note_stage_raw_omits_outline(
@@ -299,7 +300,7 @@ def test_append_links_preserves_frontmatter(tmp_path: Path) -> None:
 
 def test_write_moc_creates_file(tmp_path: Path) -> None:
     """write_moc 应在 themes/ 目录创建 MOC 页。"""
-    body = "# AI与教育变革\n\n主题描述..."
+    body = "# AI与教育变革\n\n主题描述...\n\n## 开放问题\n- AI 会怎样改变学习路径？"
     file_path = write_moc(
         tmp_path,
         theme_name="AI与教育变革",
@@ -315,8 +316,12 @@ def test_write_moc_creates_file(tmp_path: Path) -> None:
     content = full_path.read_text(encoding="utf-8")
     assert content.startswith("---")
     assert "type: theme" in content
+    assert "status: active" in content
     assert "theme_name: AI与教育变革" in content
     assert "captures: 5" in content
+    assert "last_scanned:" in content
+    assert "open_questions:" in content
+    assert "AI 会怎样改变学习路径？" in content
     assert "ai-education" in content
     assert body in content
 
@@ -389,6 +394,47 @@ def test_update_moc_appends_to_related_notes(tmp_path: Path) -> None:
     assert "新内容摘要" in content
     # captures count incremented
     assert "captures: 2" in content
+    assert "last_scanned:" in content
+
+
+def test_update_moc_uses_managed_block_without_touching_user_section(tmp_path: Path) -> None:
+    """旧 MOC 没有 Hermes 标记时，应新建管理区而不是改用户手写区。"""
+    themes_dir = tmp_path / "themes"
+    themes_dir.mkdir()
+    file_path = "themes/manual.md"
+    original_body = (
+        "# 手写主题\n\n"
+        "## 相关笔记\n"
+        "这里是我自己维护的解释。\n"
+        "- [[手写笔记]] — 我的判断\n\n"
+        "## 我的判断\n"
+        "这段内容不应该被工具改写。\n"
+    )
+    (tmp_path / file_path).write_text(
+        "---\n"
+        "type: theme\n"
+        "theme_name: 手写主题\n"
+        "captures: 1\n"
+        "---\n\n"
+        f"{original_body}",
+        encoding="utf-8",
+    )
+
+    updated = update_moc(tmp_path, file_path, {
+        "title": "新笔记", "summary": "新内容摘要",
+    })
+
+    assert updated is True
+    content = (tmp_path / file_path).read_text(encoding="utf-8")
+    assert "这里是我自己维护的解释。\n- [[手写笔记]] — 我的判断" in content
+    assert "## Hermes 管理" in content
+    assert content.count("## Hermes 管理") == 1
+    assert "<!-- HERMES-RELATED-NOTES:START -->" in content
+    assert "<!-- HERMES-RELATED-NOTES:END -->" in content
+    assert "<!-- HERMES-CHANGELOG:START -->" in content
+    assert "<!-- HERMES-CHANGELOG:END -->" in content
+    assert "[[新笔记]]" in content
+    assert "这段内容不应该被工具改写。" in content
 
 
 def test_update_moc_adds_changelog(tmp_path: Path) -> None:

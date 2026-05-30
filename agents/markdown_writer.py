@@ -159,8 +159,6 @@ def write_note(
             "story": meta.story,
             "word_count": meta.word_count,
         }
-        if meta.outline:
-            frontmatter["outline"] = meta.outline
 
     content = (
         f"---\n{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False)}"
@@ -291,13 +289,17 @@ def write_moc(
     filename = f"{slug}.md"
     filepath = themes_dir / filename
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
     frontmatter = {
         "type": "theme",
+        "status": "active",
         "theme_name": theme_name,
         "tags": tags,
         "created": today,
+        "last_scanned": now.isoformat(),
         "captures": capture_count,
+        "open_questions": _extract_open_questions(body),
     }
 
     content = (
@@ -309,7 +311,10 @@ def write_moc(
     return f"themes/{filename}"
 
 
-_CHANGELOG_SECTION_RE = re.compile(r"^##\s+更新日志\s*$", re.MULTILINE)
+_HERMES_RELATED_START = "<!-- HERMES-RELATED-NOTES:START -->"
+_HERMES_RELATED_END = "<!-- HERMES-RELATED-NOTES:END -->"
+_HERMES_CHANGELOG_START = "<!-- HERMES-CHANGELOG:START -->"
+_HERMES_CHANGELOG_END = "<!-- HERMES-CHANGELOG:END -->"
 
 
 def read_moc(
@@ -317,6 +322,56 @@ def read_moc(
 ) -> tuple[dict, str] | None:
     """Read a MOC file. Returns ``(frontmatter_dict, body_text)`` or ``None``."""
     return read_note(vault_path, file_path)
+
+
+def _extract_open_questions(body: str) -> list[str]:
+    match = re.search(r"^##\s+开放问题\s*$", body, re.MULTILINE)
+    if not match:
+        return []
+
+    next_heading = re.compile(r"^##\s+", re.MULTILINE).search(body, match.end())
+    section_end = next_heading.start() if next_heading else len(body)
+    section = body[match.end():section_end]
+    questions: list[str] = []
+    for line in section.splitlines():
+        text = re.sub(r"^\s*[-*]\s+", "", line).strip()
+        if text:
+            questions.append(text)
+    return questions
+
+
+def _append_to_managed_block(
+    body: str,
+    start_marker: str,
+    end_marker: str,
+    heading: str,
+    line: str,
+) -> str:
+    start = body.find(start_marker)
+    end = body.find(end_marker)
+    if start != -1 and end != -1 and start < end:
+        before = body[:end].rstrip("\n")
+        after = body[end:]
+        return f"{before}\n{line}\n{after}"
+
+    managed_match = re.search(r"^##\s+Hermes 管理\s*$", body, re.MULTILINE)
+    if managed_match:
+        next_heading = re.compile(r"^##\s+", re.MULTILINE).search(
+            body, managed_match.end()
+        )
+        insert_pos = next_heading.start() if next_heading else len(body)
+        before = body[:insert_pos].rstrip("\n")
+        after = body[insert_pos:]
+        return (
+            f"{before}\n{start_marker}\n{heading}\n{line}\n{end_marker}\n"
+            f"{after}"
+        )
+
+    trailing = "\n" if body and not body.endswith("\n") else ""
+    return (
+        f"{body}{trailing}\n## Hermes 管理\n"
+        f"{start_marker}\n{heading}\n{line}\n{end_marker}\n"
+    )
 
 
 def update_moc(
@@ -353,43 +408,36 @@ def update_moc(
     title = capture.get("title") or "未命名"
     summary = capture.get("summary", "")[:60]
 
-    # Dedup check: does the 相关笔记 section already contain this title?
-    match = _LINK_SECTION_RE.search(body)
-    if match:
-        next_heading = re.compile(r"^##\s+", re.MULTILINE).search(body, match.end())
-        section_end = next_heading.start() if next_heading else len(body)
-        existing = set(_WIKI_LINK_RE.findall(body[match.end():section_end]))
-        if title in existing:
-            return False
+    existing = set(_WIKI_LINK_RE.findall(body))
+    if title in existing:
+        return False
 
-    # Append to 相关笔记 section.
     new_line = f"- [[{title}]]"
     if summary:
         new_line += f" — {summary}"
 
-    if match:
-        # Strip trailing whitespace from the section so new entry is flush.
-        before = body[:section_end].rstrip("\n ")
-        after = body[section_end:]
-        body = before + "\n" + new_line + "\n\n" + after.lstrip("\n")
-    else:
-        trailing = "\n" if body and not body.endswith("\n") else ""
-        body = f"{body}{trailing}\n## 相关笔记\n\n{new_line}\n"
+    body = _append_to_managed_block(
+        body,
+        _HERMES_RELATED_START,
+        _HERMES_RELATED_END,
+        "### 相关笔记",
+        new_line,
+    )
 
-    # Add or update 更新日志 section.
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     log_line = f"- {today}: 新增《{title}》"
-    changelog_match = _CHANGELOG_SECTION_RE.search(body)
-    if changelog_match:
-        insert_pos = changelog_match.end()
-        body = body[:insert_pos] + "\n" + log_line + body[insert_pos:]
-    else:
-        trailing = "\n" if body and not body.endswith("\n") else ""
-        body = f"{body}{trailing}\n## 更新日志\n{log_line}\n"
+    body = _append_to_managed_block(
+        body,
+        _HERMES_CHANGELOG_START,
+        _HERMES_CHANGELOG_END,
+        "### 更新日志",
+        log_line,
+    )
 
     # Update captures count.
     old_count = frontmatter.get("captures", 0) or 0
     frontmatter["captures"] = old_count + 1
+    frontmatter["last_scanned"] = datetime.now(timezone.utc).isoformat()
 
     header = (
         "---\n"

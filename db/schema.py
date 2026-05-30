@@ -94,6 +94,35 @@ CREATE TABLE IF NOT EXISTS capture_drafts (
 )
 """
 
+CREATE_CAPTURE_EMBEDDINGS_TABLE = """
+CREATE TABLE IF NOT EXISTS capture_embeddings (
+    id TEXT PRIMARY KEY,
+    capture_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('identity', 'section')),
+    section_id TEXT NOT NULL DEFAULT '',
+    section_title TEXT NOT NULL DEFAULT '',
+    index_text TEXT NOT NULL DEFAULT '',
+    embedding BLOB,
+    source_hash TEXT NOT NULL DEFAULT '',
+    file_path TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(capture_id, kind, section_id)
+)
+"""
+
+CREATE_CAPTURE_METADATA_TABLE = """
+CREATE TABLE IF NOT EXISTS capture_metadata (
+    capture_id TEXT PRIMARY KEY,
+    outline_json TEXT NOT NULL DEFAULT '[]',
+    outline_source_hash TEXT NOT NULL DEFAULT '',
+    directory_rendered_at TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 CREATE_CHANGE_LOG_TABLE = """
 CREATE TABLE IF NOT EXISTS change_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,6 +151,8 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute(CREATE_PENDING_QUESTIONS_TABLE)
     conn.execute(CREATE_CAPTURE_DRAFTS_TABLE)
     _migrate_capture_drafts_table(conn)
+    conn.execute(CREATE_CAPTURE_EMBEDDINGS_TABLE)
+    conn.execute(CREATE_CAPTURE_METADATA_TABLE)
     conn.commit()
     return conn
 

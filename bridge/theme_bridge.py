@@ -3,9 +3,10 @@ from __future__ import annotations
 import logging, sys
 from datetime import datetime, timezone
 from pathlib import Path
+import yaml
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import load_config
-from agents.markdown_writer import append_links, read_note, update_moc, write_moc
+from agents.markdown_writer import append_links, read_moc, read_note, update_moc, write_moc
 from agents.theme_agent import ThemeAgent, create_pending_question
 from bridge.result_envelope import artifact_ref, success_envelope
 from db.schema import init_db
@@ -21,19 +22,43 @@ def _graph_report_preview(report: str) -> str:
     return "\n".join(lines[:6])
 
 
-def _hydrate_capture(vault_path: Path, row: dict) -> dict:
+def _identity_index_map(conn) -> dict[str, dict]:
+    rows = conn.execute(
+        """SELECT * FROM capture_embeddings
+           WHERE kind = 'identity' AND embedding IS NOT NULL"""
+    ).fetchall()
+    return {str(row["capture_id"]): dict(row) for row in rows}
+
+
+def _identity_summary(index_text: str) -> str:
+    for line in (index_text or "").splitlines():
+        if line.startswith("摘要："):
+            return line.removeprefix("摘要：").strip()
+    return (index_text or "")[:120]
+
+
+def _hydrate_capture(
+    vault_path: Path,
+    row: dict,
+    identity_indexes: dict[str, dict] | None = None,
+) -> dict:
     """从 .md 文件补充 title/summary/tags/body（DB 已不存这些字段）。"""
     file_path = row.get("file_path") or row.get("raw_path") or ""
+    identity = (identity_indexes or {}).get(row.get("id") or "") or {}
+    embedding = identity.get("embedding") or row.get("embedding")
+    index_text = identity.get("index_text") or ""
     if not file_path:
-        return row
+        return {**row, "embedding": embedding, "index_text": index_text}
     note = read_note(vault_path, file_path)
     if not note:
-        return row
+        return {**row, "embedding": embedding, "index_text": index_text}
     frontmatter, body = note
     return {
         **row,
+        "embedding": embedding,
+        "index_text": index_text,
         "title": frontmatter.get("title", ""),
-        "summary": frontmatter.get("story", ""),
+        "summary": frontmatter.get("story", "") or _identity_summary(index_text),
         "tags": frontmatter.get("tags", []),
         "cached_text": body,
     }
@@ -103,6 +128,46 @@ def _create_moc(vault_path: Path, agent, cluster: dict) -> str | None:
     )
 
 
+def _tag_captures_with_theme(
+    vault_path: Path, captures: list[dict], theme_name: str
+) -> int:
+    """Add theme_name to each capture note's linked_themes frontmatter."""
+    updated = 0
+    for cap in captures:
+        file_path = cap.get("file_path") or ""
+        if not file_path:
+            continue
+        full_path = vault_path / file_path
+        if not full_path.exists():
+            continue
+
+        text = full_path.read_text(encoding="utf-8")
+        if not text.startswith("---"):
+            continue
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            continue
+
+        try:
+            frontmatter = yaml.safe_load(parts[1]) or {}
+        except yaml.YAMLError:
+            continue
+
+        linked = frontmatter.get("linked_themes") or []
+        if isinstance(linked, str):
+            linked = [linked]
+        if theme_name in linked:
+            continue
+
+        frontmatter["linked_themes"] = [*linked, theme_name]
+        header = yaml.dump(
+            frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False
+        )
+        full_path.write_text(f"---\n{header}---{parts[2]}", encoding="utf-8")
+        updated += 1
+    return updated
+
+
 def _evolve_themes(vault_path: Path, agent, unclustered_caps: list[dict]) -> int:
     """Match unclustered captures to existing MOCs and update them.
 
@@ -113,20 +178,33 @@ def _evolve_themes(vault_path: Path, agent, unclustered_caps: list[dict]) -> int
         try:
             moc_path = agent.match_to_themes(vault_path, cap)
             if moc_path and update_moc(vault_path, moc_path, cap):
+                moc = read_moc(vault_path, moc_path)
+                if moc:
+                    frontmatter, _ = moc
+                    theme_name = frontmatter.get("theme_name") or Path(moc_path).stem
+                    _tag_captures_with_theme(vault_path, [cap], theme_name)
                 updated += 1
         except Exception as e:
             logger.warning(f"Theme evolution failed for {cap.get('id')}: {e}")
     return updated
 
 
-def run_theme_scan() -> dict:
+def run_theme_scan(*, rescan_all: bool = False) -> dict:
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     repo = CaptureRepo(init_db(config.db_path))
     conn = repo.conn
 
+    scan_filter = "" if rescan_all else "AND c.theme_scanned_at IS NULL"
     rows = conn.execute(
-        "SELECT * FROM captures WHERE embedding IS NOT NULL "
-        "AND theme_scanned_at IS NULL ORDER BY created_at ASC LIMIT 50"
+        f"""SELECT c.* FROM captures c
+           JOIN capture_embeddings e
+             ON e.capture_id = c.id
+            AND e.kind = 'identity'
+            AND e.embedding IS NOT NULL
+           WHERE 1 = 1
+             {scan_filter}
+           ORDER BY c.created_at ASC
+           LIMIT 50"""
     ).fetchall()
 
     if not rows:
@@ -134,12 +212,16 @@ def run_theme_scan() -> dict:
             agent="theme",
             intent="run_theme_scan",
             chat_preview="没有待扫描的新内容。",
-            meta={"scanned_count": 0},
+            meta={"scanned_count": 0, "rescan_all": rescan_all},
         )
 
     vault_path = Path(config.vault_path).expanduser()
-    new_caps = [_hydrate_capture(vault_path, dict(r)) for r in rows]
-    all_caps = [_hydrate_capture(vault_path, c) for c in repo.list_all(limit=200)]
+    identity_indexes = _identity_index_map(conn)
+    new_caps = [_hydrate_capture(vault_path, dict(r), identity_indexes) for r in rows]
+    all_caps = [
+        _hydrate_capture(vault_path, c, identity_indexes)
+        for c in repo.list_all(limit=200)
+    ]
 
     agent = ThemeAgent(
         llm_api_key=config.llm_api_key,
@@ -153,6 +235,7 @@ def run_theme_scan() -> dict:
     # Layer 2: create MOC pages for clusters with ≥3 captures.
     links_injected = 0
     mocs_created = 0
+    capture_theme_tags = 0
     theme_artifacts = []
     for cluster in clusters:
         try:
@@ -163,6 +246,15 @@ def run_theme_scan() -> dict:
             moc_path = _create_moc(vault_path, agent, cluster)
             if moc_path:
                 mocs_created += 1
+                moc = read_moc(vault_path, moc_path)
+                if moc:
+                    frontmatter, _ = moc
+                    theme_name = frontmatter.get("theme_name") or Path(moc_path).stem
+                    capture_theme_tags += _tag_captures_with_theme(
+                        vault_path,
+                        [cluster["new_capture"]] + cluster["related_captures"],
+                        theme_name,
+                    )
                 theme_artifacts.append(
                     artifact_ref(
                         type="theme_page",
@@ -205,7 +297,7 @@ def run_theme_scan() -> dict:
     chat_preview = (
         f"Theme 扫描完成: {len(new_caps)} 条, {len(results)} 个聚类, "
         f"{links_injected} 条 wiki-link, {mocs_created} 个 MOC 创建, "
-        f"{mocs_updated} 个 MOC 更新。"
+        f"{mocs_updated} 个 MOC 更新, {capture_theme_tags} 条主题标记。"
     )
     return success_envelope(
         agent="theme",
@@ -214,10 +306,12 @@ def run_theme_scan() -> dict:
         durable_artifacts=theme_artifacts,
         meta={
             "scanned_count": len(new_caps),
+            "rescan_all": rescan_all,
             "cluster_count": len(results),
             "links_injected": links_injected,
             "theme_pages_created": mocs_created,
             "theme_pages_updated": mocs_updated,
+            "capture_theme_tags": capture_theme_tags,
         },
     )
 

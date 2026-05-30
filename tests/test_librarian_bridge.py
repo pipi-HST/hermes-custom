@@ -53,6 +53,26 @@ def _outline_report(*, dry_run: bool, updated: int = 0) -> dict:
     }
 
 
+def _embedding_index_report(
+    *,
+    dry_run: bool,
+    missing_or_stale: int = 2,
+    updated: int = 0,
+) -> dict:
+    return {
+        "dry_run": dry_run,
+        "scanned": 3,
+        "missing_or_stale": missing_or_stale,
+        "updated": updated,
+        "errors": 0,
+        "items": (
+            [{"file_path": "captures/a.md", "action": "needs_embedding_index"}]
+            if missing_or_stale
+            else []
+        ),
+    }
+
+
 def _property_report(*, dry_run: bool, actions: list[dict] | None = None) -> dict:
     has_gaps = actions is None or bool(actions)
     planned_actions = (
@@ -132,6 +152,10 @@ class FakeLibraryAgent:
         self.calls.append({"method": "property_gaps", "apply": apply})
         return _property_report(dry_run=not apply)
 
+    def maintain_embedding_index(self, *, apply: bool = False) -> dict:
+        self.calls.append({"method": "embedding_index", "apply": apply})
+        return _embedding_index_report(dry_run=not apply, updated=2 if apply else 0)
+
 
 def test_librarian_audit_is_dry_run_by_default(monkeypatch) -> None:
     from bridge import librarian_bridge
@@ -176,8 +200,11 @@ def test_librarian_audit_is_dry_run_by_default(monkeypatch) -> None:
     assert envelope["meta"]["database_sync"]["planned_action_count"] == 2
     assert envelope["meta"]["outlines"]["needs_outline"] == 1
     assert envelope["meta"]["property_gaps"]["planned_action_count"] == 2
+    assert envelope["meta"]["embedding_index"]["missing_or_stale"] == 2
+    assert "索引" in envelope["chat_preview"]
     assert envelope["meta"]["property_gaps"]["after"]["capture_gap_count"] == 1
     assert written_reports[0]["property_gaps"]["planned_action_count"] == 2
+    assert written_reports[0]["embedding_index"]["missing_or_stale"] == 2
     assert (
         written_reports[0]["database_sync"]["raw_report_path"]
         == "data/repair_reports/repair-test.json"
@@ -186,6 +213,7 @@ def test_librarian_audit_is_dry_run_by_default(monkeypatch) -> None:
         {"method": "database_sync", "apply": False},
         {"method": "outlines", "apply": False},
         {"method": "property_gaps", "apply": False},
+        {"method": "embedding_index", "apply": False},
     ]
 
 
@@ -225,11 +253,65 @@ def test_librarian_apply_runs_confirmed_repairs(monkeypatch) -> None:
     assert envelope["meta"]["dry_run"] is False
     assert envelope["meta"]["outlines"]["updated"] == 1
     assert envelope["meta"]["property_gaps"]["applied_action_count"] == 2
+    assert envelope["meta"]["embedding_index"]["updated"] == 2
     assert FakeLibraryAgent.calls == [
         {"method": "database_sync", "apply": True},
         {"method": "outlines", "apply": True},
         {"method": "property_gaps", "apply": True},
+        {"method": "embedding_index", "apply": True},
     ]
+
+
+def test_librarian_bridge_reports_embedding_index_status(monkeypatch) -> None:
+    from bridge import librarian_bridge
+
+    class IndexLibraryAgent(FakeLibraryAgent):
+        def maintain_database_sync(self, *, apply: bool = False) -> dict:
+            report = _db_sync_report(dry_run=not apply, actions=[])
+            report["after"]["duplicate_capture_paths"] = 0
+            report["after"]["open_draft_duplicate_groups"] = 0
+            report["after"]["missing_capture_paths"] = 0
+            return report
+
+        def maintain_outlines(self, *, apply: bool = False) -> dict:
+            return {
+                **_outline_report(dry_run=not apply, updated=0),
+                "needs_outline": 0,
+                "items": [],
+            }
+
+        def maintain_property_gaps(self, *, apply: bool = False) -> dict:
+            return _property_report(dry_run=not apply, actions=[])
+
+        def maintain_embedding_index(self, *, apply: bool = False) -> dict:
+            return _embedding_index_report(dry_run=not apply, missing_or_stale=0)
+
+        def maintain_embedding_index(self, *, apply: bool = False) -> dict:
+            return _embedding_index_report(dry_run=not apply, missing_or_stale=2)
+
+    monkeypatch.setattr(librarian_bridge, "LibraryAgent", IndexLibraryAgent)
+    monkeypatch.setattr(
+        librarian_bridge,
+        "load_config",
+        lambda _path: type(
+            "Config",
+            (),
+            {
+                "vault_path": "/tmp/vault",
+                "db_path": "data/captures.db",
+                "llm_api_key": "sk-test",
+                "llm_base_url": "https://example.com",
+                "qwen_api_key": "qwen-test",
+            },
+        )(),
+    )
+    monkeypatch.setattr(librarian_bridge, "Outliner", lambda **_kwargs: object())
+
+    envelope = librarian_bridge.run_librarian_audit(apply=False)
+
+    assert envelope["meta"]["embedding_index"]["missing_or_stale"] == 2
+    assert "索引" in envelope["chat_preview"]
+    assert envelope["next_actions"][0]["intent"] == "apply_librarian_repair"
 
 
 def test_librarian_clean_report_has_no_apply_action(monkeypatch) -> None:
@@ -255,6 +337,9 @@ def test_librarian_clean_report_has_no_apply_action(monkeypatch) -> None:
 
         def maintain_property_gaps(self, *, apply: bool = False) -> dict:
             return _property_report(dry_run=not apply, actions=[])
+
+        def maintain_embedding_index(self, *, apply: bool = False) -> dict:
+            return _embedding_index_report(dry_run=not apply, missing_or_stale=0)
 
     monkeypatch.setattr(librarian_bridge, "LibraryAgent", CleanLibraryAgent)
     monkeypatch.setattr(
@@ -346,6 +431,9 @@ def test_librarian_property_gaps_do_not_create_apply_action(monkeypatch) -> None
                     "raw_gaps": [],
                 },
             }
+
+        def maintain_embedding_index(self, *, apply: bool = False) -> dict:
+            return _embedding_index_report(dry_run=not apply, missing_or_stale=0)
 
     monkeypatch.setattr(librarian_bridge, "LibraryAgent", JudgmentOnlyLibraryAgent)
 

@@ -7,7 +7,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from bridge.theme_bridge import _create_moc, _evolve_themes, _inject_wiki_links
+from bridge.theme_bridge import (
+    _create_moc,
+    _evolve_themes,
+    _hydrate_capture,
+    _identity_index_map,
+    _inject_wiki_links,
+    _tag_captures_with_theme,
+)
 
 
 def _write_note(path: Path, subdir: str, name: str, title: str, body: str) -> str:
@@ -167,6 +174,131 @@ def test_create_moc_deduplicates_tags(tmp_path: Path) -> None:
     assert content.count("- ai") == 1
     assert content.count("- ml") == 1
     assert "deep-learning" in content
+
+
+def test_tag_captures_with_theme_updates_linked_themes_frontmatter(tmp_path: Path) -> None:
+    """主题页创建后，相关 capture frontmatter 应记录 linked_themes。"""
+    cap_file = _write_note(tmp_path, "captures", "cap.md", "新笔记", "正文。")
+
+    updated = _tag_captures_with_theme(
+        tmp_path,
+        [{"id": "cap-id", "file_path": cap_file, "title": "新笔记"}],
+        "AI与教育",
+    )
+
+    assert updated == 1
+    content = (tmp_path / cap_file).read_text(encoding="utf-8")
+    assert "linked_themes:" in content
+    assert "AI与教育" in content
+    assert "正文。" in content
+
+
+def test_tag_captures_with_theme_deduplicates_existing_theme(tmp_path: Path) -> None:
+    """重复扫描同一主题不应写入重复 linked_themes。"""
+    cap_file = _write_note(tmp_path, "captures", "cap.md", "新笔记", "正文。")
+
+    _tag_captures_with_theme(tmp_path, [{"file_path": cap_file}], "AI与教育")
+    updated = _tag_captures_with_theme(tmp_path, [{"file_path": cap_file}], "AI与教育")
+
+    assert updated == 0
+    content = (tmp_path / cap_file).read_text(encoding="utf-8")
+    assert content.count("AI与教育") == 1
+
+
+def test_hydrate_capture_prefers_identity_embedding_index(tmp_path: Path) -> None:
+    """Theme scan 应使用 identity embedding，而不是依赖 captures.embedding。"""
+    from db.embedding_repo import CaptureEmbeddingRepo
+    from db.schema import init_db
+
+    cap_file = _write_note(tmp_path, "captures", "cap.md", "新笔记", "正文。")
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("cap-id", cap_file))
+    CaptureEmbeddingRepo(conn).upsert(
+        capture_id="cap-id",
+        kind="identity",
+        section_id="",
+        section_title="",
+        index_text="标题：新笔记\n摘要：AI Agent 主题关联线索",
+        embedding=b"identity-embedding",
+        source_hash="hash",
+        file_path=cap_file,
+    )
+    row = dict(conn.execute("SELECT * FROM captures WHERE id = ?", ("cap-id",)).fetchone())
+
+    identity_map = _identity_index_map(conn)
+    hydrated = _hydrate_capture(tmp_path, row, identity_map)
+
+    assert hydrated["embedding"] == b"identity-embedding"
+    assert hydrated["index_text"].startswith("标题：新笔记")
+    assert hydrated["summary"] == "AI Agent 主题关联线索"
+
+
+def test_run_theme_scan_rescan_all_includes_previously_scanned_captures(
+    tmp_path: Path,
+) -> None:
+    """首次补建主题页时，应能显式重扫已经标记过的 captures。"""
+    from db.embedding_repo import CaptureEmbeddingRepo
+    from db.schema import init_db
+
+    db_path = str(tmp_path / "test.db")
+    conn = init_db(db_path)
+    scanned_file = _write_note(
+        tmp_path, "captures", "scanned.md", "旧笔记", "旧内容。"
+    )
+    fresh_file = _write_note(
+        tmp_path, "captures", "fresh.md", "新笔记", "新内容。"
+    )
+    conn.execute(
+        "INSERT INTO captures (id, file_path, theme_scanned_at, created_at) "
+        "VALUES (?, ?, ?, datetime('now'))",
+        ("scanned-id", scanned_file, "2026-05-30T00:00:00+00:00"),
+    )
+    conn.execute(
+        "INSERT INTO captures (id, file_path, created_at) VALUES (?, ?, datetime('now'))",
+        ("fresh-id", fresh_file),
+    )
+    embed_repo = CaptureEmbeddingRepo(conn)
+    for capture_id, file_path in (
+        ("scanned-id", scanned_file),
+        ("fresh-id", fresh_file),
+    ):
+        embed_repo.upsert(
+            capture_id=capture_id,
+            kind="identity",
+            section_id="",
+            section_title="",
+            index_text=f"标题：{capture_id}",
+            embedding=b"identity",
+            source_hash=f"hash-{capture_id}",
+            file_path=file_path,
+        )
+
+    seen_new_ids: list[str] = []
+
+    class FakeThemeAgent:
+        def __init__(self, **_kwargs):
+            pass
+
+        def scan(self, new_caps, all_caps):
+            seen_new_ids.extend(cap["id"] for cap in new_caps)
+            return []
+
+    with patch("bridge.theme_bridge.load_config") as mock_cfg, patch(
+        "bridge.theme_bridge.ThemeAgent", FakeThemeAgent
+    ):
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        from bridge.theme_bridge import run_theme_scan
+
+        result = run_theme_scan(rescan_all=True)
+
+    assert result["status"] == "success"
+    assert set(seen_new_ids) == {"scanned-id", "fresh-id"}
 
 
 # ── _evolve_themes (Layer 3) ──

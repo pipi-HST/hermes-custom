@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from agents.capture_agent import load_config
+from agents.embedder import Embedder
 from agents.library_agent import DEFAULT_OUTLINE_CHAR_THRESHOLD, LibraryAgent
 from agents.outliner import Outliner
 
@@ -34,6 +35,7 @@ def run_library_maintenance(
         vault_path or config.vault_path,
         outliner=outliner,
         db_path=config.db_path,
+        embedder=Embedder(api_key=config.qwen_api_key),
         min_outline_chars=min_outline_chars,
     )
     return {
@@ -41,6 +43,7 @@ def run_library_maintenance(
         "database_sync": agent.maintain_database_sync(apply=apply),
         "outlines": agent.maintain_outlines(apply=apply),
         "property_gaps": agent.maintain_property_gaps(apply=apply),
+        "embedding_index": agent.maintain_embedding_index(apply=apply),
     }
 
 

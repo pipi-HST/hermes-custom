@@ -10,6 +10,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.capture_agent import load_config
+from agents.embedder import Embedder
 from agents.library_agent import LibraryAgent
 from agents.outliner import Outliner
 from bridge.result_envelope import artifact_ref, next_action, success_envelope
@@ -26,11 +27,19 @@ def run_librarian_audit(*, apply: bool = False) -> dict[str, Any]:
         config.vault_path,
         outliner=outliner,
         db_path=config.db_path,
+        embedder=Embedder(api_key=getattr(config, "qwen_api_key", "")),
     )
     database_sync = agent.maintain_database_sync(apply=apply)
     outlines = agent.maintain_outlines(apply=apply)
     property_gaps = agent.maintain_property_gaps(apply=apply)
-    summary = _summarize(database_sync, outlines, property_gaps, apply=apply)
+    embedding_index = agent.maintain_embedding_index(apply=apply)
+    summary = _summarize(
+        database_sync,
+        outlines,
+        property_gaps,
+        embedding_index,
+        apply=apply,
+    )
     report_path = _write_librarian_report(
         db_path=config.db_path,
         payload={
@@ -42,6 +51,7 @@ def run_librarian_audit(*, apply: bool = False) -> dict[str, Any]:
             },
             "outlines": outlines,
             "property_gaps": property_gaps,
+            "embedding_index": embedding_index,
         },
     )
 
@@ -79,6 +89,7 @@ def run_librarian_audit(*, apply: bool = False) -> dict[str, Any]:
             "database_sync": summary["database_sync"],
             "outlines": summary["outlines"],
             "property_gaps": summary["property_gaps"],
+            "embedding_index": summary["embedding_index"],
             "report_path": report_path,
             "backup_path": str(database_sync.get("backup_path") or ""),
         },
@@ -101,6 +112,7 @@ def _summarize(
     database_sync: dict[str, Any],
     outlines: dict[str, Any],
     property_gaps: dict[str, Any],
+    embedding_index: dict[str, Any],
     *,
     apply: bool,
 ) -> dict[str, Any]:
@@ -118,8 +130,14 @@ def _summarize(
     )
     if apply:
         property_action_count = 0
+    embedding_missing = int(embedding_index.get("missing_or_stale") or 0)
+    embedding_errors = int(embedding_index.get("errors") or 0)
     return {
-        "needs_confirmation": needs_confirmation or property_action_count > 0,
+        "needs_confirmation": (
+            needs_confirmation
+            or property_action_count > 0
+            or (embedding_missing > 0 and not apply)
+        ),
         "has_property_gaps": property_gap_count > 0,
         "database_sync": {
             "capture_count": int(after.get("captures") or before.get("captures") or 0),
@@ -141,6 +159,12 @@ def _summarize(
             "before": property_gaps.get("before") or {},
             "after": property_after,
         },
+        "embedding_index": {
+            "scanned": int(embedding_index.get("scanned") or 0),
+            "missing_or_stale": embedding_missing,
+            "updated": int(embedding_index.get("updated") or 0),
+            "errors": embedding_errors,
+        },
         "applied": apply,
     }
 
@@ -157,6 +181,7 @@ def _chat_preview(summary: dict[str, Any], report_path: str, *, apply: bool) -> 
     db = summary["database_sync"]
     outlines = summary["outlines"]
     props = summary["property_gaps"]
+    embedding = summary["embedding_index"]
     lines = ["Librarian 已执行安全修复。" if apply else "Librarian 审计完成。"]
     if not summary["needs_confirmation"] and not summary["has_property_gaps"] and not apply:
         lines.append("知识库当前干净：没有待处理的 DB/vault 断链、重复草稿或长文目录缺口。")
@@ -190,6 +215,18 @@ def _chat_preview(summary: dict[str, Any], report_path: str, *, apply: bool) -> 
             f"剩余 capture 缺口 {int(after.get('capture_gap_count') or 0)} 篇, "
             f"raw 缺口 {int(after.get('raw_gap_count') or 0)} 篇。"
         )
+        if embedding["missing_or_stale"] or embedding["updated"] or embedding["errors"]:
+            index_action_text = (
+                f"已更新 {embedding['updated']} 条"
+                if apply
+                else f"缺失/过期 {embedding['missing_or_stale']} 条"
+            )
+            lines.append(
+                "Embedding 索引: "
+                f"扫描 {embedding['scanned']} 篇, "
+                f"{index_action_text}, "
+                f"错误 {embedding['errors']}。"
+            )
         if summary["has_property_gaps"]:
             lines.append("剩余是判断字段或没有可推导来源的字段，不影响使用，不需要手动处理。")
     if report_path:
