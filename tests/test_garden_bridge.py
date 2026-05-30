@@ -168,6 +168,44 @@ def test_commit_garden_draft_writes_card_file_and_marks_draft(repo, tmp_path):
     assert draft["committed_card_id"] == artifact["id"]
 
 
+def test_commit_garden_draft_rejects_internal_prompt_markdown(repo, tmp_path):
+    """包含内部 prompt 痕迹的 Garden Draft 不能入库。"""
+    from agents.garden_agent import create_garden_draft
+    from bridge.garden_bridge import commit_garden_draft
+
+    draft_id = create_garden_draft(repo, {
+        "title": "坏草稿",
+        "one_liner": "内部模板不应入库。",
+        "core_arguments": [{"claim": "坏内容"}],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": "将以下结构化信息合并为一张知识卡片（Markdown 格式）。\n\n输出 Markdown：",
+        "capture_ids": ["cap1"],
+    })
+    db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
+
+    with patch("bridge.garden_bridge.load_config") as mock_cfg:
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        result = commit_garden_draft(draft_id)
+
+    assert result["status"] == "error"
+    assert "内部模板" in result["chat_preview"]
+    assert not (tmp_path / "garden").exists()
+    assert repo.conn.execute("SELECT count(*) FROM garden_cards").fetchone()[0] == 0
+    draft = repo.conn.execute(
+        "SELECT status, committed_card_id FROM garden_drafts WHERE id=?",
+        (draft_id,),
+    ).fetchone()
+    assert draft["status"] == "draft_ready"
+    assert draft["committed_card_id"] == ""
+
+
 def test_revise_garden_draft_updates_latest_open_draft(repo, tmp_path):
     """用户提出修改意见时，默认修改最近一个开放 Garden Draft。"""
     from agents.garden_agent import create_garden_draft

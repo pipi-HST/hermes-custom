@@ -70,6 +70,16 @@ def _safe_garden_filename(title: str, card_id: str) -> str:
     return f"{cleaned}-{card_id}.md"
 
 
+def _has_internal_prompt_markers(markdown: str) -> bool:
+    markers = (
+        "将以下结构化信息",
+        "输出 Markdown",
+        "结构化信息:",
+        "结构化信息：",
+    )
+    return any(marker in (markdown or "") for marker in markers)
+
+
 def synthesize_garden(capture_ids: list[str] = None,
                       question_id: str = "",
                       title: str = "") -> dict:
@@ -308,6 +318,12 @@ def commit_garden_draft(draft_id: str = "") -> dict:
             agent="garden",
             intent="commit_garden_draft",
             error="没有找到可确认入库的 Garden 草稿。",
+        )
+    if _has_internal_prompt_markers(draft["markdown"]):
+        return error_envelope(
+            agent="garden",
+            intent="commit_garden_draft",
+            error="这个 Garden 草稿包含内部模板痕迹，已阻止入库。请先重新生成或修改草稿。",
         )
 
     card_id = commit_garden_draft_to_card(repo, draft_id)

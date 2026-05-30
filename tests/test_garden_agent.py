@@ -90,6 +90,75 @@ def test_create_garden_card(repo):
     assert row["status"] == "seed"
 
 
+@patch("agents.garden_agent.GardenAgent._call_llm")
+def test_synthesize_renders_card_markdown_not_internal_prompt(mock_call):
+    mock_call.return_value = json.dumps({
+        "one_liner": "AI Agent 复杂度应按任务不确定性递增",
+        "core_arguments": [
+            {
+                "claim": "先用简单工作流解决稳定问题，再把开放任务交给 Agent。",
+                "consensus": True,
+                "source_ids": ["cap1", "cap2"],
+            }
+        ],
+        "key_materials": [
+            {
+                "type": "quote",
+                "content": "始终从最简单的方案开始。",
+                "capture_id": "cap1",
+            }
+        ],
+    })
+    agent = GardenAgent(llm_api_key="test")
+
+    result = agent.synthesize(
+        [{"id": "cap1", "title": "Agent 设计", "cached_text": "内容"}],
+        [],
+    )
+
+    assert result["markdown"].startswith("# AI Agent 复杂度应按任务不确定性")
+    assert "先用简单工作流" in result["markdown"]
+    assert "始终从最简单的方案开始" in result["markdown"]
+    assert "将以下结构化信息" not in result["markdown"]
+    assert "输出 Markdown" not in result["markdown"]
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
+def test_synthesize_repairs_invalid_extract_json_once(mock_call):
+    mock_call.side_effect = [
+        '{"one_liner": "坏掉的 JSON", "core_arguments": [{"claim": "未闭合"',
+        json.dumps({
+            "one_liner": "修复后的观点",
+            "core_arguments": [{"claim": "JSON 修复后继续合成"}],
+            "key_materials": [],
+        }),
+    ]
+    agent = GardenAgent(llm_api_key="test")
+
+    result = agent.synthesize(
+        [{"id": "cap1", "title": "材料", "cached_text": "内容"}],
+        [],
+    )
+
+    assert result["one_liner"] == "修复后的观点"
+    assert result["core_arguments"][0]["claim"] == "JSON 修复后继续合成"
+    assert mock_call.call_count == 2
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
+def test_synthesize_returns_error_when_extract_json_cannot_be_repaired(mock_call):
+    mock_call.return_value = '{"one_liner": "一直坏掉"'
+    agent = GardenAgent(llm_api_key="test")
+
+    result = agent.synthesize(
+        [{"id": "cap1", "title": "材料", "cached_text": "内容"}],
+        [],
+    )
+
+    assert "error" in result
+    assert "结构化" in result["error"]
+
+
 def test_update_garden_card(repo):
     from db.repo import CaptureRepo
     card_id = create_garden_card(repo, {

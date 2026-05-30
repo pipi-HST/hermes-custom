@@ -27,6 +27,14 @@ EXTRACT_PROMPT = """分析以下知识库内容，提取结构化信息。
   ]
 }}"""
 
+JSON_REPAIR_PROMPT = """下面文本本应是一个 JSON 对象，但格式不合法。
+
+请把它修复成合法 JSON 对象，只返回 JSON，不要 markdown 代码块，不要解释。
+
+原始文本：
+{raw_text}
+"""
+
 LINK_PROMPT = """为以下新 Garden Card 寻找知识关联。
 
 新 Card:
@@ -41,36 +49,42 @@ LINK_PROMPT = """为以下新 Garden Card 寻找知识关联。
 
 只输出 JSON，不要其他内容。没有关联输出 []。"""
 
-SYNTHESIS_PROMPT = """将以下结构化信息合并为一张知识卡片（Markdown 格式）。
+def _strip_json_fence(raw: str) -> str:
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+    return text
 
-结构化信息:
-- 一句话: {one_liner}
-- 论点: {arguments_text}
-- 素材: {materials_text}
-- 知识关联: {links_text}
 
-输出 Markdown：
+def _parse_json_value(raw: str):
+    text = _strip_json_fence(raw)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        starts = [
+            idx for idx in (text.find("{"), text.find("["))
+            if idx >= 0
+        ]
+        for idx in sorted(starts):
+            try:
+                value, _ = decoder.raw_decode(text[idx:])
+                return value
+            except json.JSONDecodeError:
+                continue
+        raise
 
-# {title}
 
-## 一句话
-{one_liner}
-
-## 核心论点
-- 共识论点1（来源：A, B）
-- ...
-
-## 知识关联
-- 关联到：...
-
-## 关键素材
-- 引用：...
-- 数据：...
-- 案例：...
-
-## 我的看法
-（留空，由用户填写）
-"""
+def _parse_json_object(raw: str) -> dict:
+    value = _parse_json_value(raw)
+    if not isinstance(value, dict):
+        raise ValueError("expected JSON object")
+    return value
 
 
 class GardenAgent:
@@ -93,7 +107,11 @@ class GardenAgent:
             f"[{c.get('id','')[:8]}]《{c.get('title','')}》\n{c.get('cached_text','') or c.get('summary','')}"
             for c in captures
         )
-        extracted = self._step1_extract(content_text)
+        try:
+            extracted = self._step1_extract(content_text)
+        except Exception as exc:
+            logger.warning("Garden structured extraction failed: %s", exc)
+            return {"error": f"Garden 结构化提取失败：{exc.__class__.__name__}"}
 
         # Step 2: 知识关联
         links = self._step2_link(extracted, existing_garden_cards)
@@ -116,7 +134,12 @@ class GardenAgent:
     def _step1_extract(self, content_text: str) -> dict:
         prompt = EXTRACT_PROMPT.format(content_text=content_text[:12000])
         raw = self._call_llm(prompt, max_tokens=2000)
-        return json.loads(raw.strip().lstrip("```json").rstrip("```"))
+        try:
+            return _parse_json_object(raw)
+        except Exception:
+            repair_prompt = JSON_REPAIR_PROMPT.format(raw_text=raw[:4000])
+            repaired = self._call_llm(repair_prompt, max_tokens=2000)
+            return _parse_json_object(repaired)
 
     def _step2_link(self, extracted: dict,
                      existing_cards: list[dict]) -> list[str]:
@@ -136,7 +159,8 @@ class GardenAgent:
         )
         try:
             raw = self._call_llm(prompt, max_tokens=200)
-            return json.loads(raw.strip().lstrip("```json").rstrip("```"))
+            value = _parse_json_value(raw)
+            return value if isinstance(value, list) else []
         except (json.JSONDecodeError, Exception):
             return []
 
@@ -147,20 +171,63 @@ class GardenAgent:
     def _build_synthesis_markdown(self, title: str, extracted: dict,
                                    links: list[str],
                                    captures: list[dict]) -> str:
-        args_text = "\n".join(
-            f"- {'[共识]' if a.get('consensus') else '[观点]'} {a['claim']}"
-            for a in extracted.get("core_arguments", [])
-        )
-        materials_text = "\n".join(
-            f"- [{m['type']}] {m['content'][:200]}"
-            for m in extracted.get("key_materials", [])[:5]
-        )
-        links_text = ", ".join(links[:5]) if links else "暂无关联"
-        return SYNTHESIS_PROMPT.format(
-            title=title, one_liner=extracted.get("one_liner", ""),
-            arguments_text=args_text, materials_text=materials_text,
-            links_text=links_text,
-        )
+        one_liner = extracted.get("one_liner", "").strip() or "（待补充）"
+        lines = [
+            f"# {title}",
+            "",
+            "## 一句话",
+            one_liner,
+            "",
+            "## 核心观点",
+        ]
+
+        arguments = extracted.get("core_arguments", [])
+        if arguments:
+            for argument in arguments:
+                claim = str(argument.get("claim", "")).strip()
+                if not claim:
+                    continue
+                sources = argument.get("source_ids") or []
+                source_text = f"（来源：{', '.join(sources)}）" if sources else ""
+                prefix = "共识" if argument.get("consensus") else "观点"
+                lines.append(f"- [{prefix}] {claim}{source_text}")
+        else:
+            lines.append("- （待补充）")
+
+        lines.extend(["", "## 支撑材料"])
+        materials = extracted.get("key_materials", [])
+        if materials:
+            for material in materials[:8]:
+                material_type = str(material.get("type", "material")).strip()
+                content = str(material.get("content", "")).strip()
+                capture_id = str(material.get("capture_id", "")).strip()
+                if not content:
+                    continue
+                source_text = f"（{capture_id}）" if capture_id else ""
+                lines.append(f"- [{material_type}] {content[:240]}{source_text}")
+        else:
+            lines.append("- （待补充）")
+
+        lines.extend(["", "## 来源笔记"])
+        for capture in captures:
+            cid = str(capture.get("id", "")).strip()
+            capture_title = str(capture.get("title", "")).strip() or cid
+            if cid:
+                lines.append(f"- {capture_title}（{cid}）")
+
+        lines.extend(["", "## 知识关联"])
+        if links:
+            for link in links[:8]:
+                lines.append(f"- {link}")
+        else:
+            lines.append("- 暂无关联")
+
+        lines.extend([
+            "",
+            "## 待继续想",
+            "- 这个观点还需要结合你的判断继续修改、补边界或补反例。",
+        ])
+        return "\n".join(lines).strip() + "\n"
 
     def _call_llm(self, prompt: str, max_tokens: int = 2000) -> str:
         headers = {
