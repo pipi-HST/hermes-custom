@@ -264,6 +264,25 @@ def test_exercise_reminder_repeats_only_after_repeat_interval(agent: LifeAgent) 
     assert due_again["selected"]["reminder_type"] == "exercise"
 
 
+def test_exercise_reminder_sending_log_throttles_next_tick(agent: LifeAgent) -> None:
+    agent.config = LifeConfig(notifications_enabled=True)
+
+    first = agent.life_tick(
+        now="2026-05-30T19:29:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=False,
+    )
+    too_soon = agent.life_tick(
+        now="2026-05-30T19:40:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=False,
+    )
+
+    assert first["selected"]["reminder_type"] == "exercise"
+    assert first["meta"]["should_notify"] is True
+    assert too_soon["selected"] is None
+
+
 def test_undo_latest_life_event(agent: LifeAgent) -> None:
     event = agent.record_life_event(
         "喝水了",

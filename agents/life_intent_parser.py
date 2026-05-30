@@ -259,12 +259,13 @@ def _parse_exercise(text: str) -> dict[str, Any] | None:
 
 def _parse_exercise_schedule(text: str, received: datetime) -> dict[str, Any] | None:
     is_reminder_request = "提醒我运动" in text
-    is_planned_exercise = any(keyword in text for keyword in ("打算", "计划", "准备")) and any(
-        keyword in text for keyword in ("运动", "跑步", "健身", "快走", "散步", "骑车", "游泳", "练", "训练")
-    )
-    if not is_reminder_request and not is_planned_exercise:
-        return None
+    exercise_markers = ("运动", "跑步", "健身", "快走", "散步", "骑车", "游泳", "练", "训练")
+    has_exercise_marker = any(keyword in text for keyword in exercise_markers)
+    is_planned_exercise = any(keyword in text for keyword in ("打算", "计划", "准备")) and has_exercise_marker
     scheduled_for = _parse_clock_time(text, received)
+    is_timed_exercise = has_exercise_marker and scheduled_for is not None
+    if not is_reminder_request and not is_planned_exercise and not is_timed_exercise:
+        return None
     if not scheduled_for:
         return None
     payload: dict[str, Any] = {}

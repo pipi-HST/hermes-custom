@@ -121,6 +121,18 @@ def test_parser_extracts_planned_exercise_time_and_type() -> None:
     assert intent.payload["exercise_type"] == "八段锦"
 
 
+def test_parser_extracts_exercise_time_without_plan_keyword() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "我晚上八点练",
+        received_at=datetime.fromisoformat("2026-05-30T19:51:18+08:00"),
+    )
+
+    assert intent.intent == "reschedule_exercise"
+    assert intent.scheduled_for == "2026-05-30T20:00:00+08:00"
+
+
 def test_parser_uses_fallback_only_when_rules_do_not_match() -> None:
     calls = []
 

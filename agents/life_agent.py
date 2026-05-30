@@ -468,7 +468,7 @@ class LifeAgent:
             return None
         if self._has_reminder_log_on_day("exercise", "skipped", current):
             return None
-        scheduled_log = self._latest_scheduled_exercise_log(current)
+        scheduled_log = self._latest_exercise_reminder_log(current)
         if scheduled_log:
             scheduled = _parse_datetime(scheduled_log["scheduled_for"])
             if current < scheduled:
@@ -557,10 +557,10 @@ class LifeAgent:
         ).fetchall()
         return any(_parse_datetime(row["scheduled_for"]).date() == current.date() for row in rows)
 
-    def _latest_scheduled_exercise_log(self, current: datetime) -> dict[str, Any] | None:
+    def _latest_exercise_reminder_log(self, current: datetime) -> dict[str, Any] | None:
         rows = self.repo.conn.execute(
             """SELECT * FROM life_reminder_logs
-               WHERE reminder_type = 'exercise' AND status = 'scheduled'
+               WHERE reminder_type = 'exercise' AND status IN ('scheduled', 'sending')
                ORDER BY scheduled_for DESC, rowid DESC"""
         ).fetchall()
         for row in rows:
