@@ -126,6 +126,7 @@ class GardenAgent:
 
         # Step 2: 知识关联
         links = self._step2_link(extracted, existing_garden_cards)
+        links = links + _infer_links_from_shared_sources(captures, existing_garden_cards)
         links = _normalize_knowledge_links(links, existing_garden_cards)
 
         # 合并生成 Markdown
@@ -291,6 +292,39 @@ def _normalize_knowledge_links(links: list[str], existing_cards: list[dict]) -> 
         if match and match not in normalized:
             normalized.append(match)
     return normalized
+
+
+def _infer_links_from_shared_sources(
+    captures: list[dict],
+    existing_cards: list[dict],
+    min_shared: int = 2,
+) -> list[str]:
+    source_ids = {
+        str(capture.get("id", "")).strip()
+        for capture in captures
+        if str(capture.get("id", "")).strip()
+    }
+    if len(source_ids) < min_shared:
+        return []
+
+    inferred = []
+    for card in existing_cards:
+        card_id = str(card.get("id", "")).strip()
+        card_sources = set(_coerce_json_list(card.get("capture_ids", [])))
+        if card_id and len(source_ids & card_sources) >= min_shared:
+            inferred.append(card_id)
+    return inferred
+
+
+def _coerce_json_list(value) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _resolve_card_id(link: str, card_ids: list[str]) -> str:

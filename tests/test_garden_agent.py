@@ -211,6 +211,39 @@ def test_synthesize_renders_knowledge_links_as_obsidian_links(mock_call):
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")
+def test_synthesize_adds_links_from_shared_capture_sources_when_llm_returns_none(mock_call):
+    mock_call.side_effect = [
+        json.dumps({
+            "title": "嵌入与驾驭的分水岭",
+            "one_liner": "AI 落地需要被嵌入工作流并被工程纪律驾驭。",
+            "core_arguments": [
+                {"claim": "共享材料足以说明它属于同一条知识链。", "source_ids": ["cap1"]},
+            ],
+            "key_materials": [],
+        }),
+        json.dumps([]),
+    ]
+    agent = GardenAgent(llm_api_key="test")
+
+    result = agent.synthesize(
+        [
+            {"id": "cap1", "title": "材料一", "cached_text": "内容"},
+            {"id": "cap2", "title": "材料二", "cached_text": "内容"},
+            {"id": "cap3", "title": "材料三", "cached_text": "内容"},
+        ],
+        [{
+            "id": "23a4f10bc173",
+            "title": "AI价值取决于工程底座与主动工作流整合",
+            "one_liner": "AI价值取决于工程底座与主动工作流整合",
+            "capture_ids": json.dumps(["cap1", "cap2", "cap4"]),
+        }],
+    )
+
+    assert result["knowledge_links"] == ["23a4f10bc173"]
+    assert "[[garden/AI价值取决于工程底座与主动工作流整合-23a4f10bc173|" in result["markdown"]
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
 def test_step1_prompt_requires_precise_single_source_materials(mock_call):
     mock_call.return_value = json.dumps({
         "title": "来源要精确",
