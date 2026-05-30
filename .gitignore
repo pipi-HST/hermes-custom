@@ -21,3 +21,5 @@ data/reports/
 
 dashboard/node_modules/
 dashboard/.next/
+
+.superpowers/
