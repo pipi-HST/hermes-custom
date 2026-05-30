@@ -123,6 +123,29 @@ CREATE TABLE IF NOT EXISTS capture_metadata (
 )
 """
 
+CREATE_REVIEW_ITEMS_TABLE = """
+CREATE TABLE IF NOT EXISTS review_items (
+    id TEXT PRIMARY KEY,
+    object_type TEXT NOT NULL DEFAULT 'capture',
+    object_id TEXT NOT NULL DEFAULT '',
+    capture_id TEXT NOT NULL DEFAULT '',
+    section_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    question TEXT NOT NULL DEFAULT '',
+    answer_hint TEXT NOT NULL DEFAULT '',
+    source_path TEXT NOT NULL DEFAULT '',
+    importance INTEGER NOT NULL DEFAULT 1,
+    review_state TEXT NOT NULL DEFAULT 'new',
+    review_interval INTEGER NOT NULL DEFAULT 1,
+    review_count INTEGER NOT NULL DEFAULT 0,
+    last_reviewed TEXT,
+    next_review TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(object_type, object_id, section_id)
+)
+"""
+
 CREATE_CHANGE_LOG_TABLE = """
 CREATE TABLE IF NOT EXISTS change_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -153,6 +176,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
     _migrate_capture_drafts_table(conn)
     conn.execute(CREATE_CAPTURE_EMBEDDINGS_TABLE)
     conn.execute(CREATE_CAPTURE_METADATA_TABLE)
+    conn.execute(CREATE_REVIEW_ITEMS_TABLE)
     conn.commit()
     return conn
 

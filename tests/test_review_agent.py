@@ -72,6 +72,125 @@ def test_review_agent_daily(repo):
     assert len(result) > 0
 
 
+def test_daily_review_creates_one_item_for_short_capture(repo, tmp_path):
+    captures_dir = tmp_path / "captures"
+    captures_dir.mkdir()
+    body = "# 短文\n\n这篇讲 AI 落地首先要从具体业务流程开始。"
+    (captures_dir / "short.md").write_text(
+        "---\n"
+        "id: cap-short\n"
+        "title: AI 落地短文\n"
+        "story: 从业务流程开始。\n"
+        "---\n\n"
+        f"{body}",
+        encoding="utf-8",
+    )
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap-short", "captures/short.md"),
+    )
+    repo.conn.commit()
+
+    agent = ReviewAgent(repo, vault_path=str(tmp_path), long_note_chars=500)
+    result = agent.run_daily()
+
+    items = repo.conn.execute("SELECT * FROM review_items").fetchall()
+    assert len(items) == 1
+    assert items[0]["capture_id"] == "cap-short"
+    assert items[0]["section_id"] == ""
+    assert "AI 落地短文" in items[0]["question"]
+    assert any(m["type"] == "review_item" for m in result)
+
+
+def test_daily_review_creates_section_items_for_long_capture(repo, tmp_path):
+    captures_dir = tmp_path / "captures"
+    captures_dir.mkdir()
+    body = (
+        "# 长文\n\n"
+        "## 方法论\n\n"
+        "方法论部分强调先定位真实约束，再选择工具和组织方式。\n\n"
+        "## 案例\n\n"
+        "案例部分说明不同团队采用 AI 的阻力并不一样。\n"
+    )
+    (captures_dir / "long.md").write_text(
+        "---\n"
+        "id: cap-long\n"
+        "title: 企业 AI 长文\n"
+        "story: AI 落地方法论。\n"
+        "---\n\n"
+        f"{body}",
+        encoding="utf-8",
+    )
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap-long", "captures/long.md"),
+    )
+    repo.conn.commit()
+
+    ReviewAgent(repo, vault_path=str(tmp_path), long_note_chars=20).run_daily()
+
+    rows = repo.conn.execute(
+        "SELECT section_id, title, question FROM review_items ORDER BY section_id"
+    ).fetchall()
+    assert [(r["section_id"], r["title"]) for r in rows] == [
+        ("section-1", "方法论"),
+        ("section-2", "案例"),
+    ]
+    assert "方法论" in rows[0]["question"]
+
+
+def test_record_item_feedback_updates_schedule(repo):
+    repo.conn.execute(
+        """INSERT INTO review_items
+           (id, object_type, object_id, capture_id, title, question, answer_hint,
+            review_interval, next_review)
+           VALUES (?, 'capture', ?, ?, ?, ?, ?, 1, ?)""",
+        (
+            "ri1",
+            "cap1",
+            "cap1",
+            "测试",
+            "问题",
+            "提示",
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    repo.conn.commit()
+
+    agent = ReviewAgent(repo)
+    agent.record_item_feedback("ri1", "remembered")
+    remembered = repo.conn.execute(
+        "SELECT review_interval, review_count, review_state FROM review_items WHERE id='ri1'"
+    ).fetchone()
+    assert remembered["review_interval"] == 3
+    assert remembered["review_count"] == 1
+    assert remembered["review_state"] == "learning"
+
+    agent.record_item_feedback("ri1", "forgotten")
+    forgotten = repo.conn.execute(
+        "SELECT review_interval, review_state FROM review_items WHERE id='ri1'"
+    ).fetchone()
+    assert forgotten["review_interval"] == 1
+    assert forgotten["review_state"] == "learning"
+
+
+def test_daily_review_preview_includes_item_ids():
+    from bridge.review_bridge import _format_daily_review_preview
+
+    preview = _format_daily_review_preview([
+        {
+            "type": "review_item",
+            "item_id": "ri1",
+            "title": "企业 AI 长文",
+            "text": "复习问题：方法论是什么？\n来源：captures/a.md#section-1",
+        }
+    ])
+
+    assert "今日复习 1 条" in preview
+    assert "复习项：ri1" in preview
+    assert "方法论是什么" in preview
+
+
 def test_handle_reply_confirmed(repo):
     repo.conn.execute(
         """INSERT INTO garden_cards (id, title, one_liner, core_arguments,
@@ -170,4 +289,3 @@ def test_hydrate_returns_row_unchanged_when_file_missing(repo, tmp_path):
     row = {"id": "test123", "file_path": "captures/does-not-exist.md"}
     result = agent._hydrate(row)
     assert result == row
-

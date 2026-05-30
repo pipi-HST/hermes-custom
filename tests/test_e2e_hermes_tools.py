@@ -533,7 +533,7 @@ def test_hermes_toolset_has_6_tools():
                 "wellness_check", "theme_scan", "graph_report", "send_message",
                 "revise_capture_draft", "commit_capture_draft", "synthesize_garden",
                 "daily_review", "show_capture_draft", "audit_library",
-                "record_life_event", "life_tick"}
+                "record_life_event", "life_tick", "review_feedback"}
     assert set(tools) == expected, f"Mismatch: {set(tools) ^ expected}"
 
 
