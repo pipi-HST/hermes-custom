@@ -7,8 +7,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from db.schema import init_db
+from db.life_schema import migrate_life_schema
 from db.repo import CaptureRepo
 from api.routes.captures import create_capture_router
+from api.routes.life import create_life_router
 from agents.capture_agent import load_config
 
 DB_PATH = str(Path(__file__).parent.parent / "data" / "captures.db")
@@ -25,8 +27,10 @@ def create_app() -> FastAPI:
 
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     conn = init_db(config.db_path or DB_PATH)
+    migrate_life_schema(conn)
     repo = CaptureRepo(conn)
     app.include_router(create_capture_router(repo, config.vault_path), prefix="/api")
+    app.include_router(create_life_router(conn), prefix="/api")
 
     return app
 
