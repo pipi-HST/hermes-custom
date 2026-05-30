@@ -321,9 +321,22 @@ def test_generate_theme_name_falls_back_when_llm_returns_empty(mock_llm):
 
 @patch.object(ThemeAgent, "_call_llm")
 def test_build_moc_produces_valid_markdown(mock_llm):
-    """build_moc 应返回包含标题、描述、笔记列表、开放问题的 markdown body。"""
+    """build_moc 应生成可读的主题关系地图，而不是散乱追加列表。"""
     mock_llm.return_value = json.dumps({
         "description": "AI正在重塑教育的形态。",
+        "relation_groups": [
+            {
+                "title": "方法论底座",
+                "insight": "先理解 AI 对学习方式的改变。",
+                "notes": [
+                    {"title": "芯片又杀疯了", "role": "说明 AI 如何改变教育资源分配。"},
+                    {"title": "多读一点难读的书", "role": "补充深度阅读仍然重要。"},
+                ],
+            }
+        ],
+        "key_connections": [
+            "《芯片又杀疯了》讨论外部技术冲击，《多读一点难读的书》讨论个体如何保持深度。",
+        ],
         "open_questions": ["AI真的能替代深度阅读吗？"],
     })
 
@@ -337,16 +350,21 @@ def test_build_moc_produces_valid_markdown(mock_llm):
     # Body content (frontmatter is added by write_moc, not build_moc)
     assert "# AI与教育变革" in md
     assert "AI正在重塑教育的形态" in md
+    assert "## 主题脉络" in md
+    assert "### 方法论底座" in md
+    assert "说明 AI 如何改变教育资源分配" in md
+    assert "## 关键联系" in md
+    assert "外部技术冲击" in md
+    assert "## 相关笔记引用" in md
     assert "[[芯片又杀疯了]]" in md
     assert "[[多读一点难读的书]]" in md
     assert "AI真的能替代深度阅读吗" in md
-    assert "## 相关笔记" in md
     assert "## 开放问题" in md
 
 
 @patch.object(ThemeAgent, "_call_llm")
 def test_build_moc_handles_llm_failure(mock_llm):
-    """LLM 返回非法 JSON 时应使用空描述和空问题列表，但仍生成笔记列表。"""
+    """LLM 返回非法 JSON 时仍生成可读的主题脉络和引用列表。"""
     mock_llm.return_value = "这不是JSON"
     agent = ThemeAgent(llm_api_key="test")
     captures = [{"title": "X", "summary": "Y", "tags": []}]
@@ -354,7 +372,8 @@ def test_build_moc_handles_llm_failure(mock_llm):
 
     assert "# 测试主题" in md
     assert "[[X]]" in md
-    assert "## 相关笔记" in md
+    assert "## 主题脉络" in md
+    assert "## 相关笔记引用" in md
     # No open_questions section when LLM fails
     assert "## 开放问题" not in md
 

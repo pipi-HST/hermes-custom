@@ -375,11 +375,18 @@ def test_read_moc_returns_none_when_missing(tmp_path: Path) -> None:
 # ── update_moc ──
 
 
-def test_update_moc_appends_to_related_notes(tmp_path: Path) -> None:
-    """update_moc 应在相关笔记段落末尾追加新条目。"""
+def test_update_moc_updates_readable_map_and_reference_list(tmp_path: Path) -> None:
+    """update_moc 应更新可读关系地图，而不是另起一块相关笔记。"""
     file_path = write_moc(
         tmp_path, "AI与教育",
-        "# AI与教育\n\n## 相关笔记\n1. [[已有笔记]] — 旧摘要\n",
+        "# AI与教育\n\n"
+        "## 主题脉络\n\n"
+        "### 核心材料\n"
+        "- [[已有笔记]] — 旧摘要\n\n"
+        "## 关键联系\n"
+        "- 旧联系。\n\n"
+        "## 相关笔记引用\n"
+        "- [[已有笔记]]\n",
         tags=["ai"], capture_count=1,
     )
 
@@ -392,21 +399,26 @@ def test_update_moc_appends_to_related_notes(tmp_path: Path) -> None:
     assert "[[已有笔记]]" in content
     assert "[[新笔记]]" in content
     assert "新内容摘要" in content
+    assert "## 主题脉络" in content
+    assert "### 后续发现" in content
+    assert "## 相关笔记引用" in content
+    assert content.count("### 相关笔记") == 0
     # captures count incremented
     assert "captures: 2" in content
     assert "last_scanned:" in content
 
 
-def test_update_moc_uses_managed_block_without_touching_user_section(tmp_path: Path) -> None:
-    """旧 MOC 没有 Hermes 标记时，应新建管理区而不是改用户手写区。"""
+def test_update_moc_keeps_system_records_at_bottom(tmp_path: Path) -> None:
+    """系统记录应放在底部，不能把相关笔记乱插成第二个阅读区。"""
     themes_dir = tmp_path / "themes"
     themes_dir.mkdir()
     file_path = "themes/manual.md"
     original_body = (
         "# 手写主题\n\n"
-        "## 相关笔记\n"
-        "这里是我自己维护的解释。\n"
-        "- [[手写笔记]] — 我的判断\n\n"
+        "## 主题脉络\n"
+        "这里是我自己维护的解释。\n\n"
+        "## 相关笔记引用\n"
+        "- [[手写笔记]]\n\n"
         "## 我的判断\n"
         "这段内容不应该被工具改写。\n"
     )
@@ -426,11 +438,10 @@ def test_update_moc_uses_managed_block_without_touching_user_section(tmp_path: P
 
     assert updated is True
     content = (tmp_path / file_path).read_text(encoding="utf-8")
-    assert "这里是我自己维护的解释。\n- [[手写笔记]] — 我的判断" in content
-    assert "## Hermes 管理" in content
-    assert content.count("## Hermes 管理") == 1
-    assert "<!-- HERMES-RELATED-NOTES:START -->" in content
-    assert "<!-- HERMES-RELATED-NOTES:END -->" in content
+    assert "这里是我自己维护的解释。" in content
+    assert "## 系统记录" in content
+    assert content.count("## 系统记录") == 1
+    assert content.count("### 相关笔记") == 0
     assert "<!-- HERMES-CHANGELOG:START -->" in content
     assert "<!-- HERMES-CHANGELOG:END -->" in content
     assert "[[新笔记]]" in content
@@ -441,15 +452,18 @@ def test_update_moc_adds_changelog(tmp_path: Path) -> None:
     """update_moc 应在更新日志顶部追加新记录。"""
     file_path = write_moc(
         tmp_path, "AI与教育",
-        "# AI与教育\n\n## 相关笔记\n1. [[已有]] — 旧\n\n"
-        "## 更新日志\n- 2026-05-26: 主题创建\n",
+        "# AI与教育\n\n## 主题脉络\n- [[已有]] — 旧\n\n"
+        "## 相关笔记引用\n- [[已有]]\n\n"
+        "## 系统记录\n<!-- HERMES-CHANGELOG:START -->\n"
+        "### 更新日志\n- 2026-05-26: 主题创建\n"
+        "<!-- HERMES-CHANGELOG:END -->\n",
         tags=[], capture_count=1,
     )
 
     update_moc(tmp_path, file_path, {"title": "新笔记", "summary": "新内容"})
 
     content = (tmp_path / file_path).read_text(encoding="utf-8")
-    assert "## 更新日志" in content
+    assert "### 更新日志" in content
     assert "新笔记" in content
     assert "2026-05-26: 主题创建" in content
 
@@ -458,7 +472,8 @@ def test_update_moc_deduplicates(tmp_path: Path) -> None:
     """MOC 中已有相同标题的笔记时不应重复追加。"""
     file_path = write_moc(
         tmp_path, "AI与教育",
-        "# AI与教育\n\n## 相关笔记\n1. [[已有笔记]] — 旧\n",
+        "# AI与教育\n\n## 主题脉络\n- [[已有笔记]] — 旧\n\n"
+        "## 相关笔记引用\n- [[已有笔记]]\n",
         tags=[], capture_count=1,
     )
 
@@ -468,7 +483,7 @@ def test_update_moc_deduplicates(tmp_path: Path) -> None:
     assert updated is False  # nothing to add
 
     content = (tmp_path / file_path).read_text(encoding="utf-8")
-    assert content.count("[[已有笔记]]") == 1
+    assert content.count("[[已有笔记]]") == 2
     # captures count unchanged
     assert "captures: 1" in content
 

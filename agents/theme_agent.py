@@ -44,7 +44,20 @@ MOC_CONTENT_PROMPT = """根据主题名和相关笔记，生成主题页内容�
 {captures_text}
 
 输出 JSON（不要其他内容）：
-{{"description": "2-3 句话描述这个主题的核心问题和探讨方向", "open_questions": ["2-3 个值得思考的开放性问题"]}}"""
+{{
+  "description": "2-3 句话描述这个主题的核心问题和探讨方向",
+  "relation_groups": [
+    {{
+      "title": "这个分组在主题中的角色，例如 方法论底座/工程实现/产品变化",
+      "insight": "一句话说明这一组材料之间的共同关系",
+      "notes": [
+        {{"title": "必须匹配相关笔记标题", "role": "这篇笔记在该主题里扮演什么角色"}}
+      ]
+    }}
+  ],
+  "key_connections": ["2-4 条直接说明文章之间如何互相补充/递进/冲突"],
+  "open_questions": ["2-3 个值得思考的开放性问题"]
+}}"""
 
 QUESTION_PROMPT = """根据以下聚类信息，生成一条自然的中文提问。
 
@@ -169,32 +182,41 @@ class ThemeAgent:
         prompt = MOC_CONTENT_PROMPT.format(
             theme_name=theme_name, captures_text=captures_text,
         )
-        raw = self._call_llm(prompt, max_tokens=500)
+        raw = self._call_llm(prompt, max_tokens=1000)
 
         description = ""
+        relation_groups: list[dict] = []
+        key_connections: list[str] = []
         open_questions: list[str] = []
         try:
-            parsed = json.loads(raw.strip().lstrip("```json").rstrip("```"))
+            parsed = _parse_json_payload(raw)
             description = parsed.get("description", "")
+            relation_groups = parsed.get("relation_groups", [])
+            key_connections = parsed.get("key_connections", [])
             open_questions = parsed.get("open_questions", [])
-        except (json.JSONDecodeError, AttributeError):
+        except (json.JSONDecodeError, AttributeError, ValueError):
             logger.warning("MOC content LLM returned invalid JSON")
 
-        # Build markdown body.
         lines = [
             f"# {theme_name}",
             "",
-            description,
+            description or _fallback_theme_description(theme_name, captures),
             "",
-            "## 相关笔记",
+            "## 主题脉络",
         ]
-        for i, c in enumerate(captures, 1):
+        lines.extend(_render_relation_groups(relation_groups, captures))
+
+        lines.extend(["", "## 关键联系"])
+        if key_connections:
+            for connection in key_connections:
+                lines.append(f"- {connection}")
+        else:
+            lines.extend(_fallback_key_connections(captures))
+
+        lines.extend(["", "## 相关笔记引用"])
+        for c in captures:
             title = c.get("title") or "无标题"
-            summary = c.get("summary", "")[:80]
-            line = f"{i}. [[{title}]]"
-            if summary:
-                line += f" — {summary}"
-            lines.append(line)
+            lines.append(f"- [[{title}]]")
 
         if open_questions:
             lines.append("")
@@ -436,6 +458,61 @@ def _fallback_theme_name(captures: list[dict]) -> str:
         if title and title.lower() not in {"untitled", "无标题"}:
             return title[:18]
     return "未命名主题"
+
+
+def _fallback_theme_description(theme_name: str, captures: list[dict]) -> str:
+    return f"这个主题整理了 {len(captures)} 篇与「{theme_name}」相关的笔记，帮助快速查看材料之间的联系。"
+
+
+def _render_relation_groups(groups: list[dict], captures: list[dict]) -> list[str]:
+    by_title = {str(c.get("title") or "无标题"): c for c in captures}
+    rendered: list[str] = []
+    used: set[str] = set()
+
+    for group in groups:
+        title = str(group.get("title") or "").strip()
+        notes = group.get("notes") or []
+        if not title or not notes:
+            continue
+        rendered.extend(["", f"### {title}"])
+        insight = str(group.get("insight") or "").strip()
+        if insight:
+            rendered.extend(["", insight])
+        for note in notes:
+            note_title = str(note.get("title") or "").strip()
+            if not note_title or note_title not in by_title:
+                continue
+            role = str(note.get("role") or "").strip()
+            summary = str(by_title[note_title].get("summary") or "")[:80]
+            detail = role or summary
+            line = f"- [[{note_title}]]"
+            if detail:
+                line += f" — {detail}"
+            rendered.append(line)
+            used.add(note_title)
+
+    remaining = [c for c in captures if str(c.get("title") or "无标题") not in used]
+    if remaining:
+        rendered.extend(["", "### 核心材料"])
+        for capture in remaining:
+            title = capture.get("title") or "无标题"
+            summary = str(capture.get("summary") or "")[:80]
+            line = f"- [[{title}]]"
+            if summary:
+                line += f" — {summary}"
+            rendered.append(line)
+
+    return rendered or ["", "### 核心材料"]
+
+
+def _fallback_key_connections(captures: list[dict]) -> list[str]:
+    if len(captures) < 2:
+        return ["- 这篇笔记构成该主题的起点。"]
+    first = captures[0].get("title") or "第一篇笔记"
+    rest_links = "、".join(
+        f"[[{str(c.get('title') or '其他笔记')}]]" for c in captures[1:3]
+    )
+    return [f"- [[{first}]] 提供主题入口，{rest_links} 补充案例、方法或边界。"]
 
 
 def create_pending_question(repo, agent_type: str, question_text: str,

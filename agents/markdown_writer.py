@@ -311,10 +311,9 @@ def write_moc(
     return f"themes/{filename}"
 
 
-_HERMES_RELATED_START = "<!-- HERMES-RELATED-NOTES:START -->"
-_HERMES_RELATED_END = "<!-- HERMES-RELATED-NOTES:END -->"
 _HERMES_CHANGELOG_START = "<!-- HERMES-CHANGELOG:START -->"
 _HERMES_CHANGELOG_END = "<!-- HERMES-CHANGELOG:END -->"
+_SYSTEM_RECORD_HEADING = "## 系统记录"
 
 
 def read_moc(
@@ -354,7 +353,7 @@ def _append_to_managed_block(
         after = body[end:]
         return f"{before}\n{line}\n{after}"
 
-    managed_match = re.search(r"^##\s+Hermes 管理\s*$", body, re.MULTILINE)
+    managed_match = re.search(r"^##\s+(?:系统记录|Hermes 管理)\s*$", body, re.MULTILINE)
     if managed_match:
         next_heading = re.compile(r"^##\s+", re.MULTILINE).search(
             body, managed_match.end()
@@ -369,9 +368,55 @@ def _append_to_managed_block(
 
     trailing = "\n" if body and not body.endswith("\n") else ""
     return (
-        f"{body}{trailing}\n## Hermes 管理\n"
+        f"{body}{trailing}\n{_SYSTEM_RECORD_HEADING}\n"
         f"{start_marker}\n{heading}\n{line}\n{end_marker}\n"
     )
+
+
+def _append_to_section(body: str, heading: str, line: str) -> str:
+    heading_re = re.compile(rf"^##\s+{re.escape(heading)}\s*$", re.MULTILINE)
+    match = heading_re.search(body)
+    if not match:
+        trailing = "\n" if body and not body.endswith("\n") else ""
+        return f"{body}{trailing}\n## {heading}\n{line}\n"
+
+    next_heading = re.compile(r"^##\s+", re.MULTILINE).search(body, match.end())
+    section_end = next_heading.start() if next_heading else len(body)
+    before = body[:section_end].rstrip("\n")
+    after = body[section_end:]
+    return f"{before}\n{line}\n{after}"
+
+
+def _append_to_theme_trail(body: str, line: str) -> str:
+    heading = "主题脉络"
+    heading_re = re.compile(rf"^##\s+{heading}\s*$", re.MULTILINE)
+    match = heading_re.search(body)
+    if not match:
+        insert = f"## {heading}\n\n### 后续发现\n{line}\n"
+        return _insert_before_reference_or_system(body, insert)
+
+    next_heading = re.compile(r"^##\s+", re.MULTILINE).search(body, match.end())
+    section_end = next_heading.start() if next_heading else len(body)
+    section = body[match.end():section_end]
+    subheading_match = re.search(r"^###\s+后续发现\s*$", section, re.MULTILINE)
+    if subheading_match:
+        before = body[:section_end].rstrip("\n")
+        after = body[section_end:]
+        return f"{before}\n{line}\n{after}"
+
+    before = body[:section_end].rstrip("\n")
+    after = body[section_end:]
+    return f"{before}\n\n### 后续发现\n{line}\n{after}"
+
+
+def _insert_before_reference_or_system(body: str, insert: str) -> str:
+    target = re.search(r"^##\s+(?:相关笔记引用|系统记录|Hermes 管理)\s*$", body, re.MULTILINE)
+    if target:
+        before = body[:target.start()].rstrip("\n")
+        after = body[target.start():]
+        return f"{before}\n\n{insert}\n{after}"
+    trailing = "\n" if body and not body.endswith("\n") else ""
+    return f"{body}{trailing}\n{insert}"
 
 
 def update_moc(
@@ -416,13 +461,8 @@ def update_moc(
     if summary:
         new_line += f" — {summary}"
 
-    body = _append_to_managed_block(
-        body,
-        _HERMES_RELATED_START,
-        _HERMES_RELATED_END,
-        "### 相关笔记",
-        new_line,
-    )
+    body = _append_to_theme_trail(body, new_line)
+    body = _append_to_section(body, "相关笔记引用", f"- [[{title}]]")
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     log_line = f"- {today}: 新增《{title}》"
