@@ -133,12 +133,12 @@ class GardenAgent:
 
     def _step1_extract(self, content_text: str) -> dict:
         prompt = EXTRACT_PROMPT.format(content_text=content_text[:12000])
-        raw = self._call_llm(prompt, max_tokens=2000)
+        raw = self._call_llm(prompt, max_tokens=6000)
         try:
             return _parse_json_object(raw)
         except Exception:
             repair_prompt = JSON_REPAIR_PROMPT.format(raw_text=raw[:4000])
-            repaired = self._call_llm(repair_prompt, max_tokens=2000)
+            repaired = self._call_llm(repair_prompt, max_tokens=6000)
             return _parse_json_object(repaired)
 
     def _step2_link(self, extracted: dict,

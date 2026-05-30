@@ -146,6 +146,23 @@ def test_synthesize_repairs_invalid_extract_json_once(mock_call):
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")
+def test_synthesize_requests_enough_tokens_for_reasoning_json(mock_call):
+    mock_call.return_value = json.dumps({
+        "one_liner": "多篇材料需要更大的 JSON 输出预算",
+        "core_arguments": [],
+        "key_materials": [],
+    })
+    agent = GardenAgent(llm_api_key="test")
+
+    agent.synthesize(
+        [{"id": "cap1", "title": "材料", "cached_text": "内容"}],
+        [],
+    )
+
+    assert mock_call.call_args.kwargs["max_tokens"] >= 6000
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
 def test_synthesize_returns_error_when_extract_json_cannot_be_repaired(mock_call):
     mock_call.return_value = '{"one_liner": "一直坏掉"'
     agent = GardenAgent(llm_api_key="test")
