@@ -11,17 +11,20 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-EXTRACT_PROMPT = """分析以下知识库内容，提取结构化信息。
+EXTRACT_PROMPT = """分析以下知识库内容，提取一张可复用的 Knowledge Card。
+
+用户指定卡片类型：{requested_card_kind}
 
 内容：
 {content_text}
 
 输出 JSON（不要 markdown 代码块）：
 {{
+  "card_kind": "viewpoint|fact|method|caution|question",
   "title": "观点标题（不要和 one_liner 重复，18字以内）",
-  "one_liner": "一句话判断。要表达因果、张力或边界，不要只是主题名。",
+  "one_liner": "一句话说明这张卡的核心内容。可以是观点、事实、方法、风险或问题。",
   "core_arguments": [
-    {{"claim": "支撑这个判断的关键理由，不要逐篇罗列材料", "consensus": true|false, "source_ids": ["capture_id"]}}
+    {{"claim": "支撑这张卡的关键理由、步骤、表现或线索，不要逐篇罗列材料", "consensus": true|false, "source_ids": ["capture_id"]}}
   ],
   "key_materials": [
     {{"type": "quote|data|case", "content": "最能支撑判断的依据，不要收集所有材料", "capture_id": "xxx"}}
@@ -29,7 +32,9 @@ EXTRACT_PROMPT = """分析以下知识库内容，提取结构化信息。
 }}
 
 要求：
-- 先提炼一个中心判断，再选材料支撑它。
+- 先提炼一个中心知识对象，再选材料支撑它。
+- 如果用户明确指定卡片类型，card_kind 必须遵循用户指定；否则你自己判断最适合的类型。
+- card_kind 只能是 viewpoint, fact, method, caution, question。
 - Garden Card 不是摘要清单；不要把每篇文章的要点都摊开。
 - core_arguments 保留 3-5 条，key_materials 保留 3-5 条。
 - 每条 key_materials 只能来自一篇 capture；如果依据混合多篇材料，必须拆成多条。
@@ -59,6 +64,27 @@ LINK_PROMPT = """为以下新 Garden Card 寻找知识关联。
 只输出 JSON，不要其他内容。没有关联输出 []。"""
 
 INVALID_FILENAME_CHARS = '/:*?"<>|'
+
+CARD_KINDS = {"viewpoint", "fact", "method", "caution", "question"}
+CARD_KIND_LABELS = {
+    "viewpoint": "观点卡",
+    "fact": "事实卡",
+    "method": "方法卡",
+    "caution": "注意卡",
+    "question": "问题卡",
+}
+CARD_KIND_HEADINGS = {
+    "viewpoint": ("核心观点", "为什么这样看", "依据", "反例或边界", "关联"),
+    "fact": ("事实", "为什么重要", "来源依据", "可用场景", "关联"),
+    "method": ("适用场景", "做法", "注意点", "来源依据", "关联"),
+    "caution": ("风险", "典型表现", "怎么避免", "来源依据", "关联"),
+    "question": ("问题", "为什么值得追踪", "已有线索", "下一步观察", "关联"),
+}
+
+
+def _normalize_card_kind(value: str | None) -> str:
+    kind = str(value or "").strip().lower()
+    return kind if kind in CARD_KINDS else "viewpoint"
 
 def _strip_json_fence(raw: str) -> str:
     text = (raw or "").strip()
@@ -107,7 +133,8 @@ class GardenAgent:
 
     def synthesize(self, captures: list[dict],
                    existing_garden_cards: list[dict],
-                   title: str = "") -> dict:
+                   title: str = "",
+                   card_kind: str = "") -> dict:
         """两步合成——返回 {one_liner, core_arguments, key_materials,
            knowledge_links, markdown}。"""
         if not captures:
@@ -119,10 +146,16 @@ class GardenAgent:
             for c in captures
         )
         try:
-            extracted = self._step1_extract(content_text)
+            extracted = self._step1_extract(content_text, card_kind=card_kind)
         except Exception as exc:
             logger.warning("Garden structured extraction failed: %s", exc)
             return {"error": f"Garden 结构化提取失败：{exc.__class__.__name__}"}
+        resolved_card_kind = (
+            _normalize_card_kind(card_kind)
+            if card_kind
+            else _normalize_card_kind(extracted.get("card_kind"))
+        )
+        extracted["card_kind"] = resolved_card_kind
 
         # Step 2: 知识关联
         links = self._step2_link(extracted, existing_garden_cards)
@@ -133,10 +166,12 @@ class GardenAgent:
         title = title or self._generate_title(extracted, captures)
         markdown = self._build_synthesis_markdown(
             title, extracted, links, captures, existing_garden_cards,
+            resolved_card_kind,
         )
 
         return {
             "title": title,
+            "card_kind": resolved_card_kind,
             "one_liner": extracted.get("one_liner", ""),
             "core_arguments": extracted.get("core_arguments", []),
             "key_materials": extracted.get("key_materials", []),
@@ -144,8 +179,12 @@ class GardenAgent:
             "markdown": markdown,
         }
 
-    def _step1_extract(self, content_text: str) -> dict:
-        prompt = EXTRACT_PROMPT.format(content_text=content_text[:12000])
+    def _step1_extract(self, content_text: str, card_kind: str = "") -> dict:
+        requested = _normalize_card_kind(card_kind) if card_kind else "未指定，由你判断"
+        prompt = EXTRACT_PROMPT.format(
+            content_text=content_text[:12000],
+            requested_card_kind=requested,
+        )
         raw = self._call_llm(prompt, max_tokens=6000)
         try:
             return _parse_json_object(raw)
@@ -192,15 +231,18 @@ class GardenAgent:
     def _build_synthesis_markdown(self, title: str, extracted: dict,
                                    links: list[str],
                                    captures: list[dict],
-                                   existing_cards: list[dict]) -> str:
+                                   existing_cards: list[dict],
+                                   card_kind: str) -> str:
+        card_kind = _normalize_card_kind(card_kind)
+        h1, h2, h3, h4, h5 = CARD_KIND_HEADINGS[card_kind]
         one_liner = extracted.get("one_liner", "").strip() or "（待补充）"
         lines = [
             f"# {title}",
             "",
-            "## 我的判断",
+            f"## {h1}",
             one_liner,
             "",
-            "## 为什么值得留下",
+            f"## {h2}",
         ]
 
         arguments = extracted.get("core_arguments", [])
@@ -215,7 +257,7 @@ class GardenAgent:
         else:
             lines.append("- （待补充）")
 
-        lines.extend(["", "## 依据"])
+        lines.extend(["", f"## {h3}"])
         materials = extracted.get("key_materials", [])
         if materials:
             for material in materials[:4]:
@@ -229,14 +271,17 @@ class GardenAgent:
         else:
             lines.append("- （待补充）")
 
-        lines.extend(["", "## 来源笔记"])
-        for capture in captures:
-            cid = str(capture.get("id", "")).strip()
-            capture_title = str(capture.get("title", "")).strip() or cid
-            if cid:
-                lines.append(f"- {capture_title}（{cid}）")
+        lines.extend(["", f"## {h4}"])
+        if h4 == "来源依据":
+            self._append_source_notes(lines, captures)
+        else:
+            lines.append("- （待补充）")
 
-        lines.extend(["", "## 知识关联"])
+        if h4 != "来源依据":
+            lines.extend(["", "## 来源笔记"])
+            self._append_source_notes(lines, captures)
+
+        lines.extend(["", f"## {h5}"])
         if links:
             card_lookup = {str(card.get("id", "")): card for card in existing_cards}
             for link in links[:8]:
@@ -247,9 +292,18 @@ class GardenAgent:
         lines.extend([
             "",
             "## 待继续想",
-            "- 这个观点还需要结合你的判断继续修改、补边界或补反例。",
+            "- 这张卡还需要结合你的判断继续修改、补边界或补反例。",
         ])
         return "\n".join(lines).strip() + "\n"
+
+    def _append_source_notes(self, lines: list[str], captures: list[dict]) -> None:
+        for capture in captures:
+            cid = str(capture.get("id", "")).strip()
+            capture_title = str(capture.get("title", "")).strip() or cid
+            if cid:
+                lines.append(f"- {capture_title}（{cid}）")
+        if not captures:
+            lines.append("- （待补充）")
 
     def _call_llm(self, prompt: str, max_tokens: int = 2000) -> str:
         headers = {
@@ -348,14 +402,15 @@ def create_garden_card(repo, garden_data: dict) -> str:
     card_id = uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc).isoformat()
     repo.conn.execute(
-        """INSERT INTO garden_cards (id, title, one_liner, core_arguments,
+        """INSERT INTO garden_cards (id, title, one_liner, card_kind, core_arguments,
            knowledge_links, key_materials, my_view, status, capture_ids,
            created_at, updated_at, review_interval)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'seed', ?, ?, ?, '1d')""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'seed', ?, ?, ?, '1d')""",
         (
             card_id,
             garden_data.get("title", ""),
             garden_data.get("one_liner", ""),
+            garden_data.get("card_kind", "viewpoint"),
             json.dumps(garden_data.get("core_arguments", [])),
             json.dumps(garden_data.get("knowledge_links", [])),
             json.dumps(garden_data.get("key_materials", [])),
@@ -385,14 +440,15 @@ def create_garden_draft(repo, garden_data: dict) -> str:
     draft_id = uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc).isoformat()
     repo.conn.execute(
-        """INSERT INTO garden_drafts (id, title, one_liner, core_arguments,
+        """INSERT INTO garden_drafts (id, title, one_liner, card_kind, core_arguments,
            knowledge_links, key_materials, markdown, capture_ids, question_id,
            instruction, status, committed_card_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_ready', '', ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_ready', '', ?, ?)""",
         (
             draft_id,
             garden_data.get("title", ""),
             garden_data.get("one_liner", ""),
+            garden_data.get("card_kind", "viewpoint"),
             _json_text(garden_data.get("core_arguments", [])),
             _json_text(garden_data.get("knowledge_links", [])),
             _json_text(garden_data.get("key_materials", [])),
@@ -439,12 +495,13 @@ def update_garden_draft(
     now = datetime.now(timezone.utc).isoformat()
     repo.conn.execute(
         """UPDATE garden_drafts
-           SET title=?, one_liner=?, core_arguments=?, knowledge_links=?,
+           SET title=?, one_liner=?, card_kind=?, core_arguments=?, knowledge_links=?,
                key_materials=?, markdown=?, instruction=?, status=?, updated_at=?
            WHERE id=?""",
         (
             garden_data.get("title", existing["title"]),
             garden_data.get("one_liner", existing["one_liner"]),
+            garden_data.get("card_kind", existing["card_kind"]),
             _json_text(
                 garden_data.get(
                     "core_arguments", _json_list(existing["core_arguments"])
@@ -477,6 +534,7 @@ def commit_garden_draft_to_card(repo, draft_id: str) -> Optional[str]:
     card_id = create_garden_card(repo, {
         "title": draft["title"],
         "one_liner": draft["one_liner"],
+        "card_kind": draft["card_kind"],
         "core_arguments": _json_list(draft["core_arguments"]),
         "knowledge_links": _json_list(draft["knowledge_links"]),
         "key_materials": _json_list(draft["key_materials"]),
@@ -505,12 +563,13 @@ def update_garden_card(repo, card_id: str, garden_data: dict) -> Optional[dict]:
     # 合并参数（追加新论点, 去重）
     # 简化实现：覆盖更新
     repo.conn.execute(
-        """UPDATE garden_cards SET title=?, one_liner=?, core_arguments=?,
+        """UPDATE garden_cards SET title=?, one_liner=?, card_kind=?, core_arguments=?,
            knowledge_links=?, key_materials=?, updated_at=?, status='seed'
            WHERE id=?""",
         (
             garden_data.get("title", existing["title"]),
             garden_data.get("one_liner", existing["one_liner"]),
+            garden_data.get("card_kind", existing["card_kind"]),
             json.dumps(garden_data.get("core_arguments", [])),
             json.dumps(garden_data.get("knowledge_links", [])),
             json.dumps(garden_data.get("key_materials", [])),

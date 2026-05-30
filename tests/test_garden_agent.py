@@ -169,10 +169,9 @@ def test_synthesize_renders_focused_garden_card_instead_of_material_dump(mock_ca
     )
 
     markdown = result["markdown"]
-    assert "## 我的判断" in markdown
-    assert "## 为什么值得留下" in markdown
+    assert "## 核心观点" in markdown
+    assert "## 为什么这样看" in markdown
     assert "## 依据" in markdown
-    assert "## 核心观点" not in markdown
     assert "## 支撑材料" not in markdown
     assert markdown.count("- 支撑判断") <= 4
     assert markdown.count("- 关键材料") <= 4
@@ -208,6 +207,90 @@ def test_synthesize_renders_knowledge_links_as_obsidian_links(mock_call):
         "AI价值取决于工程底座与主动工作流整合]]"
     ) in result["markdown"]
     assert "\n- 23a4f10b\n" not in result["markdown"]
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
+def test_synthesize_honors_requested_method_card_kind(mock_call):
+    mock_call.return_value = json.dumps({
+        "card_kind": "method",
+        "title": "长文整理先规划",
+        "one_liner": "长文整理应先判断结构，再决定压缩粒度。",
+        "core_arguments": [{"claim": "先规划再生成。", "source_ids": ["cap1"]}],
+        "key_materials": [],
+    })
+    agent = GardenAgent(llm_api_key="test")
+
+    result = agent.synthesize(
+        [{"id": "cap1", "title": "材料", "cached_text": "内容"}],
+        [],
+        card_kind="method",
+    )
+
+    assert result["card_kind"] == "method"
+    assert "## 适用场景" in result["markdown"]
+    assert "## 做法" in result["markdown"]
+    assert "## 我的判断" not in result["markdown"]
+    assert "如果用户明确指定" in mock_call.call_args.args[0]
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
+def test_synthesize_renders_caution_card_template(mock_call):
+    mock_call.return_value = json.dumps({
+        "card_kind": "caution",
+        "title": "不要把 Garden 当摘要库",
+        "one_liner": "Garden 存可复用知识对象，不存文章摘要。",
+        "core_arguments": [{"claim": "摘要应留在 Capture。", "source_ids": ["cap1"]}],
+        "key_materials": [],
+    })
+    agent = GardenAgent(llm_api_key="test")
+
+    result = agent.synthesize(
+        [{"id": "cap1", "title": "材料", "cached_text": "内容"}],
+        [],
+    )
+
+    assert result["card_kind"] == "caution"
+    assert "## 风险" in result["markdown"]
+    assert "## 怎么避免" in result["markdown"]
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
+def test_synthesize_defaults_unknown_card_kind_to_viewpoint(mock_call):
+    mock_call.return_value = json.dumps({
+        "card_kind": "misc",
+        "title": "默认观点卡",
+        "one_liner": "未知类型回退为观点卡。",
+        "core_arguments": [],
+        "key_materials": [],
+    })
+    agent = GardenAgent(llm_api_key="test")
+
+    result = agent.synthesize(
+        [{"id": "cap1", "title": "材料", "cached_text": "内容"}],
+        [],
+    )
+
+    assert result["card_kind"] == "viewpoint"
+    assert "## 核心观点" in result["markdown"]
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
+def test_method_card_does_not_duplicate_source_notes(mock_call):
+    mock_call.return_value = json.dumps({
+        "card_kind": "method",
+        "title": "方法卡",
+        "one_liner": "方法卡应该清爽地展示来源。",
+        "core_arguments": [],
+        "key_materials": [],
+    })
+    agent = GardenAgent(llm_api_key="test")
+
+    result = agent.synthesize(
+        [{"id": "cap1", "title": "来源材料", "cached_text": "内容"}],
+        [],
+    )
+
+    assert result["markdown"].count("来源材料（cap1）") == 1
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")
@@ -364,6 +447,23 @@ def test_create_and_get_garden_draft(repo):
     assert json.loads(row["core_arguments"])[0]["claim"] == "观点一"
 
 
+def test_create_garden_draft_persists_card_kind(repo):
+    draft_id = create_garden_draft(repo, {
+        "title": "方法草稿",
+        "one_liner": "一张方法卡。",
+        "card_kind": "method",
+        "core_arguments": [],
+        "knowledge_links": [],
+        "key_materials": [],
+        "markdown": "# 方法草稿\n",
+        "capture_ids": ["cap1"],
+    })
+
+    row = get_garden_draft(repo, draft_id)
+
+    assert row["card_kind"] == "method"
+
+
 def test_get_latest_open_garden_draft_skips_committed(repo):
     old_id = create_garden_draft(repo, {
         "title": "旧草稿",
@@ -445,6 +545,27 @@ def test_commit_garden_draft_to_card_creates_card_and_marks_draft(repo):
     assert card["status"] == "seed"
     assert draft["status"] == "committed"
     assert draft["committed_card_id"] == card_id
+
+
+def test_commit_garden_draft_to_card_preserves_card_kind(repo):
+    draft_id = create_garden_draft(repo, {
+        "title": "注意卡",
+        "one_liner": "一个风险提醒。",
+        "card_kind": "caution",
+        "core_arguments": [],
+        "knowledge_links": [],
+        "key_materials": [],
+        "markdown": "# 注意卡\n",
+        "capture_ids": ["cap1"],
+    })
+
+    card_id = commit_garden_draft_to_card(repo, draft_id)
+    card = repo.conn.execute(
+        "SELECT card_kind FROM garden_cards WHERE id=?",
+        (card_id,),
+    ).fetchone()
+
+    assert card["card_kind"] == "caution"
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")

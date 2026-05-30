@@ -147,6 +147,7 @@ def test_garden_drafts_table_exists(tmp_path):
         "id",
         "title",
         "one_liner",
+        "card_kind",
         "core_arguments",
         "knowledge_links",
         "key_materials",
@@ -159,4 +160,32 @@ def test_garden_drafts_table_exists(tmp_path):
         "created_at",
         "updated_at",
     ]
+    conn.close()
+
+
+def test_garden_cards_table_has_card_kind(tmp_path):
+    from db.schema import init_db
+
+    conn = init_db(str(tmp_path / "test.db"))
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(garden_cards)")]
+
+    assert "card_kind" in cols
+    row = conn.execute(
+        "SELECT dflt_value FROM pragma_table_info('garden_cards') WHERE name='card_kind'"
+    ).fetchone()
+    assert row[0] == "'viewpoint'"
+    conn.close()
+
+
+def test_garden_drafts_table_has_card_kind(tmp_path):
+    from db.schema import init_db
+
+    conn = init_db(str(tmp_path / "test.db"))
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(garden_drafts)")]
+
+    assert "card_kind" in cols
+    row = conn.execute(
+        "SELECT dflt_value FROM pragma_table_info('garden_drafts') WHERE name='card_kind'"
+    ).fetchone()
+    assert row[0] == "'viewpoint'"
     conn.close()

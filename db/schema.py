@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS garden_cards (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '',
     one_liner TEXT NOT NULL DEFAULT '',
+    card_kind TEXT NOT NULL DEFAULT 'viewpoint',
     core_arguments TEXT NOT NULL DEFAULT '[]',
     knowledge_links TEXT NOT NULL DEFAULT '[]',
     key_materials TEXT NOT NULL DEFAULT '[]',
@@ -65,6 +66,7 @@ CREATE TABLE IF NOT EXISTS garden_drafts (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '',
     one_liner TEXT NOT NULL DEFAULT '',
+    card_kind TEXT NOT NULL DEFAULT 'viewpoint',
     core_arguments TEXT NOT NULL DEFAULT '[]',
     knowledge_links TEXT NOT NULL DEFAULT '[]',
     key_materials TEXT NOT NULL DEFAULT '[]',
@@ -193,6 +195,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute(CREATE_CHANGE_LOG_TABLE)
     conn.execute(CREATE_GARDEN_CARDS_TABLE)
     conn.execute(CREATE_GARDEN_DRAFTS_TABLE)
+    _migrate_garden_tables(conn)
     conn.execute(CREATE_PENDING_QUESTIONS_TABLE)
     conn.execute(CREATE_CAPTURE_DRAFTS_TABLE)
     _migrate_capture_drafts_table(conn)
@@ -251,6 +254,18 @@ def _migrate_capture_drafts_table(conn: sqlite3.Connection) -> None:
             "ALTER TABLE capture_drafts "
             "ADD COLUMN capture_intent TEXT NOT NULL DEFAULT '{}'"
         )
+
+
+def _migrate_garden_tables(conn: sqlite3.Connection) -> None:
+    for table in ("garden_cards", "garden_drafts"):
+        existing = {
+            row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if "card_kind" not in existing:
+            conn.execute(
+                f"ALTER TABLE {table} "
+                "ADD COLUMN card_kind TEXT NOT NULL DEFAULT 'viewpoint'"
+            )
 
 
 def _migrate_review_items_table(conn: sqlite3.Connection) -> None:

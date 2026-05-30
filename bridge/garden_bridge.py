@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+import yaml
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import load_config
 from agents.markdown_writer import read_note
 from agents.garden_agent import (
+    CARD_KIND_LABELS,
     GardenAgent,
     commit_garden_draft_to_card,
     create_garden_draft,
@@ -64,7 +67,14 @@ def _resolve_capture_row(conn, capture_id: str):
     return rows[0] if len(rows) == 1 else None
 
 
-def _draft_preview(title: str, one_liner: str, arguments: list[dict], draft_id: str) -> str:
+def _draft_preview(
+    title: str,
+    one_liner: str,
+    arguments: list[dict],
+    draft_id: str,
+    card_kind: str = "viewpoint",
+) -> str:
+    label = CARD_KIND_LABELS.get(card_kind, CARD_KIND_LABELS["viewpoint"])
     claims = []
     for item in arguments[:4]:
         claim = item.get("claim", "").strip()
@@ -72,7 +82,7 @@ def _draft_preview(title: str, one_liner: str, arguments: list[dict], draft_id: 
             claims.append(f"- {claim}")
     claims_text = "\n".join(claims) if claims else "- 暂无明确观点，请补充修改意见"
     return (
-        f"已生成 Garden 观点草稿：《{title}》\n\n"
+        f"已生成 Garden {label}草稿：《{title}》\n\n"
         f"一句话：{one_liner}\n\n"
         f"观点预览：\n{claims_text}\n\n"
         f"草稿编号：{draft_id}\n"
@@ -96,15 +106,39 @@ def _has_internal_prompt_markers(markdown: str) -> bool:
     return any(marker in (markdown or "") for marker in markers)
 
 
+def _garden_card_markdown(draft: dict, card_id: str) -> str:
+    now = datetime.now(timezone.utc).isoformat()
+    frontmatter = {
+        "id": card_id,
+        "type": "garden_card",
+        "card_kind": draft.get("card_kind", "viewpoint"),
+        "status": "seed",
+        "title": draft.get("title", ""),
+        "source_captures": _json_list(draft.get("capture_ids", "[]")),
+        "related_cards": _json_list(draft.get("knowledge_links", "[]")),
+        "created": draft.get("created_at", ""),
+        "updated": now,
+    }
+    body = (draft.get("markdown") or "").strip()
+    return (
+        "---\n"
+        f"{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False)}"
+        "---\n\n"
+        f"{body}\n"
+    )
+
+
 def synthesize_garden(capture_ids: list[str] = None,
                       question_id: str = "",
-                      title: str = "") -> dict:
+                      title: str = "",
+                      card_kind: str = "") -> dict:
     """合成知识花园卡片。
 
     Args:
         capture_ids: 要合成的 capture ID 列表（直接指定）
         question_id: pending_questions 表的 ID（从主题聚类问题触发）
         title: 可选标题，不填则由 LLM 生成
+        card_kind: 可选卡片类型，不填则由 GardenAgent 判断
 
     Returns:
         Agent Result Envelope.
@@ -165,7 +199,12 @@ def synthesize_garden(capture_ids: list[str] = None,
         llm_model=config.llm_model,
         llm_base_url=config.llm_base_url or "https://api.deepseek.com",
     )
-    result = agent.synthesize(captures, existing_cards, title=title)
+    result = agent.synthesize(
+        captures,
+        existing_cards,
+        title=title,
+        card_kind=card_kind,
+    )
 
     if "error" in result:
         return error_envelope(
@@ -177,6 +216,7 @@ def synthesize_garden(capture_ids: list[str] = None,
     garden_data = {
         "title": result.get("title", ""),
         "one_liner": result.get("one_liner", ""),
+        "card_kind": result.get("card_kind", "viewpoint"),
         "core_arguments": result.get("core_arguments", []),
         "key_materials": result.get("key_materials", []),
         "knowledge_links": result.get("knowledge_links", []),
@@ -197,6 +237,7 @@ def synthesize_garden(capture_ids: list[str] = None,
             one_liner,
             result.get("core_arguments", []),
             draft_id,
+            result.get("card_kind", "viewpoint"),
         ),
         durable_artifacts=[
             artifact_ref(
@@ -217,6 +258,7 @@ def synthesize_garden(capture_ids: list[str] = None,
         meta={
             "title": title_text,
             "one_liner": one_liner,
+            "card_kind": result.get("card_kind", "viewpoint"),
             "capture_ids": capture_ids,
             "draft_id": draft_id,
         },
@@ -273,7 +315,12 @@ def revise_garden_draft(draft_id: str = "", instruction: str = "") -> dict:
         llm_model=config.llm_model,
         llm_base_url=config.llm_base_url or "https://api.deepseek.com",
     )
-    result = agent.synthesize(captures, existing_cards, title=draft["title"])
+    result = agent.synthesize(
+        captures,
+        existing_cards,
+        title=draft["title"],
+        card_kind=draft["card_kind"],
+    )
     if "error" in result:
         return error_envelope(
             agent="garden",
@@ -284,6 +331,7 @@ def revise_garden_draft(draft_id: str = "", instruction: str = "") -> dict:
     updated = update_garden_draft(repo, draft_id, {
         "title": result.get("title", draft["title"]),
         "one_liner": result.get("one_liner", draft["one_liner"]),
+        "card_kind": result.get("card_kind", draft["card_kind"]),
         "core_arguments": result.get("core_arguments", []),
         "key_materials": result.get("key_materials", []),
         "knowledge_links": result.get("knowledge_links", []),
@@ -299,6 +347,7 @@ def revise_garden_draft(draft_id: str = "", instruction: str = "") -> dict:
             updated["one_liner"],
             _json_list(updated["core_arguments"]),
             draft_id,
+            updated["card_kind"],
         ),
         durable_artifacts=[
             artifact_ref(
@@ -316,7 +365,11 @@ def revise_garden_draft(draft_id: str = "", instruction: str = "") -> dict:
                 requires_confirmation=True,
             )
         ],
-        meta={"draft_id": draft_id, "instruction": instruction},
+        meta={
+            "draft_id": draft_id,
+            "instruction": instruction,
+            "card_kind": updated["card_kind"],
+        },
     )
 
 
@@ -355,7 +408,7 @@ def commit_garden_draft(draft_id: str = "") -> dict:
     garden_dir.mkdir(exist_ok=True)
     filename = _safe_garden_filename(draft["title"], card_id)
     md_path = garden_dir / filename
-    md_path.write_text(draft["markdown"], encoding="utf-8")
+    md_path.write_text(_garden_card_markdown(draft, card_id), encoding="utf-8")
     rel_path = f"garden/{filename}"
 
     if draft["question_id"]:

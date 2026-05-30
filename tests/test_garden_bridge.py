@@ -168,6 +168,49 @@ def test_synthesize_garden_accepts_unique_capture_id_prefix(repo, tmp_path):
     assert mock_synthesize.call_args.args[0][0]["id"] == "2bafca34bdd7"
 
 
+def test_synthesize_garden_passes_card_kind_to_agent(repo, tmp_path):
+    """Garden bridge 应把用户指定的卡片类型传给 GardenAgent。"""
+    from bridge.garden_bridge import synthesize_garden
+
+    captures_dir = tmp_path / "captures"
+    captures_dir.mkdir()
+    (captures_dir / "cap.md").write_text(
+        "---\ntitle: 方法素材\nstory: 摘要\n---\n\n正文内容\n",
+        encoding="utf-8",
+    )
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path, created_at) VALUES (?, ?, datetime('now'))",
+        ("cap1", "captures/cap.md"),
+    )
+    repo.conn.commit()
+    agent_result = {
+        "title": "方法卡",
+        "one_liner": "这是方法卡。",
+        "card_kind": "method",
+        "core_arguments": [{"claim": "先规划再执行"}],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": "# 方法卡\n",
+    }
+    db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
+
+    with patch("bridge.garden_bridge.load_config") as mock_cfg, \
+            patch.object(GardenAgent, "synthesize", return_value=agent_result) as mock_synthesize:
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        result = synthesize_garden(capture_ids=["cap1"], card_kind="method")
+
+    assert result["status"] == "success"
+    assert result["meta"]["card_kind"] == "method"
+    assert "方法卡" in result["chat_preview"]
+    assert mock_synthesize.call_args.kwargs["card_kind"] == "method"
+
+
 def test_commit_garden_draft_writes_card_file_and_marks_draft(repo, tmp_path):
     """确认 Garden Draft 后才写 garden_cards 和 Obsidian 文件。"""
     from agents.garden_agent import create_garden_draft
@@ -208,6 +251,42 @@ def test_commit_garden_draft_writes_card_file_and_marks_draft(repo, tmp_path):
     ).fetchone()
     assert draft["status"] == "committed"
     assert draft["committed_card_id"] == artifact["id"]
+
+
+def test_commit_garden_draft_writes_card_frontmatter(repo, tmp_path):
+    """确认 Garden Draft 后，Obsidian 文件应包含 Garden card frontmatter。"""
+    import yaml
+    from agents.garden_agent import create_garden_draft
+    from bridge.garden_bridge import commit_garden_draft
+
+    draft_id = create_garden_draft(repo, {
+        "title": "方法卡",
+        "one_liner": "确认才进入 garden。",
+        "card_kind": "method",
+        "core_arguments": [],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": "# 方法卡\n\n正文",
+        "capture_ids": ["cap1"],
+    })
+    db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
+
+    with patch("bridge.garden_bridge.load_config") as mock_cfg:
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        result = commit_garden_draft(draft_id)
+
+    text = (tmp_path / result["durable_artifacts"][0]["path"]).read_text(encoding="utf-8")
+    assert text.startswith("---\n")
+    frontmatter = yaml.safe_load(text.split("---", 2)[1])
+    assert frontmatter["type"] == "garden_card"
+    assert frontmatter["card_kind"] == "method"
+    assert frontmatter["source_captures"] == ["cap1"]
 
 
 def test_commit_garden_draft_rejects_internal_prompt_markdown(repo, tmp_path):
