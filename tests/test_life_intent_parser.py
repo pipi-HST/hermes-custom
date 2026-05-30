@@ -96,6 +96,18 @@ def test_parser_classifies_sedentary_activity_reply() -> None:
     assert intent.intent == "sedentary_activity_reply"
 
 
+def test_parser_extracts_latest_record_modification() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "上一条改成加餐",
+        received_at=datetime.fromisoformat("2026-05-30T12:20:00+08:00"),
+    )
+
+    assert intent.intent == "modify_latest"
+    assert intent.payload["change_text"] == "加餐"
+
+
 def test_parser_extracts_planned_exercise_time_and_type() -> None:
     parser = LifeIntentParser()
 

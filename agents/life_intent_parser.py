@@ -42,6 +42,10 @@ class LifeIntentParser:
         if _is_manual_status_query(text):
             return LifeIntent(intent="manual_status_query")
 
+        modification = _parse_latest_modification(text)
+        if modification:
+            return LifeIntent(intent="modify_latest", payload={"change_text": modification})
+
         sedentary_pause = _parse_sedentary_pause(text, received_at)
         if sedentary_pause:
             return LifeIntent(
@@ -194,7 +198,7 @@ class LifeIntentLLMFallback:
 
 _LLM_SYSTEM_PROMPT = """你是 Life Assistant 的意图解析器，只能输出 JSON 对象。
 把用户消息解析为:
-intent: record_event | skip_exercise | reschedule_exercise | pause_sedentary | undo_latest | manual_status_query | health_consultation | unknown
+intent: record_event | skip_exercise | reschedule_exercise | pause_sedentary | undo_latest | modify_latest | manual_status_query | health_consultation | unknown
 event_type: sleep_start | sleep_end | exercise | meal | water | ""
 occurred_at/scheduled_for: ISO 8601 字符串；没有就空字符串。
 duration_minutes: 整数或 null。
@@ -294,6 +298,11 @@ def _parse_sedentary_pause(text: str, received: datetime) -> dict[str, Any] | No
         "pause_until": received + timedelta(minutes=duration),
         "duration_minutes": duration,
     }
+
+
+def _parse_latest_modification(text: str) -> str:
+    match = re.match(r"^上一条改成\s*(.+)$", text)
+    return match.group(1).strip() if match else ""
 
 
 def _parse_sleep_start_time(text: str, received: datetime) -> datetime | None:

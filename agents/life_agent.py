@@ -117,6 +117,9 @@ class LifeAgent:
             updated = self.repo.update_event(latest["id"], status="undone")
             return {"status": "undone", "event": updated, "chat_preview": "已撤销上一条生活记录。"}
 
+        if intent.intent == "modify_latest":
+            return self._modify_latest_event(intent, received)
+
         if intent.intent == "record_event":
             return self._record_structured_event(intent, message, received)
 
@@ -235,6 +238,54 @@ class LifeAgent:
             return _recorded(event, f"已记录喝水：{_fmt_time(occurred)}。")
 
         return _rejected("这条我暂时不能作为生活记录保存。")
+
+    def _modify_latest_event(self, intent: LifeIntent, received: datetime) -> dict[str, Any]:
+        latest = self.repo.latest_user_event(
+            now=received.isoformat(),
+            window_minutes=30,
+        )
+        if not latest:
+            return _rejected("没有找到 30 分钟内可修改的生活记录。")
+
+        change_text = str(intent.payload.get("change_text") or "").strip()
+        if not change_text:
+            return _rejected("这条修改指令不完整，暂时不能保存。")
+
+        updated = self._updated_latest_meal(latest, change_text, received)
+        if not updated:
+            return _rejected("这条修改我暂时只支持改最近一条饮食记录。")
+
+        payload = updated["payload_json"]
+        return {
+            "status": "modified",
+            "event": updated,
+            "chat_preview": f"已把上一条改为{_meal_label(payload['meal_slot'])}：{payload['content']}。",
+        }
+
+    def _updated_latest_meal(
+        self,
+        latest: dict[str, Any],
+        change_text: str,
+        received: datetime,
+    ) -> dict[str, Any] | None:
+        if latest["event_type"] != "meal":
+            return None
+
+        slot = _meal_slot_from_text(change_text)
+        if slot and "吃" not in change_text:
+            payload = dict(latest.get("payload_json") or {})
+            if not payload.get("content"):
+                return None
+            payload["meal_slot"] = slot
+            payload["meal_slot_inferred"] = False
+            return self.repo.update_event(latest["id"], payload=payload)
+
+        parsed = self.parser.parse(change_text, received_at=received)
+        if parsed.intent != "record_event" or parsed.event_type != "meal":
+            return None
+        if "meal_slot" not in parsed.payload or "content" not in parsed.payload:
+            return None
+        return self.repo.update_event(latest["id"], payload=parsed.payload)
 
     def life_tick(
         self,
@@ -552,3 +603,19 @@ def _meal_label(slot: str) -> str:
         "late_snack": "夜宵",
         "snack": "加餐",
     }.get(slot, "饮食")
+
+
+def _meal_slot_from_text(text: str) -> str:
+    for keyword, slot in {
+        "早餐": "breakfast",
+        "早饭": "breakfast",
+        "午餐": "lunch",
+        "午饭": "lunch",
+        "晚餐": "dinner",
+        "晚饭": "dinner",
+        "夜宵": "late_snack",
+        "加餐": "snack",
+    }.items():
+        if keyword in text:
+            return slot
+    return ""

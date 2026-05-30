@@ -15,6 +15,7 @@ def test_run_life_smoke_checks_core_scenarios(tmp_path) -> None:
     assert report["summary"]["checked"] >= 10
     assert report["records"]["sleep_duration_minutes"] == 600
     assert report["records"]["sleep_session_duration_minutes"] == 420
+    assert report["records"]["modified_meal_slot"] == "snack"
     assert report["records"]["planned_exercise_time"] == "2026-05-30T18:00:00+08:00"
     assert report["records"]["exercise_repeat_too_soon"] == ""
     assert report["records"]["exercise_repeat_due"] == "exercise"

@@ -66,6 +66,10 @@ def _recording_scenarios(
         "午饭吃了腰果饼干",
         received_at="2026-05-30T12:20:00+08:00",
     )
+    meal_modify = agent.record_life_event(
+        "上一条改成加餐",
+        received_at="2026-05-30T12:30:00+08:00",
+    )
     water = agent.record_life_event(
         "喝水了",
         received_at="2026-05-30T16:00:00+08:00",
@@ -83,6 +87,7 @@ def _recording_scenarios(
     records["sleep_duration_minutes"] = wake_event["duration_minutes"]
     records["sleep_session_duration_minutes"] = sleep_session["event"]["duration_minutes"]
     records["meal_content"] = meal["event"]["payload_json"].get("content")
+    records["modified_meal_slot"] = meal_modify["event"]["payload_json"].get("meal_slot")
     records["water_event_type"] = water["event"]["event_type"]
     records["exercise_duration_minutes"] = exercise["event"]["duration_minutes"]
 
@@ -91,6 +96,8 @@ def _recording_scenarios(
     _check(checks, "sleep duration backfills", wake_event["duration_minutes"] == 600)
     _check(checks, "sleep session duration is stored", sleep_session["event"]["duration_minutes"] == 420)
     _check(checks, "meal content is stored", meal["event"]["payload_json"].get("content") == "腰果饼干")
+    _check(checks, "latest meal can be modified", meal_modify["status"] == "modified")
+    _check(checks, "latest meal slot modification is stored", records["modified_meal_slot"] == "snack")
     _check(checks, "water record is stored", water["event"]["event_type"] == "water")
     _check(checks, "exercise duration is stored", exercise["event"]["duration_minutes"] == 30)
 

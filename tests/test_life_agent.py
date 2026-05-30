@@ -279,6 +279,55 @@ def test_undo_latest_life_event(agent: LifeAgent) -> None:
     assert agent.repo.get_event(event["id"])["status"] == "undone"
 
 
+def test_modifies_latest_meal_slot_within_window(agent: LifeAgent) -> None:
+    event = agent.record_life_event(
+        "午饭吃了牛肉饭",
+        received_at="2026-05-30T12:10:00+08:00",
+    )["event"]
+
+    result = agent.record_life_event(
+        "上一条改成加餐",
+        received_at="2026-05-30T12:20:00+08:00",
+    )
+
+    updated = agent.repo.get_event(event["id"])
+    assert result["status"] == "modified"
+    assert result["event"]["id"] == event["id"]
+    assert updated["event_type"] == "meal"
+    assert updated["payload_json"]["meal_slot"] == "snack"
+    assert updated["payload_json"]["content"] == "牛肉饭"
+    assert "加餐" in result["chat_preview"]
+
+
+def test_modifies_latest_meal_content_within_window(agent: LifeAgent) -> None:
+    event = agent.record_life_event(
+        "午饭吃了牛肉饭",
+        received_at="2026-05-30T12:10:00+08:00",
+    )["event"]
+
+    result = agent.record_life_event(
+        "上一条改成晚饭吃了面",
+        received_at="2026-05-30T12:20:00+08:00",
+    )
+
+    updated = agent.repo.get_event(event["id"])
+    assert result["status"] == "modified"
+    assert result["event"]["id"] == event["id"]
+    assert updated["payload_json"]["meal_slot"] == "dinner"
+    assert updated["payload_json"]["content"] == "面"
+
+
+def test_rejects_latest_record_modification_without_target(agent: LifeAgent) -> None:
+    result = agent.record_life_event(
+        "上一条改成加餐",
+        received_at="2026-05-30T12:20:00+08:00",
+    )
+
+    assert result["status"] == "rejected"
+    assert result["event"] is None
+    assert "30 分钟内" in result["chat_preview"]
+
+
 def test_rejects_manual_status_query_without_life_event(agent: LifeAgent) -> None:
     result = agent.record_life_event(
         "我今天坐了多久？",
