@@ -283,6 +283,20 @@ def test_exercise_reminder_sending_log_throttles_next_tick(agent: LifeAgent) -> 
     assert too_soon["selected"] is None
 
 
+def test_life_tick_handles_timezone_aware_exercise_reschedule_without_now(agent: LifeAgent) -> None:
+    agent.record_life_event(
+        "我晚上八点练",
+        received_at="2026-05-30T19:51:18+08:00",
+    )
+
+    result = agent.life_tick(
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=False,
+    )
+
+    assert result["status"] in {"selected", "idle"}
+
+
 def test_undo_latest_life_event(agent: LifeAgent) -> None:
     event = agent.record_life_event(
         "喝水了",

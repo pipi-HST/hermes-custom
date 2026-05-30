@@ -49,7 +49,7 @@ class LifeAgent:
         *,
         received_at: str | None = None,
     ) -> dict[str, Any]:
-        received = _parse_datetime(received_at) if received_at else datetime.now()
+        received = _parse_datetime(received_at) if received_at else _now()
         text = message.strip()
         intent = self.parser.parse(text, received_at=received)
 
@@ -295,7 +295,7 @@ class LifeAgent:
         activity: ActivitySnapshot | None = None,
         dry_run: bool = True,
     ) -> dict[str, Any]:
-        current = _parse_datetime(now) if now else datetime.now()
+        current = _parse_datetime(now) if now else _now()
         activity = activity or ActivitySnapshot(idle_seconds=None, available=False)
         warnings: list[str] = []
         candidates: list[dict[str, Any]] = []
@@ -601,7 +601,14 @@ def _reminder_updated(chat_preview: str) -> dict[str, Any]:
 
 
 def _parse_datetime(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.astimezone()
+    return parsed
+
+
+def _now() -> datetime:
+    return datetime.now().astimezone()
 
 
 def _fmt_time(value: datetime) -> str:
