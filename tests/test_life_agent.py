@@ -27,6 +27,21 @@ def test_records_sleep_start_and_end_with_duration(agent: LifeAgent) -> None:
     assert "7小时30分钟" in end["chat_preview"]
 
 
+def test_records_wake_with_explicit_noon_time(agent: LifeAgent) -> None:
+    agent.record_life_event("我睡了", received_at="2026-05-29T02:00:00+08:00")
+
+    end = agent.record_life_event(
+        "我中午13点半醒的",
+        received_at="2026-05-29T13:40:00+08:00",
+    )
+
+    assert end["status"] == "recorded"
+    assert end["event"]["event_type"] == "sleep_end"
+    assert end["event"]["occurred_at"] == "2026-05-29T13:30:00+08:00"
+    assert end["event"]["duration_minutes"] == 690
+    assert "11小时30分钟" in end["chat_preview"]
+
+
 def test_records_meal_with_inferred_slot(agent: LifeAgent) -> None:
     result = agent.record_life_event(
         "吃了牛肉饭",

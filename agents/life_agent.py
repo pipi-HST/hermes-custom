@@ -91,23 +91,25 @@ class LifeAgent:
             )
             return _recorded(event, f"已记录睡觉时间：{_fmt_time(received)}。")
 
-        if text in {"我醒了", "醒了", "起床了"}:
+        wake_time = _parse_wake_time(text, received)
+        if text in {"我醒了", "醒了", "起床了"} or wake_time:
+            occurred = wake_time or received
             start = self._latest_unmatched_sleep_start()
             duration = None
             if start:
                 started_at = _parse_datetime(start["occurred_at"])
-                duration = max(0, round((received - started_at).total_seconds() / 60))
+                duration = max(0, round((occurred - started_at).total_seconds() / 60))
             event = self.repo.create_event(
                 event_type="sleep_end",
-                occurred_at=received.isoformat(),
+                occurred_at=occurred.isoformat(),
                 duration_minutes=duration,
                 source="wechat",
                 raw_text=message,
-                payload={"wake_date": received.date().isoformat()},
+                payload={"wake_date": occurred.date().isoformat()},
             )
             if duration is None:
                 return _recorded(event, "已记录醒来时间；还缺睡觉时间，可以补一句大概几点睡。")
-            return _recorded(event, f"已记录醒来时间：{_fmt_time(received)}，睡了{_fmt_duration(duration)}。")
+            return _recorded(event, f"已记录醒来时间：{_fmt_time(occurred)}，睡了{_fmt_duration(duration)}。")
 
         if text in {"已运动", "运动了"}:
             event = self.repo.create_event(
@@ -434,6 +436,33 @@ def _parse_exercise_reschedule(text: str, received: datetime) -> datetime | None
     if period == "中午" and hour < 11:
         hour += 12
     return received.replace(hour=hour, minute=0, second=0, microsecond=0)
+
+
+def _parse_wake_time(text: str, received: datetime) -> datetime | None:
+    if not any(keyword in text for keyword in ("醒", "起床", "睡到")):
+        return None
+    parsed = _parse_clock_time(text, received)
+    if parsed and parsed > received + timedelta(minutes=5):
+        parsed = parsed - timedelta(days=1)
+    return parsed
+
+
+def _parse_clock_time(text: str, received: datetime) -> datetime | None:
+    match = re.search(r"(凌晨|早上|上午|中午|下午|晚上)?\s*(\d{1,2})\s*点\s*(半|(\d{1,2})\s*分?)?", text)
+    if not match:
+        return None
+    period = match.group(1) or ""
+    hour = int(match.group(2))
+    minute = 30 if match.group(3) == "半" else int(match.group(4) or 0)
+    if period in {"下午", "晚上"} and hour < 12:
+        hour += 12
+    if period == "中午" and hour < 11:
+        hour += 12
+    if period in {"凌晨", "早上", "上午"} and hour == 12:
+        hour = 0
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        return None
+    return received.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
 def _parse_meal(text: str, received: datetime) -> dict[str, Any] | None:
