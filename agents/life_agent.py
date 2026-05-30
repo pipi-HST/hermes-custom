@@ -58,6 +58,9 @@ class LifeAgent:
         if intent.intent == "health_consultation":
             return _rejected("我不能做医学诊断；如果症状持续、明显影响生活，建议咨询医生或专业人士。")
 
+        if intent.intent == "sedentary_activity_reply":
+            return _rejected("久坐警报不能靠回复解除；离开电脑超过5分钟后我会自动停止提醒。")
+
         if intent.intent == "pause_sedentary":
             try:
                 pause_until = _parse_datetime(intent.scheduled_for)
@@ -164,6 +167,28 @@ class LifeAgent:
             if duration is None:
                 return _recorded(event, "已记录醒来时间；还缺睡觉时间，可以补一句大概几点睡。")
             return _recorded(event, f"已记录醒来时间：{_fmt_time(occurred)}，睡了{_fmt_duration(duration)}。")
+
+        if intent.event_type == "sleep_session":
+            try:
+                ended_at = _parse_datetime(str(intent.payload.get("ended_at", "")))
+            except ValueError:
+                return _rejected("这条我暂时不能作为生活记录保存。")
+            duration = max(0, round((ended_at - occurred).total_seconds() / 60))
+            self.repo.create_event(
+                event_type="sleep_start",
+                occurred_at=occurred.isoformat(),
+                source="wechat",
+                raw_text=message,
+            )
+            event = self.repo.create_event(
+                event_type="sleep_end",
+                occurred_at=ended_at.isoformat(),
+                duration_minutes=duration,
+                source="wechat",
+                raw_text=message,
+                payload={"wake_date": ended_at.date().isoformat()},
+            )
+            return _recorded(event, f"已记录睡眠：{_fmt_time(occurred)} 到 {_fmt_time(ended_at)}，睡了{_fmt_duration(duration)}。")
 
         if intent.event_type == "exercise":
             if intent.status != "completed_unknown":

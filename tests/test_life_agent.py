@@ -28,6 +28,22 @@ def test_records_sleep_start_and_end_with_duration(agent: LifeAgent) -> None:
     assert "7小时30分钟" in end["chat_preview"]
 
 
+def test_records_sleep_session_from_single_message(agent: LifeAgent) -> None:
+    result = agent.record_life_event(
+        "昨晚1点睡，今天8点醒",
+        received_at="2026-05-30T09:00:00+08:00",
+    )
+
+    events = agent.repo.conn.execute(
+        "SELECT * FROM life_events WHERE event_type IN ('sleep_start', 'sleep_end') ORDER BY occurred_at"
+    ).fetchall()
+    assert result["status"] == "recorded"
+    assert result["event"]["event_type"] == "sleep_end"
+    assert result["event"]["duration_minutes"] == 420
+    assert events[0]["occurred_at"] == "2026-05-30T01:00:00+08:00"
+    assert events[1]["occurred_at"] == "2026-05-30T08:00:00+08:00"
+
+
 def test_records_wake_with_explicit_noon_time(agent: LifeAgent) -> None:
     agent.record_life_event("我睡了", received_at="2026-05-29T02:00:00+08:00")
 
@@ -293,6 +309,28 @@ def test_sedentary_pause_suppresses_alert_but_keeps_sitting_window(agent: LifeAg
     assert paused_tick["selected"]["reminder_type"] == "exercise"
     assert resumed_tick["selected"]["reminder_type"] == "sedentary"
     assert active_window is not None
+    assert active_window["status"] == "active"
+
+
+def test_sedentary_activity_reply_does_not_resolve_active_window(agent: LifeAgent) -> None:
+    agent.repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-05-30T09:00:00+08:00",
+        source="mac_activity",
+        raw_text="",
+        status="active",
+    )
+
+    result = agent.record_life_event(
+        "已活动",
+        received_at="2026-05-30T10:05:00+08:00",
+    )
+
+    active_window = agent.repo.conn.execute(
+        "SELECT * FROM life_events WHERE event_type = 'sedentary_start'"
+    ).fetchone()
+    assert result["status"] == "rejected"
+    assert "离开电脑超过5分钟" in result["chat_preview"]
     assert active_window["status"] == "active"
 
 

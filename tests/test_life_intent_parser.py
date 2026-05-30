@@ -20,6 +20,20 @@ def test_parser_extracts_explicit_wake_time() -> None:
     assert intent.occurred_at == "2026-05-30T13:30:00+08:00"
 
 
+def test_parser_extracts_sleep_session_with_start_and_end() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "昨晚1点睡，今天8点醒",
+        received_at=datetime.fromisoformat("2026-05-30T09:00:00+08:00"),
+    )
+
+    assert intent.intent == "record_event"
+    assert intent.event_type == "sleep_session"
+    assert intent.occurred_at == "2026-05-30T01:00:00+08:00"
+    assert intent.payload["ended_at"] == "2026-05-30T08:00:00+08:00"
+
+
 def test_parser_extracts_meal_without_keyword_enum() -> None:
     parser = LifeIntentParser()
 
@@ -69,6 +83,17 @@ def test_parser_extracts_sedentary_pause_duration() -> None:
     assert intent.intent == "pause_sedentary"
     assert intent.scheduled_for == "2026-05-30T20:00:00+08:00"
     assert intent.duration_minutes == 120
+
+
+def test_parser_classifies_sedentary_activity_reply() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "已活动",
+        received_at=datetime.fromisoformat("2026-05-30T10:05:00+08:00"),
+    )
+
+    assert intent.intent == "sedentary_activity_reply"
 
 
 def test_parser_extracts_planned_exercise_time_and_type() -> None:

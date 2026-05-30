@@ -64,6 +64,18 @@ class LifeIntentParser:
         if text == "撤销上一条":
             return LifeIntent(intent="undo_latest")
 
+        if text in {"已活动", "活动了", "起来活动了"}:
+            return LifeIntent(intent="sedentary_activity_reply")
+
+        sleep_session = _parse_sleep_session(text, received_at)
+        if sleep_session:
+            return LifeIntent(
+                intent="record_event",
+                event_type="sleep_session",
+                occurred_at=sleep_session["started_at"].isoformat(),
+                payload={"ended_at": sleep_session["ended_at"].isoformat()},
+            )
+
         if text in {"我睡了", "睡了", "准备睡了"}:
             return LifeIntent(
                 intent="record_event",
@@ -291,6 +303,19 @@ def _parse_sleep_start_time(text: str, received: datetime) -> datetime | None:
     if parsed and parsed > received + timedelta(minutes=5):
         parsed = parsed - timedelta(days=1)
     return parsed
+
+
+def _parse_sleep_session(text: str, received: datetime) -> dict[str, datetime] | None:
+    if "睡" not in text or not any(keyword in text for keyword in ("醒", "起床")):
+        return None
+    sleep_index = text.find("睡")
+    start = _parse_clock_time(text[: sleep_index + 1], received)
+    end = _parse_clock_time(text[sleep_index + 1 :], received)
+    if not start or not end:
+        return None
+    if start > end:
+        start = start - timedelta(days=1)
+    return {"started_at": start, "ended_at": end}
 
 
 def _parse_wake_time(text: str, received: datetime) -> datetime | None:

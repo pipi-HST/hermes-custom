@@ -74,9 +74,14 @@ def _recording_scenarios(
         "跑步 30 分钟",
         received_at="2026-05-30T19:00:00+08:00",
     )
+    sleep_session = agent.record_life_event(
+        "昨晚1点睡，今天8点醒",
+        received_at="2026-05-30T09:00:00+08:00",
+    )
     wake_event = agent.repo.get_event(wake["event"]["id"])
 
     records["sleep_duration_minutes"] = wake_event["duration_minutes"]
+    records["sleep_session_duration_minutes"] = sleep_session["event"]["duration_minutes"]
     records["meal_content"] = meal["event"]["payload_json"].get("content")
     records["water_event_type"] = water["event"]["event_type"]
     records["exercise_duration_minutes"] = exercise["event"]["duration_minutes"]
@@ -84,6 +89,7 @@ def _recording_scenarios(
     _check(checks, "wake record is stored", wake["event"]["event_type"] == "sleep_end")
     _check(checks, "sleep start record is stored", sleep["event"]["event_type"] == "sleep_start")
     _check(checks, "sleep duration backfills", wake_event["duration_minutes"] == 600)
+    _check(checks, "sleep session duration is stored", sleep_session["event"]["duration_minutes"] == 420)
     _check(checks, "meal content is stored", meal["event"]["payload_json"].get("content") == "腰果饼干")
     _check(checks, "water record is stored", water["event"]["event_type"] == "water")
     _check(checks, "exercise duration is stored", exercise["event"]["duration_minutes"] == 30)
@@ -109,12 +115,17 @@ def _sedentary_scenario(
         activity=ActivitySnapshot(idle_seconds=360, available=True),
         dry_run=True,
     )
+    reply = agent.record_life_event(
+        "已活动",
+        received_at="2026-05-30T10:09:00+08:00",
+    )
     break_row = agent.repo.conn.execute(
         "SELECT * FROM life_events WHERE event_type = 'sedentary_break'"
     ).fetchone()
 
     records["sedentary_alert_type"] = (alert_tick["selected"] or {}).get("reminder_type", "")
     records["sedentary_break_minutes"] = int(break_row["duration_minutes"] if break_row else -1)
+    records["sedentary_reply_status"] = reply["status"]
 
     _check(checks, "sedentary start does not alert early", first_tick["selected"] is None)
     _check(
@@ -124,6 +135,7 @@ def _sedentary_scenario(
     )
     _check(checks, "sedentary break clears alert", break_tick["selected"] is None)
     _check(checks, "sedentary break duration is stored", records["sedentary_break_minutes"] == 68)
+    _check(checks, "sedentary reply does not create event", reply["status"] == "rejected" and reply["event"] is None)
 
 
 def _reminder_scenarios(
