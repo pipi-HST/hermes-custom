@@ -53,5 +53,6 @@ def test_get_agent_run_status_formats_recent_runs(monkeypatch, tmp_path):
     assert "result_count=2" in envelope["chat_preview"]
     assert "Building Effective AI Agents" in envelope["chat_preview"]
     assert "构建大语言模型代理的经验与方法" in envelope["chat_preview"]
+    assert "不要使用“同上”" in envelope["chat_preview"]
     assert envelope["meta"]["run_count"] == 1
     assert json.loads(envelope["meta"]["runs"][0]["evidence_json"])["source_count"] == 1

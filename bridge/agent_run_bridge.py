@@ -30,7 +30,10 @@ def get_agent_run_status(limit: int = 5) -> dict[str, Any]:
 def _preview(runs: list[dict[str, Any]]) -> str:
     if not runs:
         return "最近还没有记录到 Hermes Agent 运行。"
-    lines = [f"最近 {len(runs)} 次 Agent 运行："]
+    lines = [
+        f"最近 {len(runs)} 次 Agent 运行：",
+        "来源列表已逐条写完整；回复用户时请原样保留文章名和章节名，不要使用“同上”。",
+    ]
     for index, run in enumerate(runs, 1):
         evidence = _json_obj(run.get("evidence_json"), {})
         output = _json_obj(run.get("output_json"), {})
