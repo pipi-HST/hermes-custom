@@ -34,6 +34,7 @@ class LifeConfig:
     water_times: tuple[str, str] = ("10:00", "16:00")
     notifications_enabled: bool = False
     tick_lock_ttl_seconds: int = 50
+    notification_rate_limit_cooldown_minutes: int = 30
     log_path: str = ""
 
 
@@ -962,6 +963,9 @@ class LifeAgent:
 
             candidates.sort(key=lambda item: item["priority"])
             selected = candidates[0] if candidates else None
+            if selected and self._notification_rate_limited(current):
+                warnings.append("notification_rate_limited")
+                selected = None
             should_notify = bool(selected and self.config.notifications_enabled and not dry_run)
             if selected:
                 self._store_selected_review(selected)
@@ -1023,6 +1027,10 @@ class LifeAgent:
                 labels=review.get("labels") or {},
                 patterns=review.get("patterns") or {},
                 recommendations=list(review.get("recommendations") or []),
+                headline=str(review.get("headline") or ""),
+                report_text=str(review.get("report_text") or review.get("summary") or ""),
+                evidence=list(review.get("evidence") or []),
+                delivery=review.get("delivery") or {},
             )
 
     def _open_context(
@@ -1120,6 +1128,10 @@ class LifeAgent:
                     labels=review["labels"],
                     patterns=review["patterns"],
                     recommendations=review["recommendations"],
+                    headline=review["headline"],
+                    report_text=review["report_text"],
+                    evidence=review["evidence"],
+                    delivery=review["delivery"],
                 )
 
     def _write_tick_log(
@@ -1228,6 +1240,8 @@ class LifeAgent:
             return None
         if self._is_sedentary_paused(current):
             return None
+        if self._has_recent_reminder_log("sedentary", current, minutes=self.config.sedentary_repeat_minutes):
+            return None
         retry_payload = self._short_retry_payload("sedentary", current)
         if retry_payload:
             return {
@@ -1237,8 +1251,6 @@ class LifeAgent:
                 "message": "久坐警报：起来活动一下，离开电脑超过5分钟后我会停止提醒。",
                 "payload": retry_payload,
             }
-        if self._has_recent_reminder_log("sedentary", current, minutes=self.config.sedentary_repeat_minutes):
-            return None
 
         return {
             "priority": 1,
@@ -1456,7 +1468,7 @@ class LifeAgent:
             "priority": 6,
             "reminder_type": "weekly_review",
             "dedupe_key": dedupe_key,
-            "message": f"周复盘：{review['summary']}",
+            "message": f"周复盘：{review['report_text']}",
             "review": review,
         }
 
@@ -1519,20 +1531,125 @@ class LifeAgent:
             "meal_record_days": meal_days,
         }
         recommendations = ["下周继续优先保证作息和减少连续久坐。"]
+        evidence = self._weekly_evidence(week_start, week_end)
+        headline = self._weekly_headline(
+            sleep_days=sleep_days,
+            exercise_days=exercise_days,
+            total_sedentary=total_sedentary,
+            meal_days=meal_days,
+        )
         summary = (
             f"本周睡眠记录{sleep_days}天"
             f"{f'，平均{_fmt_duration(avg_sleep)}' if avg_sleep else ''}；"
             f"运动{exercise_days}天；久坐{_fmt_duration(total_sedentary)}；"
             f"饮食记录覆盖{meal_days}天。"
         )
+        report_text = self._weekly_report_text(
+            headline=headline,
+            sleep_days=sleep_days,
+            avg_sleep=avg_sleep,
+            exercise_days=exercise_days,
+            total_sedentary=total_sedentary,
+            meal_days=meal_days,
+            evidence=evidence,
+            recommendations=recommendations,
+        )
         return {
             "week_start": week_start,
             "week_end": week_end,
             "summary": summary,
+            "headline": headline,
+            "report_text": report_text,
             "labels": labels,
             "patterns": patterns,
             "recommendations": recommendations,
+            "evidence": evidence,
+            "delivery": {"wechat": "pending", "feishu": "pending"},
         }
+
+    def _weekly_headline(
+        self,
+        *,
+        sleep_days: int,
+        exercise_days: int,
+        total_sedentary: int,
+        meal_days: int,
+    ) -> str:
+        if total_sedentary >= 180:
+            return "久坐压力偏高，优先减少连续坐姿"
+        if sleep_days <= 2:
+            return "睡眠记录偏少，先把作息数据补齐"
+        if exercise_days == 0:
+            return "运动缺口明显，需要固定一次活动"
+        if meal_days <= 2:
+            return "饮食记录偏少，先提高记录完整度"
+        return "本周生活节律基本可控"
+
+    def _weekly_report_text(
+        self,
+        *,
+        headline: str,
+        sleep_days: int,
+        avg_sleep: int,
+        exercise_days: int,
+        total_sedentary: int,
+        meal_days: int,
+        evidence: list[dict[str, Any]],
+        recommendations: list[str],
+    ) -> str:
+        findings = [
+            f"睡眠记录{sleep_days}天" + (f"，平均{_fmt_duration(avg_sleep)}" if avg_sleep else "，证据不足"),
+            f"运动{exercise_days}天，{'偏少' if exercise_days < 3 else '有延续'}",
+            f"久坐超标{_fmt_duration(total_sedentary)}" if total_sedentary else "未见超过60分钟的久坐窗口",
+            f"饮食记录覆盖{meal_days}天" if meal_days else "饮食记录缺失，暂时无法判断饮食习惯",
+        ]
+        evidence_text = "；".join(str(item.get("text") or "") for item in evidence[:2] if item.get("text"))
+        suggestion_text = "；".join(recommendations[:3])
+        text = (
+            f"总体：{headline}。\n"
+            f"发现：{'；'.join(findings)}。"
+            f"{f' 证据：{evidence_text}。' if evidence_text else ''}\n"
+            f"建议：{suggestion_text}"
+        )
+        return text[:600]
+
+    def _weekly_evidence(self, week_start: str, week_end: str) -> list[dict[str, Any]]:
+        rows = self.repo.conn.execute(
+            """SELECT * FROM life_events
+               WHERE status NOT IN ('undone', 'superseded')
+               ORDER BY occurred_at ASC, rowid ASC"""
+        ).fetchall()
+        evidence: list[dict[str, Any]] = []
+        for row in rows:
+            event = self.repo._event_row_to_dict(row)
+            if not event:
+                continue
+            event_day = _date_key(str(event.get("occurred_at") or ""))
+            if not (week_start <= event_day <= week_end):
+                continue
+            if event["event_type"] == "sedentary_start" and int(event.get("duration_minutes") or 0) >= self.config.sedentary_threshold_minutes:
+                evidence.append({
+                    "type": "sedentary",
+                    "date": event_day,
+                    "text": f"{event_day[5:]} 久坐{_fmt_duration(int(event.get('duration_minutes') or 0))}",
+                })
+            elif event["event_type"] == "meal" and event.get("raw_text"):
+                evidence.append({
+                    "type": "meal",
+                    "date": event_day,
+                    "text": f"{event_day[5:]} {event['raw_text']}",
+                })
+            elif event["event_type"] == "exercise":
+                payload = event.get("payload_json") or {}
+                kind = str(payload.get("exercise_type") or "运动")
+                evidence.append({
+                    "type": "exercise",
+                    "date": event_day,
+                    "text": f"{event_day[5:]} {kind}{_fmt_duration(int(event.get('duration_minutes') or 0)) if event.get('duration_minutes') else ''}",
+                })
+            if len(evidence) >= 5:
+                break
+        return evidence
 
     def _daily_metrics(self, day: str) -> dict[str, Any]:
         events = self.repo.conn.execute(
@@ -1675,6 +1792,21 @@ class LifeAgent:
             scheduled = _parse_datetime(row["scheduled_for"])
             elapsed_seconds = _seconds_between(scheduled, current)
             if 0 <= elapsed_seconds < minutes * 60:
+                return True
+        return False
+
+    def _notification_rate_limited(self, current: datetime) -> bool:
+        rows = self.repo.conn.execute(
+            """SELECT scheduled_for, error FROM life_reminder_logs
+               WHERE status = 'failed' AND error LIKE '%rate limited%'"""
+        ).fetchall()
+        for row in rows:
+            error = str(row["error"] or "")
+            if "Weixin send failed" not in error and "iLink sendmessage rate limited" not in error:
+                continue
+            scheduled = _parse_datetime(row["scheduled_for"])
+            elapsed_seconds = _seconds_between(scheduled, current)
+            if 0 <= elapsed_seconds < self.config.notification_rate_limit_cooldown_minutes * 60:
                 return True
         return False
 

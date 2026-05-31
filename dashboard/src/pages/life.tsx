@@ -4,12 +4,15 @@ import {
   fetchLifeReminders,
   fetchLifeReviews,
   fetchLifeSummary,
+  fetchLifeWeek,
   type LifeDailyReview,
   type LifeEvent,
   type LifeLongTermDecision,
   type LifeReminder,
   type LifeReviews,
   type LifeSummary,
+  type LifeWeek,
+  type LifeWeekTrendRow,
   type LifeWeeklyReview,
 } from '../lib/lifeApi'
 
@@ -46,6 +49,11 @@ const STATUS_LABELS: Record<string, string> = {
   failed: '失败',
 }
 
+const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+const LIFE_VIEW_STORAGE_KEY = 'life-dashboard-view'
+
+type ViewMode = 'day' | 'week'
+
 interface SittingRow {
   id: string
   start: string
@@ -65,6 +73,11 @@ interface SleepSession {
 
 function todayKey(): string {
   return dateKey(new Date())
+}
+
+function viewModeFromText(value: string | null): ViewMode | null {
+  if (value === 'day' || value === 'week') return value
+  return null
 }
 
 function shiftDate(date: string, days: number): string {
@@ -112,6 +125,12 @@ function formatDateTime(value?: string): string {
   return `${day} ${formatTime(value)}`
 }
 
+function formatShortDate(value: string): string {
+  const date = parseTime(`${value}T00:00:00`)
+  if (!date) return value.slice(5)
+  return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+}
+
 function formatClockSeconds(seconds: number): string {
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
@@ -137,8 +156,27 @@ function formatMinutes(minutes?: number): string {
   return `${rest}分`
 }
 
+function percent(value: number, max: number, min = 0): number {
+  if (!max) return min
+  return Math.max(min, Math.min(100, Math.round((value / max) * 100)))
+}
+
 function statusLabel(status: string): string {
   return STATUS_LABELS[status] || status
+}
+
+function deliveryLabel(value: unknown): string {
+  if (value === 'sent') return '已推送'
+  if (value === 'pending') return '待推送'
+  if (value === 'failed') return '失败'
+  if (typeof value === 'string' && value) return value
+  return '未知'
+}
+
+function evidenceText(value: Record<string, unknown>): string {
+  const text = value.text
+  if (typeof text === 'string' && text) return text
+  return JSON.stringify(value)
 }
 
 function payloadText(payload?: Record<string, unknown>): string {
@@ -245,10 +283,12 @@ function buildSittingRows(events: LifeEvent[], activeSitting: LifeEvent | null):
 
 export default function LifePage() {
   const [date, setDate] = useState(todayKey())
+  const [mode, setMode] = useState<ViewMode>('day')
   const [summary, setSummary] = useState<LifeSummary | null>(null)
   const [events, setEvents] = useState<LifeEvent[]>([])
   const [reminders, setReminders] = useState<LifeReminder[]>([])
   const [reviews, setReviews] = useState<LifeReviews | null>(null)
+  const [week, setWeek] = useState<LifeWeek | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
@@ -259,6 +299,24 @@ export default function LifePage() {
     const timer = window.setInterval(() => setClock(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const savedMode = viewModeFromText(params.get('view')) || viewModeFromText(window.localStorage.getItem(LIFE_VIEW_STORAGE_KEY))
+    if (savedMode) setMode(savedMode)
+  }, [])
+
+  const changeMode = (nextMode: ViewMode) => {
+    setMode(nextMode)
+    window.localStorage.setItem(LIFE_VIEW_STORAGE_KEY, nextMode)
+    const url = new URL(window.location.href)
+    if (nextMode === 'week') {
+      url.searchParams.set('view', 'week')
+    } else {
+      url.searchParams.delete('view')
+    }
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -278,12 +336,14 @@ export default function LifePage() {
         fetchLifeEvents(date),
         fetchLifeReminders(date),
         fetchLifeReviews(date),
-      ]).then(([nextSummary, nextEvents, nextReminders, nextReviews]) => {
+        fetchLifeWeek(date),
+      ]).then(([nextSummary, nextEvents, nextReminders, nextReviews, nextWeek]) => {
         if (cancelled) return
         setSummary(nextSummary)
         setEvents(nextEvents)
         setReminders(nextReminders)
         setReviews(nextReviews)
+        setWeek(nextWeek)
         setLastSyncedAt(new Date().toISOString())
       }).catch(err => {
         if (cancelled) return
@@ -325,39 +385,56 @@ export default function LifePage() {
   const water = events.filter(event => event.event_type === 'water')
   const exercises = events.filter(event => event.event_type === 'exercise')
   const exercisePlans = reminders.filter(isUserExercisePlan)
+  const dateShiftDays = mode === 'week' ? 7 : 1
 
   return (
     <main className="min-h-screen bg-[#f6f2e9] text-neutral-950 dark:bg-neutral-950 dark:text-neutral-100">
       <div className="mx-auto max-w-6xl px-4 py-6 md:px-6">
-        <header className="mb-5 flex flex-col gap-3 border-b border-stone-200 pb-4 dark:border-neutral-800 md:flex-row md:items-end md:justify-between">
-          <div>
+        <header className="mb-5 grid gap-4 border-b border-stone-200 pb-4 dark:border-neutral-800 lg:grid-cols-[minmax(260px,1fr)_auto] lg:items-end">
+          <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-normal text-emerald-700 dark:text-emerald-400">
               Life Assistant
             </p>
             <h1 className="mt-1 text-2xl font-semibold">我的生活活动日志</h1>
             <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
-              {date} · 只读生活记录
+              {mode === 'week' && week ? `${formatDateRange(week.week_start, week.week_end)} · 周期数据` : `${date} · 只读生活记录`}
             </p>
             <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-500">
               {lastSyncedAt ? `最后同步 ${formatTime(lastSyncedAt)}${refreshing ? ' · 同步中' : ''}` : '等待首次同步'}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button className="rounded-md border border-stone-300 px-3 py-2 text-sm dark:border-neutral-700" onClick={() => setDate(shiftDate(date, -1))}>
-              前一天
-            </button>
-            <input
-              type="date"
-              value={date}
-              onChange={event => setDate(event.target.value)}
-              className="rounded-md border border-stone-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-            />
-            <button className="rounded-md border border-stone-300 px-3 py-2 text-sm dark:border-neutral-700" onClick={() => setDate(shiftDate(date, 1))}>
-              后一天
-            </button>
-            <button className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-white dark:bg-neutral-100 dark:text-neutral-950" onClick={() => setDate(todayKey())}>
-              今天
-            </button>
+          <div className="flex flex-col gap-2 lg:items-end">
+            <div className="flex rounded-md border border-stone-300 bg-white p-1 dark:border-neutral-700 dark:bg-neutral-900">
+              <button
+                className={`rounded px-3 py-1.5 text-sm ${mode === 'day' ? 'bg-neutral-950 text-white dark:bg-neutral-100 dark:text-neutral-950' : 'text-neutral-600 dark:text-neutral-300'}`}
+                onClick={() => changeMode('day')}
+              >
+                日视图
+              </button>
+              <button
+                className={`rounded px-3 py-1.5 text-sm ${mode === 'week' ? 'bg-neutral-950 text-white dark:bg-neutral-100 dark:text-neutral-950' : 'text-neutral-600 dark:text-neutral-300'}`}
+                onClick={() => changeMode('week')}
+              >
+                周视图
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+              <button className="rounded-md border border-stone-300 px-3 py-2 text-sm dark:border-neutral-700" onClick={() => setDate(shiftDate(date, -dateShiftDays))}>
+                {mode === 'week' ? '上一周' : '前一天'}
+              </button>
+              <input
+                type="date"
+                value={date}
+                onChange={event => setDate(event.target.value)}
+                className="w-40 rounded-md border border-stone-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              />
+              <button className="rounded-md border border-stone-300 px-3 py-2 text-sm dark:border-neutral-700" onClick={() => setDate(shiftDate(date, dateShiftDays))}>
+                {mode === 'week' ? '下一周' : '后一天'}
+              </button>
+              <button className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-white dark:bg-neutral-100 dark:text-neutral-950" onClick={() => setDate(todayKey())}>
+                今天
+              </button>
+            </div>
           </div>
         </header>
 
@@ -372,47 +449,365 @@ export default function LifePage() {
             加载 Life 数据中...
           </section>
         ) : (
-          <div className="space-y-4">
-            <SittingSection
-              activeSeconds={activeSeconds}
-              displayedTotalMinutes={displayedTotalMinutes}
-              sedentaryMinutes={summary?.metrics.sedentary_over_limit_minutes || 0}
-              rows={sittingRows}
-            />
+          mode === 'week' ? (
+            <WeekView week={week} />
+          ) : (
+            <div className="space-y-4">
+              <SittingSection
+                activeSeconds={activeSeconds}
+                displayedTotalMinutes={displayedTotalMinutes}
+                sedentaryMinutes={summary?.metrics.sedentary_over_limit_minutes || 0}
+                rows={sittingRows}
+              />
 
-            <ReviewSection reviews={reviews} />
+              <ReviewSection reviews={reviews} />
 
-            <div className="grid gap-4 lg:grid-cols-2">
-              <SleepSection rows={sleepSessions} />
-              <ExerciseSection exercises={exercises} plans={exercisePlans} />
-            </div>
-
-            <div className="grid gap-4 lg:grid-cols-2">
-              <MealSection meals={meals} />
-              <WaterSection water={water} />
-            </div>
-
-            <details className="rounded-md border border-stone-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
-              <summary className="cursor-pointer text-sm font-semibold">诊断信息</summary>
-              <p className="mt-2 text-xs text-neutral-500">提醒状态、dedupe key、payload 和错误信息只在排障时看。</p>
-              <div className="mt-3 space-y-2">
-                {reminders.length === 0 ? (
-                  <EmptyState text="这一天没有提醒日志。" />
-                ) : reminders.map(reminder => (
-                  <ReminderRow key={reminder.id} reminder={reminder} />
-                ))}
+              <div className="grid gap-4 lg:grid-cols-2">
+                <SleepSection rows={sleepSessions} />
+                <ExerciseSection exercises={exercises} plans={exercisePlans} />
               </div>
-            </details>
-          </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <MealSection meals={meals} />
+                <WaterSection water={water} />
+              </div>
+
+              <details className="rounded-md border border-stone-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+                <summary className="cursor-pointer text-sm font-semibold">诊断信息</summary>
+                <p className="mt-2 text-xs text-neutral-500">提醒状态、dedupe key、payload 和错误信息只在排障时看。</p>
+                <div className="mt-3 space-y-2">
+                  {reminders.length === 0 ? (
+                    <EmptyState text="这一天没有提醒日志。" />
+                  ) : reminders.map(reminder => (
+                    <ReminderRow key={reminder.id} reminder={reminder} />
+                  ))}
+                </div>
+              </details>
+            </div>
+          )
         )}
 
-        {!loading && (
+        {!loading && mode === 'day' && (
           <p className="mt-4 text-xs text-neutral-500">
             今日记录：久坐 {sittingRows.length} 段 · 睡眠 {sleepSessions.length} 条 · 饮食 {meals.length} 条 · 喝水 {water.length} 条 · 运动 {exercises.length + exercisePlans.length} 条
           </p>
         )}
       </div>
     </main>
+  )
+}
+
+function WeekView({ week }: { week: LifeWeek | null }) {
+  if (!week) {
+    return (
+      <section className="rounded-md border border-stone-200 bg-white p-6 text-sm text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900">
+        这周还没有 Life 数据。
+      </section>
+    )
+  }
+
+  const review = week.weekly_review
+  const delivery = review?.delivery_json || {}
+
+  return (
+    <div className="space-y-4">
+      <WeekRhythmMap week={week} />
+
+      <div className="grid gap-4 xl:grid-cols-[1.15fr_.85fr]">
+        <SittingBarChart rows={week.trend_rows} />
+        <SleepExerciseChart rows={week.trend_rows} />
+      </div>
+
+      <RecordCoverageChart week={week} />
+
+      <section className="rounded-md border border-stone-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+        <SectionTitle title="周复盘推送" meta={review ? '已生成' : '未生成'} />
+        {!review ? (
+          <EmptyState text="这周还没有生成周复盘。" />
+        ) : (
+          <div className="space-y-3">
+            <div className="rounded-md border border-stone-200 px-3 py-3 dark:border-neutral-800">
+              <p className="text-sm font-semibold">{review.headline || '周复盘'}</p>
+              <p className="mt-2 break-words text-sm leading-6 text-neutral-700 dark:text-neutral-300">{review.summary}</p>
+              <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                <span className="rounded-md bg-stone-100 px-2 py-1 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                  微信 {deliveryLabel(delivery.wechat)}
+                </span>
+                <span className="rounded-md bg-stone-100 px-2 py-1 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                  飞书 {deliveryLabel(delivery.feishu)}
+                </span>
+                <span className="rounded-md bg-stone-100 px-2 py-1 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                  {review.report_text.length} 字
+                </span>
+              </div>
+            </div>
+            {review.evidence_json.length > 0 && (
+              <div>
+                <p className="mb-2 text-xs font-medium text-neutral-500">本周依据</p>
+                <div className="space-y-2">
+                  {review.evidence_json.map((item, index) => (
+                    <RecordRow key={`${evidenceText(item)}:${index}`} title={`依据 ${index + 1}`} detail={evidenceText(item)} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+
+function WeekRhythmMap({ week }: { week: LifeWeek }) {
+  const maxSitting = Math.max(1, ...week.trend_rows.map(row => row.sitting_total_minutes))
+  return (
+    <section className="rounded-md border border-stone-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+      <SectionTitle title="本周节律图" meta={formatDateRange(week.week_start, week.week_end)} />
+      <div className="space-y-3">
+        {week.trend_rows.map((row, index) => (
+          <DayRhythmRow key={row.date} row={row} index={index} maxSitting={maxSitting} />
+        ))}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-3 text-xs text-neutral-500">
+        <Legend color="bg-sky-500" label="睡眠" />
+        <Legend color="bg-emerald-500" label="运动" />
+        <Legend color="bg-stone-500" label="坐姿" />
+        <Legend color="bg-amber-500" label="久坐" />
+      </div>
+    </section>
+  )
+}
+
+function DayRhythmRow({
+  row,
+  index,
+  maxSitting,
+}: {
+  row: LifeWeekTrendRow
+  index: number
+  maxSitting: number
+}) {
+  const sleepWidth = percent(row.sleep_minutes, 10 * 60, row.sleep_minutes ? 3 : 0)
+  const sittingWidth = percent(row.sitting_total_minutes, maxSitting, row.sitting_total_minutes ? 3 : 0)
+  const sedentaryWidth = percent(row.sedentary_over_limit_minutes, maxSitting, 0)
+  const exerciseWidth = percent(row.exercise_minutes, 60, row.exercise_minutes ? 3 : 0)
+  const score = [
+    row.sleep_minutes > 0,
+    row.exercise_count > 0,
+    row.meal_count > 0,
+    row.water_count > 0,
+    row.sedentary_over_limit_minutes === 0,
+  ].filter(Boolean).length
+
+  return (
+    <div className="grid gap-3 rounded-md border border-stone-200 bg-stone-50 p-3 dark:border-neutral-800 dark:bg-neutral-950 md:grid-cols-[72px_1fr_170px] md:items-center">
+      <div>
+        <p className="text-sm font-semibold">{WEEKDAY_LABELS[index] || ''}</p>
+        <p className="text-xs text-neutral-500">{formatShortDate(row.date)}</p>
+      </div>
+      <div className="space-y-2">
+        <RhythmLane label="睡眠" color="bg-sky-500" width={sleepWidth} text={row.sleep_minutes ? formatMinutes(row.sleep_minutes) : '无记录'} />
+        <div className="grid grid-cols-[42px_1fr_74px] items-center gap-2">
+          <span className="text-xs text-neutral-500">坐姿</span>
+          <div className="relative h-3 overflow-hidden rounded-full bg-stone-200 dark:bg-neutral-800">
+            <div className="h-full rounded-full bg-stone-500" style={{ width: `${sittingWidth}%` }} />
+            {row.sedentary_over_limit_minutes > 0 && (
+              <div className="absolute left-0 top-0 h-full rounded-full bg-amber-500" style={{ width: `${sedentaryWidth}%` }} />
+            )}
+          </div>
+          <span className="truncate text-right text-xs text-neutral-500">{row.sitting_total_minutes ? formatMinutes(row.sitting_total_minutes) : '无记录'}</span>
+        </div>
+        <RhythmLane label="运动" color="bg-emerald-500" width={exerciseWidth} text={row.exercise_minutes ? formatMinutes(row.exercise_minutes) : '无记录'} />
+      </div>
+      <div className="space-y-2">
+        <p className="text-xs font-medium text-neutral-600 dark:text-neutral-300">生活完整度 {score}/5</p>
+        <div className="flex flex-wrap gap-1.5">
+          <StatusPill active={row.sleep_minutes > 0} activeText="有睡眠" inactiveText="缺睡眠" />
+          <StatusPill active={row.exercise_count > 0} activeText="有运动" inactiveText="缺运动" />
+          <StatusPill active={row.meal_count > 0} activeText="有饮食" inactiveText="缺饮食" />
+          <StatusPill active={row.water_count > 0} activeText="有喝水" inactiveText="缺喝水" />
+          <StatusPill active={row.sedentary_over_limit_minutes === 0} activeText="未久坐" inactiveText={`久坐${formatMinutes(row.sedentary_over_limit_minutes)}`} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function StatusPill({
+  active,
+  activeText,
+  inactiveText,
+}: {
+  active: boolean
+  activeText: string
+  inactiveText: string
+}) {
+  return (
+    <span className={`rounded-md px-2 py-1 text-xs ${active ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200' : 'bg-stone-200 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'}`}>
+      {active ? activeText : inactiveText}
+    </span>
+  )
+}
+
+function RhythmLane({
+  label,
+  color,
+  width,
+  text,
+}: {
+  label: string
+  color: string
+  width: number
+  text: string
+}) {
+  return (
+    <div className="grid grid-cols-[42px_1fr_74px] items-center gap-2">
+      <span className="text-xs text-neutral-500">{label}</span>
+      <div className="h-3 overflow-hidden rounded-full bg-stone-200 dark:bg-neutral-800">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${width}%` }} />
+      </div>
+      <span className="truncate text-right text-xs text-neutral-500">{text}</span>
+    </div>
+  )
+}
+
+function Legend({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className={`h-2.5 w-2.5 rounded-full ${color}`} />
+      {label}
+    </span>
+  )
+}
+
+function SittingBarChart({ rows }: { rows: LifeWeekTrendRow[] }) {
+  const maxSitting = Math.max(1, ...rows.map(row => row.sitting_total_minutes))
+  return (
+    <section className="rounded-md border border-stone-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+      <SectionTitle title="坐姿压力图" meta="灰色为总坐姿，黄色为久坐" />
+      <div className="space-y-3">
+        {rows.map((row, index) => {
+          const totalWidth = percent(row.sitting_total_minutes, maxSitting, row.sitting_total_minutes ? 3 : 0)
+          const overWidth = percent(row.sedentary_over_limit_minutes, maxSitting, 0)
+          return (
+            <div key={row.date} className="grid grid-cols-[54px_1fr_64px] items-center gap-3 text-sm">
+              <div>
+                <p className="text-xs font-medium">{WEEKDAY_LABELS[index]}</p>
+                <p className="text-xs text-neutral-500">{formatShortDate(row.date)}</p>
+              </div>
+              <div className="relative h-5 overflow-hidden rounded-full bg-stone-100 dark:bg-neutral-800">
+                <div className="h-full rounded-full bg-stone-500" style={{ width: `${totalWidth}%` }} />
+                {row.sedentary_over_limit_minutes > 0 && (
+                  <div className="absolute left-0 top-0 h-full rounded-full bg-amber-500" style={{ width: `${overWidth}%` }} />
+                )}
+              </div>
+              <p className="text-right text-xs text-neutral-500">{row.sitting_total_minutes ? formatMinutes(row.sitting_total_minutes) : '-'}</p>
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+function SleepExerciseChart({ rows }: { rows: LifeWeekTrendRow[] }) {
+  const hourTicks = [10, 8, 6, 4, 2, 0]
+  return (
+    <section className="rounded-md border border-stone-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+      <SectionTitle title="睡眠 / 运动图" meta="左轴睡眠小时，绿色按60分钟满格" />
+      <div className="grid grid-cols-[34px_1fr] gap-2">
+        <div className="flex h-44 flex-col justify-between pb-6 text-right text-[11px] text-neutral-500">
+          {hourTicks.map(tick => (
+            <span key={tick}>{tick}h</span>
+          ))}
+        </div>
+        <div>
+          <div className="relative h-44 border-b border-stone-200 dark:border-neutral-800">
+            <div className="absolute inset-0 flex flex-col justify-between">
+              {hourTicks.map(tick => (
+                <div key={tick} className="border-t border-stone-100 first:border-stone-200 dark:border-neutral-800" />
+              ))}
+            </div>
+            <div className="relative z-10 grid h-full grid-cols-7 items-end gap-2 px-1">
+              {rows.map((row, index) => (
+                <div key={row.date} className="flex h-full flex-col items-center justify-end gap-2">
+                  <div className="flex h-36 items-end gap-1">
+                    <div
+                      className="w-5 rounded-t bg-sky-500"
+                      style={{ height: `${percent(row.sleep_minutes, 10 * 60, row.sleep_minutes ? 5 : 0)}%` }}
+                      title={`睡眠 ${formatMinutes(row.sleep_minutes)}`}
+                    />
+                    <div
+                      className="w-3 rounded-t bg-emerald-500"
+                      style={{ height: `${percent(row.exercise_minutes, 60, row.exercise_minutes ? 5 : 0)}%` }}
+                      title={`运动 ${formatMinutes(row.exercise_minutes)}`}
+                    />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-xs font-medium">{WEEKDAY_LABELS[index].slice(1)}</p>
+                    <p className="text-[11px] text-neutral-500">{formatShortDate(row.date)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-neutral-500">
+        <p>睡眠记录 {rows.filter(row => row.sleep_minutes > 0).length} 天</p>
+        <p className="text-right">运动记录 {rows.filter(row => row.exercise_count > 0).length} 天</p>
+      </div>
+    </section>
+  )
+}
+
+function RecordCoverageChart({ week }: { week: LifeWeek }) {
+  return (
+    <section className="rounded-md border border-stone-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+      <SectionTitle title="记录覆盖图" meta="看这一周哪些模块真的留下了记录" />
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <CoverageStrip label="睡眠" color="bg-sky-500" rows={week.trend_rows} active={row => row.sleep_minutes > 0} />
+        <CoverageStrip label="运动" color="bg-emerald-500" rows={week.trend_rows} active={row => row.exercise_count > 0} />
+        <CoverageStrip label="饮食" color="bg-rose-500" rows={week.trend_rows} active={row => row.meal_count > 0} value={row => row.meal_count} suffix="餐" />
+        <CoverageStrip label="喝水" color="bg-cyan-500" rows={week.trend_rows} active={row => row.water_count > 0} value={row => row.water_count} suffix="次" />
+      </div>
+    </section>
+  )
+}
+
+function CoverageStrip({
+  label,
+  color,
+  rows,
+  active,
+  value,
+  suffix = '',
+}: {
+  label: string
+  color: string
+  rows: LifeWeekTrendRow[]
+  active: (row: LifeWeekTrendRow) => boolean
+  value?: (row: LifeWeekTrendRow) => number
+  suffix?: string
+}) {
+  const activeCount = rows.filter(active).length
+  return (
+    <div className="rounded-md border border-stone-200 bg-stone-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
+      <div className="mb-3 flex items-center justify-between">
+        <p className="text-sm font-semibold">{label}</p>
+        <p className="text-xs text-neutral-500">{activeCount}/7 天</p>
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {rows.map((row, index) => (
+          <div key={row.date} className="text-center">
+            <div className={`flex h-8 items-center justify-center rounded text-xs font-semibold ${active(row) ? `${color} text-white` : 'bg-stone-200 text-neutral-400 dark:bg-neutral-800'}`}>
+              {value && value(row) > 0 ? `${value(row)}${suffix}` : ''}
+            </div>
+            <p className="mt-1 text-[10px] text-neutral-500">{WEEKDAY_LABELS[index].slice(1)}</p>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 

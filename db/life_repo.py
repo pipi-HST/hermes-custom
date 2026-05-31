@@ -589,23 +589,50 @@ class LifeRepo:
         labels: dict[str, Any],
         patterns: dict[str, Any],
         recommendations: list[str],
+        headline: str = "",
+        report_text: str = "",
+        evidence: list[dict[str, Any]] | None = None,
+        delivery: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         existing = self.get_weekly_review(week_start=week_start, week_end=week_end)
         if existing:
-            return existing
+            updates: dict[str, Any] = {}
+            if headline and not existing.get("headline"):
+                updates["headline"] = headline
+            if (report_text or summary) and not existing.get("report_text"):
+                updates["report_text"] = report_text or summary
+            if evidence and not existing.get("evidence_json"):
+                updates["evidence_json"] = json.dumps(evidence, ensure_ascii=False)
+            if delivery and not existing.get("delivery_json"):
+                updates["delivery_json"] = json.dumps(delivery, ensure_ascii=False)
+            if updates:
+                assignments = ", ".join(f"{column} = ?" for column in updates)
+                self.conn.execute(
+                    f"""UPDATE life_weekly_reviews
+                        SET {assignments}
+                        WHERE week_start = ? AND week_end = ?""",
+                    (*updates.values(), week_start, week_end),
+                )
+                self.conn.commit()
+            return self.get_weekly_review(week_start=week_start, week_end=week_end) or existing
         review_id = uuid.uuid4().hex[:12]
         self.conn.execute(
             """INSERT INTO life_weekly_reviews
-               (id, week_start, week_end, summary, labels_json, patterns_json, recommendations_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (id, week_start, week_end, summary, headline, report_text,
+                labels_json, patterns_json, recommendations_json, evidence_json, delivery_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 review_id,
                 week_start,
                 week_end,
                 summary,
+                headline,
+                report_text or summary,
                 json.dumps(labels, ensure_ascii=False),
                 json.dumps(patterns, ensure_ascii=False),
                 json.dumps(recommendations, ensure_ascii=False),
+                json.dumps(evidence or [], ensure_ascii=False),
+                json.dumps(delivery or {}, ensure_ascii=False),
             ),
         )
         self.conn.commit()
@@ -623,6 +650,8 @@ class LifeRepo:
         result["labels_json"] = _load_json(result.get("labels_json"), {})
         result["patterns_json"] = _load_json(result.get("patterns_json"), {})
         result["recommendations_json"] = _load_json(result.get("recommendations_json"), [])
+        result["evidence_json"] = _load_json(result.get("evidence_json"), [])
+        result["delivery_json"] = _load_json(result.get("delivery_json"), {})
         return result
 
     def create_long_term_decision(

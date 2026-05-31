@@ -62,9 +62,9 @@ def test_life_audit_reports_runtime_warning_without_writing(tmp_path) -> None:
     )
     repo.create_reminder_log(
         reminder_type="sedentary",
-        scheduled_for="2026-05-30T10:00:00+08:00",
+        scheduled_for="2026-05-30T23:00:00+08:00",
         status="failed",
-        dedupe_key="sedentary:2026-05-30T10:00",
+        dedupe_key="sedentary:2026-05-30T23:00",
     )
 
     report = run_audit(db_path=db_path, now="2026-05-30T23:30:00+08:00")
@@ -117,7 +117,40 @@ def test_life_audit_warns_on_duplicate_sleep_sessions(tmp_path) -> None:
     assert any(check["name"] == "duplicate_sleep_sessions" for check in report["checks"])
 
 
-def test_life_audit_warns_on_successful_reminder_burst(tmp_path) -> None:
+def test_life_audit_ignores_historical_failed_reminders_and_bursts(tmp_path) -> None:
+    db_path = str(tmp_path / "life-audit.db")
+    repo = LifeRepo(init_life_db(db_path))
+    repo.create_reminder_log(
+        reminder_type="sedentary",
+        scheduled_for="2026-05-31T08:00:00+08:00",
+        status="failed",
+        dedupe_key="sedentary:2026-05-31T08:00",
+    )
+    repo.create_reminder_log(
+        reminder_type="exercise",
+        scheduled_for="2026-05-31T08:01:00+08:00",
+        status="sent",
+        sent_at="2026-05-31T08:01:01+08:00",
+        dedupe_key="exercise:2026-05-31T08:01",
+    )
+    repo.create_reminder_log(
+        reminder_type="exercise",
+        scheduled_for="2026-05-31T08:02:00+08:00",
+        status="sent",
+        sent_at="2026-05-31T08:02:01+08:00",
+        dedupe_key="exercise:2026-05-31T08:02",
+    )
+
+    report = run_audit(db_path=db_path, now="2026-05-31T23:00:00+08:00")
+
+    assert report["status"] == "ok"
+    assert report["summary"]["failed_reminders"] == 0
+    assert report["summary"]["historical_failed_reminders"] == 1
+    assert report["summary"]["reminder_bursts"] == []
+    assert report["summary"]["historical_reminder_bursts"] == 1
+
+
+def test_life_audit_warns_on_recent_successful_reminder_burst(tmp_path) -> None:
     db_path = str(tmp_path / "life-audit.db")
     repo = LifeRepo(init_life_db(db_path))
     repo.create_reminder_log(
@@ -135,7 +168,7 @@ def test_life_audit_warns_on_successful_reminder_burst(tmp_path) -> None:
         dedupe_key="exercise:2026-05-31T14:52",
     )
 
-    report = run_audit(db_path=db_path, now="2026-05-31T21:00:00+08:00")
+    report = run_audit(db_path=db_path, now="2026-05-31T15:00:00+08:00")
 
     assert report["status"] == "warning"
     assert report["summary"]["reminder_bursts"][0]["reminder_type"] == "exercise"

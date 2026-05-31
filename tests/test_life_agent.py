@@ -652,6 +652,39 @@ def test_sleep_failed_delivery_does_not_retry_in_due_window(agent: LifeAgent) ->
     assert (repeat["selected"] or {}).get("reminder_type") != "sleep"
 
 
+def test_weixin_rate_limit_suppresses_notification_candidates_temporarily(agent: LifeAgent) -> None:
+    agent.config = LifeConfig(notifications_enabled=True)
+    agent.repo.create_reminder_log(
+        reminder_type="sedentary",
+        scheduled_for="2026-05-31T23:40:00+08:00",
+        status="failed",
+        dedupe_key="sedentary:2026-05-31T23:40",
+        error="delivery error: Weixin send failed: iLink sendmessage rate limited",
+    )
+    agent.repo.create_event(
+        event_type="exercise",
+        occurred_at="2026-05-31T18:00:00+08:00",
+        source="wechat",
+        status="completed_unknown",
+    )
+
+    suppressed = agent.life_tick(
+        now="2026-06-01T00:00:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=False,
+    )
+    after_cooldown = agent.life_tick(
+        now="2026-06-01T00:11:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=False,
+    )
+
+    assert suppressed["selected"] is None
+    assert suppressed["meta"]["should_notify"] is False
+    assert "notification_rate_limited" in suppressed["warnings"]
+    assert after_cooldown["selected"]["reminder_type"] == "daily_review"
+
+
 def test_exercise_failed_delivery_gets_two_short_retries_then_waits(agent: LifeAgent) -> None:
     agent.config = LifeConfig(notifications_enabled=True)
 
@@ -1130,6 +1163,41 @@ def test_sedentary_alert_throttles_after_sent_delivery(agent: LifeAgent) -> None
     assert repeated["selected"]["reminder_type"] == "sedentary"
 
 
+def test_sedentary_alert_throttles_after_failed_delivery(agent: LifeAgent) -> None:
+    agent.config = LifeConfig(notifications_enabled=True)
+    agent.repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-05-29T09:00:00+08:00",
+        source="mac_activity",
+        raw_text="",
+        status="active",
+    )
+
+    first = agent.life_tick(
+        now="2026-05-29T10:00:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=10, available=True),
+        dry_run=False,
+    )
+    agent.reconcile_delivery_result(
+        completed_at="2026-05-29T10:00:30+08:00",
+        delivery_error="delivery error: rate limited",
+    )
+    too_soon_after_failed = agent.life_tick(
+        now="2026-05-29T10:02:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=20, available=True),
+        dry_run=False,
+    )
+    repeated = agent.life_tick(
+        now="2026-05-29T10:10:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=30, available=True),
+        dry_run=False,
+    )
+
+    assert first["selected"]["reminder_type"] == "sedentary"
+    assert (too_soon_after_failed["selected"] or {}).get("reminder_type") != "sedentary"
+    assert repeated["selected"]["reminder_type"] == "sedentary"
+
+
 def test_life_tick_handles_existing_naive_sedentary_window_with_aware_now(agent: LifeAgent) -> None:
     agent.repo.create_event(
         event_type="sedentary_start",
@@ -1421,6 +1489,54 @@ def test_life_tick_sends_and_stores_weekly_review(agent: LifeAgent) -> None:
     assert row["week_start"] == "2026-05-25"
     assert row["week_end"] == "2026-05-31"
     assert "周复盘" in result["chat_preview"]
+
+
+def test_weekly_review_is_concise_and_evidence_based(agent: LifeAgent) -> None:
+    agent.repo.create_event(
+        event_type="sleep_end",
+        occurred_at="2026-05-27T08:00:00+08:00",
+        duration_minutes=420,
+        source="wechat",
+        payload={"wake_date": "2026-05-27"},
+    )
+    agent.repo.create_event(
+        event_type="meal",
+        occurred_at="2026-05-28T12:30:00+08:00",
+        source="wechat",
+        raw_text="午饭吃了牛肉饭",
+        payload={"meal_slot": "lunch", "content": "牛肉饭"},
+    )
+    agent.repo.create_event(
+        event_type="exercise",
+        occurred_at="2026-05-31T18:00:00+08:00",
+        duration_minutes=30,
+        source="wechat",
+        payload={"exercise_type": "八段锦"},
+    )
+    agent.repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-05-29T09:00:00+08:00",
+        ended_at="2026-05-29T11:10:00+08:00",
+        duration_minutes=130,
+        source="mac_activity",
+        status="auto_resolved",
+    )
+
+    result = agent.life_tick(
+        now="2026-05-31T21:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    review = result["selected"]["review"]
+    row = agent.repo.get_weekly_review(week_start="2026-05-25", week_end="2026-05-31")
+    assert len(review["report_text"]) <= 600
+    assert "总体" in review["report_text"]
+    assert "建议" in review["report_text"]
+    assert review["evidence"]
+    assert row is not None
+    assert row["report_text"] == review["report_text"]
+    assert row["evidence_json"] == review["evidence"]
 
 
 def test_long_term_decision_without_review_time_asks_follow_up(agent: LifeAgent) -> None:

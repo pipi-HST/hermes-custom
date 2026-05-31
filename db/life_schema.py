@@ -94,9 +94,13 @@ CREATE TABLE IF NOT EXISTS life_weekly_reviews (
     week_start TEXT NOT NULL,
     week_end TEXT NOT NULL,
     summary TEXT NOT NULL DEFAULT '',
+    headline TEXT NOT NULL DEFAULT '',
+    report_text TEXT NOT NULL DEFAULT '',
     labels_json TEXT NOT NULL DEFAULT '{}',
     patterns_json TEXT NOT NULL DEFAULT '{}',
     recommendations_json TEXT NOT NULL DEFAULT '[]',
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    delivery_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(week_start, week_end)
 )
@@ -146,6 +150,21 @@ def migrate_life_schema(conn: sqlite3.Connection) -> None:
     conn.execute(CREATE_LIFE_INTERACTION_CONTEXTS_TABLE)
     conn.execute(CREATE_LIFE_DAILY_REVIEWS_TABLE)
     conn.execute(CREATE_LIFE_WEEKLY_REVIEWS_TABLE)
+    _add_column_if_missing(conn, "life_weekly_reviews", "headline", "TEXT NOT NULL DEFAULT ''")
+    _add_column_if_missing(conn, "life_weekly_reviews", "report_text", "TEXT NOT NULL DEFAULT ''")
+    _add_column_if_missing(conn, "life_weekly_reviews", "evidence_json", "TEXT NOT NULL DEFAULT '[]'")
+    _add_column_if_missing(conn, "life_weekly_reviews", "delivery_json", "TEXT NOT NULL DEFAULT '{}'")
     conn.execute(CREATE_LIFE_LONG_TERM_DECISIONS_TABLE)
     conn.execute(CREATE_LIFE_DECISION_REVIEWS_TABLE)
     conn.commit()
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")

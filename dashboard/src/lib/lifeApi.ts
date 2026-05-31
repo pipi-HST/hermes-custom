@@ -53,9 +53,13 @@ export interface LifeWeeklyReview {
   week_start: string
   week_end: string
   summary: string
+  headline: string
+  report_text: string
   labels_json: Record<string, unknown>
   patterns_json: Record<string, unknown>
   recommendations_json: string[]
+  evidence_json: Array<Record<string, unknown>>
+  delivery_json: Record<string, unknown>
   created_at: string
 }
 
@@ -90,6 +94,47 @@ export interface LifeReviews {
   long_term_decisions: LifeLongTermDecision[]
 }
 
+export interface LifeWeekTrendRow {
+  date: string
+  sleep_minutes: number
+  exercise_count: number
+  exercise_minutes: number
+  sitting_total_minutes: number
+  sedentary_over_limit_minutes: number
+  meal_count: number
+  water_count: number
+}
+
+export interface LifeWeekMetrics {
+  sleep_days: number
+  sleep_total_minutes: number
+  sleep_average_minutes: number
+  exercise_days: number
+  exercise_total_minutes: number
+  sitting_total_minutes: number
+  sedentary_over_limit_minutes: number
+  meal_count: number
+  water_count: number
+}
+
+export interface LifeWeekRecordGroups {
+  sleep: LifeEvent[]
+  meal: LifeEvent[]
+  exercise: LifeEvent[]
+  sedentary: LifeEvent[]
+  water: LifeEvent[]
+}
+
+export interface LifeWeek {
+  date: string
+  week_start: string
+  week_end: string
+  metrics: LifeWeekMetrics
+  trend_rows: LifeWeekTrendRow[]
+  record_groups: LifeWeekRecordGroups
+  weekly_review: LifeWeeklyReview | null
+}
+
 const API_BASE = 'http://localhost:8000/api'
 
 export async function fetchLifeSummary(date: string): Promise<LifeSummary> {
@@ -108,6 +153,10 @@ export async function fetchLifeReminders(date: string): Promise<LifeReminder[]> 
 
 export async function fetchLifeReviews(date: string): Promise<LifeReviews> {
   return fetchJson<LifeReviews>(`/life/reviews?date=${encodeURIComponent(date)}`)
+}
+
+export async function fetchLifeWeek(date: string): Promise<LifeWeek> {
+  return fetchJson<LifeWeek>(`/life/week?date=${encodeURIComponent(date)}`)
 }
 
 async function fetchJson<T>(path: string): Promise<T> {

@@ -7,7 +7,7 @@ import argparse
 import json
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -34,12 +34,18 @@ def run_audit(
     db_path: str | None = None,
     now: str | None = None,
     stale_active_hours: int = 12,
+    warning_window_hours: int = 6,
     migrate: bool = False,
 ) -> dict[str, Any]:
     resolved_db_path = db_path or _load_db_path(ROOT / "config.yaml")
     current = _parse_datetime(now) if now else datetime.now().astimezone()
+    warning_cutoff = current - timedelta(hours=warning_window_hours)
     checks: list[dict[str, Any]] = []
-    summary: dict[str, Any] = {"db_path": resolved_db_path, "now": current.isoformat()}
+    summary: dict[str, Any] = {
+        "db_path": resolved_db_path,
+        "now": current.isoformat(),
+        "warning_window_hours": warning_window_hours,
+    }
 
     conn = sqlite3.connect(resolved_db_path)
     conn.row_factory = sqlite3.Row
@@ -88,16 +94,15 @@ def run_audit(
                 f"oldest active sitting window is {age_minutes} minutes old",
             )
 
-        failed_reminders = _scalar(
-            conn,
-            "SELECT count(*) FROM life_reminder_logs WHERE status = 'failed'",
-        )
-        summary["failed_reminders"] = failed_reminders
+        failed_reminders = _failed_reminders(conn, since=warning_cutoff)
+        historical_failed_reminders = _failed_reminders(conn, before=warning_cutoff)
+        summary["failed_reminders"] = len(failed_reminders)
+        summary["historical_failed_reminders"] = len(historical_failed_reminders)
         _check(
             checks,
             "failed_reminders",
             "warning" if failed_reminders else "ok",
-            f"{failed_reminders} failed reminder log(s)",
+            f"{len(failed_reminders)} failed reminder log(s) in the last {warning_window_hours} hour(s)",
         )
 
         pending_decisions = _scalar(
@@ -135,13 +140,15 @@ def run_audit(
             f"{len(duplicate_sleep_sessions)} duplicate sleep session group(s)",
         )
 
-        reminder_bursts = _reminder_bursts(conn)
+        reminder_bursts = _reminder_bursts(conn, since=warning_cutoff)
+        historical_reminder_bursts = _reminder_bursts(conn, before=warning_cutoff, limit=None)
         summary["reminder_bursts"] = reminder_bursts
+        summary["historical_reminder_bursts"] = len(historical_reminder_bursts)
         _check(
             checks,
             "reminder_bursts",
             "warning" if reminder_bursts else "ok",
-            f"{len(reminder_bursts)} reminder burst(s)",
+            f"{len(reminder_bursts)} reminder burst(s) in the last {warning_window_hours} hour(s)",
         )
     finally:
         conn.close()
@@ -223,7 +230,43 @@ def _duplicate_sleep_sessions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     ]
 
 
-def _reminder_bursts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def _failed_reminders(
+    conn: sqlite3.Connection,
+    *,
+    since: datetime | None = None,
+    before: datetime | None = None,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT reminder_type, scheduled_for, error
+           FROM life_reminder_logs
+           WHERE status = 'failed'
+           ORDER BY scheduled_for ASC, rowid ASC"""
+    ).fetchall()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        scheduled_for = str(row["scheduled_for"])
+        scheduled_at = _parse_datetime(scheduled_for)
+        if since and scheduled_at < since:
+            continue
+        if before and scheduled_at >= before:
+            continue
+        items.append(
+            {
+                "reminder_type": str(row["reminder_type"]),
+                "scheduled_for": scheduled_for,
+                "error": str(row["error"] or ""),
+            }
+        )
+    return items
+
+
+def _reminder_bursts(
+    conn: sqlite3.Connection,
+    *,
+    since: datetime | None = None,
+    before: datetime | None = None,
+    limit: int | None = 20,
+) -> list[dict[str, Any]]:
     min_gap_minutes = {
         "exercise": 120,
         "sedentary": 10,
@@ -250,6 +293,10 @@ def _reminder_bursts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             continue
         gap_minutes = int(_seconds_between(previous_dt, current_dt) // 60)
         if gap_minutes < min_gap_minutes[reminder_type]:
+            if since and current_dt < since:
+                continue
+            if before and current_dt >= before:
+                continue
             bursts.append(
                 {
                     "reminder_type": reminder_type,
@@ -259,7 +306,9 @@ def _reminder_bursts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                     "expected_min_gap_minutes": min_gap_minutes[reminder_type],
                 }
             )
-    return bursts[:20]
+    if limit is None:
+        return bursts
+    return bursts[:limit]
 
 
 def _check(checks: list[dict[str, Any]], name: str, status: str, detail: str) -> None:
@@ -283,9 +332,20 @@ def main() -> int:
     parser.add_argument("--now", default=None, help="Optional ISO timestamp for deterministic checks.")
     parser.add_argument("--strict", action="store_true", help="Return non-zero for warnings as well as failures.")
     parser.add_argument("--migrate", action="store_true", help="Create missing Life tables before auditing.")
+    parser.add_argument(
+        "--warning-window-hours",
+        type=int,
+        default=6,
+        help="Only recent failed reminders and reminder bursts inside this window affect warning status.",
+    )
     args = parser.parse_args()
 
-    report = run_audit(db_path=args.db_path, now=args.now, migrate=args.migrate)
+    report = run_audit(
+        db_path=args.db_path,
+        now=args.now,
+        migrate=args.migrate,
+        warning_window_hours=args.warning_window_hours,
+    )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if report["status"] == "failed" or (args.strict and report["status"] == "warning"):
         return 1

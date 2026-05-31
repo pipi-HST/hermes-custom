@@ -269,6 +269,86 @@ def test_life_reviews_empty_database_has_stable_shape(tmp_path) -> None:
     }
 
 
+def test_life_week_returns_weekly_metrics_trends_and_records(tmp_path) -> None:
+    client, repo = _client(tmp_path)
+    repo.create_event(
+        event_type="sleep_end",
+        occurred_at="2026-05-27T08:00:00+08:00",
+        duration_minutes=420,
+        source="wechat",
+        payload={"wake_date": "2026-05-27"},
+    )
+    repo.create_event(
+        event_type="exercise",
+        occurred_at="2026-05-28T18:00:00+08:00",
+        duration_minutes=30,
+        source="wechat",
+        payload={"exercise_type": "八段锦"},
+    )
+    repo.create_event(
+        event_type="meal",
+        occurred_at="2026-05-28T12:30:00+08:00",
+        source="wechat",
+        raw_text="午饭吃了牛肉饭",
+        payload={"meal_slot": "lunch", "content": "牛肉饭"},
+    )
+    repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-05-29T09:00:00+08:00",
+        ended_at="2026-05-29T10:20:00+08:00",
+        duration_minutes=80,
+        source="mac_activity",
+        status="auto_resolved",
+    )
+    repo.create_weekly_review(
+        week_start="2026-05-25",
+        week_end="2026-05-31",
+        summary="本周要减少连续久坐。",
+        labels={"sedentary": "偏高"},
+        patterns={"exercise_days": 1},
+        recommendations=["先把午后运动固定下来"],
+        headline="久坐偏高，运动偏少",
+        report_text="总体：本周久坐偏高，运动记录偏少。建议：下周先固定一次午后运动。",
+        evidence=[{"type": "sedentary", "text": "05-29 久坐80分钟"}],
+        delivery={"wechat": "sent", "feishu": "pending"},
+    )
+
+    response = client.get("/api/life/week?date=2026-05-30")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["week_start"] == "2026-05-25"
+    assert data["week_end"] == "2026-05-31"
+    assert data["metrics"]["sleep_days"] == 1
+    assert data["metrics"]["exercise_days"] == 1
+    assert data["metrics"]["sedentary_over_limit_minutes"] == 80
+    assert len(data["trend_rows"]) == 7
+    assert data["record_groups"]["meal"][0]["raw_text"] == "午饭吃了牛肉饭"
+    assert data["weekly_review"]["headline"] == "久坐偏高，运动偏少"
+    assert data["weekly_review"]["delivery_json"] == {"wechat": "sent", "feishu": "pending"}
+
+
+def test_life_week_empty_database_has_stable_shape(tmp_path) -> None:
+    client, _repo = _client(tmp_path)
+
+    response = client.get("/api/life/week?date=2026-05-30")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["week_start"] == "2026-05-25"
+    assert data["week_end"] == "2026-05-31"
+    assert len(data["trend_rows"]) == 7
+    assert data["metrics"]["sleep_days"] == 0
+    assert data["record_groups"] == {
+        "sleep": [],
+        "meal": [],
+        "exercise": [],
+        "sedentary": [],
+        "water": [],
+    }
+    assert data["weekly_review"] is None
+
+
 def test_life_summary_empty_database_has_stable_shape(tmp_path) -> None:
     client, _repo = _client(tmp_path)
 

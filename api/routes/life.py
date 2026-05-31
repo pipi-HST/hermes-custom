@@ -100,6 +100,26 @@ def create_life_router(
             "long_term_decisions": long_term_decisions,
         }
 
+    @router.get("/life/week")
+    def get_life_week(date: str = Query(default="")):
+        selected_date = date or datetime.now().astimezone().date().isoformat()
+        week_start, week_end = _week_bounds(selected_date)
+        days = _date_range(week_start, week_end)
+        with _life_connection(conn, db_path) as db:
+            events = _events_between(db, week_start, week_end)
+            weekly_review = _weekly_review_for_date(db, selected_date)
+        trend_rows = [_trend_row_for_day(day, events) for day in days]
+        metrics = _weekly_metrics(trend_rows)
+        return {
+            "date": selected_date,
+            "week_start": week_start,
+            "week_end": week_end,
+            "metrics": metrics,
+            "trend_rows": trend_rows,
+            "record_groups": _weekly_record_groups(events),
+            "weekly_review": weekly_review,
+        }
+
     return router
 
 
@@ -146,6 +166,19 @@ def _reminders_on_date(conn: sqlite3.Connection, selected_date: str, *, limit: i
         if _date_key(row["scheduled_for"]) == selected_date
     ]
     return items[:limit]
+
+
+def _events_between(conn: sqlite3.Connection, week_start: str, week_end: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT * FROM life_events
+           ORDER BY occurred_at DESC, rowid DESC"""
+    ).fetchall()
+    return [
+        _event_row_to_dict(row)
+        for row in rows
+        if week_start <= _event_life_day(row) <= week_end
+        and row["status"] not in {"undone", "superseded"}
+    ]
 
 
 def _daily_review_on_date(conn: sqlite3.Connection, selected_date: str) -> dict[str, Any] | None:
@@ -197,6 +230,8 @@ def _weekly_review_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     item["labels_json"] = _load_json(item.get("labels_json"), {})
     item["patterns_json"] = _load_json(item.get("patterns_json"), {})
     item["recommendations_json"] = _load_json(item.get("recommendations_json"), [])
+    item["evidence_json"] = _load_json(item.get("evidence_json"), [])
+    item["delivery_json"] = _load_json(item.get("delivery_json"), {})
     return item
 
 
@@ -234,6 +269,13 @@ def _date_key(value: str) -> str:
     return parsed.date().isoformat()
 
 
+def _event_life_day(row: sqlite3.Row) -> str:
+    payload = _load_json(row["payload_json"], {})
+    if row["event_type"] == "sleep_end" and payload.get("wake_date"):
+        return str(payload["wake_date"])
+    return _date_key(row["occurred_at"])
+
+
 def _week_bounds(selected_date: str) -> tuple[str, str]:
     try:
         parsed = date_type.fromisoformat(selected_date)
@@ -242,3 +284,82 @@ def _week_bounds(selected_date: str) -> tuple[str, str]:
     start = parsed - timedelta(days=parsed.weekday())
     end = start + timedelta(days=6)
     return start.isoformat(), end.isoformat()
+
+
+def _date_range(start: str, end: str) -> list[str]:
+    current = date_type.fromisoformat(start)
+    finish = date_type.fromisoformat(end)
+    days: list[str] = []
+    while current <= finish:
+        days.append(current.isoformat())
+        current = current + timedelta(days=1)
+    return days
+
+
+def _trend_row_for_day(day: str, events: list[dict[str, Any]]) -> dict[str, Any]:
+    day_events = [event for event in events if _event_dict_life_day(event) == day]
+    sleep_minutes = sum(
+        int(event.get("duration_minutes") or 0)
+        for event in day_events
+        if event["event_type"] == "sleep_end"
+    )
+    exercise_minutes = sum(
+        int(event.get("duration_minutes") or 0)
+        for event in day_events
+        if event["event_type"] == "exercise"
+    )
+    sitting_total = sum(
+        int(event.get("duration_minutes") or 0)
+        for event in day_events
+        if event["event_type"] == "sedentary_start"
+    )
+    sedentary_over_limit = sum(
+        int(event.get("duration_minutes") or 0)
+        for event in day_events
+        if event["event_type"] == "sedentary_start"
+        and int(event.get("duration_minutes") or 0) >= 60
+    )
+    return {
+        "date": day,
+        "sleep_minutes": sleep_minutes,
+        "exercise_count": sum(1 for event in day_events if event["event_type"] == "exercise"),
+        "exercise_minutes": exercise_minutes,
+        "sitting_total_minutes": sitting_total,
+        "sedentary_over_limit_minutes": sedentary_over_limit,
+        "meal_count": sum(1 for event in day_events if event["event_type"] == "meal"),
+        "water_count": sum(1 for event in day_events if event["event_type"] == "water"),
+    }
+
+
+def _weekly_metrics(trend_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    sleep_days = sum(1 for row in trend_rows if row["sleep_minutes"])
+    total_sleep = sum(int(row["sleep_minutes"]) for row in trend_rows)
+    exercise_days = sum(1 for row in trend_rows if row["exercise_count"])
+    return {
+        "sleep_days": sleep_days,
+        "sleep_total_minutes": total_sleep,
+        "sleep_average_minutes": round(total_sleep / sleep_days) if sleep_days else 0,
+        "exercise_days": exercise_days,
+        "exercise_total_minutes": sum(int(row["exercise_minutes"]) for row in trend_rows),
+        "sitting_total_minutes": sum(int(row["sitting_total_minutes"]) for row in trend_rows),
+        "sedentary_over_limit_minutes": sum(int(row["sedentary_over_limit_minutes"]) for row in trend_rows),
+        "meal_count": sum(int(row["meal_count"]) for row in trend_rows),
+        "water_count": sum(int(row["water_count"]) for row in trend_rows),
+    }
+
+
+def _weekly_record_groups(events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    return {
+        "sleep": [event for event in events if event["event_type"] in {"sleep_start", "sleep_end"}],
+        "meal": [event for event in events if event["event_type"] == "meal"],
+        "exercise": [event for event in events if event["event_type"] == "exercise"],
+        "sedentary": [event for event in events if event["event_type"] in {"sedentary_start", "sedentary_break"}],
+        "water": [event for event in events if event["event_type"] == "water"],
+    }
+
+
+def _event_dict_life_day(event: dict[str, Any]) -> str:
+    payload = event.get("payload_json") or {}
+    if event["event_type"] == "sleep_end" and payload.get("wake_date"):
+        return str(payload["wake_date"])
+    return _date_key(str(event["occurred_at"]))
