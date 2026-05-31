@@ -214,6 +214,25 @@ def test_generate_question_fallback_title():
         assert "这是一个很长的摘要内容" in prompt or "这是一个很长的摘要" in prompt
 
 
+def test_generate_question_prompt_offers_directions_not_type_homework():
+    """Theme 提问应让 Agent 给出沉淀方向，而不是让用户先判断卡片类型。"""
+    agent = ThemeAgent(llm_api_key="test")
+    cluster = {
+        "new_capture": {"title": "Agent Harness", "summary": "可靠性来自外部约束"},
+        "related_captures": [
+            {"title": "Effective Agents", "summary": "先用简单工作流"},
+        ],
+    }
+
+    with patch.object(agent, "_call_llm", return_value="提问文本") as mock:
+        agent.generate_question(cluster)
+
+    prompt = mock.call_args[0][0]
+    assert "可沉淀方向" in prompt
+    assert "不要让用户先判断" in prompt
+    assert "先展开哪个" in prompt
+
+
 # ── _llm_confirm edge case ──
 
 @patch.object(ThemeAgent, "_call_llm")

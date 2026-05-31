@@ -129,6 +129,7 @@ def test_hermes_theme_scan_schema():
     props = params.get("properties", {})
     assert "rescan_all" in props
     assert "重建" in tools["theme_scan"].schema.get("description", "")
+    assert "可沉淀方向" in tools["theme_scan"].schema.get("description", "")
 
 
 def test_hermes_life_tools_registered():
@@ -144,6 +145,21 @@ def test_hermes_life_tools_registered():
     assert "不要用于知识笔记" in record_description
     assert "手动状态查询" in record_description
     assert "dry_run" in tools["life_tick"].schema.get("parameters", {}).get("properties", {})
+
+
+def test_runtime_prompt_prioritizes_life_voice_records_over_capture():
+    config_path = os.path.expanduser("~/.hermes/config.yaml")
+    if not os.path.exists(config_path):
+        pytest.skip("Hermes runtime config not found")
+    yaml = pytest.importorskip("yaml")
+
+    with open(config_path, encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
+    prompt = config.get("agent", {}).get("system_prompt", "")
+
+    assert "Life routing has priority over capture_content" in prompt
+    assert "Clear life/health records" in prompt
+    assert prompt.index("Life routing has priority over capture_content") < prompt.index("Clear life/health records")
 
 
 def test_hermes_tools_have_name_description_parameters():

@@ -4,7 +4,7 @@
 
 **Goal:** Broaden Garden from opinion-only cards into typed Knowledge Cards: `viewpoint`, `fact`, `method`, `caution`, and `question`.
 
-**Architecture:** Keep the current draft-first Garden lifecycle. Add a `card_kind` field to `garden_drafts` and `garden_cards`, make GardenAgent produce type-aware markdown, and expose optional `card_kind` routing through the bridge and Hermes runtime tool. Existing cards default to `viewpoint`.
+**Architecture:** Keep the current draft-first Garden lifecycle. Add a `card_kind` field to `garden_drafts` and `garden_cards`, make GardenAgent produce type-aware markdown, and expose optional `card_kind` routing through the bridge and Hermes runtime tool. Existing cards default to `viewpoint`; `card_kind` is a weak system label, not a classification chore for the user.
 
 **Tech Stack:** Python 3.11, SQLite migrations, Obsidian Markdown/YAML frontmatter, pytest, Hermes runtime tool schemas.
 
@@ -16,6 +16,7 @@ In scope:
 - Add and migrate `card_kind` on Garden drafts/cards.
 - Preserve existing Garden cards as `viewpoint`.
 - Let GardenAgent infer or honor a requested card kind.
+- Make Theme suggestions offer "可沉淀方向" instead of asking the user to classify content.
 - Render type-aware Markdown bodies.
 - Store Garden card frontmatter when committing to Obsidian.
 - Update Hermes runtime tool descriptions and parameters.
@@ -445,18 +446,18 @@ Run the two bridge tests. Expected: pass.
 Add `card_kind` to the runtime tool schema enum:
 
 ```python
-"card_kind": {
-    "type": "string",
-    "enum": ["viewpoint", "fact", "method", "caution", "question"],
-    "description": "可选，指定知识卡片类型；不填则由 Garden Agent 判断。",
-}
+            "card_kind": {
+                "type": "string",
+                "enum": ["viewpoint", "fact", "method", "caution", "question"],
+                "description": "可选系统提示，指定知识卡片类型；不填则由 Garden Agent 判断，不要要求用户先选择类型。",
+            }
 ```
 
 Pass it to `do_synthesize`.
 
 - [ ] **Step 2: Update wording**
 
-Replace "观点草稿" wording with "知识卡片草稿" in Garden runtime tools. Keep the confirmation rule unchanged.
+Replace "观点草稿" wording with "知识卡片草稿". Keep confirmation strict, but accept "确认卡片" as the preferred wording and keep "确认观点" only as backward-compatible user phrasing.
 
 - [ ] **Step 3: Run runtime focused tests**
 
@@ -526,6 +527,7 @@ Expected: gateway process exists and state file points to a live gateway.
 
 - Existing Garden cards remain valid and default to `viewpoint`.
 - New Garden drafts/cards can store `card_kind`.
+- Theme suggestions explain possible card directions without asking the user to classify the material first.
 - `method` and `caution` cards render with non-viewpoint templates.
 - Committed Garden Markdown has frontmatter with `type: garden_card` and `card_kind`.
 - Hermes runtime can request `card_kind`, but can also omit it and let Garden infer.
@@ -533,6 +535,6 @@ Expected: gateway process exists and state file points to a live gateway.
 
 ## Self-Review
 
-- Spec coverage: P0 covers data model, type-aware cards, draft-first flow, Obsidian frontmatter, and runtime routing. Theme/RAG/Review/Canvas are intentionally later phases.
+- Spec coverage: P0 covers data model, type-aware cards, draft-first flow, Obsidian frontmatter, runtime routing, and Theme suggestion wording. RAG/Review/Canvas are intentionally later phases.
 - Placeholder scan: no unfinished placeholder markers remain.
 - Type consistency: `card_kind` is used consistently in schema, helpers, bridge, markdown, and runtime schema.

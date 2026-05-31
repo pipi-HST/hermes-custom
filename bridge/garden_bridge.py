@@ -84,9 +84,9 @@ def _draft_preview(
     return (
         f"已生成 Garden {label}草稿：《{title}》\n\n"
         f"一句话：{one_liner}\n\n"
-        f"观点预览：\n{claims_text}\n\n"
+        f"卡片预览：\n{claims_text}\n\n"
         f"草稿编号：{draft_id}\n"
-        "满意回复“确认观点”或“存入花园”；不满意直接说怎么改。"
+        "满意回复“确认卡片”或“存入花园”；不满意直接说怎么改。"
     )
 
 
@@ -249,7 +249,7 @@ def synthesize_garden(capture_ids: list[str] = None,
         ],
         next_actions=[
             next_action(
-                label="确认观点入库",
+                label="确认卡片入库",
                 intent="commit_garden_draft",
                 payload={"draft_id": draft_id},
                 requires_confirmation=True,
@@ -359,7 +359,7 @@ def revise_garden_draft(draft_id: str = "", instruction: str = "") -> dict:
         ],
         next_actions=[
             next_action(
-                label="确认观点入库",
+                label="确认卡片入库",
                 intent="commit_garden_draft",
                 payload={"draft_id": draft_id},
                 requires_confirmation=True,

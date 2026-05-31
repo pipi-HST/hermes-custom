@@ -208,6 +208,8 @@ def test_synthesize_garden_passes_card_kind_to_agent(repo, tmp_path):
     assert result["status"] == "success"
     assert result["meta"]["card_kind"] == "method"
     assert "方法卡" in result["chat_preview"]
+    assert "卡片预览" in result["chat_preview"]
+    assert "观点预览" not in result["chat_preview"]
     assert mock_synthesize.call_args.kwargs["card_kind"] == "method"
 
 

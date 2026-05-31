@@ -47,6 +47,12 @@ Forcing all of these into an opinion template makes the system feel artificial a
 
 Use one field, `card_kind`, with five values.
 
+`card_kind` is a system hint and retrieval/display label, not a question the
+user must answer before a card can exist. The user can ask "这些内容有什么联系"
+or "把有价值的东西提炼出来"; Theme and Garden should suggest likely card
+directions and explain why, then let the user accept, reject, or revise the
+direction in ordinary language.
+
 ### `viewpoint`
 
 A reusable judgment, interpretation, or stance.
@@ -329,7 +335,11 @@ When Theme Agent scans related captures, it may suggest card drafts, but should 
 
 Example reply:
 
-> 我发现这个主题下可能有 2 个值得沉淀的对象：一张方法卡和一张注意卡。要不要我先生成草稿？
+> 这几篇材料都在讲 Agent 可靠性不是只靠模型，而是靠外部约束和工程流程。可沉淀方向：方法：如何设计可靠 Agent Harness；注意：不要把换更强模型当成可靠性方案；观点：Agent 工程化的关键在约束系统。要我先展开哪个？也可以让我先展开最值得保留的那个。
+
+Theme Agent should not ask "这是方法卡还是观点卡？" as a blocking question.
+Classification is the Agent's job; the user's job is to judge whether the
+suggested direction is useful.
 
 ### RAG/Review Discovery
 
@@ -397,6 +407,9 @@ When the user asks for cards, the reply should be short and reviewable in WeChat
 ```
 
 The full card draft is stored in DB and can be expanded if needed.
+If the user did not specify a card kind, the reply should say why the Agent
+chose that direction in one short phrase, but should not ask the user to choose
+a taxonomy before seeing the useful content.
 
 ## Migration Strategy
 
