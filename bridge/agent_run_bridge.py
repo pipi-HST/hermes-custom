@@ -13,6 +13,8 @@ from bridge.result_envelope import success_envelope
 from db.agent_run_repo import AgentRunRepo
 from db.schema import init_db
 
+MAX_PREVIEW_SOURCES = 8
+
 
 def get_agent_run_status(limit: int = 5) -> dict[str, Any]:
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
@@ -71,7 +73,7 @@ def _source_lines(output: dict[str, Any], evidence: dict[str, Any]) -> list[str]
     sources = output.get("sources")
     if isinstance(sources, list) and sources:
         lines = []
-        for source in sources[:5]:
+        for source in sources[:MAX_PREVIEW_SOURCES]:
             if not isinstance(source, dict):
                 continue
             title = str(source.get("title") or "").strip()
@@ -83,5 +85,5 @@ def _source_lines(output: dict[str, Any], evidence: dict[str, Any]) -> list[str]
 
     titles = evidence.get("source_titles")
     if isinstance(titles, list):
-        return [str(title) for title in titles[:5] if str(title)]
+        return [str(title) for title in titles[:MAX_PREVIEW_SOURCES] if str(title)]
     return []

@@ -56,3 +56,48 @@ def test_get_agent_run_status_formats_recent_runs(monkeypatch, tmp_path):
     assert "不要使用“同上”" in envelope["chat_preview"]
     assert envelope["meta"]["run_count"] == 1
     assert json.loads(envelope["meta"]["runs"][0]["evidence_json"])["source_count"] == 1
+
+
+def test_get_agent_run_status_shows_all_sources_up_to_eight(monkeypatch, tmp_path):
+    from bridge import agent_run_bridge
+
+    db_path = tmp_path / "captures.db"
+    conn = init_db(str(db_path))
+    repo = AgentRunRepo(conn)
+    run = repo.start_run(
+        agent="rag",
+        intent="search_knowledge_base",
+        trigger="wechat",
+        input_ref={"query": "AI Agent 工程化"},
+    )
+    sources = [
+        {
+            "id": f"cap{index}",
+            "title": f"材料 {index}",
+            "path": f"captures/cap{index}.md",
+            "section": f"章节 {index}",
+            "type": "capture_section",
+        }
+        for index in range(1, 7)
+    ]
+    repo.complete_run(
+        run["id"],
+        output_ref={"query": "AI Agent 工程化", "sources": sources},
+        evidence={
+            "result_count": 6,
+            "source_count": 6,
+            "source_titles": [source["title"] for source in sources],
+        },
+        warnings=[],
+    )
+
+    monkeypatch.setattr(
+        agent_run_bridge,
+        "load_config",
+        lambda _path: type("Config", (), {"db_path": str(db_path)})(),
+    )
+
+    envelope = get_agent_run_status(limit=1)
+
+    assert "source_count=6" in envelope["chat_preview"]
+    assert "[6] 材料 6 / 章节 6" in envelope["chat_preview"]
