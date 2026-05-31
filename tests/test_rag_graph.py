@@ -160,3 +160,16 @@ def test_graph_retrieval_prefers_sections_over_whole_note_for_same_capture(tmp_p
     assert len(result["final_hits"]) == 1
     assert result["final_hits"][0]["matched_kind"] == "section"
     assert result["final_hits"][0]["section_title"] == "关键章节"
+
+
+def test_graph_retrieval_ignores_seed_hits_without_file_path(tmp_path):
+    conn = init_db(str(tmp_path / "captures.db"))
+    result = build_graph_retrieval(
+        conn,
+        query_embedding=_vec(1.0, 0.0),
+        seed_hits=[{"id": "cap1", "file_path": "", "matched_kind": "identity"}],
+        vault_path=str(tmp_path),
+        final_limit=3,
+    )
+
+    assert result["expanded_theme_pages"] == []

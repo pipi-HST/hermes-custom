@@ -163,7 +163,10 @@ def _theme_pages_for_captures(
     pages: list[dict[str, str]] = []
     seen: set[str] = set()
     for hit in seed_hits:
-        note = read_note(vault, str(hit.get("file_path") or ""))
+        file_path = str(hit.get("file_path") or "").strip()
+        if not file_path:
+            continue
+        note = read_note(vault, file_path)
         if not note:
             continue
         frontmatter, body = note
