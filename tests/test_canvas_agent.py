@@ -11,7 +11,7 @@ from agents.canvas_agent import (
 )
 
 
-def test_build_obsidian_canvas_uses_compact_text_nodes_with_wiki_links():
+def test_build_obsidian_canvas_uses_garden_cards_as_main_board_nodes():
     result = build_obsidian_canvas(
         CanvasBuildInput(
             title="AI Agent工程化",
@@ -35,23 +35,30 @@ def test_build_obsidian_canvas_uses_compact_text_nodes_with_wiki_links():
                     file_path="garden/agent-method.md",
                     kind="method",
                     summary="先优化单次调用，再考虑复杂工作流。",
+                    source_ids=["cap1"],
                 ),
             ],
         )
     )
 
     payload = json.loads(result.json_text)
-    assert all(node["type"] == "text" for node in payload["nodes"])
-    text = "\n".join(node["text"] for node in payload["nodes"])
+    by_id = {node["id"]: node for node in payload["nodes"]}
+    assert by_id["theme"]["type"] == "text"
+    assert by_id["theme"]["y"] < by_id["garden-1"]["y"]
+    assert by_id["garden-1"]["type"] == "text"
+    assert by_id["source-1"]["type"] == "file"
+    assert by_id["source-1"]["file"] == "captures/effective.md"
+    assert by_id["source-1"]["y"] > by_id["garden-1"]["y"]
+    text = "\n".join(node.get("text", "") for node in payload["nodes"])
     assert "[[themes/ai-agent|AI Agent]]" in text
-    assert "[[captures/effective|Building Effective AI Agents]]" in text
     assert "[[garden/agent-method|AI Agent 工程化方法卡]]" in text
     assert "把模型能力变成可验证" in text
     assert "先优化单次调用" in text
+    assert "来源：S1" in text
     assert "cap1" not in result.json_text
 
 
-def test_build_obsidian_canvas_positions_captures_left_and_cards_right():
+def test_build_obsidian_canvas_positions_theme_garden_and_sources_as_board():
     result = build_obsidian_canvas(
         CanvasBuildInput(
             title="AI Agent工程化",
@@ -70,8 +77,9 @@ def test_build_obsidian_canvas_positions_captures_left_and_cards_right():
 
     payload = json.loads(result.json_text)
     by_id = {node["id"]: node for node in payload["nodes"]}
-    assert by_id["capture-1"]["x"] < by_id["theme"]["x"]
-    assert by_id["garden-1"]["x"] > by_id["theme"]["x"]
+    assert by_id["theme"]["y"] < by_id["garden-1"]["y"]
+    assert by_id["source-1"]["y"] > by_id["garden-1"]["y"]
+    assert by_id["garden-1"]["x"] < by_id["source-1"]["x"] + by_id["source-1"]["width"]
 
 
 def test_build_obsidian_canvas_caps_large_graph_and_reports_trimmed_items():
@@ -100,15 +108,16 @@ def test_build_obsidian_canvas_caps_large_graph_and_reports_trimmed_items():
 
     payload = json.loads(result.json_text)
     text_nodes = [node for node in payload["nodes"] if node["type"] == "text"]
-    assert len([node for node in text_nodes if node["id"].startswith("capture-") and node["id"] != "capture-more"]) == 5
-    assert len([node for node in text_nodes if node["id"].startswith("garden-") and node["id"] != "garden-more"]) == 5
-    assert any("还有 2 篇来源未展开" in node["text"] for node in text_nodes)
-    assert any("还有 2 张卡未展开" in node["text"] for node in text_nodes)
+    file_nodes = [node for node in payload["nodes"] if node["type"] == "file"]
+    assert len([node for node in file_nodes if node["id"].startswith("source-")]) == 5
+    assert len([node for node in text_nodes if node["id"].startswith("garden-") and node["id"] != "garden-more"]) == 6
+    assert any("还有 2 篇来源收起" in node["text"] for node in text_nodes)
+    assert any("还有 1 张 Garden Card 收起" in node["text"] for node in text_nodes)
     assert "已省略 2 篇来源笔记" in result.warnings
-    assert "已省略 2 张 Garden 卡片" in result.warnings
+    assert "已省略 1 张 Garden 卡片" in result.warnings
 
 
-def test_build_obsidian_canvas_uses_fewer_unlabeled_edges():
+def test_build_obsidian_canvas_connects_garden_cards_to_related_sources():
     result = build_obsidian_canvas(
         CanvasBuildInput(
             title="AI Agent工程化",
@@ -118,15 +127,68 @@ def test_build_obsidian_canvas_uses_fewer_unlabeled_edges():
                 CanvasItem(id="cap2", title="来源二", file_path="captures/two.md"),
             ],
             garden_cards=[
-                CanvasItem(id="card1", title="方法卡", file_path="garden/method.md", kind="method"),
-                CanvasItem(id="card2", title="风险卡", file_path="garden/risk.md", kind="caution"),
+                CanvasItem(id="card1", title="方法卡", file_path="garden/method.md", kind="method", source_ids=["cap1"]),
+                CanvasItem(id="card2", title="风险卡", file_path="garden/risk.md", kind="caution", source_ids=["cap2"]),
             ],
         )
     )
 
     payload = json.loads(result.json_text)
-    assert len(payload["edges"]) == 4
+    edge_pairs = {(edge["fromNode"], edge["toNode"]) for edge in payload["edges"]}
+    assert ("theme", "garden-1") in edge_pairs
+    assert ("theme", "garden-2") in edge_pairs
+    assert ("garden-1", "source-1") in edge_pairs
+    assert ("garden-2", "source-2") in edge_pairs
     assert all("label" not in edge for edge in payload["edges"])
+
+
+def test_build_obsidian_canvas_limits_visible_source_edges_per_card():
+    result = build_obsidian_canvas(
+        CanvasBuildInput(
+            title="AI Agent工程化",
+            theme=CanvasTheme(title="AI Agent", file_path="themes/ai-agent.md"),
+            captures=[
+                CanvasItem(id="cap1", title="来源一", file_path="captures/one.md"),
+                CanvasItem(id="cap2", title="来源二", file_path="captures/two.md"),
+                CanvasItem(id="cap3", title="来源三", file_path="captures/three.md"),
+            ],
+            garden_cards=[
+                CanvasItem(
+                    id="card1",
+                    title="方法卡",
+                    file_path="garden/method.md",
+                    kind="method",
+                    source_ids=["cap1", "cap2", "cap3"],
+                ),
+            ],
+        )
+    )
+
+    payload = json.loads(result.json_text)
+    edge_pairs = {(edge["fromNode"], edge["toNode"]) for edge in payload["edges"]}
+    text = "\n".join(node.get("text", "") for node in payload["nodes"])
+    assert ("garden-1", "source-1") in edge_pairs
+    assert ("garden-1", "source-2") in edge_pairs
+    assert ("garden-1", "source-3") not in edge_pairs
+    assert "来源：S1, S2" in text
+    assert "S3" not in text
+
+
+def test_build_obsidian_canvas_uses_light_custom_colors():
+    result = build_obsidian_canvas(
+        CanvasBuildInput(
+            title="AI Agent工程化",
+            theme=CanvasTheme(title="AI Agent", file_path="themes/ai-agent.md"),
+            captures=[CanvasItem(id="cap1", title="来源", file_path="captures/source.md")],
+            garden_cards=[CanvasItem(id="card1", title="方法卡", file_path="garden/method.md", kind="method")],
+        )
+    )
+
+    payload = json.loads(result.json_text)
+    colors = {node["color"] for node in payload["nodes"] if "color" in node}
+    assert "#EAF4E3" in colors
+    assert "#FFF4D8" in colors
+    assert all(color.startswith("#") for color in colors)
 
 
 def test_safe_canvas_filename_removes_invalid_path_characters():

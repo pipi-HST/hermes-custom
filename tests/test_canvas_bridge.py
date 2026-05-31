@@ -86,11 +86,18 @@ def test_generate_canvas_from_theme_writes_obsidian_canvas(tmp_path):
     assert canvas_path.exists()
     payload = json.loads(canvas_path.read_text(encoding="utf-8"))
     text = "\n".join(node.get("text", "") for node in payload["nodes"])
-    assert all(node.get("type") == "text" for node in payload["nodes"])
+    by_id = {node["id"]: node for node in payload["nodes"]}
+    assert by_id["theme"]["type"] == "text"
+    assert by_id["garden-1"]["type"] == "text"
+    assert by_id["source-1"]["type"] == "file"
+    assert by_id["source-1"]["file"] == "captures/effective.md"
     assert "[[themes/ai-agent|AI Agent]]" in text
-    assert "[[captures/effective|Building Effective AI Agents]]" in text
     assert "[[garden/AI Agent 工程化方法卡-card1|AI Agent 工程化方法卡]]" in text
     assert "一句话" in text
+    assert "来源：S1" in text
+    assert ("garden-1", "source-1") in {
+        (edge["fromNode"], edge["toNode"]) for edge in payload["edges"]
+    }
     assert "已生成 Obsidian Canvas" in envelope["chat_preview"]
     assert envelope["durable_artifacts"][0]["type"] == "obsidian_canvas"
 
@@ -149,10 +156,11 @@ def test_generate_canvas_uses_moc_wiki_links_to_limit_sources(tmp_path):
 
     payload = json.loads((vault / "canvas" / "AI Agent-关系图.canvas").read_text(encoding="utf-8"))
     text = "\n".join(node.get("text", "") for node in payload["nodes"])
+    files = {node.get("file") for node in payload["nodes"] if node.get("type") == "file"}
     assert envelope["status"] == "success"
-    assert "[[captures/effective|Building Effective AI Agents]]" in text
+    assert "captures/effective.md" in files
     assert "[[garden/AI Agent 工程化方法卡-card1|AI Agent 工程化方法卡]]" in text
-    assert "captures/unrelated" not in text
+    assert "captures/unrelated.md" not in files
     assert "garden/不相关卡片-card2" not in text
 
 
@@ -179,8 +187,8 @@ def test_generate_canvas_from_pending_theme_candidate_uses_related_captures(tmp_
 
     payload = json.loads((vault / "canvas" / "AI Agent-关系图.canvas").read_text(encoding="utf-8"))
     assert envelope["status"] == "success"
-    text = "\n".join(node.get("text", "") for node in payload["nodes"])
-    assert "[[captures/effective|Building Effective AI Agents]]" in text
+    files = {node.get("file") for node in payload["nodes"] if node.get("type") == "file"}
+    assert "captures/effective.md" in files
     assert envelope["meta"]["capture_count"] == 1
 
 

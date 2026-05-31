@@ -6,7 +6,17 @@ import re
 from dataclasses import dataclass, field
 
 MAX_CAPTURES = 5
-MAX_GARDEN_CARDS = 5
+MAX_GARDEN_CARDS = 6
+MAX_SOURCE_REFS_PER_CARD = 2
+
+THEME_COLOR = "#EAF4E3"
+METHOD_COLOR = "#FFF4D8"
+VIEWPOINT_COLOR = "#E8F3FF"
+CAUTION_COLOR = "#FDECE7"
+QUESTION_COLOR = "#EFE8FF"
+FACT_COLOR = "#F7EBC8"
+SOURCE_COLOR = "#F2F2F2"
+MORE_COLOR = "#EFEAF7"
 
 
 @dataclass(frozen=True)
@@ -23,6 +33,7 @@ class CanvasItem:
     file_path: str
     kind: str = ""
     summary: str = ""
+    source_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -56,67 +67,81 @@ def build_obsidian_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
         warnings.append(f"已省略 {len(data.garden_cards) - len(cards)} 张 Garden 卡片")
 
     nodes = [
-        _text_node(
-            "theme",
-            _theme_text(data.theme),
-            0,
-            -20,
-            380,
-            250,
-            "4",
-        )
+        _text_node("theme", _theme_text(data.theme), -420, -360, 840, 120, THEME_COLOR)
     ]
     edges = []
-    for index, capture in enumerate(captures):
-        node_id = f"capture-{index + 1}"
-        nodes.append(
-            _text_node(
-                node_id,
-                _capture_text(capture),
-                -520,
-                -260 + index * 120,
-                340,
-                128,
-                "1",
-            )
-        )
-        edges.append(_edge(f"edge-capture-{index + 1}", node_id, "theme"))
-    if len(data.captures) > len(captures):
-        nodes.append(
-            _text_node(
-                "capture-more",
-                f"还有 {len(data.captures) - len(captures)} 篇来源未展开",
-                -492,
-                -260 + len(captures) * 120,
-                280,
-                70,
-                "6",
-            )
-        )
     for index, card in enumerate(cards):
         node_id = f"garden-{index + 1}"
         nodes.append(
             _text_node(
                 node_id,
-                _garden_text(card),
-                520,
-                -230 + index * 138,
-                340,
-                136,
+                _garden_text(card, _source_refs(card, captures)),
+                *_garden_position(index),
+                310,
+                170,
                 _color_for_kind(card.kind),
             )
         )
-        edges.append(_edge(f"edge-garden-{index + 1}", "theme", node_id))
+        edges.append(
+            _edge(
+                f"edge-theme-garden-{index + 1}",
+                "theme",
+                node_id,
+                from_side="bottom",
+                to_side="top",
+            )
+        )
+    source_node_ids = {}
+    for index, capture in enumerate(captures):
+        node_id = f"source-{index + 1}"
+        source_node_ids[capture.id] = node_id
+        nodes.append(
+            _file_node(
+                node_id,
+                f"S{index + 1} · {capture.title}",
+                capture.file_path,
+                -560 + index * 280,
+                360,
+                250,
+                90,
+                SOURCE_COLOR,
+            )
+        )
+    for card_index, card in enumerate(cards):
+        for source_id in card.source_ids[:MAX_SOURCE_REFS_PER_CARD]:
+            source_node_id = source_node_ids.get(source_id)
+            if source_node_id:
+                edges.append(
+                    _edge(
+                        f"edge-garden-{card_index + 1}-{source_node_id}",
+                        f"garden-{card_index + 1}",
+                        source_node_id,
+                        from_side="bottom",
+                        to_side="top",
+                    )
+                )
+    if len(data.captures) > len(captures):
+        nodes.append(
+            _text_node(
+                "source-more",
+                f"还有 {len(data.captures) - len(captures)} 篇来源收起",
+                150,
+                480,
+                280,
+                70,
+                MORE_COLOR,
+            )
+        )
     if len(data.garden_cards) > len(cards):
         nodes.append(
             _text_node(
                 "garden-more",
-                f"还有 {len(data.garden_cards) - len(cards)} 张卡未展开",
-                550,
-                -230 + len(cards) * 138,
+                f"还有 {len(data.garden_cards) - len(cards)} 张 Garden Card 收起",
+                460,
+                110,
                 280,
                 70,
-                "6",
+                MORE_COLOR,
             )
         )
 
@@ -131,6 +156,29 @@ def build_obsidian_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
         node_count=len(nodes),
         edge_count=len(edges),
     )
+
+
+def _file_node(
+    node_id: str,
+    label: str,
+    file_path: str,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    color: str,
+) -> dict:
+    return {
+        "id": node_id,
+        "type": "file",
+        "file": file_path,
+        "label": label,
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "color": color,
+    }
 
 
 def _text_node(
@@ -154,13 +202,20 @@ def _text_node(
     }
 
 
-def _edge(edge_id: str, from_node: str, to_node: str) -> dict:
+def _edge(
+    edge_id: str,
+    from_node: str,
+    to_node: str,
+    *,
+    from_side: str = "right",
+    to_side: str = "left",
+) -> dict:
     return {
         "id": edge_id,
         "fromNode": from_node,
-        "fromSide": "right",
+        "fromSide": from_side,
         "toNode": to_node,
-        "toSide": "left",
+        "toSide": to_side,
     }
 
 
@@ -183,7 +238,7 @@ def _capture_text(item: CanvasItem) -> str:
     return "\n".join(lines).strip()
 
 
-def _garden_text(item: CanvasItem) -> str:
+def _garden_text(item: CanvasItem, refs: list[str] | None = None) -> str:
     kind_label = _kind_label(item.kind)
     lines = [
         f"**{kind_label}**",
@@ -191,7 +246,30 @@ def _garden_text(item: CanvasItem) -> str:
     ]
     if item.summary.strip():
         lines.extend(["", _clip(item.summary)])
+    if refs:
+        lines.extend(["", f"来源：{', '.join(refs)}"])
     return "\n".join(lines).strip()
+
+
+def _source_refs(card: CanvasItem, captures: list[CanvasItem]) -> list[str]:
+    index_by_id = {capture.id: index + 1 for index, capture in enumerate(captures)}
+    return [
+        f"S{index_by_id[source_id]}"
+        for source_id in card.source_ids[:MAX_SOURCE_REFS_PER_CARD]
+        if source_id in index_by_id
+    ]
+
+
+def _garden_position(index: int) -> tuple[int, int]:
+    positions = [
+        (-520, -140),
+        (-155, -160),
+        (210, -140),
+        (-340, 100),
+        (40, 100),
+        (420, 100),
+    ]
+    return positions[index] if index < len(positions) else (460, 110)
 
 
 def _wiki_link(file_path: str, title: str) -> str:
@@ -218,9 +296,9 @@ def _kind_label(kind: str) -> str:
 
 def _color_for_kind(kind: str) -> str:
     return {
-        "method": "2",
-        "caution": "1",
-        "question": "6",
-        "fact": "3",
-        "viewpoint": "5",
-    }.get(kind or "", "5")
+        "method": METHOD_COLOR,
+        "caution": CAUTION_COLOR,
+        "question": QUESTION_COLOR,
+        "fact": FACT_COLOR,
+        "viewpoint": VIEWPOINT_COLOR,
+    }.get(kind or "", VIEWPOINT_COLOR)

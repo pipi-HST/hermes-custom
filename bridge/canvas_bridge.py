@@ -266,6 +266,7 @@ def _garden_items(rows: list[dict[str, Any]]) -> list[CanvasItem]:
                 file_path=f"garden/{_safe_note_stem(title, card_id)}.md",
                 kind=str(row.get("card_kind") or ""),
                 summary=str(row.get("one_liner") or ""),
+                source_ids=_json_list(row.get("capture_ids")),
             )
         )
     return items
