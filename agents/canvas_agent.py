@@ -59,7 +59,7 @@ def safe_canvas_filename(title: str) -> str:
 
 def build_obsidian_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
     captures = data.captures[:MAX_CAPTURES]
-    cards = data.garden_cards[:MAX_GARDEN_CARDS]
+    cards = _ordered_cards(data.garden_cards[:MAX_GARDEN_CARDS])
     warnings: list[str] = []
     if len(data.captures) > len(captures):
         warnings.append(f"已省略 {len(data.captures) - len(captures)} 篇来源笔记")
@@ -70,15 +70,19 @@ def build_obsidian_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
         _text_node("theme", _theme_text(data.theme), -420, -360, 840, 120, THEME_COLOR)
     ]
     edges = []
+    lane_counts: dict[str, int] = {}
     for index, card in enumerate(cards):
         node_id = f"garden-{index + 1}"
+        lane = _position_lane(card.kind)
+        lane_index = lane_counts.get(lane, 0)
+        lane_counts[lane] = lane_index + 1
         nodes.append(
             _text_node(
                 node_id,
                 _garden_text(card, _source_refs(card, captures)),
-                *_garden_position(index),
+                *_garden_position(lane, lane_index),
                 310,
-                170,
+                198,
                 _color_for_kind(card.kind),
             )
         )
@@ -89,9 +93,9 @@ def build_obsidian_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
                 node_id,
                 _source_text(capture, index + 1),
                 -560 + index * 280,
-                400,
+                430,
                 240,
-                64,
+                42,
                 SOURCE_COLOR,
             )
         )
@@ -167,20 +171,18 @@ def _garden_text(item: CanvasItem, refs: list[str] | None = None) -> str:
     kind_label = _kind_label(item.kind)
     lines = [
         f"**{kind_label}**",
-        f"### {_wiki_link(item.file_path, item.title)}",
+        f"### {item.title or '未命名'}",
     ]
     if item.summary.strip():
         lines.extend(["", _clip(item.summary)])
     if refs:
         lines.extend(["", f"来源：{', '.join(refs)}"])
+    lines.extend(["", f"打开：{_wiki_link(item.file_path, item.title)}"])
     return "\n".join(lines).strip()
 
 
 def _source_text(item: CanvasItem, index: int) -> str:
-    return "\n".join([
-        f"**S{index} · Capture**",
-        _wiki_link(item.file_path, item.title),
-    ])
+    return f"S{index} · {_wiki_link(item.file_path, _clip(item.title, 28))}"
 
 
 def _source_refs(card: CanvasItem, captures: list[CanvasItem]) -> list[str]:
@@ -192,16 +194,39 @@ def _source_refs(card: CanvasItem, captures: list[CanvasItem]) -> list[str]:
     ]
 
 
-def _garden_position(index: int) -> tuple[int, int]:
-    positions = [
-        (-520, -140),
-        (-155, -160),
-        (210, -140),
-        (-340, 100),
-        (40, 100),
-        (420, 100),
+def _position_lane(kind: str) -> str:
+    if kind == "viewpoint":
+        return "viewpoint"
+    if kind in {"method", "fact"}:
+        return "practice"
+    return "edge"
+
+
+def _garden_position(lane: str, index: int) -> tuple[int, int]:
+    positions = {
+        "viewpoint": [(-520, -150), (-155, -150), (210, -150), (-520, 100)],
+        "practice": [(-155, 100), (210, 100), (575, 100)],
+        "edge": [(575, -150), (575, 100), (940, 100)],
+    }
+    lane_positions = positions.get(lane, positions["edge"])
+    return lane_positions[min(index, len(lane_positions) - 1)]
+
+
+def _ordered_cards(cards: list[CanvasItem]) -> list[CanvasItem]:
+    order = {
+        "viewpoint": 0,
+        "method": 1,
+        "fact": 2,
+        "caution": 3,
+        "question": 4,
+    }
+    return [
+        card
+        for _index, card in sorted(
+            enumerate(cards),
+            key=lambda item: (order.get(item[1].kind or "", 9), item[0]),
+        )
     ]
-    return positions[index] if index < len(positions) else (460, 110)
 
 
 def _wiki_link(file_path: str, title: str) -> str:

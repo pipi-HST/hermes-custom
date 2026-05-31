@@ -48,10 +48,14 @@ def test_build_obsidian_canvas_uses_garden_cards_as_main_board_nodes():
     assert by_id["garden-1"]["type"] == "text"
     assert by_id["source-1"]["type"] == "text"
     assert "[[captures/effective|Building Effective AI Agents]]" in by_id["source-1"]["text"]
+    assert by_id["source-1"]["height"] <= 48
+    assert by_id["source-1"]["text"].startswith("S1 · [[")
     assert by_id["source-1"]["y"] > by_id["garden-1"]["y"]
     text = "\n".join(node.get("text", "") for node in payload["nodes"])
     assert "[[themes/ai-agent|AI Agent]]" in text
     assert "[[garden/agent-method|AI Agent 工程化方法卡]]" in text
+    assert "### AI Agent 工程化方法卡" in text
+    assert "### [[garden/agent-method|AI Agent 工程化方法卡]]" not in text
     assert "把模型能力变成可验证" in text
     assert "先优化单次调用" in text
     assert "来源：S1" in text
@@ -79,7 +83,7 @@ def test_build_obsidian_canvas_positions_theme_garden_and_sources_as_board():
     by_id = {node["id"]: node for node in payload["nodes"]}
     assert by_id["theme"]["y"] < by_id["garden-1"]["y"]
     assert by_id["source-1"]["y"] > by_id["garden-1"]["y"]
-    assert by_id["source-1"]["height"] <= 72
+    assert by_id["source-1"]["height"] <= 48
 
 
 def test_build_obsidian_canvas_caps_large_graph_and_reports_trimmed_items():
@@ -113,7 +117,7 @@ def test_build_obsidian_canvas_caps_large_graph_and_reports_trimmed_items():
         if node["id"].startswith("source-") and node["id"] != "source-more"
     ]
     assert len(source_nodes) == 5
-    assert all(node["height"] <= 72 for node in source_nodes)
+    assert all(node["height"] <= 48 for node in source_nodes)
     assert len([node for node in text_nodes if node["id"].startswith("garden-") and node["id"] != "garden-more"]) == 6
     assert any("还有 2 篇来源收起" in node["text"] for node in text_nodes)
     assert any("还有 1 张 Garden Card 收起" in node["text"] for node in text_nodes)
@@ -197,6 +201,55 @@ def test_build_obsidian_canvas_places_overflow_nodes_outside_main_cards():
     by_id = {node["id"]: node for node in payload["nodes"]}
     assert by_id["garden-more"]["x"] >= 800
     assert by_id["source-more"]["y"] >= 610
+
+
+def test_build_obsidian_canvas_groups_cards_by_kind_lanes():
+    result = build_obsidian_canvas(
+        CanvasBuildInput(
+            title="AI Agent工程化",
+            theme=CanvasTheme(title="AI Agent", file_path="themes/ai-agent.md"),
+            garden_cards=[
+                CanvasItem(id="method1", title="方法卡", file_path="garden/method.md", kind="method"),
+                CanvasItem(id="view1", title="观点卡", file_path="garden/view.md", kind="viewpoint"),
+                CanvasItem(id="risk1", title="风险卡", file_path="garden/risk.md", kind="caution"),
+            ],
+        )
+    )
+
+    payload = json.loads(result.json_text)
+    by_title = {
+        node["text"].split("### ", 1)[1].splitlines()[0]: node
+        for node in payload["nodes"]
+        if node["id"].startswith("garden-") and node["id"] != "garden-more"
+    }
+    assert by_title["观点卡"]["y"] < by_title["方法卡"]["y"]
+    assert by_title["方法卡"]["x"] < by_title["风险卡"]["x"]
+
+
+def test_build_obsidian_canvas_does_not_reuse_garden_card_positions():
+    cards = [
+        CanvasItem(id=f"card{i}", title=f"观点{i}", file_path=f"garden/view-{i}.md", kind="viewpoint")
+        for i in range(4)
+    ] + [
+        CanvasItem(id="method1", title="方法", file_path="garden/method.md", kind="method"),
+        CanvasItem(id="risk1", title="风险", file_path="garden/risk.md", kind="caution"),
+    ]
+
+    result = build_obsidian_canvas(
+        CanvasBuildInput(
+            title="AI Agent工程化",
+            theme=CanvasTheme(title="AI Agent", file_path="themes/ai-agent.md"),
+            garden_cards=cards,
+        )
+    )
+
+    payload = json.loads(result.json_text)
+    positions = [
+        (node["x"], node["y"])
+        for node in payload["nodes"]
+        if node["id"].startswith("garden-") and node["id"] != "garden-more"
+    ]
+    assert len(positions) == len(set(positions))
 
 
 def test_build_obsidian_canvas_uses_light_custom_colors():
