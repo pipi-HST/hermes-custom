@@ -598,7 +598,8 @@ def test_hermes_toolset_has_6_tools():
                 "revise_garden_draft", "commit_garden_draft", "daily_review",
                 "show_capture_draft", "audit_library",
                 "record_life_event", "life_tick", "review_feedback", "review_followup",
-                "theme_candidates", "agent_run_status", "continue_rag_answer"}
+                "theme_candidates", "agent_run_status", "continue_rag_answer",
+                "generate_canvas"}
     assert set(tools) == expected, f"Mismatch: {set(tools) ^ expected}"
 
 
