@@ -1,5 +1,6 @@
 """Theme Agent bridge — Cron 入口."""
 from __future__ import annotations
+import json
 import logging, sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,7 +9,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import load_config
 from agents.markdown_writer import append_links, read_moc, read_note, update_moc, write_moc
 from agents.theme_agent import ThemeAgent, create_pending_question
-from bridge.result_envelope import artifact_ref, success_envelope
+from agents.theme_graph import (
+    ThemeCluster,
+    ThemeNode,
+    ThemeSection,
+    build_relationship_edges,
+    cluster_relationship_graph,
+    filter_theme_nodes,
+)
+from bridge.result_envelope import artifact_ref, next_action, success_envelope
+from bridge.run_ledger import run_with_ledger
 from db.schema import init_db
 from db.repo import CaptureRepo
 
@@ -49,6 +59,22 @@ def _unindexed_capture_count(conn, *, rescan_all: bool) -> int:
     return int(row["count"] or 0) if row else 0
 
 
+def _indexed_capture_count(conn, *, rescan_all: bool) -> int:
+    scan_filter = "" if rescan_all else "AND c.theme_scanned_at IS NULL"
+    row = conn.execute(
+        f"""SELECT COUNT(DISTINCT c.id) AS count
+            FROM captures c
+            JOIN capture_embeddings e
+              ON e.capture_id = c.id
+             AND e.kind = 'identity'
+             AND e.embedding IS NOT NULL
+            WHERE c.file_path IS NOT NULL
+              AND c.file_path != ''
+              {scan_filter}"""
+    ).fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
 def _identity_summary(index_text: str) -> str:
     for line in (index_text or "").splitlines():
         if line.startswith("摘要："):
@@ -81,6 +107,49 @@ def _hydrate_capture(
         "tags": frontmatter.get("tags", []),
         "cached_text": body,
     }
+
+
+def _build_theme_nodes(vault_path: Path, rows: list[dict], conn) -> list[ThemeNode]:
+    embeddings = conn.execute("SELECT * FROM capture_embeddings").fetchall()
+    by_capture: dict[str, list[dict]] = {}
+    for row in embeddings:
+        by_capture.setdefault(str(row["capture_id"]), []).append(dict(row))
+
+    nodes: list[ThemeNode] = []
+    for row in rows:
+        capture_id = str(row["id"])
+        file_path = row.get("file_path") or ""
+        note = read_note(vault_path, file_path)
+        frontmatter, _body = note if note else ({}, "")
+        identity_embedding = None
+        section_embeddings: list[ThemeSection] = []
+        summary = ""
+        for emb in by_capture.get(capture_id, []):
+            if emb["kind"] == "identity":
+                identity_embedding = emb["embedding"]
+                summary = _identity_summary(emb.get("index_text") or "")
+            elif emb["kind"] == "section" and emb.get("embedding"):
+                section_embeddings.append(
+                    ThemeSection(
+                        section_id=emb.get("section_id") or "",
+                        section_title=emb.get("section_title") or "",
+                        index_text=emb.get("index_text") or "",
+                        embedding=emb["embedding"],
+                    )
+                )
+        nodes.append(
+            ThemeNode(
+                capture_id=capture_id,
+                title=frontmatter.get("title") or Path(file_path).stem,
+                file_path=file_path,
+                summary=frontmatter.get("story") or summary,
+                tags=tuple(frontmatter.get("tags") or ()),
+                created_at=row.get("created_at") or "",
+                identity_embedding=identity_embedding,
+                section_embeddings=tuple(section_embeddings),
+            )
+        )
+    return nodes
 
 def _inject_wiki_links(vault_path: Path, cluster: dict) -> int:
     """Inject [[wiki-links]] between new_capture and related_captures.
@@ -208,9 +277,152 @@ def _evolve_themes(vault_path: Path, agent, unclustered_caps: list[dict]) -> int
     return updated
 
 
+def _cluster_to_legacy_dict(cluster: ThemeCluster, node_by_id: dict[str, ThemeNode]) -> dict:
+    capture_dicts = [
+        {
+            "id": node.capture_id,
+            "title": node.title,
+            "file_path": node.file_path,
+            "summary": node.summary,
+            "tags": list(node.tags),
+        }
+        for node in (node_by_id[cid] for cid in cluster.capture_ids)
+        if node
+    ]
+    return {
+        "new_capture": capture_dicts[0],
+        "related_captures": capture_dicts[1:],
+        "score": cluster.score,
+        "edges": cluster.edges,
+    }
+
+
+def _theme_scan_preview(
+    *,
+    scanned_real_count: int,
+    skipped_test_count: int,
+    cluster_questions: list[str],
+    partial: bool,
+) -> str:
+    if cluster_questions:
+        status = "Theme 扫描只完成了一部分" if partial else "我扫完了这批内容"
+        lines = [
+            f"{status}：已扫描 {scanned_real_count} 篇真实笔记，发现 {len(cluster_questions)} 组值得整理的关联。",
+        ]
+        if skipped_test_count:
+            lines.append(f"已跳过 {skipped_test_count} 篇测试材料。")
+        lines.append("")
+        for index, question in enumerate(cluster_questions[:3], 1):
+            lines.append(f"{index}. {question}")
+        lines.append("")
+        lines.append("要我先展开哪一组？也可以说“展开最值得保留的那个”。")
+        return "\n".join(lines)
+
+    lines = [
+        "这次没有发现足够强的主题关联。",
+        f"已扫描真实笔记 {scanned_real_count} 篇。",
+    ]
+    if skipped_test_count:
+        lines.append(f"已跳过 {skipped_test_count} 篇测试材料。")
+    if partial:
+        lines.append("这次扫描只完成了一部分，未处理内容会留到下次继续。")
+    else:
+        lines.append("这不是扫描失败，只是当前材料之间的相似度不够。")
+    return "\n".join(lines)
+
+
+def _json_list(text: str) -> list[str]:
+    try:
+        value = json.loads(text or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item)]
+
+
+def _short_question_text(text: str, max_len: int = 48) -> str:
+    cleaned = " ".join((text or "").split())
+    return cleaned[:max_len]
+
+
+def _candidate_group_key(capture_ids: list[str]) -> tuple[str, ...]:
+    return tuple(sorted(set(capture_ids)))
+
+
+def list_theme_candidates(*, limit: int = 5) -> dict:
+    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    repo = CaptureRepo(init_db(config.db_path))
+    max_limit = max(1, min(int(limit or 5), 10))
+    rows = repo.conn.execute(
+        """SELECT * FROM pending_questions
+           WHERE agent_type='theme'
+             AND status='pending'
+             AND expires_at > ?
+           ORDER BY created_at DESC""",
+        (datetime.now(timezone.utc).isoformat(),),
+    ).fetchall()
+    latest_by_group: dict[tuple[str, ...], dict] = {}
+    for row in rows:
+        capture_ids = _json_list(row["related_capture_ids"])
+        if len(set(capture_ids)) < 2:
+            continue
+        key = _candidate_group_key(capture_ids)
+        if key not in latest_by_group:
+            latest_by_group[key] = dict(row)
+    candidates = sorted(
+        latest_by_group.values(),
+        key=lambda row: row["created_at"],
+    )[:max_limit]
+
+    if not candidates:
+        return success_envelope(
+            agent="theme",
+            intent="list_theme_candidates",
+            chat_preview="现在没有可直接展开的 Theme 候选组。可以先扫描最近内容，或明确要求全库扫描。",
+            meta={"candidate_count": 0},
+        )
+
+    lines = [f"现在有 {len(candidates)} 组可展开成知识卡片的候选：", ""]
+    actions = []
+    for index, row in enumerate(candidates, 1):
+        capture_ids = _json_list(row["related_capture_ids"])
+        lines.append(
+            f"{index}. {_short_question_text(row['question_text'])}"
+            f"（{len(capture_ids)} 篇材料）"
+        )
+        actions.append(
+            next_action(
+                label=f"展开第 {index} 组为知识卡片",
+                intent="synthesize_garden",
+                payload={"question_id": row["id"], "capture_ids": capture_ids},
+            )
+        )
+    lines.append("")
+    lines.append("回复编号即可展开，例如“第一组”。")
+    return success_envelope(
+        agent="theme",
+        intent="list_theme_candidates",
+        chat_preview="\n".join(lines),
+        next_actions=actions,
+        meta={"candidate_count": len(candidates)},
+    )
+
+
 def run_theme_scan(*, rescan_all: bool = False) -> dict:
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     repo = CaptureRepo(init_db(config.db_path))
+    return run_with_ledger(
+        repo.conn,
+        agent="theme",
+        intent="run_theme_scan",
+        trigger="wechat",
+        input_ref={"rescan_all": rescan_all},
+        operation=lambda: _run_theme_scan(config, repo, rescan_all=rescan_all),
+    )
+
+
+def _run_theme_scan(config, repo: CaptureRepo, *, rescan_all: bool = False) -> dict:
     conn = repo.conn
 
     scan_filter = "" if rescan_all else "AND c.theme_scanned_at IS NULL"
@@ -250,20 +462,31 @@ def run_theme_scan(*, rescan_all: bool = False) -> dict:
         )
 
     vault_path = Path(config.vault_path).expanduser()
-    identity_indexes = _identity_index_map(conn)
-    new_caps = [_hydrate_capture(vault_path, dict(r), identity_indexes) for r in rows]
-    all_caps = [
-        _hydrate_capture(vault_path, c, identity_indexes)
-        for c in repo.list_all(limit=200)
-    ]
+    row_dicts = [dict(r) for r in rows]
+    scan_nodes = _build_theme_nodes(vault_path, row_dicts, conn)
+    all_nodes = _build_theme_nodes(vault_path, repo.list_all(limit=200), conn)
+    eligible_nodes, filter_stats = filter_theme_nodes(all_nodes)
+    eligible_scan_nodes, _scan_filter_stats = filter_theme_nodes(scan_nodes)
+    partial = _indexed_capture_count(conn, rescan_all=rescan_all) > len(row_dicts)
 
     agent = ThemeAgent(
         llm_api_key=config.llm_api_key,
         llm_model=config.llm_model,
         llm_base_url=config.llm_base_url or "https://api.deepseek.com",
+        llm_timeout=25.0,
     )
 
-    clusters = agent.scan(new_caps, all_caps)
+    eligible_scan_ids = {
+        node.capture_id
+        for node in eligible_scan_nodes
+    }
+    node_by_id = {node.capture_id: node for node in eligible_nodes}
+    edges = build_relationship_edges(eligible_nodes)
+    graph_clusters = [
+        cluster for cluster in cluster_relationship_graph(edges)
+        if eligible_scan_ids & set(cluster.capture_ids)
+    ]
+    clusters = [_cluster_to_legacy_dict(cluster, node_by_id) for cluster in graph_clusters]
 
     # Layer 1: inject wiki-links between related captures.
     # Layer 2: create MOC pages for clusters with ≥3 captures.
@@ -302,50 +525,89 @@ def run_theme_scan(*, rescan_all: bool = False) -> dict:
             logger.warning(f"MOC creation failed: {e}")
 
     results = []
+    question_actions = []
     for cluster in clusters:
         try:
             q = agent.generate_question(cluster)
-            create_pending_question(
+            related_capture_ids = (
+                [c["id"] for c in cluster["related_captures"]]
+                + [cluster["new_capture"]["id"]]
+            )
+            question = create_pending_question(
                 repo, "theme", q,
                 context_ref=f"theme-{cluster['new_capture']['id'][:8]}",
-                related_capture_ids=(
-                    [c["id"] for c in cluster["related_captures"]]
-                    + [cluster["new_capture"]["id"]]
-                ),
+                related_capture_ids=related_capture_ids,
             )
             results.append(q[:80])
+            question_actions.append(
+                next_action(
+                    label=f"展开第 {len(question_actions) + 1} 组为知识卡片",
+                    intent="synthesize_garden",
+                    payload={
+                        "question_id": question["id"],
+                        "capture_ids": related_capture_ids,
+                    },
+                )
+            )
         except Exception as e:
             logger.warning(f"Theme question failed: {e}")
 
     # Layer 3: match unclustered captures to existing themes.
-    clustered_ids = {c["new_capture"]["id"] for c in clusters}
+    clustered_ids = {
+        capture_id
+        for cluster in clusters
+        for capture_id in (
+            [cluster["new_capture"]["id"]]
+            + [c["id"] for c in cluster["related_captures"]]
+        )
+    }
+    new_caps = [
+        {
+            "id": node.capture_id,
+            "title": node.title,
+            "file_path": node.file_path,
+            "summary": node.summary,
+            "tags": list(node.tags),
+        }
+        for node in eligible_scan_nodes
+    ]
     unclustered = [c for c in new_caps if c["id"] not in clustered_ids]
     mocs_updated = _evolve_themes(vault_path, agent, unclustered)
 
+    mark_scanned_ids = {node.capture_id for node in scan_nodes}
     now_iso = datetime.now(timezone.utc).isoformat()
-    for c in new_caps:
+    for node in scan_nodes:
+        if node.capture_id not in mark_scanned_ids:
+            continue
         conn.execute("UPDATE captures SET theme_scanned_at=? WHERE id=?",
-                     (now_iso, c["id"]))
+                     (now_iso, node.capture_id))
     conn.commit()
 
-    chat_preview = (
-        f"Theme 扫描完成: {len(new_caps)} 条, {len(results)} 个聚类, "
-        f"{links_injected} 条 wiki-link, {mocs_created} 个 MOC 创建, "
-        f"{mocs_updated} 个 MOC 更新, {capture_theme_tags} 条主题标记。"
+    skipped_test_count = int(filter_stats.get("skipped_test_garbage") or 0)
+    chat_preview = _theme_scan_preview(
+        scanned_real_count=len(eligible_scan_ids),
+        skipped_test_count=skipped_test_count,
+        cluster_questions=results,
+        partial=partial,
     )
     return success_envelope(
         agent="theme",
         intent="run_theme_scan",
         chat_preview=chat_preview,
         durable_artifacts=theme_artifacts,
+        next_actions=question_actions,
         meta={
             "scanned_count": len(new_caps),
             "rescan_all": rescan_all,
+            "partial": partial,
             "cluster_count": len(results),
             "links_injected": links_injected,
             "theme_pages_created": mocs_created,
             "theme_pages_updated": mocs_updated,
             "capture_theme_tags": capture_theme_tags,
+            "relationship_edges": len(edges),
+            "skipped_test_garbage": skipped_test_count,
+            "scanned_real_count": len(eligible_scan_ids),
         },
     )
 
@@ -359,6 +621,7 @@ def run_graph_report() -> dict:
         llm_api_key=config.llm_api_key,
         llm_model=config.llm_model,
         llm_base_url=config.llm_base_url or "https://api.deepseek.com",
+        llm_timeout=25.0,
     )
     report = agent.graph_report(vault_path)
     report_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

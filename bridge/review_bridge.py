@@ -9,12 +9,24 @@ from agents.capture_agent import load_config
 from agents.rag_agent import RagAgent, format_answer
 from agents.review_agent import ReviewAgent
 from bridge.result_envelope import source_ref, success_envelope
+from bridge.run_ledger import run_with_ledger
 from db.schema import init_db
 from db.repo import CaptureRepo
 
 def run_daily_review() -> dict:
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     repo = CaptureRepo(init_db(config.db_path))
+    return run_with_ledger(
+        repo.conn,
+        agent="review",
+        intent="run_daily_review",
+        trigger="wechat",
+        input_ref={},
+        operation=lambda: _run_daily_review(config, repo),
+    )
+
+
+def _run_daily_review(config, repo: CaptureRepo) -> dict:
     agent = ReviewAgent(repo, vault_path=config.vault_path)
     result = agent.run_daily()
     chat_preview = _format_daily_review_preview(result)
@@ -51,6 +63,17 @@ def record_review_feedback(item_id: str, outcome: str) -> dict:
 def expand_latest_review_followup(question: str) -> dict:
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     repo = CaptureRepo(init_db(config.db_path))
+    return run_with_ledger(
+        repo.conn,
+        agent="review",
+        intent="expand_latest_review_followup",
+        trigger="wechat",
+        input_ref={"question": question},
+        operation=lambda: _expand_latest_review_followup(config, repo, question),
+    )
+
+
+def _expand_latest_review_followup(config, repo: CaptureRepo, question: str) -> dict:
     item = _latest_viewed_review_item(repo)
     if not item:
         return success_envelope(

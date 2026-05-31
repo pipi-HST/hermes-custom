@@ -4,15 +4,17 @@ from __future__ import annotations
 import re
 import httpx
 
-ANSWER_PREVIEW_LIMIT = 600
-TOTAL_PREVIEW_LIMIT = 900
+ANSWER_PREVIEW_LIMIT = 1000
+TOTAL_PREVIEW_LIMIT = 1400
+MAX_SOURCE_LINES = 8
 CONTINUATION_HINT = "\n\n（已省略后续内容，回复“继续展开”可查看更多。）"
 
 RAG_SYSTEM_PROMPT = """你是个人知识助手。根据用户的知识库内容回答问题。
 
 规则：
-1. 用中文回答，简洁直接
-2. 每个关键论点必须用 [1][2] 等编号标注来源文档
+1. 用中文回答，先给结论，再解释依据和判断
+2. 不要只回答一句话；一般给 3-6 个有信息量的段落或要点
+3. 每个关键论点必须用 [1][2] 等编号标注来源文档
 3. 如果内容中有矛盾观点，同时呈现并标出差异
 4. 如果库中没有相关信息，诚实说不知道
 5. 不要编造知识库中没有的内容"""
@@ -47,7 +49,7 @@ def format_answer(answer: str, sources: list[dict]) -> str:
     if len(raw_answer) > ANSWER_PREVIEW_LIMIT:
         answer = _truncate_answer(raw_answer, ANSWER_PREVIEW_LIMIT)
 
-    source_lines = _format_source_lines(answer, sources)
+    source_lines = _format_source_lines(raw_answer, sources)
     result = _join_answer_and_sources(answer, source_lines)
     if len(result) > TOTAL_PREVIEW_LIMIT:
         source_block = _join_answer_and_sources("", source_lines)
@@ -62,14 +64,17 @@ def _format_source_lines(answer: str, sources: list[dict]) -> list[str]:
     if cited_indexes:
         selected = [(idx, sources[idx - 1]) for idx in cited_indexes]
     else:
-        selected = [(idx, source) for idx, source in enumerate(sources[:3], 1)]
+        selected = [(idx, source) for idx, source in enumerate(sources[:MAX_SOURCE_LINES], 1)]
 
     lines: list[str] = []
     for i, s in selected:
         title = s.get("title") or "无标题"
+        section = (s.get("section_title") or "").strip()
         story = s.get("story", "") or s.get("summary", "")
         story = _clip_source_summary(story)
         line = f"[{i}] {title}"
+        if section:
+            line += f" / {section}"
         if story:
             line += f" — {story}"
         lines.append(line)
@@ -84,6 +89,7 @@ def _truncate_answer(answer: str, limit: int) -> str:
     budget = max(0, limit - len(CONTINUATION_HINT))
     cutoff = _natural_cutoff(answer, budget)
     cutoff = _clean_partial_citation_suffix(cutoff).rstrip()
+    cutoff = _strip_trailing_orphan_markdown(cutoff).rstrip()
     return cutoff + CONTINUATION_HINT
 
 
@@ -121,6 +127,12 @@ def _clip_source_summary(story: str) -> str:
 
 def _clean_partial_citation_suffix(answer: str) -> str:
     return re.sub(r"\[(?:\d{0,3})?$", "", answer).rstrip()
+
+
+def _strip_trailing_orphan_markdown(answer: str) -> str:
+    answer = re.sub(r"(?:\n|\A)\s{0,3}#{1,6}\s*(?:\d+[.、)]\s*)?$", "", answer)
+    answer = re.sub(r"(?:\n|\A)\s{0,3}(?:[-*+]\s*|\d+[.、)]\s*)$", "", answer)
+    return answer
 
 
 def _cited_source_indexes(answer: str, source_count: int) -> list[int]:
@@ -168,22 +180,39 @@ class RagAgent:
             "Content-Type": "application/json",
         }
         is_simple = len(prompt) < 3000
+        messages = [
+            {"role": "system", "content": RAG_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
         body = {
             "model": self.llm_model if not is_simple else "deepseek-v4-flash",
-            "messages": [
-                {"role": "system", "content": RAG_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
+            "messages": messages,
             "temperature": 0.3,
-            "max_tokens": 800,
+            "max_tokens": 1600,
         }
+        chunks: list[str] = []
         with httpx.Client(timeout=120) as client:
-            resp = client.post(
-                f"{self.llm_base_url}/chat/completions",
-                headers=headers, json=body,
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            for _ in range(3):
+                resp = client.post(
+                    f"{self.llm_base_url}/chat/completions",
+                    headers=headers, json=body,
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                choice = payload["choices"][0]
+                content = choice["message"]["content"]
+                chunks.append(content)
+                if choice.get("finish_reason") != "length":
+                    break
+                messages.extend([
+                    {"role": "assistant", "content": content},
+                    {
+                        "role": "user",
+                        "content": "继续完成上一条回答，从断掉的位置接着写，不要重复已经写过的内容。",
+                    },
+                ])
+                body["messages"] = messages
+        return "".join(chunks)
 
 
 def _format_orientation_context(context_pack: dict) -> str:

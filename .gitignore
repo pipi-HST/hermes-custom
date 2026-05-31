@@ -14,12 +14,15 @@ config.yaml
 
 data/*.db
 data/*.db-*
+data/*.bak
 data/*.log
 data/backups/
 data/repair_reports/
 data/reports/
+reports/
 
 dashboard/node_modules/
 dashboard/.next/
+dashboard/*.tsbuildinfo
 
 .superpowers/

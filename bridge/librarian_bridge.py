@@ -14,10 +14,24 @@ from agents.embedder import Embedder
 from agents.library_agent import LibraryAgent
 from agents.outliner import Outliner
 from bridge.result_envelope import artifact_ref, next_action, success_envelope
+from bridge.run_ledger import run_with_ledger
+from db.schema import init_db
 
 
 def run_librarian_audit(*, apply: bool = False) -> dict[str, Any]:
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    conn = init_db(config.db_path)
+    return run_with_ledger(
+        conn,
+        agent="librarian",
+        intent="apply_librarian_repair" if apply else "audit_library",
+        trigger="wechat",
+        input_ref={"apply": apply},
+        operation=lambda: _run_librarian_audit(config, apply=apply),
+    )
+
+
+def _run_librarian_audit(config, *, apply: bool = False) -> dict[str, Any]:
     outliner = Outliner(
         api_key=config.llm_api_key,
         model="deepseek-v4-flash",

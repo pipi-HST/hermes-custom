@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -236,72 +237,64 @@ class GardenAgent:
         card_kind = _normalize_card_kind(card_kind)
         h1, h2, h3, h4, h5 = CARD_KIND_HEADINGS[card_kind]
         one_liner = extracted.get("one_liner", "").strip() or "（待补充）"
+        capture_lookup = _capture_lookup(captures)
         lines = [
             f"# {title}",
             "",
             f"## {h1}",
             one_liner,
-            "",
-            f"## {h2}",
         ]
 
         arguments = extracted.get("core_arguments", [])
         if arguments:
+            lines.extend(["", f"## {h2}"])
             for argument in arguments[:4]:
                 claim = str(argument.get("claim", "")).strip()
                 if not claim:
                     continue
                 sources = argument.get("source_ids") or []
-                source_text = f"（来源：{', '.join(sources)}）" if sources else ""
+                source_links = [
+                    _format_capture_source(source, capture_lookup)
+                    for source in sources
+                ]
+                source_links = [link for link in source_links if link]
+                source_text = f"（来源：{', '.join(source_links)}）" if source_links else ""
                 lines.append(f"- {claim}{source_text}")
-        else:
-            lines.append("- （待补充）")
 
-        lines.extend(["", f"## {h3}"])
         materials = extracted.get("key_materials", [])
         if materials:
+            lines.extend(["", f"## {h3}"])
             for material in materials[:4]:
                 material_type = str(material.get("type", "material")).strip()
                 content = str(material.get("content", "")).strip()
                 capture_id = str(material.get("capture_id", "")).strip()
                 if not content:
                     continue
-                source_text = f"（{capture_id}）" if capture_id else ""
+                source = _format_capture_source(capture_id, capture_lookup)
+                source_text = f"（来源：{source}）" if source else ""
                 lines.append(f"- [{material_type}] {content[:240]}{source_text}")
-        else:
-            lines.append("- （待补充）")
 
-        lines.extend(["", f"## {h4}"])
         if h4 == "来源依据":
+            lines.extend(["", f"## {h4}"])
             self._append_source_notes(lines, captures)
-        else:
-            lines.append("- （待补充）")
-
-        if h4 != "来源依据":
+        elif captures:
             lines.extend(["", "## 来源笔记"])
             self._append_source_notes(lines, captures)
 
-        lines.extend(["", f"## {h5}"])
         if links:
+            lines.extend(["", f"## {h5}"])
             card_lookup = {str(card.get("id", "")): card for card in existing_cards}
             for link in links[:8]:
                 lines.append(f"- {_format_knowledge_link(link, card_lookup)}")
-        else:
-            lines.append("- 暂无关联")
-
-        lines.extend([
-            "",
-            "## 待继续想",
-            "- 这张卡还需要结合你的判断继续修改、补边界或补反例。",
-        ])
         return "\n".join(lines).strip() + "\n"
 
     def _append_source_notes(self, lines: list[str], captures: list[dict]) -> None:
+        capture_lookup = _capture_lookup(captures)
         for capture in captures:
             cid = str(capture.get("id", "")).strip()
-            capture_title = str(capture.get("title", "")).strip() or cid
-            if cid:
-                lines.append(f"- {capture_title}（{cid}）")
+            source = _format_capture_source(cid, capture_lookup)
+            if source:
+                lines.append(f"- {source}")
         if not captures:
             lines.append("- （待补充）")
 
@@ -395,6 +388,39 @@ def _format_knowledge_link(link: str, card_lookup: dict[str, dict]) -> str:
     title = str(card.get("title", "")).strip() or str(link).strip()
     target = _safe_garden_file_stem(title, str(link).strip())
     return f"[[garden/{target}|{title}]]"
+
+
+def _capture_lookup(captures: list[dict]) -> dict[str, dict]:
+    lookup: dict[str, dict] = {}
+    for capture in captures:
+        cid = str(capture.get("id", "")).strip()
+        if not cid:
+            continue
+        lookup[cid] = capture
+        if len(cid) >= 8:
+            lookup[cid[:8]] = capture
+    return lookup
+
+
+def _format_capture_source(source_id: str, capture_lookup: dict[str, dict]) -> str:
+    source_id = str(source_id or "").strip()
+    if not source_id:
+        return ""
+    capture = capture_lookup.get(source_id)
+    if not capture:
+        matches = [
+            item for key, item in capture_lookup.items()
+            if len(source_id) >= 6 and key.startswith(source_id)
+        ]
+        capture = matches[0] if len(matches) == 1 else None
+    if not capture:
+        return ""
+    title = str(capture.get("title", "")).strip() or source_id
+    file_path = str(capture.get("file_path", "")).strip()
+    if file_path:
+        target = str(Path(file_path).with_suffix(""))
+        return f"[[{target}|{title}]]"
+    return title
 
 
 def create_garden_card(repo, garden_data: dict) -> str:

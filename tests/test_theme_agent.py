@@ -162,6 +162,88 @@ def test_scan_llm_filter_exception_skips(mock_llm):
     assert agent.scan(new_caps, all_caps) == []
 
 
+def test_scan_filters_test_garbage_from_new_items_and_candidates():
+    """明显测试垃圾不应参与 Theme 聚类，避免污染真实关联发现。"""
+    agent = ThemeAgent(llm_api_key="test")
+    diagnostics: dict = {}
+
+    garbage_new = _make_capture(
+        "junk-new",
+        title="这是一段足够长的原始内容，用来生成待确认草稿",
+        summary="长草稿摘要",
+        embedding=_make_emb(seed=0.0),
+    )
+    real_new = _make_capture(
+        "real-new",
+        title="AI 落地",
+        summary="AI 需要嵌入工作流才能在企业落地",
+        embedding=_make_emb(seed=1.0),
+    )
+    garbage_candidate = _make_capture(
+        "junk-old",
+        title="这是一段足够长的原始内容，用来生成待确认草稿",
+        summary="长草稿摘要",
+        embedding=_make_emb(seed=1.0),
+    )
+    real_candidate = _make_capture(
+        "real-old",
+        title="工程底座",
+        summary="组织工程底座决定 AI 工具的放大效果",
+        embedding=_make_emb(seed=1.0),
+    )
+
+    with patch.object(agent, "_llm_filter", return_value=[]) as mock_filter:
+        clusters = agent.scan(
+            [garbage_new, real_new],
+            [garbage_new, real_new, garbage_candidate, real_candidate],
+            diagnostics=diagnostics,
+        )
+
+    assert clusters == []
+    mock_filter.assert_called_once()
+    candidates = mock_filter.call_args.args[1]
+    assert [c["id"] for c in candidates] == ["real-old"]
+    assert diagnostics["filtered_test_captures"] == 2
+
+
+def test_scan_records_llm_filter_failures_in_diagnostics():
+    """LLM 精筛失败不能被吞成“真的没有关联”。"""
+    agent = ThemeAgent(llm_api_key="test")
+    diagnostics: dict = {}
+
+    new_caps = [_make_capture("n1", summary="AI 落地", embedding=_make_emb())]
+    all_caps = [_make_capture("a1", summary="企业 AI 工程", embedding=_make_emb(seed=1.0))]
+
+    with patch.object(agent, "_llm_filter", side_effect=ValueError("No JSON payload found")):
+        clusters = agent.scan(new_caps, all_caps, diagnostics=diagnostics)
+
+    assert clusters == []
+    assert diagnostics["llm_filter_failures"] == 1
+    assert diagnostics["processed_count"] == 1
+    assert "No JSON payload found" in diagnostics["warnings"][0]
+
+
+def test_scan_stops_when_time_budget_is_exceeded():
+    """达到时间预算时应提前返回已有结果，避免微信长时间无响应。"""
+    agent = ThemeAgent(llm_api_key="test")
+    diagnostics: dict = {}
+
+    new_caps = [_make_capture("n1", summary="AI 落地", embedding=_make_emb())]
+    all_caps = [_make_capture("a1", summary="企业 AI 工程", embedding=_make_emb(seed=1.0))]
+
+    clusters = agent.scan(
+        new_caps,
+        all_caps,
+        diagnostics=diagnostics,
+        time_budget_seconds=0.0,
+    )
+
+    assert clusters == []
+    assert diagnostics["processed_count"] == 0
+    assert diagnostics["time_budget_exceeded"] is True
+    assert "时间预算" in diagnostics["warnings"][0]
+
+
 @patch.object(ThemeAgent, "_call_llm")
 def test_llm_filter_extracts_json_array_from_fenced_text(mock_llm):
     """LLM 输出带说明或代码块时，也应提取 JSON 数组。"""
@@ -181,6 +263,28 @@ def test_llm_filter_extracts_json_array_from_fenced_text(mock_llm):
 
     assert result[0]["capture_id"] == "a1"
     assert result[0]["connection_type"] == "strong"
+
+
+@patch.object(ThemeAgent, "_call_llm")
+def test_llm_filter_retries_once_when_json_is_missing(mock_llm):
+    """第一次没拿到 JSON 时，应短重试一次，减少误判为无关联。"""
+    mock_llm.side_effect = [
+        "这些内容大体相关，但我不输出 JSON。",
+        json.dumps([
+            {"capture_id": "a1", "related": True,
+             "connection_type": "strong", "reason": "同一主题"},
+        ]),
+    ]
+
+    agent = ThemeAgent(llm_api_key="test")
+    result = agent._llm_filter(
+        {"summary": "AI 落地", "tags": ["ai-product"]},
+        [{"id": "a1", "summary": "企业 AI 工程", "tags": ["ai-product"]}],
+    )
+
+    assert result[0]["capture_id"] == "a1"
+    assert mock_llm.call_count == 2
+    assert "只输出 JSON 数组" in mock_llm.call_args.args[0]
 
 
 # ── generate_question ──

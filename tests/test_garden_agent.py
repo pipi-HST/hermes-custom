@@ -124,6 +124,33 @@ def test_synthesize_renders_card_markdown_not_internal_prompt(mock_call):
     assert "输出 Markdown" not in result["markdown"]
 
 
+def test_garden_markdown_omits_empty_placeholder_sections():
+    agent = GardenAgent(llm_api_key="test")
+    markdown = agent._build_synthesis_markdown(
+        "AI 工程化",
+        {
+            "one_liner": "AI 效能来自工程体系。",
+            "core_arguments": [
+                {"claim": "工具、记忆和检查共同降低错误率。", "source_ids": ["cap1"]}
+            ],
+            "key_materials": [
+                {"type": "case", "content": "自动化钩子能把检查前移。", "capture_id": "cap1"}
+            ],
+        },
+        links=[],
+        captures=[
+            {"id": "cap1", "title": "AI 工程实践", "file_path": "captures/AI工程实践.md"}
+        ],
+        existing_cards=[],
+        card_kind="viewpoint",
+    )
+
+    assert "（待补充）" not in markdown
+    assert "暂无关联" not in markdown
+    assert "待继续想" not in markdown
+    assert "这张卡还需要" not in markdown
+
+
 @patch("agents.garden_agent.GardenAgent._call_llm")
 def test_synthesize_uses_distinct_title_when_model_provides_one(mock_call):
     mock_call.return_value = json.dumps({
@@ -175,6 +202,46 @@ def test_synthesize_renders_focused_garden_card_instead_of_material_dump(mock_ca
     assert "## 支撑材料" not in markdown
     assert markdown.count("- 支撑判断") <= 4
     assert markdown.count("- 关键材料") <= 4
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
+def test_synthesize_renders_source_titles_instead_of_ids(mock_call):
+    mock_call.return_value = json.dumps({
+        "title": "可信代理工程",
+        "one_liner": "可信代理依赖工程约束。",
+        "core_arguments": [
+            {"claim": "简单优先能降低复杂度风险。", "source_ids": ["cap1"]},
+            {"claim": "检查点能阻止错误扩散。", "source_ids": ["cap2"]},
+        ],
+        "key_materials": [
+            {"type": "quote", "content": "先从简单方案开始。", "capture_id": "cap1"},
+        ],
+    })
+    agent = GardenAgent(llm_api_key="test")
+
+    result = agent.synthesize(
+        [
+            {
+                "id": "cap1",
+                "title": "Building Effective AI Agents",
+                "file_path": "captures/Building Effective AI Agents-2026-05-30-cap1.md",
+                "cached_text": "内容",
+            },
+            {
+                "id": "cap2",
+                "title": "Claude Code 自动化配置",
+                "file_path": "captures/Claude Code 自动化配置-2026-05-28-cap2.md",
+                "cached_text": "内容",
+            },
+        ],
+        [],
+    )
+
+    markdown = result["markdown"]
+    assert "来源：cap1" not in markdown
+    assert "（cap1）" not in markdown
+    assert "[[captures/Building Effective AI Agents-2026-05-30-cap1|Building Effective AI Agents]]" in markdown
+    assert "[[captures/Claude Code 自动化配置-2026-05-28-cap2|Claude Code 自动化配置]]" in markdown
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")
@@ -251,7 +318,9 @@ def test_synthesize_renders_caution_card_template(mock_call):
 
     assert result["card_kind"] == "caution"
     assert "## 风险" in result["markdown"]
-    assert "## 怎么避免" in result["markdown"]
+    assert "## 典型表现" in result["markdown"]
+    assert "## 怎么避免" not in result["markdown"]
+    assert "（待补充）" not in result["markdown"]
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")
@@ -290,7 +359,8 @@ def test_method_card_does_not_duplicate_source_notes(mock_call):
         [],
     )
 
-    assert result["markdown"].count("来源材料（cap1）") == 1
+    assert result["markdown"].count("来源材料") == 1
+    assert "cap1" not in result["markdown"]
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")

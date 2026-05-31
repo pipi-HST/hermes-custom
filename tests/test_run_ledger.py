@@ -21,7 +21,7 @@ def test_run_with_ledger_records_success(tmp_path):
             agent="rag",
             intent="search_knowledge_base",
             chat_preview="答案",
-            meta={"query": "AI", "result_count": 0},
+            meta={"query": "AI", "answer": "完整答案", "result_count": 0},
         ),
     )
 
@@ -31,6 +31,7 @@ def test_run_with_ledger_records_success(tmp_path):
     assert latest["intent"] == "search_knowledge_base"
     assert latest["status"] == "success"
     assert json.loads(latest["input_json"]) == {"query": "AI"}
+    assert json.loads(latest["output_json"])["answer"] == "完整答案"
     assert json.loads(latest["evidence_json"])["result_count"] == 0
 
 

@@ -61,6 +61,7 @@ def extract_run_evidence(
                 }
             )
         output_ref["query"] = meta.get("query", "")
+        output_ref["answer"] = meta.get("answer", "")
         output_ref["sources"] = source_refs
     elif intent == "synthesize_garden":
         draft_artifact = _first_artifact(artifacts, "garden_draft")

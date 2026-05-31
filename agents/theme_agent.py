@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -82,29 +83,54 @@ QUESTION_PROMPT = """根据以下聚类信息，生成一条自然的中文提�
 
 class ThemeAgent:
     def __init__(self, llm_api_key: str, llm_model: str = "deepseek-v4-pro",
-                 llm_base_url: str = "https://api.deepseek.com"):
+                 llm_base_url: str = "https://api.deepseek.com",
+                 llm_timeout: float = 45.0):
         self.llm_api_key = llm_api_key
         self.llm_model = llm_model
         self.llm_base_url = llm_base_url
+        self.llm_timeout = llm_timeout
 
     def scan(self, new_captures: list[dict], all_captures: list[dict],
-             top_k: int = 15) -> list[dict]:
+             top_k: int = 8, diagnostics: Optional[dict] = None,
+             time_budget_seconds: Optional[float] = None) -> list[dict]:
         """对一批新 capture 执行渐进式三级过滤，返回强关联聚类。"""
         from agents.embedder import cosine_similarity
 
+        diagnostics = _init_scan_diagnostics(diagnostics)
+        deadline = (
+            time.monotonic() + time_budget_seconds
+            if time_budget_seconds is not None else None
+        )
         clusters: list[dict] = []
+        usable_new_captures = []
+        for c in new_captures:
+            if _mark_if_test_garbage(c, diagnostics):
+                diagnostics["filtered_new_ids"].append(c.get("id"))
+            else:
+                usable_new_captures.append(c)
+        new_captures = usable_new_captures
 
         for new_cap in new_captures:
+            if deadline is not None and time.monotonic() >= deadline:
+                diagnostics["time_budget_exceeded"] = True
+                diagnostics["warnings"].append("Theme 扫描达到时间预算，已用现有结果返回。")
+                break
+
+            diagnostics["processed_count"] += 1
+            diagnostics["processed_ids"].append(new_cap.get("id"))
             new_emb = new_cap.get("embedding")
             if not new_emb:
+                diagnostics["skipped_without_embedding"] += 1
                 continue
 
             # 第一级：向量粗筛
             candidates = [
                 (c["id"], c.get("embedding")) for c in all_captures
                 if c.get("embedding") and c["id"] != new_cap["id"]
+                and not _mark_if_test_garbage(c, diagnostics)
             ]
             if not candidates:
+                diagnostics["no_candidate_count"] += 1
                 continue
 
             scored = [(cid, cosine_similarity(new_emb, emb))
@@ -120,6 +146,9 @@ class ThemeAgent:
             try:
                 filtered = self._llm_filter(new_cap, top_captures)
             except Exception as e:
+                diagnostics["llm_filter_failures"] += 1
+                diagnostics["failed_ids"].append(new_cap.get("id"))
+                diagnostics["warnings"].append(f"LLM 精筛失败: {e}")
                 logger.warning(f"Theme LLM filter failed: {e}")
                 continue
 
@@ -371,7 +400,16 @@ class ThemeAgent:
             candidates_text=candidates_text,
         )
         raw = self._call_llm(prompt, max_tokens=1800)
-        parsed = _parse_json_payload(raw)
+        try:
+            parsed = _parse_json_payload(raw)
+        except ValueError:
+            retry_prompt = (
+                "你上一次没有按要求输出 JSON。请根据同一批材料重新判断，"
+                "只输出 JSON 数组，不要解释、不要 Markdown：\n\n"
+                f"{prompt}"
+            )
+            raw = self._call_llm(retry_prompt, max_tokens=1000)
+            parsed = _parse_json_payload(raw)
         return parsed if isinstance(parsed, list) else []
 
     def _llm_confirm(self, new_cap: dict, strong_candidates: list[dict]) -> list[str] | None:
@@ -400,13 +438,54 @@ class ThemeAgent:
             "temperature": 0.3,
             "max_tokens": max_tokens,
         }
-        with httpx.Client(timeout=120) as client:
+        with httpx.Client(timeout=self.llm_timeout) as client:
             resp = client.post(
                 f"{self.llm_base_url}/chat/completions",
                 headers=headers, json=body,
             )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
+
+
+def _init_scan_diagnostics(diagnostics: Optional[dict]) -> dict:
+    diagnostics = diagnostics if diagnostics is not None else {}
+    diagnostics.setdefault("processed_count", 0)
+    diagnostics.setdefault("filtered_test_captures", 0)
+    diagnostics.setdefault("skipped_without_embedding", 0)
+    diagnostics.setdefault("no_candidate_count", 0)
+    diagnostics.setdefault("llm_filter_failures", 0)
+    diagnostics.setdefault("time_budget_exceeded", False)
+    diagnostics.setdefault("warnings", [])
+    diagnostics.setdefault("processed_ids", [])
+    diagnostics.setdefault("failed_ids", [])
+    diagnostics.setdefault("filtered_new_ids", [])
+    diagnostics.setdefault("_filtered_test_ids", set())
+    return diagnostics
+
+
+TEST_GARBAGE_MARKERS = (
+    "这是一段足够长的原始内容，用来生成待确认草稿",
+)
+
+
+def _mark_if_test_garbage(capture: dict, diagnostics: dict) -> bool:
+    if not _is_test_garbage_capture(capture):
+        return False
+    capture_id = str(capture.get("id") or "")
+    seen = diagnostics.setdefault("_filtered_test_ids", set())
+    key = capture_id or str(capture.get("file_path") or capture.get("title") or "")
+    if key not in seen:
+        seen.add(key)
+        diagnostics["filtered_test_captures"] += 1
+    return True
+
+
+def _is_test_garbage_capture(capture: dict) -> bool:
+    text = "\n".join(
+        str(capture.get(field) or "")
+        for field in ("title", "summary", "file_path", "raw_path", "index_text")
+    )
+    return any(marker in text for marker in TEST_GARBAGE_MARKERS)
 
 
 def _parse_json_payload(raw: str):

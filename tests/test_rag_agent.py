@@ -31,6 +31,54 @@ def test_format_answer_only_lists_cited_sources():
     assert "[2]" not in result
 
 
+def test_format_answer_lists_all_sources_when_answer_has_no_citations():
+    answer = "AI Agent 工程化需要把模型能力放进可控流程。"
+    sources = [
+        {"title": f"来源{i}", "story": "", "section_title": f"章节{i}"}
+        for i in range(1, 7)
+    ]
+
+    result = format_answer(answer, sources)
+
+    for i in range(1, 7):
+        assert f"[{i}] 来源{i} / 章节{i}" in result
+
+
+def test_format_answer_keeps_source_list_under_preview_budget():
+    answer = "AI Agent 工程化需要把模型能力放进可控流程。" * 80
+    sources = [
+        {
+            "title": f"很长的来源标题{i}：这里还有一串为了模拟真实中文标题的描述",
+            "story": "",
+            "section_title": f"章节{i}",
+        }
+        for i in range(1, 7)
+    ]
+
+    result = format_answer(answer, sources)
+
+    assert len(result) <= 1400
+    assert "📎 来源" in result
+    assert "[6] 很长的来源标题6" in result
+
+
+def test_format_answer_uses_raw_answer_citations_when_preview_is_truncated():
+    answer = (
+        "第一段只引用第一篇材料。[1]" * 80
+        + "\n\n后面虽然被预览截掉，但完整答案实际也用了第六篇材料。[6]"
+    )
+    sources = [
+        {"title": f"来源{i}", "story": "", "section_title": ""}
+        for i in range(1, 7)
+    ]
+
+    result = format_answer(answer, sources)
+
+    assert "回复“继续展开”" in result
+    assert "[1] 来源1" in result
+    assert "[6] 来源6" in result
+
+
 def test_format_answer_removes_dangling_partial_citation():
     answer = "AI Agent 工程化依赖 Harness 约束层。[1][2]["
     sources = [
@@ -61,7 +109,7 @@ def test_format_answer_does_not_truncate_inside_citation_marker():
 
 def test_format_answer_truncates_long_body_at_sentence_boundary_with_continue_hint():
     answer = (
-        "第一段说明工程化要从简单工作流开始。" * 40
+        "第一段说明工程化要从简单工作流开始。" * 80
         + "\n\n第二段会继续解释调度器工作者这种复杂工作流模式，以及后续治理要求。[1]"
     )
     sources = [
@@ -76,6 +124,19 @@ def test_format_answer_truncates_long_body_at_sentence_boundary_with_continue_hi
     assert body.endswith("可查看更多。）")
     assert "📎 来源" in result
     assert "[1] 来源一" in result
+
+
+def test_format_answer_drops_orphan_heading_when_truncated():
+    answer = "第一段解释。" * 180 + "\n\n### 3."
+    sources = [
+        {"title": "来源一", "story": "", "file_path": "captures/one.md"},
+    ]
+
+    result = format_answer(answer, sources)
+    body = result.split("\n\n📎 来源", 1)[0]
+
+    assert not body.rstrip().endswith("### 3.")
+    assert "回复“继续展开”" in body
 
 
 def test_format_answer_without_url():
@@ -178,3 +239,50 @@ def test_rag_query_empty_captures(mock_call):
     result = agent.query("问题", [])
     assert "没有找到" in result["answer"]
     assert result["sources"] == []
+
+
+def test_call_llm_continues_once_when_generation_hits_length(monkeypatch):
+    requests = []
+
+    class FakeResponse:
+        def __init__(self, content: str, finish_reason: str):
+            self.content = content
+            self.finish_reason = finish_reason
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {"content": self.content},
+                        "finish_reason": self.finish_reason,
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, headers, json):
+            requests.append(json)
+            if len(requests) == 1:
+                return FakeResponse("第一段没写完", "length")
+            return FakeResponse("，第二段补完。", "stop")
+
+    monkeypatch.setattr("agents.rag_agent.httpx.Client", FakeClient)
+
+    agent = RagAgent(llm_api_key="test")
+    answer = agent._call_llm("请回答")
+
+    assert answer == "第一段没写完，第二段补完。"
+    assert len(requests) == 2
+    assert "继续完成上一条回答" in requests[1]["messages"][-1]["content"]
