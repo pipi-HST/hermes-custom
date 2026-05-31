@@ -135,3 +135,61 @@ def test_search_knowledge_base_uses_best_section_embedding(monkeypatch, tmp_path
     assert FakeRagAgent.seen_captures[0]["section_title"] == "第二部分"
     assert "Terminal-Bench" in FakeRagAgent.seen_captures[0]["body"]
     assert "背景材料" not in FakeRagAgent.seen_captures[0]["body"]
+
+
+def test_indexed_search_ignores_managed_section_embeddings(tmp_path):
+    from bridge import rag_bridge
+    from db.repo import CaptureRepo
+
+    db_path = tmp_path / "captures.db"
+    vault = tmp_path / "vault"
+    rel_path = _write_capture(vault)
+    conn = init_db(str(db_path))
+    conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap1", rel_path),
+    )
+    repo = CaptureEmbeddingRepo(conn)
+    repo.upsert(
+        capture_id="cap1",
+        kind="identity",
+        index_text="AI Agent 工程化整体身份",
+        embedding=_vec(0.7, 0.0),
+        source_hash="identity",
+        file_path=rel_path,
+    )
+    repo.upsert(
+        capture_id="cap1",
+        kind="section",
+        section_id="related",
+        section_title="相关笔记",
+        index_text="Building Effective AI Agents Opus 4.8 Claude Code",
+        embedding=_vec(1.0, 0.0),
+        source_hash="related",
+        file_path=rel_path,
+    )
+    repo.upsert(
+        capture_id="cap1",
+        kind="section",
+        section_id="second",
+        section_title="第二部分",
+        index_text="节奏狙击 Terminal-Bench 故意留坑",
+        embedding=_vec(0.9, 0.0),
+        source_hash="second",
+        file_path=rel_path,
+    )
+
+    class FakeEmbedder:
+        def embed(self, _text: str) -> bytes:
+            return _vec(1.0, 0.0)
+
+    results = rag_bridge._indexed_search(
+        "AI Agent 工程化",
+        CaptureRepo(conn),
+        FakeEmbedder(),
+        limit=1,
+    )
+
+    assert len(results) == 1
+    assert results[0]["section_title"] == "第二部分"
+    assert results[0]["matched_kind"] == "section"

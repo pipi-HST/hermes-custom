@@ -59,3 +59,31 @@ def test_section_indexes_return_empty_for_unsectioned_short_note():
     body = "只有一小段内容。"
 
     assert build_section_indexes("cap1", "captures/a.md", frontmatter, body) == []
+
+
+def test_section_indexes_skip_managed_sections():
+    frontmatter = {"title": "AI Agent 工程化"}
+    body = """# AI Agent 工程化
+
+## 核心方法
+这里是可以回答问题的正文内容。
+
+## 相关笔记
+- [[Building Effective AI Agents]]
+
+## 知识关联
+- 这只是管理区链接。
+
+## 参考来源
+[1] 原文
+
+## 后续判断
+这里也是可以回答问题的正文内容。
+"""
+
+    sections = build_section_indexes("cap1", "captures/a.md", frontmatter, body)
+
+    assert [section.section_title for section in sections] == ["核心方法", "后续判断"]
+    assert all("相关笔记" not in section.index_text for section in sections)
+    assert all("知识关联" not in section.index_text for section in sections)
+    assert all("参考来源" not in section.index_text for section in sections)

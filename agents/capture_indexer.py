@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from agents.managed_sections import is_managed_section_title
+
 
 IDENTITY_BODY_HINT_CHARS = 500
 SECTION_BODY_CHARS = 1600
@@ -125,7 +127,7 @@ def _markdown_sections(body: str) -> list[tuple[str, str]]:
     sections: list[tuple[str, str]] = []
     for idx, match in enumerate(matches):
         title = match.group(2).strip()
-        if title == "目录纲要":
+        if is_managed_section_title(title):
             continue
         start = match.end()
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)

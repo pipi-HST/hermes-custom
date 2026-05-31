@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.markdown_writer import read_note
 from agents.capture_agent import load_config
+from agents.managed_sections import is_managed_section_title
 from agents.rag_agent import RagAgent, format_answer
 from agents.embedder import Embedder
 from bridge.result_envelope import source_ref, success_envelope
@@ -149,6 +150,10 @@ def _indexed_search(
 
     grouped: dict[str, list[dict]] = {}
     for row in rows:
+        if row.get("kind") == "section" and is_managed_section_title(
+            str(row.get("section_title") or "")
+        ):
+            continue
         grouped.setdefault(row["capture_id"], []).append(row)
 
     results: list[dict] = []
