@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from agents.life_intent_parser import LifeIntent, LifeIntentParser
@@ -30,6 +33,8 @@ class LifeConfig:
     sleep_reminder_time: str = "23:30"
     water_times: tuple[str, str] = ("10:00", "16:00")
     notifications_enabled: bool = False
+    tick_lock_ttl_seconds: int = 50
+    log_path: str = ""
 
 
 class LifeAgent:
@@ -61,6 +66,18 @@ class LifeAgent:
 
         if intent.intent == "sedentary_activity_reply":
             return _rejected("久坐警报不能靠回复解除；离开电脑超过5分钟后我会自动停止提醒。")
+
+        if intent.intent == "record_long_term_decision":
+            return self._record_long_term_decision(intent, received)
+
+        if intent.intent == "set_long_term_decision_review_time":
+            return self._set_long_term_decision_review_time(intent, received)
+
+        if intent.intent == "review_long_term_decision":
+            return self._review_long_term_decision(intent, received)
+
+        if intent.intent == "close_long_term_decision":
+            return self._close_long_term_decision(intent, received)
 
         if intent.intent == "pause_sedentary":
             try:
@@ -94,6 +111,12 @@ class LifeAgent:
                 scheduled_for = _parse_datetime(intent.scheduled_for)
             except ValueError:
                 return _rejected("这条我暂时不能作为生活记录保存。")
+            self.repo.supersede_same_day_reminders(
+                reminder_type="exercise",
+                day=scheduled_for.date().isoformat(),
+                superseded_at=received.isoformat(),
+                reason="user_reschedule",
+            )
             payload = {"source": "user_reschedule", **intent.payload}
             self.repo.create_reminder_log(
                 reminder_type="exercise",
@@ -125,6 +148,22 @@ class LifeAgent:
             return self._record_structured_event(intent, message, received)
 
         return _rejected("这条我暂时不能作为生活记录保存。")
+
+    def reconcile_delivery_result(
+        self,
+        *,
+        completed_at: str,
+        delivery_error: str = "",
+    ) -> dict[str, Any]:
+        updated = self.repo.reconcile_sending_reminders(
+            completed_at=completed_at,
+            delivery_error=delivery_error,
+        )
+        return {
+            "status": "reconciled",
+            "updated": len(updated),
+            "delivery_status": "failed" if delivery_error else "sent",
+        }
 
     def _record_structured_event(
         self,
@@ -178,6 +217,17 @@ class LifeAgent:
             except ValueError:
                 return _rejected("这条我暂时不能作为生活记录保存。")
             duration = _duration_minutes_between(occurred, ended_at)
+            updated = self._update_existing_sleep_session(
+                started_at=occurred,
+                ended_at=ended_at,
+                raw_text=message,
+            )
+            if updated:
+                return {
+                    "status": "modified",
+                    "event": updated,
+                    "chat_preview": f"已修正睡眠：{_fmt_time(occurred)} 到 {_fmt_time(ended_at)}，睡了{_fmt_duration(duration)}。",
+                }
             self.repo.create_event(
                 event_type="sleep_start",
                 occurred_at=occurred.isoformat(),
@@ -198,6 +248,36 @@ class LifeAgent:
             if intent.status != "completed_unknown":
                 if intent.duration_minutes is None or "exercise_type" not in intent.payload:
                     return _rejected("这条我暂时不能作为生活记录保存。")
+                pending_details = self.repo.latest_active_context(
+                    context_type="exercise_details_missing",
+                    now=received.isoformat(),
+                )
+                if pending_details and pending_details.get("target_type") == "life_event":
+                    existing = self.repo.get_event(str(pending_details["target_id"]))
+                    if existing and existing.get("event_type") == "exercise":
+                        updated = self.repo.update_event(
+                            existing["id"],
+                            duration_minutes=intent.duration_minutes,
+                            raw_text=_append_text(str(existing.get("raw_text") or ""), message),
+                            payload=intent.payload or None,
+                            status="recorded",
+                        )
+                        self.repo.resolve_interaction_context(
+                            pending_details["id"],
+                            resolved_at=received.isoformat(),
+                        )
+                        if updated:
+                            self.repo.complete_same_day_reminders(
+                                reminder_type="exercise",
+                                day=occurred.date().isoformat(),
+                                completed_at=occurred.isoformat(),
+                                event_id=updated["id"],
+                            )
+                            return {
+                                "status": "modified",
+                                "event": updated,
+                                "chat_preview": f"已补充运动：{intent.payload['exercise_type']} {intent.duration_minutes} 分钟。",
+                            }
             event = self.repo.create_event(
                 event_type="exercise",
                 occurred_at=occurred.isoformat(),
@@ -207,7 +287,21 @@ class LifeAgent:
                 status=intent.status or "recorded",
                 payload=intent.payload or None,
             )
+            self.repo.complete_same_day_reminders(
+                reminder_type="exercise",
+                day=occurred.date().isoformat(),
+                completed_at=occurred.isoformat(),
+                event_id=event["id"],
+            )
             if intent.status == "completed_unknown":
+                self._open_context(
+                    "exercise_details_missing",
+                    target_type="life_event",
+                    target_id=event["id"],
+                    expected_reply_kind="exercise_details",
+                    current=received,
+                    ttl=timedelta(hours=12),
+                )
                 return _recorded(event, "已记录今天运动完成；可以之后补充类型和时长。")
             return _recorded(
                 event,
@@ -217,16 +311,46 @@ class LifeAgent:
         if intent.event_type == "meal":
             if "meal_slot" not in intent.payload or "content" not in intent.payload:
                 return _rejected("这条我暂时不能作为生活记录保存。")
-            event = self.repo.create_event(
-                event_type="meal",
+            payload = {**intent.payload, "recorded_at": received.isoformat()}
+            is_append = payload.get("meal_update_mode") == "append"
+            if intent.occurred_at:
+                meal_date = occurred.date().isoformat()
+            else:
+                occurred = _date_anchor(received)
+                meal_date = received.date().isoformat()
+            event = self.repo.upsert_meal_event(
+                meal_date=meal_date,
+                meal_slot=str(payload["meal_slot"]),
                 occurred_at=occurred.isoformat(),
                 source="wechat",
                 raw_text=message,
-                payload=intent.payload,
+                payload=payload,
+            )
+            stored_payload = event.get("payload_json") or payload
+            action = "已补充" if is_append else "已记录"
+            if stored_payload.get("meal_time_precision") == "missing":
+                self._open_context(
+                    "meal_time_missing",
+                    target_type="life_event",
+                    target_id=event["id"],
+                    expected_reply_kind="time",
+                    current=received,
+                    ttl=timedelta(hours=12),
+                    payload={"meal_slot": stored_payload["meal_slot"]},
+                )
+                return _recorded(
+                    event,
+                    f"{action}{_meal_label(stored_payload['meal_slot'])}：{stored_payload['content']}。大概几点吃的？",
+                )
+            self.repo.resolve_contexts_for_target(
+                context_type="meal_time_missing",
+                target_type="life_event",
+                target_id=event["id"],
+                resolved_at=received.isoformat(),
             )
             return _recorded(
                 event,
-                f"已记录{_meal_label(intent.payload['meal_slot'])}：{intent.payload['content']}。",
+                f"{action}{_meal_label(stored_payload['meal_slot'])}：{stored_payload['content']}。",
             )
 
         if intent.event_type == "water":
@@ -241,6 +365,21 @@ class LifeAgent:
         return _rejected("这条我暂时不能作为生活记录保存。")
 
     def _modify_latest_event(self, intent: LifeIntent, received: datetime) -> dict[str, Any]:
+        if "meal_occurred_at" in intent.payload:
+            if intent.payload.get("explicit_change"):
+                updated = self._modify_meal_time_by_slot(
+                    str(intent.payload["meal_occurred_at"]),
+                    received,
+                    meal_slot=str(intent.payload.get("meal_slot") or ""),
+                )
+                if updated:
+                    return updated
+            return self._modify_pending_meal_time(
+                str(intent.payload["meal_occurred_at"]),
+                received,
+                meal_slot=str(intent.payload.get("meal_slot") or ""),
+            )
+
         latest = self.repo.latest_user_event(
             now=received.isoformat(),
             window_minutes=30,
@@ -254,14 +393,417 @@ class LifeAgent:
 
         updated = self._updated_latest_meal(latest, change_text, received)
         if not updated:
-            return _rejected("这条修改我暂时只支持改最近一条饮食记录。")
+            updated = self._updated_latest_exercise(latest, change_text, message_time=received)
+        if not updated:
+            updated = self._updated_latest_sleep(latest, change_text, message_time=received)
+        if not updated:
+            return _rejected("这条修改我暂时只支持改最近一条饮食、运动或睡眠记录。")
 
-        payload = updated["payload_json"]
+        payload = updated.get("payload_json") or {}
+        if updated["event_type"] == "exercise":
+            return {
+                "status": "modified",
+                "event": updated,
+                "chat_preview": f"已把上一条改为运动：{payload.get('exercise_type', '运动')} {updated.get('duration_minutes') or 0} 分钟。",
+            }
+        if updated["event_type"] == "sleep_end":
+            return {
+                "status": "modified",
+                "event": updated,
+                "chat_preview": f"已修改上一条睡眠记录，睡了{_fmt_duration(int(updated.get('duration_minutes') or 0))}。",
+            }
         return {
             "status": "modified",
             "event": updated,
             "chat_preview": f"已把上一条改为{_meal_label(payload['meal_slot'])}：{payload['content']}。",
         }
+
+    def _record_long_term_decision(self, intent: LifeIntent, received: datetime) -> dict[str, Any]:
+        content = str(intent.payload.get("content") or "").strip()
+        if not content:
+            return _rejected("这条长期决定内容不完整，暂时不能保存。")
+        next_review_at = _parse_optional_datetime(intent.payload.get("next_review_at"))
+        existing = self.repo.find_open_long_term_decision_by_content(content)
+        if existing:
+            if next_review_at:
+                interval = _days_between(received, next_review_at)
+                updated = self.repo.update_long_term_decision(
+                    existing["id"],
+                    status="active",
+                    next_review_at=next_review_at.isoformat(),
+                    review_interval_days=interval,
+                    updated_at=received.isoformat(),
+                )
+                return {
+                    "status": "decision_recorded",
+                    "decision": updated,
+                    "event": None,
+                    "chat_preview": f"已更新这个长期决定的下次复盘时间：{_fmt_month_day_time(next_review_at)}。",
+                }
+            if existing["status"] == "pending_review_time":
+                self._open_context(
+                    "long_term_review_time_missing",
+                    target_type="long_term_decision",
+                    target_id=existing["id"],
+                    expected_reply_kind="time",
+                    current=received,
+                    ttl=timedelta(days=7),
+                    payload={"content": content},
+                )
+                return {
+                    "status": "decision_needs_review_time",
+                    "decision": existing,
+                    "event": None,
+                    "chat_preview": "这个长期决定已经记下了。下一次复盘是哪天几点？",
+                }
+            return {
+                "status": "decision_recorded",
+                "decision": existing,
+                "event": None,
+                "chat_preview": f"这个长期决定已经在记录里。下次复盘 {_fmt_month_day_time(_parse_datetime(existing['next_review_at']))}。",
+            }
+        if not next_review_at:
+            decision = self.repo.create_long_term_decision(
+                content=content,
+                created_at=received.isoformat(),
+                next_review_at="",
+                review_interval_days=0,
+                status="pending_review_time",
+            )
+            self._open_context(
+                "long_term_review_time_missing",
+                target_type="long_term_decision",
+                target_id=decision["id"],
+                expected_reply_kind="time",
+                current=received,
+                ttl=timedelta(days=7),
+                payload={"content": content},
+            )
+            return {
+                "status": "decision_needs_review_time",
+                "decision": decision,
+                "event": None,
+                "chat_preview": f"已记下这个长期决定。下一次复盘是哪天几点？",
+            }
+        interval = _days_between(received, next_review_at)
+        decision = self.repo.create_long_term_decision(
+            content=content,
+            created_at=received.isoformat(),
+            next_review_at=next_review_at.isoformat(),
+            review_interval_days=interval,
+        )
+        return {
+            "status": "decision_recorded",
+            "decision": decision,
+            "event": None,
+            "chat_preview": f"已记录长期决定：{content}。我会在{_fmt_month_day_time(next_review_at)}提醒你复盘。",
+        }
+
+    def _set_long_term_decision_review_time(self, intent: LifeIntent, received: datetime) -> dict[str, Any]:
+        context = self.repo.latest_active_context(
+            context_type="long_term_review_time_missing",
+            now=received.isoformat(),
+        )
+        decision = None
+        if context and context.get("target_type") == "long_term_decision":
+            decision = self.repo.get_long_term_decision(str(context["target_id"]))
+        if not decision:
+            decision = self.repo.latest_pending_long_term_decision()
+        if not decision:
+            return _rejected("没有找到待补复盘时间的长期决定。")
+        next_review_at = _parse_optional_datetime(intent.payload.get("next_review_at"))
+        if not next_review_at:
+            return _rejected("这条复盘时间我暂时没读懂，可以直接说具体日期和时间。")
+        duplicate = self.repo.find_open_long_term_decision_by_content(
+            str(decision["content"]),
+            exclude_id=str(decision["id"]),
+            status="active",
+        )
+        if duplicate:
+            updated = self.repo.update_long_term_decision(
+                duplicate["id"],
+                next_review_at=next_review_at.isoformat(),
+                review_interval_days=_days_between(received, next_review_at),
+                updated_at=received.isoformat(),
+            )
+            self.repo.update_long_term_decision(
+                decision["id"],
+                status="superseded",
+                updated_at=received.isoformat(),
+            )
+            if context:
+                self.repo.resolve_interaction_context(context["id"], resolved_at=received.isoformat())
+            return {
+                "status": "decision_recorded",
+                "decision": updated,
+                "event": None,
+                "chat_preview": f"已设置长期决定的下次复盘时间：{_fmt_month_day_time(next_review_at)}。",
+            }
+        updated = self.repo.update_long_term_decision(
+            decision["id"],
+            status="active",
+            next_review_at=next_review_at.isoformat(),
+            review_interval_days=_days_between(received, next_review_at),
+            updated_at=received.isoformat(),
+        )
+        if context:
+            self.repo.resolve_interaction_context(context["id"], resolved_at=received.isoformat())
+        return {
+            "status": "decision_recorded",
+            "decision": updated,
+            "event": None,
+            "chat_preview": f"已设置长期决定的下次复盘时间：{_fmt_month_day_time(next_review_at)}。",
+        }
+
+    def _review_long_term_decision(self, intent: LifeIntent, received: datetime) -> dict[str, Any]:
+        context = self.repo.latest_active_context(
+            context_type="long_term_review_reply",
+            now=received.isoformat(),
+        )
+        decision = None
+        if context and context.get("target_type") == "long_term_decision":
+            decision = self.repo.get_long_term_decision(str(context["target_id"]))
+        if not decision:
+            decision = self.repo.latest_active_long_term_decision(now=received.isoformat())
+        if not decision:
+            return _rejected("没有找到可复盘的长期决定。")
+        review_note = str(intent.payload.get("review_note") or "").strip() or "继续有效"
+        new_content = str(intent.payload.get("new_content") or "").strip()
+        next_review_at = _parse_optional_datetime(intent.payload.get("next_review_at"))
+        outcome = "adjusted" if new_content else "kept"
+        self.repo.create_decision_review(
+            decision_id=decision["id"],
+            reviewed_at=received.isoformat(),
+            review_note=review_note,
+            outcome=outcome,
+            next_review_at=next_review_at.isoformat() if next_review_at else "",
+        )
+        if not next_review_at:
+            updated = self.repo.update_long_term_decision(
+                decision["id"],
+                content=new_content or None,
+                status="pending_review_time",
+                next_review_at="",
+                review_interval_days=0,
+                updated_at=received.isoformat(),
+            )
+            if context:
+                self.repo.resolve_interaction_context(context["id"], resolved_at=received.isoformat())
+            self._open_context(
+                "long_term_review_time_missing",
+                target_type="long_term_decision",
+                target_id=decision["id"],
+                expected_reply_kind="time",
+                current=received,
+                ttl=timedelta(days=7),
+                payload={"content": str(updated.get("content") or decision["content"])},
+            )
+            return {
+                "status": "decision_needs_review_time",
+                "decision": updated,
+                "event": None,
+                "chat_preview": "已记录这次复盘。下一次复盘是哪天几点？",
+            }
+        interval = _days_between(received, next_review_at)
+        updated = self.repo.update_long_term_decision(
+            decision["id"],
+            content=new_content or None,
+            status="active",
+            next_review_at=next_review_at.isoformat(),
+            review_interval_days=interval,
+            updated_at=received.isoformat(),
+        )
+        if context:
+            self.repo.resolve_interaction_context(context["id"], resolved_at=received.isoformat())
+        display_content = str((updated or decision).get("content") or decision["content"])
+        return {
+            "status": "decision_review_recorded",
+            "decision": updated,
+            "event": None,
+            "chat_preview": f"已复盘长期决定：{display_content}。下次复盘 {_fmt_month_day_time(next_review_at)}。",
+        }
+
+    def _close_long_term_decision(self, intent: LifeIntent, received: datetime) -> dict[str, Any]:
+        context = self.repo.latest_active_context(
+            context_type="long_term_review_reply",
+            now=received.isoformat(),
+        )
+        decision = None
+        if context and context.get("target_type") == "long_term_decision":
+            decision = self.repo.get_long_term_decision(str(context["target_id"]))
+        if not decision:
+            decision = self.repo.latest_active_long_term_decision(now=received.isoformat())
+        if not decision:
+            return _rejected("没有找到可关闭的长期决定。")
+        review_note = str(intent.payload.get("review_note") or "").strip() or "关闭这个决定"
+        self.repo.create_decision_review(
+            decision_id=decision["id"],
+            reviewed_at=received.isoformat(),
+            review_note=review_note,
+            outcome="closed",
+        )
+        updated = self.repo.update_long_term_decision(
+            decision["id"],
+            status="closed",
+            closed_at=received.isoformat(),
+            updated_at=received.isoformat(),
+        )
+        if context:
+            self.repo.resolve_interaction_context(context["id"], resolved_at=received.isoformat())
+        return {
+            "status": "decision_closed",
+            "decision": updated,
+            "event": None,
+            "chat_preview": f"已关闭长期决定：{decision['content']}。",
+        }
+
+    def _modify_pending_meal_time(
+        self,
+        occurred_at_text: str,
+        received: datetime,
+        *,
+        meal_slot: str = "",
+    ) -> dict[str, Any]:
+        try:
+            occurred = _parse_datetime(occurred_at_text)
+        except ValueError:
+            return _rejected("这条修改指令不完整，暂时不能保存。")
+        context = self.repo.latest_active_context(
+            context_type="meal_time_missing",
+            now=received.isoformat(),
+        )
+        latest = None
+        if context and context.get("target_type") == "life_event":
+            candidate = self.repo.get_event(str(context["target_id"]))
+            payload = candidate.get("payload_json") if candidate else {}
+            if candidate and (not meal_slot or payload.get("meal_slot") == meal_slot):
+                latest = candidate
+        if not latest:
+            latest = self.repo.latest_pending_meal(
+                now=received.isoformat(),
+                window_minutes=720 if meal_slot else 60,
+                meal_slot=meal_slot,
+            )
+        if not latest:
+            if meal_slot:
+                return _rejected("没有找到当天待补时间的这顿饮食记录。")
+            return _rejected("没有找到 60 分钟内待补时间的饮食记录。")
+        payload = dict(latest.get("payload_json") or {})
+        payload["meal_time_precision"] = "exact"
+        updated = self.repo.update_event(
+            latest["id"],
+            occurred_at=occurred.isoformat(),
+            payload=payload,
+        )
+        if not updated:
+            return _rejected("这条修改指令不完整，暂时不能保存。")
+        if context:
+            self.repo.resolve_interaction_context(context["id"], resolved_at=received.isoformat())
+        label = _meal_label(str(payload.get("meal_slot") or ""))
+        return {
+            "status": "modified",
+            "event": updated,
+            "chat_preview": f"已补充{label}时间：{_fmt_time(occurred)}。",
+        }
+
+    def _modify_meal_time_by_slot(
+        self,
+        occurred_at_text: str,
+        received: datetime,
+        *,
+        meal_slot: str,
+    ) -> dict[str, Any] | None:
+        if not meal_slot:
+            return None
+        try:
+            occurred = _parse_datetime(occurred_at_text)
+        except ValueError:
+            return None
+        latest = self.repo.meal_event_on_date(
+            meal_date=received.date().isoformat(),
+            meal_slot=meal_slot,
+        )
+        if not latest:
+            return None
+        payload = dict(latest.get("payload_json") or {})
+        payload["meal_time_precision"] = "exact"
+        payload["meal_slot_inferred"] = False
+        updated = self.repo.update_event(
+            latest["id"],
+            occurred_at=occurred.isoformat(),
+            payload=payload,
+        )
+        if not updated:
+            return None
+        self.repo.resolve_contexts_for_target(
+            context_type="meal_time_missing",
+            target_type="life_event",
+            target_id=latest["id"],
+            resolved_at=received.isoformat(),
+        )
+        return {
+            "status": "modified",
+            "event": updated,
+            "chat_preview": f"已修改{_meal_label(meal_slot)}时间：{_fmt_time(occurred)}。",
+        }
+
+    def _update_existing_sleep_session(
+        self,
+        *,
+        started_at: datetime,
+        ended_at: datetime,
+        raw_text: str,
+    ) -> dict[str, Any] | None:
+        rows = self.repo.conn.execute(
+            """SELECT * FROM life_events
+               WHERE event_type = 'sleep_end'
+                 AND status NOT IN ('undone', 'superseded')
+               ORDER BY occurred_at DESC, rowid DESC"""
+        ).fetchall()
+        wake_date = ended_at.date().isoformat()
+        same_wake_date: list[dict[str, Any]] = []
+        for row in rows:
+            item = self.repo._event_row_to_dict(row)
+            if not item:
+                continue
+            payload = item.get("payload_json") or {}
+            row_wake_date = str(payload.get("wake_date") or "")
+            if not row_wake_date:
+                row_wake_date = _parse_datetime(str(item["occurred_at"])).date().isoformat()
+            if row_wake_date == wake_date:
+                same_wake_date.append(item)
+        if len(same_wake_date) != 1:
+            return None
+        sleep_end = same_wake_date[0]
+        existing_ended_at = _parse_datetime(str(sleep_end["occurred_at"]))
+        if abs(_seconds_between(existing_ended_at, ended_at)) > 3 * 60 * 60:
+            return None
+        start_row = self.repo.conn.execute(
+            """SELECT * FROM life_events
+               WHERE event_type = 'sleep_start'
+                 AND status NOT IN ('undone', 'superseded')
+                 AND occurred_at < ?
+               ORDER BY occurred_at DESC, rowid DESC
+               LIMIT 1""",
+            (sleep_end["occurred_at"],),
+        ).fetchone()
+        if not start_row:
+            return None
+        sleep_start = self.repo._event_row_to_dict(start_row)
+        if not sleep_start:
+            return None
+        self.repo.update_event(
+            sleep_start["id"],
+            occurred_at=started_at.isoformat(),
+            raw_text=_append_text(str(sleep_start.get("raw_text") or ""), raw_text),
+        )
+        return self.repo.update_event(
+            sleep_end["id"],
+            occurred_at=ended_at.isoformat(),
+            duration_minutes=_duration_minutes_between(started_at, ended_at),
+            raw_text=_append_text(str(sleep_end.get("raw_text") or ""), raw_text),
+            payload={"wake_date": wake_date},
+        )
 
     def _updated_latest_meal(
         self,
@@ -288,6 +830,50 @@ class LifeAgent:
             return None
         return self.repo.update_event(latest["id"], payload=parsed.payload)
 
+    def _updated_latest_exercise(
+        self,
+        latest: dict[str, Any],
+        change_text: str,
+        *,
+        message_time: datetime,
+    ) -> dict[str, Any] | None:
+        if latest["event_type"] != "exercise":
+            return None
+        parsed = self.parser.parse(change_text, received_at=message_time)
+        if parsed.intent != "record_event" or parsed.event_type != "exercise":
+            return None
+        if parsed.duration_minutes is None or "exercise_type" not in parsed.payload:
+            return None
+        return self.repo.update_event(
+            latest["id"],
+            duration_minutes=parsed.duration_minutes,
+            payload=parsed.payload,
+            status="recorded",
+        )
+
+    def _updated_latest_sleep(
+        self,
+        latest: dict[str, Any],
+        change_text: str,
+        *,
+        message_time: datetime,
+    ) -> dict[str, Any] | None:
+        if latest["event_type"] not in {"sleep_start", "sleep_end"}:
+            return None
+        parsed = self.parser.parse(change_text, received_at=message_time)
+        if parsed.intent != "record_event" or parsed.event_type != "sleep_session":
+            return None
+        try:
+            started_at = _parse_datetime(parsed.occurred_at)
+            ended_at = _parse_datetime(str(parsed.payload.get("ended_at", "")))
+        except ValueError:
+            return None
+        return self._update_existing_sleep_session(
+            started_at=started_at,
+            ended_at=ended_at,
+            raw_text=change_text,
+        )
+
     def life_tick(
         self,
         *,
@@ -297,47 +883,278 @@ class LifeAgent:
     ) -> dict[str, Any]:
         current = _parse_datetime(now) if now else _now()
         activity = activity or ActivitySnapshot(idle_seconds=None, available=False)
-        warnings: list[str] = []
-        candidates: list[dict[str, Any]] = []
-
-        if activity.available:
-            sedentary = self._sedentary_candidate(current, activity)
-            if sedentary:
-                candidates.append(sedentary)
-        else:
-            warnings.append("mac_activity_unavailable")
-
-        exercise = self._exercise_candidate(current)
-        if exercise:
-            candidates.append(exercise)
-        sleep = self._sleep_candidate(current)
-        if sleep:
-            candidates.append(sleep)
-        water = self._water_candidate(current)
-        if water:
-            candidates.append(water)
-        daily_review = self._daily_review_candidate(current)
-        if daily_review:
-            candidates.append(daily_review)
-
-        candidates.sort(key=lambda item: item["priority"])
-        selected = candidates[0] if candidates else None
-        should_notify = bool(selected and self.config.notifications_enabled and not dry_run)
-        if selected:
-            self.repo.create_reminder_log(
-                reminder_type=selected["reminder_type"],
-                scheduled_for=current.isoformat(),
-                status="sending" if should_notify else "scheduled",
-                dedupe_key=selected["dedupe_key"],
-                payload={"dry_run": dry_run},
+        lock_owner = f"life_tick:{uuid.uuid4().hex[:8]}"
+        if not self.repo.acquire_lock(
+            name="life_tick",
+            owner=lock_owner,
+            now=current.isoformat(),
+            ttl_seconds=self.config.tick_lock_ttl_seconds,
+        ):
+            result = {
+                "status": "locked",
+                "selected": None,
+                "chat_preview": "Life Assistant tick 正在运行，本次跳过。",
+                "warnings": ["life_tick_lock_held"],
+                "meta": {"should_notify": False, "dry_run": dry_run},
+            }
+            self._write_tick_log(
+                current=current,
+                activity=activity,
+                candidates=[],
+                selected=None,
+                warnings=result["warnings"],
+                dry_run=dry_run,
+                should_notify=False,
+                status="locked",
             )
-        return {
-            "status": "selected" if selected else "idle",
-            "selected": selected,
-            "chat_preview": selected["message"] if selected else "Life Assistant 本次 tick 无需提醒。",
+            return result
+
+        try:
+            warnings: list[str] = []
+            candidates: list[dict[str, Any]] = []
+            self._mark_missed_reviews(current)
+            if self._has_fresh_pending_knowledge_choice(current):
+                warnings.append("knowledge_workflow_active")
+                result = {
+                    "status": "idle",
+                    "selected": None,
+                    "chat_preview": "Life Assistant 本次 tick 无需提醒。",
+                    "warnings": warnings,
+                    "meta": {"should_notify": False, "dry_run": dry_run},
+                }
+                self._write_tick_log(
+                    current=current,
+                    activity=activity,
+                    candidates=[],
+                    selected=None,
+                    warnings=warnings,
+                    dry_run=dry_run,
+                    should_notify=False,
+                    status="idle",
+                )
+                return result
+
+            if activity.available:
+                sedentary = self._sedentary_candidate(current, activity)
+                if sedentary:
+                    candidates.append(sedentary)
+            else:
+                warnings.append("mac_activity_unavailable")
+
+            long_term_decision_review = self._long_term_decision_review_candidate(current)
+            if long_term_decision_review:
+                candidates.append(long_term_decision_review)
+            exercise = self._exercise_candidate(current)
+            if exercise:
+                candidates.append(exercise)
+            sleep = self._sleep_candidate(current)
+            if sleep:
+                candidates.append(sleep)
+            water = self._water_candidate(current)
+            if water:
+                candidates.append(water)
+            daily_review = self._daily_review_candidate(current)
+            if daily_review:
+                candidates.append(daily_review)
+            weekly_review = self._weekly_review_candidate(current)
+            if weekly_review:
+                candidates.append(weekly_review)
+
+            candidates.sort(key=lambda item: item["priority"])
+            selected = candidates[0] if candidates else None
+            should_notify = bool(selected and self.config.notifications_enabled and not dry_run)
+            if selected:
+                self._store_selected_review(selected)
+                payload = {"dry_run": dry_run, **(selected.get("payload") or {})}
+                self.repo.create_reminder_log(
+                    reminder_type=selected["reminder_type"],
+                    scheduled_for=current.isoformat(),
+                    status="sending" if should_notify else "scheduled",
+                    dedupe_key=selected["dedupe_key"],
+                    payload=payload,
+                )
+                if selected["reminder_type"] == "long_term_decision_review":
+                    decision_id = str((selected.get("payload") or {}).get("decision_id") or "")
+                    if decision_id:
+                        self._open_context(
+                            "long_term_review_reply",
+                            target_type="long_term_decision",
+                            target_id=decision_id,
+                            expected_reply_kind="decision_review",
+                            current=current,
+                            ttl=timedelta(days=7),
+                        )
+            result = {
+                "status": "selected" if selected else "idle",
+                "selected": selected,
+                "chat_preview": selected["message"] if selected else "Life Assistant 本次 tick 无需提醒。",
+                "warnings": warnings,
+                "meta": {"should_notify": should_notify, "dry_run": dry_run},
+            }
+            self._write_tick_log(
+                current=current,
+                activity=activity,
+                candidates=candidates,
+                selected=selected,
+                warnings=warnings,
+                dry_run=dry_run,
+                should_notify=should_notify,
+                status=result["status"],
+            )
+            return result
+        finally:
+            self.repo.release_lock(name="life_tick", owner=lock_owner)
+
+    def _store_selected_review(self, selected: dict[str, Any]) -> None:
+        if selected["reminder_type"] == "daily_review":
+            review = selected.get("review") or {}
+            self.repo.create_daily_review(
+                review_date=str(review["review_date"]),
+                summary=str(review["summary"]),
+                metrics=review.get("metrics") or {},
+                notes=review.get("notes") or {},
+            )
+        if selected["reminder_type"] == "weekly_review":
+            review = selected.get("review") or {}
+            self.repo.create_weekly_review(
+                week_start=str(review["week_start"]),
+                week_end=str(review["week_end"]),
+                summary=str(review["summary"]),
+                labels=review.get("labels") or {},
+                patterns=review.get("patterns") or {},
+                recommendations=list(review.get("recommendations") or []),
+            )
+
+    def _open_context(
+        self,
+        context_type: str,
+        *,
+        target_type: str,
+        target_id: str,
+        expected_reply_kind: str,
+        current: datetime,
+        ttl: timedelta,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self.repo.create_interaction_context(
+            context_type=context_type,
+            target_type=target_type,
+            target_id=target_id,
+            expected_reply_kind=expected_reply_kind,
+            created_at=current.isoformat(),
+            expires_at=(current + ttl).isoformat(),
+            payload=payload,
+        )
+
+    def _mark_missed_reviews(self, current: datetime) -> None:
+        self._ensure_review_rows_for_existing_logs()
+
+        daily_review_date = (current - timedelta(days=1)).date().isoformat()
+        daily_cutoff = current.replace(hour=2, minute=0, second=0, microsecond=0)
+        daily_dedupe_key = f"daily_review:{daily_review_date}"
+        if (
+            current >= daily_cutoff
+            and not self.repo.get_daily_review(daily_review_date)
+            and not self._has_any_reminder_log(daily_dedupe_key)
+        ):
+            self.repo.create_reminder_log(
+                reminder_type="daily_review",
+                scheduled_for=daily_cutoff.isoformat(),
+                status="missed",
+                dedupe_key=daily_dedupe_key,
+                payload={"reason": "blocked_until_cutoff"},
+            )
+
+        if current.weekday() != 6:
+            return
+        weekly_cutoff = current.replace(hour=23, minute=30, second=0, microsecond=0)
+        if current < weekly_cutoff:
+            return
+        week_start, week_end = _week_bounds(current)
+        weekly_dedupe_key = f"weekly_review:{week_start}:{week_end}"
+        if self.repo.get_weekly_review(week_start=week_start, week_end=week_end):
+            return
+        if self._has_any_reminder_log(weekly_dedupe_key):
+            return
+        self.repo.create_reminder_log(
+            reminder_type="weekly_review",
+            scheduled_for=weekly_cutoff.isoformat(),
+            status="missed",
+            dedupe_key=weekly_dedupe_key,
+            payload={"reason": "blocked_until_cutoff"},
+        )
+
+    def _ensure_review_rows_for_existing_logs(self) -> None:
+        rows = self.repo.conn.execute(
+            """SELECT reminder_type, dedupe_key FROM life_reminder_logs
+               WHERE reminder_type IN ('daily_review', 'weekly_review')
+                 AND status IN ('scheduled', 'sending', 'sent')
+               ORDER BY scheduled_for ASC"""
+        ).fetchall()
+        for row in rows:
+            reminder_type = row["reminder_type"]
+            dedupe_key = str(row["dedupe_key"])
+            if reminder_type == "daily_review":
+                review_date = dedupe_key.replace("daily_review:", "", 1)
+                if not review_date or self.repo.get_daily_review(review_date):
+                    continue
+                review = self._build_daily_review(review_date)
+                self.repo.create_daily_review(
+                    review_date=review_date,
+                    summary=review["summary"],
+                    metrics=review["metrics"],
+                    notes=review["notes"],
+                )
+            elif reminder_type == "weekly_review":
+                parts = dedupe_key.split(":")
+                if len(parts) != 3:
+                    continue
+                _, week_start, week_end = parts
+                if self.repo.get_weekly_review(week_start=week_start, week_end=week_end):
+                    continue
+                review = self._build_weekly_review(week_start, week_end)
+                self.repo.create_weekly_review(
+                    week_start=week_start,
+                    week_end=week_end,
+                    summary=review["summary"],
+                    labels=review["labels"],
+                    patterns=review["patterns"],
+                    recommendations=review["recommendations"],
+                )
+
+    def _write_tick_log(
+        self,
+        *,
+        current: datetime,
+        activity: ActivitySnapshot,
+        candidates: list[dict[str, Any]],
+        selected: dict[str, Any] | None,
+        warnings: list[str],
+        dry_run: bool,
+        should_notify: bool,
+        status: str,
+    ) -> None:
+        if not self.config.log_path:
+            return
+        entry = {
+            "tick_time": current.isoformat(),
+            "status": status,
+            "idle_seconds": activity.idle_seconds,
+            "activity_available": activity.available,
+            "sedentary_state": "active" if self._active_sitting_window() else "inactive",
+            "due_candidates": [item["reminder_type"] for item in candidates],
+            "selected_reminder": selected.get("reminder_type") if selected else "",
+            "should_notify": should_notify,
+            "dry_run": dry_run,
             "warnings": warnings,
-            "meta": {"should_notify": should_notify, "dry_run": dry_run},
         }
+        try:
+            path = Path(self.config.log_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+        except OSError:
+            return
 
     def _latest_unmatched_sleep_start(self) -> dict[str, Any] | None:
         row = self.repo.conn.execute(
@@ -381,7 +1198,7 @@ class LifeAgent:
         current: datetime,
         activity: ActivitySnapshot,
     ) -> dict[str, Any] | None:
-        active_window = self._active_sitting_window()
+        active_window = self._split_cross_midnight_sitting_window(current)
         if activity.locked or activity.sleeping or activity.logged_out:
             if active_window:
                 self._close_sitting_window(active_window, current, "mac_interrupted")
@@ -390,7 +1207,9 @@ class LifeAgent:
             return None
         if activity.idle_seconds > self.config.break_threshold_minutes * 60:
             if active_window:
-                self._close_sitting_window(active_window, current, "idle_break")
+                break_at = self._idle_break_time(active_window, current, activity.idle_seconds)
+                if break_at:
+                    self._close_sitting_window(active_window, break_at, "idle_break")
             return None
 
         if not active_window:
@@ -409,12 +1228,24 @@ class LifeAgent:
             return None
         if self._is_sedentary_paused(current):
             return None
+        retry_payload = self._short_retry_payload("sedentary", current)
+        if retry_payload:
+            return {
+                "priority": 1,
+                "reminder_type": "sedentary",
+                "dedupe_key": f"sedentary:{current.strftime('%Y-%m-%dT%H:%M')}",
+                "message": "久坐警报：起来活动一下，离开电脑超过5分钟后我会停止提醒。",
+                "payload": retry_payload,
+            }
+        if self._has_recent_reminder_log("sedentary", current, minutes=self.config.sedentary_repeat_minutes):
+            return None
 
         return {
             "priority": 1,
             "reminder_type": "sedentary",
             "dedupe_key": f"sedentary:{current.strftime('%Y-%m-%dT%H:%M')}",
             "message": "久坐警报：起来活动一下，离开电脑超过5分钟后我会停止提醒。",
+            "payload": {"retry_count": 0},
         }
 
     def _active_sitting_window(self) -> dict[str, Any] | None:
@@ -425,6 +1256,31 @@ class LifeAgent:
                LIMIT 1"""
         ).fetchone()
         return self.repo._event_row_to_dict(row) if row else None
+
+    def _split_cross_midnight_sitting_window(self, current: datetime) -> dict[str, Any] | None:
+        active_window = self._active_sitting_window()
+        if not active_window:
+            return None
+
+        started_at = _parse_datetime(active_window["occurred_at"])
+        while started_at.date() < current.date():
+            split_at = _next_midnight(started_at)
+            duration_minutes = _duration_minutes_between(started_at, split_at)
+            self.repo.update_event(
+                active_window["id"],
+                ended_at=split_at.isoformat(),
+                duration_minutes=duration_minutes,
+                status="day_split",
+            )
+            active_window = self.repo.create_event(
+                event_type="sedentary_start",
+                occurred_at=split_at.isoformat(),
+                source="mac_activity",
+                status="active",
+                payload={"split_from": active_window["id"]},
+            )
+            started_at = split_at
+        return active_window
 
     def _is_sedentary_paused(self, current: datetime) -> bool:
         rows = self.repo.conn.execute(
@@ -461,6 +1317,21 @@ class LifeAgent:
             },
         )
 
+    def _idle_break_time(
+        self,
+        active_window: dict[str, Any],
+        current: datetime,
+        idle_seconds: int,
+    ) -> datetime | None:
+        started_at = _parse_datetime(active_window["occurred_at"])
+        if _seconds_between(started_at, current) < 0:
+            return None
+        break_at = current - timedelta(seconds=idle_seconds)
+        break_at = break_at + timedelta(minutes=self.config.break_threshold_minutes)
+        if _seconds_between(started_at, break_at) < 0:
+            return started_at
+        return break_at
+
     def _exercise_candidate(self, current: datetime) -> dict[str, Any] | None:
         if current.strftime("%H:%M") < self.config.exercise_first_time:
             return None
@@ -468,12 +1339,25 @@ class LifeAgent:
             return None
         if self._has_reminder_log_on_day("exercise", "skipped", current):
             return None
+        retry_payload = self._short_retry_payload("exercise", current)
+        if retry_payload:
+            return {
+                "priority": 2,
+                "reminder_type": "exercise",
+                "dedupe_key": f"exercise:{current.strftime('%Y-%m-%dT%H:%M')}",
+                "message": "运动提醒：今天找个时间动一动吧。回复已运动、今天不练了，或告诉我具体时间。",
+                "payload": retry_payload,
+            }
         scheduled_log = self._latest_exercise_reminder_log(current)
         if scheduled_log:
             scheduled = _parse_datetime(scheduled_log["scheduled_for"])
             if current < scheduled:
                 return None
             payload = scheduled_log.get("payload_json") or {}
+            if scheduled_log.get("status") == "failed":
+                next_repeat = scheduled + timedelta(hours=self.config.exercise_repeat_hours)
+                if current < next_repeat:
+                    return None
             if payload.get("source") != "user_reschedule":
                 next_repeat = scheduled + timedelta(hours=self.config.exercise_repeat_hours)
                 if current < next_repeat:
@@ -483,6 +1367,7 @@ class LifeAgent:
             "reminder_type": "exercise",
             "dedupe_key": f"exercise:{current.strftime('%Y-%m-%dT%H:%M')}",
             "message": "运动提醒：今天找个时间动一动吧。回复已运动、今天不练了，或告诉我具体时间。",
+            "payload": {"retry_count": 0},
         }
 
     def _sleep_candidate(self, current: datetime) -> dict[str, Any] | None:
@@ -493,10 +1378,13 @@ class LifeAgent:
         )
         if not due_at:
             return None
+        dedupe_key = f"sleep:{due_at.strftime('%Y-%m-%d')}"
+        if self._has_any_reminder_log(dedupe_key):
+            return None
         return {
             "priority": 3,
             "reminder_type": "sleep",
-            "dedupe_key": f"sleep:{due_at.strftime('%Y-%m-%d')}",
+            "dedupe_key": dedupe_key,
             "message": "睡眠提醒：差不多可以准备睡了。",
         }
 
@@ -514,10 +1402,13 @@ class LifeAgent:
             return None
         if self._has_recent_event("water", current, minutes=60):
             return None
+        dedupe_key = f"water:{due_at.strftime('%Y-%m-%dT%H:%M')}"
+        if self._has_any_reminder_log(dedupe_key):
+            return None
         return {
             "priority": 4,
             "reminder_type": "water",
-            "dedupe_key": f"water:{due_at.strftime('%Y-%m-%dT%H:%M')}",
+            "dedupe_key": dedupe_key,
             "message": "喝水提醒：白天补点水。",
         }
 
@@ -530,11 +1421,167 @@ class LifeAgent:
         if not due_at:
             return None
         review_date = (due_at - timedelta(days=1)).date().isoformat()
+        if self.repo.get_daily_review(review_date):
+            return None
+        dedupe_key = f"daily_review:{review_date}"
+        if self._has_any_reminder_log(dedupe_key):
+            return None
+        review = self._build_daily_review(review_date)
         return {
             "priority": 5,
             "reminder_type": "daily_review",
-            "dedupe_key": f"daily_review:{review_date}",
-            "message": "每日轻复盘：今天的生活记录我会轻量总结，缺失的部分先不追问。",
+            "dedupe_key": dedupe_key,
+            "message": f"每日轻复盘：{review['summary']}",
+            "review": review,
+        }
+
+    def _weekly_review_candidate(self, current: datetime) -> dict[str, Any] | None:
+        if current.weekday() != 6:
+            return None
+        due_at = _due_time_on_day(
+            current,
+            "21:30",
+            window_minutes=self.config.reminder_due_window_minutes,
+        )
+        if not due_at:
+            return None
+        week_start, week_end = _week_bounds(current)
+        if self.repo.get_weekly_review(week_start=week_start, week_end=week_end):
+            return None
+        dedupe_key = f"weekly_review:{week_start}:{week_end}"
+        if self._has_any_reminder_log(dedupe_key):
+            return None
+        review = self._build_weekly_review(week_start, week_end)
+        return {
+            "priority": 6,
+            "reminder_type": "weekly_review",
+            "dedupe_key": dedupe_key,
+            "message": f"周复盘：{review['summary']}",
+            "review": review,
+        }
+
+    def _long_term_decision_review_candidate(self, current: datetime) -> dict[str, Any] | None:
+        decision = self.repo.due_long_term_decision(now=current.isoformat())
+        if not decision:
+            return None
+        due_at = _parse_datetime(str(decision["next_review_at"]))
+        dedupe_key = f"long_term_decision_review:{decision['id']}:{due_at.date().isoformat()}"
+        if self._has_any_reminder_log(dedupe_key):
+            return None
+        return {
+            "priority": 2,
+            "reminder_type": "long_term_decision_review",
+            "dedupe_key": dedupe_key,
+            "message": (
+                f"长期决定复盘：你之前决定“{decision['content']}”。"
+                "现在是否还成立？可以回复“继续有效”“调整为：...”或“关闭这个决定”。"
+            ),
+            "payload": {"decision_id": decision["id"]},
+        }
+
+    def _build_daily_review(self, review_date: str) -> dict[str, Any]:
+        metrics = self._daily_metrics(review_date)
+        parts = [
+            f"睡眠{_fmt_duration(metrics['sleep_minutes'])}" if metrics["sleep_minutes"] else "睡眠未记录",
+            f"运动{metrics['exercise_count']}次" if metrics["exercise_count"] else "运动未记录",
+            f"久坐{_fmt_duration(metrics['sedentary_over_limit_minutes'])}" if metrics["sedentary_over_limit_minutes"] else "久坐未超60分钟",
+            f"饮食记录{metrics['meal_count']}条" if metrics["meal_count"] else "饮食未记录",
+            f"喝水{metrics['water_count']}次" if metrics["water_count"] else "喝水未记录",
+        ]
+        if metrics["active_sitting_open"]:
+            parts.append("当前还有未结束的坐姿窗口")
+        return {
+            "review_date": review_date,
+            "summary": "；".join(parts) + "。",
+            "metrics": metrics,
+            "notes": {"generated_by": "life_agent_rules"},
+        }
+
+    def _build_weekly_review(self, week_start: str, week_end: str) -> dict[str, Any]:
+        days = _date_range(week_start, week_end)
+        daily_metrics = [self._daily_metrics(day) for day in days]
+        exercise_days = sum(1 for item in daily_metrics if item["exercise_count"])
+        total_sleep = sum(item["sleep_minutes"] for item in daily_metrics)
+        sleep_days = sum(1 for item in daily_metrics if item["sleep_minutes"])
+        total_sedentary = sum(item["sedentary_over_limit_minutes"] for item in daily_metrics)
+        meal_days = sum(1 for item in daily_metrics if item["meal_count"])
+        avg_sleep = round(total_sleep / sleep_days) if sleep_days else 0
+        labels = {
+            "sleep": "有记录" if sleep_days else "缺记录",
+            "exercise": "有运动" if exercise_days else "缺运动",
+            "sedentary": "偏高" if total_sedentary >= 60 else "可控",
+            "meals": "有记录" if meal_days else "缺记录",
+        }
+        patterns = {
+            "sleep_days": sleep_days,
+            "exercise_days": exercise_days,
+            "total_sedentary_minutes": total_sedentary,
+            "meal_record_days": meal_days,
+        }
+        recommendations = ["下周继续优先保证作息和减少连续久坐。"]
+        summary = (
+            f"本周睡眠记录{sleep_days}天"
+            f"{f'，平均{_fmt_duration(avg_sleep)}' if avg_sleep else ''}；"
+            f"运动{exercise_days}天；久坐{_fmt_duration(total_sedentary)}；"
+            f"饮食记录覆盖{meal_days}天。"
+        )
+        return {
+            "week_start": week_start,
+            "week_end": week_end,
+            "summary": summary,
+            "labels": labels,
+            "patterns": patterns,
+            "recommendations": recommendations,
+        }
+
+    def _daily_metrics(self, day: str) -> dict[str, Any]:
+        events = self.repo.conn.execute(
+            """SELECT * FROM life_events
+               WHERE status NOT IN ('undone', 'superseded')
+               ORDER BY occurred_at ASC, rowid ASC"""
+        ).fetchall()
+        sleep_minutes = 0
+        exercise_count = 0
+        exercise_minutes = 0
+        meal_count = 0
+        water_count = 0
+        sitting_total = 0
+        sedentary_over_limit = 0
+        active_sitting_open = False
+        for row in events:
+            event = self.repo._event_row_to_dict(row)
+            if not event:
+                continue
+            event_day = _date_key(str(event.get("occurred_at") or ""))
+            payload = event.get("payload_json") or {}
+            if event["event_type"] == "sleep_end":
+                wake_date = str(payload.get("wake_date") or event_day)
+                if wake_date == day:
+                    sleep_minutes += int(event.get("duration_minutes") or 0)
+            elif event_day == day and event["event_type"] == "exercise":
+                exercise_count += 1
+                exercise_minutes += int(event.get("duration_minutes") or 0)
+            elif event_day == day and event["event_type"] == "meal":
+                meal_count += 1
+            elif event_day == day and event["event_type"] == "water":
+                water_count += 1
+            elif event_day == day and event["event_type"] == "sedentary_start":
+                if event.get("status") == "active":
+                    active_sitting_open = True
+                    continue
+                duration = int(event.get("duration_minutes") or 0)
+                sitting_total += duration
+                if duration >= self.config.sedentary_threshold_minutes:
+                    sedentary_over_limit += duration
+        return {
+            "sleep_minutes": sleep_minutes,
+            "exercise_count": exercise_count,
+            "exercise_minutes": exercise_minutes,
+            "meal_count": meal_count,
+            "water_count": water_count,
+            "sitting_total_minutes": sitting_total,
+            "sedentary_over_limit_minutes": sedentary_over_limit,
+            "active_sitting_open": active_sitting_open,
         }
 
     def _has_event_on_day(self, event_type: str, current: datetime) -> bool:
@@ -560,7 +1607,7 @@ class LifeAgent:
     def _latest_exercise_reminder_log(self, current: datetime) -> dict[str, Any] | None:
         rows = self.repo.conn.execute(
             """SELECT * FROM life_reminder_logs
-               WHERE reminder_type = 'exercise' AND status IN ('scheduled', 'sending')
+               WHERE reminder_type = 'exercise' AND status IN ('scheduled', 'sending', 'sent', 'failed')
                ORDER BY scheduled_for DESC, rowid DESC"""
         ).fetchall()
         for row in rows:
@@ -568,6 +1615,31 @@ class LifeAgent:
             if scheduled.date() == current.date():
                 return self.repo._reminder_row_to_dict(row)
         return None
+
+    def _short_retry_payload(self, reminder_type: str, current: datetime) -> dict[str, Any] | None:
+        row = self.repo.conn.execute(
+            """SELECT * FROM life_reminder_logs
+               WHERE reminder_type = ? AND status = 'failed'
+               ORDER BY scheduled_for DESC, rowid DESC
+               LIMIT 1""",
+            (reminder_type,),
+        ).fetchone()
+        if not row:
+            return None
+        item = self.repo._reminder_row_to_dict(row)
+        scheduled = _parse_datetime(item["scheduled_for"])
+        if scheduled.date() != current.date():
+            return None
+        elapsed_seconds = _seconds_between(scheduled, current)
+        if elapsed_seconds < 60 or elapsed_seconds > 5 * 60:
+            return None
+        retry_count = int((item.get("payload_json") or {}).get("retry_count") or 0)
+        if retry_count >= 2:
+            return None
+        return {
+            "retry_count": retry_count + 1,
+            "retry_of": item["id"],
+        }
 
     def _has_recent_event(
         self,
@@ -586,6 +1658,59 @@ class LifeAgent:
             if 0 <= elapsed_seconds <= minutes * 60:
                 return True
         return False
+
+    def _has_recent_reminder_log(
+        self,
+        reminder_type: str,
+        current: datetime,
+        *,
+        minutes: int,
+    ) -> bool:
+        rows = self.repo.conn.execute(
+            """SELECT scheduled_for FROM life_reminder_logs
+               WHERE reminder_type = ? AND status IN ('scheduled', 'sending', 'sent', 'failed')""",
+            (reminder_type,),
+        ).fetchall()
+        for row in rows:
+            scheduled = _parse_datetime(row["scheduled_for"])
+            elapsed_seconds = _seconds_between(scheduled, current)
+            if 0 <= elapsed_seconds < minutes * 60:
+                return True
+        return False
+
+    def _has_active_reminder_log(self, dedupe_key: str) -> bool:
+        row = self.repo.conn.execute(
+            """SELECT id FROM life_reminder_logs
+               WHERE dedupe_key = ? AND status IN ('scheduled', 'sending')
+               LIMIT 1""",
+            (dedupe_key,),
+        ).fetchone()
+        return row is not None
+
+    def _has_any_reminder_log(self, dedupe_key: str) -> bool:
+        row = self.repo.conn.execute(
+            "SELECT id FROM life_reminder_logs WHERE dedupe_key = ? LIMIT 1",
+            (dedupe_key,),
+        ).fetchone()
+        return row is not None
+
+    def _has_fresh_pending_knowledge_choice(self, current: datetime) -> bool:
+        row = self.repo.conn.execute(
+            """SELECT created_at, expires_at FROM pending_questions
+               WHERE status = 'pending' AND agent_type IN ('theme', 'garden')
+               ORDER BY datetime(replace(substr(created_at, 1, 19), 'T', ' ')) DESC
+               LIMIT 1"""
+        ).fetchone()
+        if not row:
+            return False
+        try:
+            created_at = _parse_datetime(row["created_at"])
+            expires_at = _parse_datetime(row["expires_at"])
+        except ValueError:
+            return False
+        if current > expires_at:
+            return False
+        return 0 <= _seconds_between(created_at, current) <= 5 * 60
 
 
 def _recorded(event: dict[str, Any], chat_preview: str) -> dict[str, Any]:
@@ -607,12 +1732,25 @@ def _parse_datetime(value: str) -> datetime:
     return parsed
 
 
+def _parse_optional_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return _parse_datetime(value.strip())
+    except ValueError:
+        return None
+
+
 def _now() -> datetime:
     return datetime.now().astimezone()
 
 
 def _fmt_time(value: datetime) -> str:
     return value.strftime("%H:%M")
+
+
+def _fmt_month_day_time(value: datetime) -> str:
+    return value.strftime("%m-%d %H:%M")
 
 
 def _fmt_duration(minutes: int) -> str:
@@ -626,6 +1764,49 @@ def _fmt_duration(minutes: int) -> str:
 
 def _duration_minutes_between(start: datetime, end: datetime) -> int:
     return max(0, round(_seconds_between(start, end) / 60))
+
+
+def _days_between(start: datetime, end: datetime) -> int:
+    return max(1, round(_seconds_between(start, end) / 86400))
+
+
+def _date_anchor(value: datetime) -> datetime:
+    return value.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _append_text(existing: str, addition: str) -> str:
+    existing = existing.strip()
+    addition = addition.strip()
+    if not existing:
+        return addition
+    if not addition or addition in existing:
+        return existing
+    return f"{existing}；{addition}"
+
+
+def _next_midnight(value: datetime) -> datetime:
+    return _date_anchor(value) + timedelta(days=1)
+
+
+def _week_bounds(value: datetime) -> tuple[str, str]:
+    week_start = value.date() - timedelta(days=value.weekday())
+    week_end = week_start + timedelta(days=6)
+    return week_start.isoformat(), week_end.isoformat()
+
+
+def _date_range(start: str, end: str) -> list[str]:
+    start_date = datetime.fromisoformat(start).date()
+    end_date = datetime.fromisoformat(end).date()
+    days: list[str] = []
+    current = start_date
+    while current <= end_date:
+        days.append(current.isoformat())
+        current += timedelta(days=1)
+    return days
+
+
+def _date_key(value: str) -> str:
+    return _parse_datetime(value).date().isoformat()
 
 
 def _seconds_between(start: datetime, end: datetime) -> float:

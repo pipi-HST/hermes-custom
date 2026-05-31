@@ -142,6 +142,8 @@ def test_hermes_life_tools_registered():
     assert tools["life_tick"].toolset == "personal-assistant"
     record_description = tools["record_life_event"].schema.get("description", "")
     assert "生活" in record_description
+    assert "长期决定" in record_description
+    assert "补充下次复盘时间" in record_description
     assert "不要用于知识笔记" in record_description
     assert "手动状态查询" in record_description
     assert "dry_run" in tools["life_tick"].schema.get("parameters", {}).get("properties", {})
@@ -158,6 +160,8 @@ def test_runtime_prompt_prioritizes_life_voice_records_over_capture():
     prompt = config.get("agent", {}).get("system_prompt", "")
 
     assert "Life routing has priority over capture_content" in prompt
+    assert "long-term decisions" in prompt
+    assert "review time follow-ups" in prompt
     assert "Clear life/health records" in prompt
     assert prompt.index("Life routing has priority over capture_content") < prompt.index("Clear life/health records")
 

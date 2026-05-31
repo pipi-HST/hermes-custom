@@ -45,8 +45,10 @@ def _load_life_config(config_path: Path) -> LifeConfig:
     with config_path.open() as f:
         cfg = yaml.safe_load(f) or {}
     life_cfg = cfg.get("life", {}) or {}
+    default_log_path = Path(__file__).parent.parent / "data" / "life.log"
     return LifeConfig(
         notifications_enabled=bool(life_cfg.get("notifications_enabled", False)),
+        log_path=str(life_cfg.get("log_path") or default_log_path),
     )
 
 
@@ -111,6 +113,24 @@ def life_tick(now: str = "", dry_run: bool = True) -> dict:
         meta={
             **result.get("meta", {}),
             "selected_reminder_type": selected.get("reminder_type", ""),
+        },
+    )
+
+
+def reconcile_life_delivery(completed_at: str, delivery_error: str = "") -> dict:
+    """Reconcile the previous cron delivery result into Life reminder logs."""
+    agent = _init()
+    result = agent.reconcile_delivery_result(
+        completed_at=completed_at,
+        delivery_error=delivery_error or "",
+    )
+    return success_envelope(
+        agent="life",
+        intent="reconcile_life_delivery",
+        chat_preview="Life Assistant delivery state reconciled.",
+        meta={
+            "should_notify": False,
+            **result,
         },
     )
 

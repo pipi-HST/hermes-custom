@@ -44,8 +44,69 @@ def test_parser_extracts_meal_without_keyword_enum() -> None:
 
     assert intent.intent == "record_event"
     assert intent.event_type == "meal"
+    assert intent.occurred_at == ""
     assert intent.payload["meal_slot"] == "lunch"
     assert intent.payload["content"] == "腰果饼干"
+    assert intent.payload["meal_time_precision"] == "missing"
+
+
+def test_parser_extracts_explicit_meal_time() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "12点半午饭吃了腰果饼干",
+        received_at=datetime.fromisoformat("2026-05-30T16:20:00+08:00"),
+    )
+
+    assert intent.intent == "record_event"
+    assert intent.event_type == "meal"
+    assert intent.occurred_at == "2026-05-30T12:30:00+08:00"
+    assert intent.payload["meal_slot"] == "lunch"
+    assert intent.payload["content"] == "腰果饼干"
+    assert intent.payload["meal_time_precision"] == "exact"
+
+
+def test_parser_treats_meal_slot_time_phrase_as_pending_time_update() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "午餐时间是下午两点",
+        received_at=datetime.fromisoformat("2026-05-31T15:13:29+08:00"),
+    )
+
+    assert intent.intent == "modify_latest"
+    assert intent.event_type == ""
+    assert intent.payload["meal_occurred_at"] == "2026-05-31T14:00:00+08:00"
+    assert intent.payload["meal_slot"] == "lunch"
+
+
+def test_parser_treats_named_drink_with_meal_context_as_meal() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "中午还喝了茉莉乌龙茶",
+        received_at=datetime.fromisoformat("2026-05-31T14:05:00+08:00"),
+    )
+
+    assert intent.intent == "record_event"
+    assert intent.event_type == "meal"
+    assert intent.occurred_at == ""
+    assert intent.payload["meal_slot"] == "lunch"
+    assert intent.payload["content"] == "茉莉乌龙茶"
+    assert intent.payload["meal_item_kind"] == "beverage"
+    assert intent.payload["meal_time_precision"] == "missing"
+
+
+def test_parser_keeps_explicit_water_as_water() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "喝了一杯水",
+        received_at=datetime.fromisoformat("2026-05-31T14:05:00+08:00"),
+    )
+
+    assert intent.intent == "record_event"
+    assert intent.event_type == "water"
 
 
 def test_parser_keeps_manual_status_query_out_of_records() -> None:
@@ -131,6 +192,90 @@ def test_parser_extracts_exercise_time_without_plan_keyword() -> None:
 
     assert intent.intent == "reschedule_exercise"
     assert intent.scheduled_for == "2026-05-30T20:00:00+08:00"
+
+
+def test_parser_treats_tonight_exercise_time_as_evening() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "今晚八点再运动",
+        received_at=datetime.fromisoformat("2026-05-31T14:54:40+08:00"),
+    )
+
+    assert intent.intent == "reschedule_exercise"
+    assert intent.scheduled_for == "2026-05-31T20:00:00+08:00"
+
+
+def test_parser_extracts_explicit_long_term_decision() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "长期决定：未来三个月优先打磨 Life Assistant",
+        received_at=datetime.fromisoformat("2026-05-31T16:00:00+08:00"),
+    )
+
+    assert intent.intent == "record_long_term_decision"
+    assert intent.payload["content"] == "未来三个月优先打磨 Life Assistant"
+    assert "review_interval_days" not in intent.payload
+    assert "next_review_at" not in intent.payload
+
+
+def test_parser_lets_llm_supply_long_term_decision_review_time() -> None:
+    def fallback(text, received_at):
+        assert text == "长期决定：未来三个月优先打磨 Life Assistant，下个月15号晚上8点复盘"
+        return LifeIntent(
+            intent="record_long_term_decision",
+            payload={
+                "content": "未来三个月优先打磨 Life Assistant",
+                "next_review_at": "2026-06-15T20:00:00+08:00",
+            },
+        )
+
+    parser = LifeIntentParser(llm_fallback=fallback)
+
+    intent = parser.parse(
+        "长期决定：未来三个月优先打磨 Life Assistant，下个月15号晚上8点复盘",
+        received_at=datetime.fromisoformat("2026-05-31T16:00:00+08:00"),
+    )
+
+    assert intent.intent == "record_long_term_decision"
+    assert intent.payload["content"] == "未来三个月优先打磨 Life Assistant"
+    assert intent.payload["next_review_at"] == "2026-06-15T20:00:00+08:00"
+
+
+def test_parser_extracts_long_term_decision_follow_up_review_time() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "6月15日晚上8点复盘",
+        received_at=datetime.fromisoformat("2026-05-31T17:53:46+08:00"),
+    )
+
+    assert intent.intent == "set_long_term_decision_review_time"
+    assert intent.payload["next_review_at"] == "2026-06-15T20:00:00+08:00"
+
+
+def test_parser_extracts_long_term_decision_review_reply() -> None:
+    parser = LifeIntentParser()
+
+    keep = parser.parse(
+        "继续有效",
+        received_at=datetime.fromisoformat("2026-06-30T21:00:00+08:00"),
+    )
+    adjust = parser.parse(
+        "调整为：未来三个月优先跑通 Life Assistant 的真实使用",
+        received_at=datetime.fromisoformat("2026-06-30T21:01:00+08:00"),
+    )
+    close = parser.parse(
+        "关闭这个决定",
+        received_at=datetime.fromisoformat("2026-06-30T21:02:00+08:00"),
+    )
+
+    assert keep.intent == "review_long_term_decision"
+    assert keep.payload["review_note"] == "继续有效"
+    assert adjust.intent == "review_long_term_decision"
+    assert adjust.payload["new_content"] == "未来三个月优先跑通 Life Assistant 的真实使用"
+    assert close.intent == "close_long_term_decision"
 
 
 def test_parser_uses_fallback_only_when_rules_do_not_match() -> None:

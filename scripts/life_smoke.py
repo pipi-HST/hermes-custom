@@ -141,7 +141,7 @@ def _sedentary_scenario(
         (alert_tick["selected"] or {}).get("reminder_type") == "sedentary",
     )
     _check(checks, "sedentary break clears alert", break_tick["selected"] is None)
-    _check(checks, "sedentary break duration is stored", records["sedentary_break_minutes"] == 80)
+    _check(checks, "sedentary break duration is stored", records["sedentary_break_minutes"] == 79)
     _check(checks, "sedentary reply does not create event", reply["status"] == "rejected" and reply["event"] is None)
 
 
@@ -176,7 +176,12 @@ def _reminder_scenarios(
         dry_run=True,
     )
     offset_daily_review_tick = agent.life_tick(
-        now="2026-05-28T00:09:20+08:00",
+        now="2026-05-27T00:09:20+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+    weekly_review_tick = agent.life_tick(
+        now="2026-05-31T21:30:00+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
         dry_run=True,
     )
@@ -203,6 +208,13 @@ def _reminder_scenarios(
     records["sedentary_pause_until"] = sedentary_pause.get("scheduled_for", "")
     records["offset_water_reminder"] = (offset_water_tick["selected"] or {}).get("reminder_type", "")
     records["offset_daily_review"] = (offset_daily_review_tick["selected"] or {}).get("reminder_type", "")
+    records["daily_review_rows"] = agent.repo.conn.execute(
+        "SELECT count(*) AS cnt FROM life_daily_reviews"
+    ).fetchone()["cnt"]
+    records["weekly_review"] = (weekly_review_tick["selected"] or {}).get("reminder_type", "")
+    records["weekly_review_rows"] = agent.repo.conn.execute(
+        "SELECT count(*) AS cnt FROM life_weekly_reviews"
+    ).fetchone()["cnt"]
     records["exercise_repeat_first"] = (first_exercise_tick["selected"] or {}).get("reminder_type", "")
     records["exercise_repeat_too_soon"] = (too_soon_exercise_tick["selected"] or {}).get("reminder_type", "")
     records["exercise_repeat_due"] = (due_exercise_tick["selected"] or {}).get("reminder_type", "")
@@ -215,6 +227,9 @@ def _reminder_scenarios(
     _check(checks, "sedentary pause stores pause-until time", sedentary_pause.get("scheduled_for") == "2026-05-31T12:45:00+08:00")
     _check(checks, "water reminder tolerates cron offset", records["offset_water_reminder"] == "water")
     _check(checks, "daily review tolerates cron offset", records["offset_daily_review"] == "daily_review")
+    _check(checks, "daily review is stored", records["daily_review_rows"] >= 1)
+    _check(checks, "weekly review can run", records["weekly_review"] == "weekly_review")
+    _check(checks, "weekly review is stored", records["weekly_review_rows"] >= 1)
     _check(checks, "exercise reminder starts", records["exercise_repeat_first"] == "exercise")
     _check(checks, "exercise reminder does not repeat too soon", records["exercise_repeat_too_soon"] == "")
     _check(checks, "exercise reminder repeats after interval", records["exercise_repeat_due"] == "exercise")

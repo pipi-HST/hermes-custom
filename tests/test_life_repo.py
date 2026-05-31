@@ -123,3 +123,46 @@ def test_life_repo_dedupe_reminder_logs(life_repo: LifeRepo) -> None:
 
     assert first["id"] == second["id"]
     assert life_repo.count_reminder_logs("water") == 1
+
+
+def test_life_repo_lock_rejects_active_holder_and_allows_expired_holder(life_repo: LifeRepo) -> None:
+    first = life_repo.acquire_lock(
+        name="life_tick",
+        owner="worker-a",
+        now="2026-05-30T10:00:00+08:00",
+        ttl_seconds=50,
+    )
+    second = life_repo.acquire_lock(
+        name="life_tick",
+        owner="worker-b",
+        now="2026-05-30T10:00:10+08:00",
+        ttl_seconds=50,
+    )
+    expired = life_repo.acquire_lock(
+        name="life_tick",
+        owner="worker-b",
+        now="2026-05-30T10:01:00+08:00",
+        ttl_seconds=50,
+    )
+
+    row = life_repo.conn.execute("SELECT owner FROM life_locks WHERE name = 'life_tick'").fetchone()
+    assert first is True
+    assert second is False
+    assert expired is True
+    assert row["owner"] == "worker-b"
+
+
+def test_life_repo_lock_release_respects_owner(life_repo: LifeRepo) -> None:
+    life_repo.acquire_lock(
+        name="life_tick",
+        owner="worker-a",
+        now="2026-05-30T10:00:00+08:00",
+        ttl_seconds=50,
+    )
+
+    wrong_owner = life_repo.release_lock(name="life_tick", owner="worker-b")
+    right_owner = life_repo.release_lock(name="life_tick", owner="worker-a")
+
+    assert wrong_owner is False
+    assert right_owner is True
+    assert life_repo.conn.execute("SELECT * FROM life_locks WHERE name = 'life_tick'").fetchone() is None

@@ -62,6 +62,21 @@ CREATE TABLE IF NOT EXISTS life_locks (
 )
 """
 
+CREATE_LIFE_INTERACTION_CONTEXTS_TABLE = """
+CREATE TABLE IF NOT EXISTS life_interaction_contexts (
+    id TEXT PRIMARY KEY,
+    context_type TEXT NOT NULL,
+    target_type TEXT NOT NULL DEFAULT '',
+    target_id TEXT NOT NULL DEFAULT '',
+    expected_reply_kind TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,
+    resolved_at TEXT
+)
+"""
+
 CREATE_LIFE_DAILY_REVIEWS_TABLE = """
 CREATE TABLE IF NOT EXISTS life_daily_reviews (
     id TEXT PRIMARY KEY,
@@ -87,6 +102,33 @@ CREATE TABLE IF NOT EXISTS life_weekly_reviews (
 )
 """
 
+CREATE_LIFE_LONG_TERM_DECISIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS life_long_term_decisions (
+    id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    review_interval_days INTEGER NOT NULL DEFAULT 0,
+    next_review_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    closed_at TEXT
+)
+"""
+
+CREATE_LIFE_DECISION_REVIEWS_TABLE = """
+CREATE TABLE IF NOT EXISTS life_decision_reviews (
+    id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    reviewed_at TEXT NOT NULL,
+    review_note TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    next_review_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 
 def init_life_db(db_path: str) -> sqlite3.Connection:
     """Initialize the shared Hermes DB with Life Assistant tables."""
@@ -101,6 +143,9 @@ def migrate_life_schema(conn: sqlite3.Connection) -> None:
     conn.execute(CREATE_LIFE_REMINDER_RULES_TABLE)
     conn.execute(CREATE_LIFE_REMINDER_LOGS_TABLE)
     conn.execute(CREATE_LIFE_LOCKS_TABLE)
+    conn.execute(CREATE_LIFE_INTERACTION_CONTEXTS_TABLE)
     conn.execute(CREATE_LIFE_DAILY_REVIEWS_TABLE)
     conn.execute(CREATE_LIFE_WEEKLY_REVIEWS_TABLE)
+    conn.execute(CREATE_LIFE_LONG_TERM_DECISIONS_TABLE)
+    conn.execute(CREATE_LIFE_DECISION_REVIEWS_TABLE)
     conn.commit()

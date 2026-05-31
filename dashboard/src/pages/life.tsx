@@ -2,10 +2,15 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   fetchLifeEvents,
   fetchLifeReminders,
+  fetchLifeReviews,
   fetchLifeSummary,
+  type LifeDailyReview,
   type LifeEvent,
+  type LifeLongTermDecision,
   type LifeReminder,
+  type LifeReviews,
   type LifeSummary,
+  type LifeWeeklyReview,
 } from '../lib/lifeApi'
 
 const EVENT_LABELS: Record<string, string> = {
@@ -24,6 +29,8 @@ const REMINDER_LABELS: Record<string, string> = {
   water: '喝水提醒',
   sleep: '早睡提醒',
   daily_review: '日复盘',
+  weekly_review: '周复盘',
+  long_term_decision_review: '长期决定复盘',
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -34,6 +41,7 @@ const STATUS_LABELS: Record<string, string> = {
   scheduled: '已安排',
   sending: '已触发',
   skipped: '已跳过',
+  completed: '已完成',
   paused: '已暂停',
   failed: '失败',
 }
@@ -91,6 +99,19 @@ function formatTime(value?: string): string {
   return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
+function formatDateRange(start?: string, end?: string): string {
+  if (!start || !end) return ''
+  return `${start} 至 ${end}`
+}
+
+function formatDateTime(value?: string): string {
+  if (!value) return ''
+  const date = parseTime(value)
+  if (!date) return value.slice(0, 16)
+  const day = date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+  return `${day} ${formatTime(value)}`
+}
+
 function formatClockSeconds(seconds: number): string {
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
@@ -131,12 +152,21 @@ function payloadText(payload?: Record<string, unknown>): string {
   return JSON.stringify(payload)
 }
 
+function payloadString(payload: Record<string, unknown> | undefined, key: string): string {
+  const value = payload?.[key]
+  return typeof value === 'string' ? value : ''
+}
+
 function mealSlotLabel(slot: unknown): string {
   if (slot === 'breakfast') return '早餐'
   if (slot === 'lunch') return '午饭'
   if (slot === 'dinner') return '晚饭'
   if (slot === 'snack') return '加餐'
   return '饮食'
+}
+
+function mealHasExactTime(meal: LifeEvent): boolean {
+  return meal.payload_json.meal_time_precision !== 'missing'
 }
 
 function eventText(event: LifeEvent): string {
@@ -179,6 +209,19 @@ function sleepRows(events: LifeEvent[]): SleepSession[] {
   })
 }
 
+function isUserExercisePlan(reminder: LifeReminder): boolean {
+  if (reminder.reminder_type !== 'exercise') return false
+  if (payloadString(reminder.payload_json, 'source') === 'user_reschedule') return true
+  if (reminder.dedupe_key.startsWith('exercise_reschedule:')) return true
+  return reminder.status === 'skipped' || reminder.dedupe_key.startsWith('exercise_skip:')
+}
+
+function exercisePlanDetail(plan: LifeReminder): string {
+  if (plan.status === 'skipped') return '今天不练'
+  if (plan.status === 'completed') return payloadString(plan.payload_json, 'exercise_type') || '已完成'
+  return payloadString(plan.payload_json, 'exercise_type') || payloadString(plan.payload_json, 'content') || '用户指定时间'
+}
+
 function buildSittingRows(events: LifeEvent[], activeSitting: LifeEvent | null): SittingRow[] {
   return events
     .filter(event => event.event_type === 'sedentary_start')
@@ -205,8 +248,11 @@ export default function LifePage() {
   const [summary, setSummary] = useState<LifeSummary | null>(null)
   const [events, setEvents] = useState<LifeEvent[]>([])
   const [reminders, setReminders] = useState<LifeReminder[]>([])
+  const [reviews, setReviews] = useState<LifeReviews | null>(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
+  const [lastSyncedAt, setLastSyncedAt] = useState('')
   const [clock, setClock] = useState(() => Date.now())
 
   useEffect(() => {
@@ -216,25 +262,53 @@ export default function LifePage() {
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
-    setError('')
-    Promise.all([
-      fetchLifeSummary(date),
-      fetchLifeEvents(date),
-      fetchLifeReminders(date),
-    ]).then(([nextSummary, nextEvents, nextReminders]) => {
+    let inFlight = false
+
+    const refresh = (showLoading: boolean) => {
+      if (inFlight) return
+      inFlight = true
+      if (showLoading) {
+        setLoading(true)
+      } else {
+        setRefreshing(true)
+      }
+      setError('')
+      Promise.all([
+        fetchLifeSummary(date),
+        fetchLifeEvents(date),
+        fetchLifeReminders(date),
+        fetchLifeReviews(date),
+      ]).then(([nextSummary, nextEvents, nextReminders, nextReviews]) => {
+        if (cancelled) return
+        setSummary(nextSummary)
+        setEvents(nextEvents)
+        setReminders(nextReminders)
+        setReviews(nextReviews)
+        setLastSyncedAt(new Date().toISOString())
+      }).catch(err => {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : 'Life API 请求失败')
+      }).finally(() => {
+        if (cancelled) return
+        inFlight = false
+        setLoading(false)
+        setRefreshing(false)
+      })
+    }
+
+    const refreshIfVisible = () => {
       if (cancelled) return
-      setSummary(nextSummary)
-      setEvents(nextEvents)
-      setReminders(nextReminders)
-      setLoading(false)
-    }).catch(err => {
-      if (cancelled) return
-      setError(err instanceof Error ? err.message : 'Life API 请求失败')
-      setLoading(false)
-    })
+      if (document.visibilityState === 'visible') refresh(false)
+    }
+
+    refresh(true)
+    const pollingTimer = window.setInterval(refreshIfVisible, 30000)
+    document.addEventListener('visibilitychange', refreshIfVisible)
+
     return () => {
       cancelled = true
+      window.clearInterval(pollingTimer)
+      document.removeEventListener('visibilitychange', refreshIfVisible)
     }
   }, [date])
 
@@ -250,7 +324,7 @@ export default function LifePage() {
   const meals = events.filter(event => event.event_type === 'meal')
   const water = events.filter(event => event.event_type === 'water')
   const exercises = events.filter(event => event.event_type === 'exercise')
-  const exercisePlans = reminders.filter(reminder => reminder.reminder_type === 'exercise')
+  const exercisePlans = reminders.filter(isUserExercisePlan)
 
   return (
     <main className="min-h-screen bg-[#f6f2e9] text-neutral-950 dark:bg-neutral-950 dark:text-neutral-100">
@@ -263,6 +337,9 @@ export default function LifePage() {
             <h1 className="mt-1 text-2xl font-semibold">我的生活活动日志</h1>
             <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
               {date} · 只读生活记录
+            </p>
+            <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-500">
+              {lastSyncedAt ? `最后同步 ${formatTime(lastSyncedAt)}${refreshing ? ' · 同步中' : ''}` : '等待首次同步'}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -303,6 +380,8 @@ export default function LifePage() {
               rows={sittingRows}
             />
 
+            <ReviewSection reviews={reviews} />
+
             <div className="grid gap-4 lg:grid-cols-2">
               <SleepSection rows={sleepSessions} />
               <ExerciseSection exercises={exercises} plans={exercisePlans} />
@@ -334,6 +413,76 @@ export default function LifePage() {
         )}
       </div>
     </main>
+  )
+}
+
+function ReviewSection({ reviews }: { reviews: LifeReviews | null }) {
+  const daily = reviews?.daily_review || null
+  const weekly = reviews?.weekly_review || null
+  const decisions = reviews?.long_term_decisions || []
+  const count = (daily ? 1 : 0) + (weekly ? 1 : 0) + decisions.length
+
+  return (
+    <ModuleSection title="定期复盘" meta={count ? `${count} 条` : '暂无'}>
+      {!daily && !weekly && decisions.length === 0 ? (
+        <EmptyState text="这一天还没有可查看的复盘结果。" />
+      ) : (
+        <div className="grid gap-2 lg:grid-cols-2">
+          {daily && <DailyReviewCard review={daily} />}
+          {weekly && <WeeklyReviewCard review={weekly} />}
+          {decisions.map(decision => (
+            <LongTermDecisionCard key={decision.id} decision={decision} />
+          ))}
+        </div>
+      )}
+    </ModuleSection>
+  )
+}
+
+function DailyReviewCard({ review }: { review: LifeDailyReview }) {
+  return (
+    <div className="rounded-md border border-stone-200 px-3 py-3 dark:border-neutral-800">
+      <p className="text-sm font-semibold">日复盘 · {review.review_date}</p>
+      <p className="mt-2 break-words text-sm leading-6 text-neutral-700 dark:text-neutral-300">{review.summary}</p>
+      <p className="mt-2 text-xs text-neutral-500">生成于 {formatTime(review.created_at)}</p>
+    </div>
+  )
+}
+
+function WeeklyReviewCard({ review }: { review: LifeWeeklyReview }) {
+  return (
+    <div className="rounded-md border border-stone-200 px-3 py-3 dark:border-neutral-800">
+      <p className="text-sm font-semibold">周复盘 · {formatDateRange(review.week_start, review.week_end)}</p>
+      <p className="mt-2 break-words text-sm leading-6 text-neutral-700 dark:text-neutral-300">{review.summary}</p>
+      {review.recommendations_json.length > 0 && (
+        <ul className="mt-2 space-y-1 text-sm text-neutral-600 dark:text-neutral-400">
+          {review.recommendations_json.map(item => (
+            <li key={item} className="break-words">{item}</li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-2 text-xs text-neutral-500">生成于 {formatTime(review.created_at)}</p>
+    </div>
+  )
+}
+
+function LongTermDecisionCard({ decision }: { decision: LifeLongTermDecision }) {
+  const latest = decision.latest_review
+  const nextReviewText = decision.next_review_at
+    ? `下次复盘 ${formatDateTime(decision.next_review_at)}`
+    : '待补下次复盘时间'
+  const intervalText = decision.review_interval_days > 0
+    ? ` · 间隔 ${decision.review_interval_days} 天`
+    : ''
+  return (
+    <div className="rounded-md border border-stone-200 px-3 py-3 dark:border-neutral-800">
+      <p className="text-sm font-semibold">长期决定</p>
+      <p className="mt-2 break-words text-sm leading-6 text-neutral-700 dark:text-neutral-300">{decision.content}</p>
+      <div className="mt-2 space-y-1 text-xs text-neutral-500">
+        <p>{nextReviewText}{intervalText}</p>
+        {latest && <p className="break-words">上次复盘：{latest.review_note}</p>}
+      </div>
+    </div>
   )
 }
 
@@ -415,14 +564,21 @@ function MealSection({ meals }: { meals: LifeEvent[] }) {
     <ModuleSection title="饮食记录" meta={`${meals.length} 条`}>
       {meals.length === 0 ? (
         <EmptyState text="这一天还没有饮食记录。" />
-      ) : meals.map(meal => (
-        <RecordRow
-          key={meal.id}
-          title={`${formatTime(meal.occurred_at)} · ${mealSlotLabel(meal.payload_json.meal_slot)}`}
-          detail={String(meal.payload_json.content || eventText(meal))}
-          note={meal.raw_text}
-        />
-      ))}
+      ) : meals.map(meal => {
+        const detail = payloadString(meal.payload_json, 'content') || eventText(meal)
+        const notes = []
+        if (!mealHasExactTime(meal)) notes.push('时间未填写')
+        return (
+          <RecordRow
+            key={meal.id}
+            title={mealHasExactTime(meal)
+              ? `${formatTime(meal.occurred_at)} · ${mealSlotLabel(meal.payload_json.meal_slot)}`
+              : mealSlotLabel(meal.payload_json.meal_slot)}
+            detail={detail}
+            note={notes.join(' · ')}
+          />
+        )
+      })}
     </ModuleSection>
   )
 }
@@ -454,8 +610,8 @@ function ExerciseSection({
     ...plans.map(plan => ({
       id: plan.id,
       title: `${formatTime(plan.scheduled_for)} · 运动安排`,
-      detail: payloadText(plan.payload_json) || statusLabel(plan.status),
-      note: plan.status === 'skipped' ? '今天不练' : '等待完成记录',
+      detail: exercisePlanDetail(plan),
+      note: statusLabel(plan.status),
     })),
     ...exercises.map(exercise => ({
       id: exercise.id,
