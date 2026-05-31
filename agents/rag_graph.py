@@ -1,0 +1,310 @@
+"""Deterministic one-hop graph expansion for RAG retrieval."""
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+from agents.embedder import cosine_similarity
+from agents.managed_sections import is_managed_section_title
+from agents.markdown_writer import read_note
+from db.embedding_repo import CaptureEmbeddingRepo
+
+_THEME_LINK_RE = re.compile(r"\[\[themes/([^|\]]+)(?:\|([^\]]+))?\]\]")
+
+
+def build_graph_retrieval(
+    conn,
+    *,
+    query_embedding: bytes,
+    seed_hits: list[dict[str, Any]],
+    vault_path: str,
+    final_limit: int = 6,
+    max_garden: int = 3,
+    max_theme: int = 3,
+    max_expanded_captures: int = 20,
+) -> dict[str, Any]:
+    seed_capture_ids = [
+        str(hit.get("id") or hit.get("capture_id") or "")
+        for hit in seed_hits
+        if hit.get("id") or hit.get("capture_id")
+    ]
+    garden_cards = _garden_cards_for_captures(conn, seed_capture_ids, limit=max_garden)
+    linked_card_ids = _linked_card_ids(garden_cards)
+    if linked_card_ids:
+        garden_cards.extend(_garden_cards_by_ids(conn, linked_card_ids, limit=max_garden))
+        garden_cards = _dedupe_by_id(garden_cards)[:max_garden]
+
+    theme_groups = _theme_groups_for_captures(conn, seed_capture_ids, limit=max_theme)
+    theme_pages = _theme_pages_for_captures(seed_hits, vault_path, limit=max_theme)
+    expanded_capture_ids = _expanded_capture_ids(
+        seed_capture_ids,
+        garden_cards,
+        theme_groups,
+        max_expanded_captures,
+    )
+    final_hits = _select_final_hits(
+        conn,
+        query_embedding=query_embedding,
+        seed_hits=seed_hits,
+        expanded_capture_ids=expanded_capture_ids,
+        final_limit=final_limit,
+    )
+    stopped_reason = "no_expansion"
+    if expanded_capture_ids:
+        stopped_reason = "enough_evidence"
+    if len(expanded_capture_ids) >= max_expanded_captures:
+        stopped_reason = "budget"
+    return {
+        "seed_hits": seed_hits,
+        "expanded_garden_cards": garden_cards,
+        "expanded_theme_groups": theme_groups,
+        "expanded_theme_pages": theme_pages,
+        "expanded_capture_ids": expanded_capture_ids,
+        "final_hits": final_hits,
+        "trace": {
+            "seed_count": len(seed_hits),
+            "garden_count": len(garden_cards),
+            "theme_count": len(theme_groups) + len(theme_pages),
+            "expanded_capture_count": len(expanded_capture_ids),
+            "final_count": len(final_hits),
+            "stopped_reason": stopped_reason,
+        },
+    }
+
+
+def _garden_cards_for_captures(
+    conn,
+    capture_ids: list[str],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    wanted = set(capture_ids)
+    if not wanted:
+        return []
+    try:
+        rows = conn.execute(
+            """SELECT id, title, one_liner, core_arguments, knowledge_links, capture_ids
+               FROM garden_cards
+               WHERE status != 'archived'
+               ORDER BY updated_at DESC"""
+        ).fetchall()
+    except Exception:
+        return []
+    cards = []
+    for row in rows:
+        card_capture_ids = _json_list(row["capture_ids"])
+        if wanted & set(card_capture_ids):
+            cards.append(_garden_card_dict(row, card_capture_ids))
+        if len(cards) >= limit:
+            break
+    return cards
+
+
+def _garden_cards_by_ids(conn, card_ids: list[str], *, limit: int) -> list[dict[str, Any]]:
+    if not card_ids:
+        return []
+    placeholders = ",".join("?" for _ in card_ids)
+    try:
+        rows = conn.execute(
+            f"""SELECT id, title, one_liner, core_arguments, knowledge_links, capture_ids
+                FROM garden_cards
+                WHERE id IN ({placeholders}) AND status != 'archived'
+                ORDER BY updated_at DESC""",
+            tuple(card_ids),
+        ).fetchall()
+    except Exception:
+        return []
+    return [_garden_card_dict(row, _json_list(row["capture_ids"])) for row in rows[:limit]]
+
+
+def _theme_groups_for_captures(
+    conn,
+    capture_ids: list[str],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    wanted = set(capture_ids)
+    if not wanted:
+        return []
+    try:
+        rows = conn.execute(
+            """SELECT id, question_text, related_capture_ids, status
+               FROM theme_questions
+               ORDER BY created_at DESC"""
+        ).fetchall()
+    except Exception:
+        return []
+    groups = []
+    for row in rows:
+        related = _json_list(row["related_capture_ids"])
+        if wanted & set(related):
+            groups.append(
+                {
+                    "id": row["id"],
+                    "title": row["question_text"],
+                    "capture_ids": related,
+                    "status": row["status"],
+                }
+            )
+        if len(groups) >= limit:
+            break
+    return groups
+
+
+def _theme_pages_for_captures(
+    seed_hits: list[dict[str, Any]],
+    vault_path: str,
+    *,
+    limit: int,
+) -> list[dict[str, str]]:
+    vault = Path(vault_path).expanduser()
+    pages: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for hit in seed_hits:
+        note = read_note(vault, str(hit.get("file_path") or ""))
+        if not note:
+            continue
+        frontmatter, body = note
+        for name in _frontmatter_theme_names(frontmatter):
+            _append_theme_page(pages, seen, name, f"themes/{name}.md")
+        for match in _THEME_LINK_RE.finditer(body):
+            target = match.group(1).strip()
+            title = (match.group(2) or target).strip()
+            _append_theme_page(pages, seen, title, f"themes/{target}.md")
+        if len(pages) >= limit:
+            break
+    return pages[:limit]
+
+
+def _select_final_hits(
+    conn,
+    *,
+    query_embedding: bytes,
+    seed_hits: list[dict[str, Any]],
+    expanded_capture_ids: list[str],
+    final_limit: int,
+) -> list[dict[str, Any]]:
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for hit in seed_hits:
+        capture_id = str(hit.get("id") or hit.get("capture_id") or "")
+        matched_kind = hit.get("matched_kind") or hit.get("kind") or ""
+        if not capture_id or not matched_kind:
+            continue
+        item = dict(hit)
+        item["id"] = capture_id
+        item["matched_kind"] = matched_kind
+        key = (capture_id, str(item.get("section_id") or ""))
+        by_key[key] = item
+
+    repo = CaptureEmbeddingRepo(conn)
+    for capture_id in expanded_capture_ids:
+        for row in repo.list_by_capture(capture_id):
+            if row.get("kind") == "section" and is_managed_section_title(
+                row.get("section_title", "")
+            ):
+                continue
+            if row.get("kind") not in ("identity", "section"):
+                continue
+            item = dict(row)
+            item["id"] = item["capture_id"]
+            item["matched_kind"] = item["kind"]
+            item["score"] = cosine_similarity(query_embedding, item["embedding"])
+            key = (item["capture_id"], item.get("section_id") or "")
+            existing = by_key.get(key)
+            if existing is None or item["score"] > existing.get("score", 0):
+                by_key[key] = item
+
+    ranked = sorted(by_key.values(), key=lambda item: item.get("score", 0), reverse=True)
+    return ranked[:final_limit]
+
+
+def _expanded_capture_ids(
+    seed_capture_ids: list[str],
+    garden_cards: list[dict[str, Any]],
+    theme_groups: list[dict[str, Any]],
+    limit: int,
+) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for capture_id in seed_capture_ids:
+        _append_capture_id(ordered, seen, capture_id, limit)
+    for card in garden_cards:
+        for capture_id in card.get("capture_ids", []):
+            _append_capture_id(ordered, seen, str(capture_id), limit)
+    for group in theme_groups:
+        for capture_id in group.get("capture_ids", []):
+            _append_capture_id(ordered, seen, str(capture_id), limit)
+    return ordered
+
+
+def _garden_card_dict(row, capture_ids: list[str]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "one_liner": row["one_liner"],
+        "core_arguments": _json_list(row["core_arguments"]),
+        "knowledge_links": _json_list(row["knowledge_links"]),
+        "capture_ids": capture_ids,
+    }
+
+
+def _linked_card_ids(cards: list[dict[str, Any]]) -> list[str]:
+    linked = []
+    for card in cards:
+        for card_id in card.get("knowledge_links", []):
+            if isinstance(card_id, str) and card_id:
+                linked.append(card_id)
+    return linked
+
+
+def _dedupe_by_id(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    result = []
+    for item in items:
+        item_id = item.get("id")
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        result.append(item)
+    return result
+
+
+def _frontmatter_theme_names(frontmatter: dict[str, Any]) -> list[str]:
+    linked = frontmatter.get("linked_themes") or []
+    if isinstance(linked, str):
+        linked = [linked]
+    return [str(item).strip() for item in linked if str(item).strip()]
+
+
+def _append_theme_page(
+    pages: list[dict[str, str]],
+    seen: set[str],
+    title: str,
+    path: str,
+) -> None:
+    if path in seen:
+        return
+    seen.add(path)
+    pages.append({"title": title, "path": path})
+
+
+def _append_capture_id(
+    ordered: list[str],
+    seen: set[str],
+    capture_id: str,
+    limit: int,
+) -> None:
+    if not capture_id or capture_id in seen or len(ordered) >= limit:
+        return
+    seen.add(capture_id)
+    ordered.append(capture_id)
+
+
+def _json_list(text: Any) -> list[Any]:
+    try:
+        value = json.loads(text or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return value if isinstance(value, list) else []

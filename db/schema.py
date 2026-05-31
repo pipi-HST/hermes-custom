@@ -182,6 +182,34 @@ CREATE TABLE IF NOT EXISTS change_log (
 )
 """
 
+CREATE_AGENT_RUNS_TABLE = """
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id TEXT PRIMARY KEY,
+    agent TEXT NOT NULL,
+    intent TEXT NOT NULL,
+    trigger TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'running',
+    input_json TEXT NOT NULL DEFAULT '{}',
+    output_json TEXT NOT NULL DEFAULT '{}',
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    errors_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT
+)
+"""
+
+CREATE_AGENT_RUN_EVENTS_TABLE = """
+CREATE TABLE IF NOT EXISTS agent_run_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 
 def init_db(db_path: str) -> sqlite3.Connection:
     path = Path(db_path)
@@ -193,6 +221,8 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute(CREATE_CAPTURES_TABLE)
     _migrate_captures_table(conn)
     conn.execute(CREATE_CHANGE_LOG_TABLE)
+    conn.execute(CREATE_AGENT_RUNS_TABLE)
+    conn.execute(CREATE_AGENT_RUN_EVENTS_TABLE)
     conn.execute(CREATE_GARDEN_CARDS_TABLE)
     conn.execute(CREATE_GARDEN_DRAFTS_TABLE)
     _migrate_garden_tables(conn)

@@ -11,8 +11,11 @@ from agents.markdown_writer import read_note
 from agents.capture_agent import load_config
 from agents.managed_sections import is_managed_section_title
 from agents.rag_agent import RagAgent, format_answer
+from agents.rag_context import build_rag_context_pack
+from agents.rag_graph import build_graph_retrieval
 from agents.embedder import Embedder
 from bridge.result_envelope import source_ref, success_envelope
+from bridge.run_ledger import run_with_ledger
 from db.embedding_repo import CaptureEmbeddingRepo
 from db.vector_search import search as vector_search
 from db.schema import init_db
@@ -46,14 +49,34 @@ def _init():
 
 def search_knowledge_base(query: str) -> dict:
     config, repo = _init()
+    return run_with_ledger(
+        repo.conn,
+        agent="rag",
+        intent="search_knowledge_base",
+        trigger="wechat",
+        input_ref={"query": query},
+        operation=lambda: _search_knowledge_base(query, config, repo),
+    )
+
+
+def _search_knowledge_base(query: str, config, repo: CaptureRepo) -> dict:
     _log(f"QUERY: {query}")
     logger.info("[RAG] query=%r", query)
 
     embedder = Embedder(api_key=config.qwen_api_key)
     used_fallback = False
     used_index = False
+    graph = None
+    query_embedding = None
     try:
-        results = _indexed_search(query, repo, embedder, limit=5)
+        query_embedding = embedder.embed(query)
+        results = _indexed_search(
+            query,
+            repo,
+            embedder,
+            limit=5,
+            query_embedding=query_embedding,
+        )
         used_index = bool(results)
         _log(f"INDEX: {len(results)} hits")
         logger.info("[RAG] index_search returned %d results", len(results))
@@ -71,6 +94,20 @@ def search_knowledge_base(query: str) -> dict:
             _log(f"VECTOR_FAIL: {e}")
             logger.warning("[RAG] vector_search failed: %s", e)
             results = []
+
+    if results:
+        if query_embedding is None:
+            query_embedding = embedder.embed(query)
+        graph = build_graph_retrieval(
+            repo.conn,
+            query_embedding=query_embedding,
+            seed_hits=results,
+            vault_path=config.vault_path,
+            final_limit=6,
+        )
+        if graph["final_hits"]:
+            results = graph["final_hits"]
+        _log(f"GRAPH: {json.dumps(graph['trace'], ensure_ascii=False)}")
 
     results = [_hydrate_capture(config.vault_path, item) for item in results]
 
@@ -93,13 +130,19 @@ def search_knowledge_base(query: str) -> dict:
     titles = [r.get("title") or r.get("file_path", "?") for r in results]
     _log(f"SOURCES: {json.dumps(titles, ensure_ascii=False)}")
     logger.info("[RAG] passing %d sources to LLM: %s", len(results), titles)
+    context_pack = build_rag_context_pack(
+        repo.conn,
+        capture_hits=results,
+        vault_path=config.vault_path,
+        graph=graph,
+    )
 
     rag = RagAgent(
         llm_api_key=config.llm_api_key,
         llm_model=config.llm_model,
         llm_base_url=config.llm_base_url or "https://api.deepseek.com",
     )
-    resp = rag.query(query, results)
+    resp = rag.query(query, results, context_pack=context_pack)
     _log(f"ANSWER: {len(resp.get('answer', ''))} chars")
     logger.info("[RAG] answer generated (%d chars)", len(resp.get("answer", "")))
 
@@ -128,6 +171,17 @@ def search_knowledge_base(query: str) -> dict:
             "used_index": used_index,
             "used_fallback": used_fallback,
             "result_count": len(results),
+            "context_pack": {
+                "capture_count": context_pack["capture_count"],
+                "garden_count": context_pack["garden_count"],
+                "theme_count": context_pack["theme_count"],
+                "theme_group_count": context_pack.get("theme_group_count", 0),
+            },
+            "graph_trace": (graph or {}).get("trace", {}),
+            "trace": {
+                "retrieval": "indexed" if used_index else "fallback" if used_fallback else "vector",
+                "source_titles": titles,
+            },
         },
     )
 
@@ -138,8 +192,10 @@ def _indexed_search(
     embedder: Embedder,
     *,
     limit: int = 5,
+    query_embedding: bytes | None = None,
 ) -> list[dict]:
-    query_embedding = embedder.embed(query)
+    if query_embedding is None:
+        query_embedding = embedder.embed(query)
     rows = CaptureEmbeddingRepo(repo.conn).search(
         query_embedding,
         kinds=("identity", "section"),

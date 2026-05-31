@@ -126,6 +126,127 @@ def test_synthesize_garden_creates_reviewable_draft_not_card(repo, tmp_path):
     assert not (tmp_path / "garden").exists()
 
 
+def test_synthesize_garden_blocks_clear_duplicate_card(repo, tmp_path):
+    from bridge.garden_bridge import synthesize_garden
+
+    captures_dir = tmp_path / "captures"
+    captures_dir.mkdir()
+    (captures_dir / "cap.md").write_text(
+        "---\ntitle: Agent 素材\nstory: 摘要\n---\n\n正文内容\n",
+        encoding="utf-8",
+    )
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path, created_at) VALUES (?, ?, datetime('now'))",
+        ("cap1", "captures/cap.md"),
+    )
+    repo.conn.execute(
+        """INSERT INTO garden_cards
+           (id, title, one_liner, card_kind, core_arguments, knowledge_links,
+            key_materials, status, capture_ids)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'seed', ?)""",
+        (
+            "card1",
+            "AI Agent 工程化",
+            "AI Agent 工程化的关键是用流程和护栏管理不可靠模型。",
+            "method",
+            "[]",
+            "[]",
+            "[]",
+            json.dumps(["cap1"], ensure_ascii=False),
+        ),
+    )
+    repo.conn.commit()
+
+    agent_result = {
+        "title": "工程化 Agent",
+        "one_liner": "AI Agent 工程化的关键是用流程和护栏管理不可靠模型。",
+        "card_kind": "method",
+        "core_arguments": [{"claim": "需要流程和护栏。"}],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": "# 工程化 Agent\n",
+    }
+    db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
+    with patch("bridge.garden_bridge.load_config") as mock_cfg, \
+            patch.object(GardenAgent, "synthesize", return_value=agent_result):
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        result = synthesize_garden(capture_ids=["cap1"])
+
+    assert result["status"] == "success"
+    assert result["durable_artifacts"][0]["type"] == "garden_card"
+    assert result["durable_artifacts"][0]["id"] == "card1"
+    assert result["meta"]["duplicate_status"] == "duplicate"
+    assert "高度重复" in result["chat_preview"]
+    assert repo.conn.execute("SELECT count(*) FROM garden_drafts").fetchone()[0] == 0
+
+
+def test_synthesize_garden_warns_possible_duplicate_but_creates_draft(repo, tmp_path):
+    from bridge.garden_bridge import synthesize_garden
+
+    captures_dir = tmp_path / "captures"
+    captures_dir.mkdir()
+    for capture_id in ("cap1", "cap2", "cap4"):
+        (captures_dir / f"{capture_id}.md").write_text(
+            f"---\ntitle: {capture_id}\nstory: 摘要\n---\n\n正文内容\n",
+            encoding="utf-8",
+        )
+        repo.conn.execute(
+            "INSERT INTO captures (id, file_path, created_at) VALUES (?, ?, datetime('now'))",
+            (capture_id, f"captures/{capture_id}.md"),
+        )
+    repo.conn.execute(
+        """INSERT INTO garden_cards
+           (id, title, one_liner, card_kind, core_arguments, knowledge_links,
+            key_materials, status, capture_ids)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'seed', ?)""",
+        (
+            "card1",
+            "AI 工作流落地",
+            "AI 落地需要嵌入业务流程，而不是只依赖模型能力。",
+            "method",
+            "[]",
+            "[]",
+            "[]",
+            json.dumps(["cap1", "cap2", "cap3"], ensure_ascii=False),
+        ),
+    )
+    repo.conn.commit()
+
+    agent_result = {
+        "title": "AI Agent 工具链",
+        "one_liner": "AI Agent 要通过工具链进入真实工作流。",
+        "card_kind": "method",
+        "core_arguments": [{"claim": "工具链决定落地效果。"}],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": "# AI Agent 工具链\n",
+    }
+    db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
+    with patch("bridge.garden_bridge.load_config") as mock_cfg, \
+            patch.object(GardenAgent, "synthesize", return_value=agent_result):
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        result = synthesize_garden(capture_ids=["cap1", "cap2", "cap4"])
+
+    assert result["status"] == "success"
+    assert result["durable_artifacts"][0]["type"] == "garden_draft"
+    assert result["warnings"]
+    assert result["meta"]["duplicate_status"] == "possible_duplicate"
+    assert "可能和已有 Garden 卡相近" in result["chat_preview"]
+    assert repo.conn.execute("SELECT count(*) FROM garden_drafts").fetchone()[0] == 1
+
+
 def test_synthesize_garden_accepts_unique_capture_id_prefix(repo, tmp_path):
     """Garden 合成应接受唯一 capture id 前缀，避免主 Agent 从文件名取短 id 后失败。"""
     from bridge.garden_bridge import synthesize_garden
@@ -213,6 +334,51 @@ def test_synthesize_garden_passes_card_kind_to_agent(repo, tmp_path):
     assert mock_synthesize.call_args.kwargs["card_kind"] == "method"
 
 
+def test_synthesize_garden_preview_lists_all_used_sources(repo, tmp_path):
+    """微信预览应列出实际参与合成的全部来源，而不是只露出部分材料。"""
+    from bridge.garden_bridge import synthesize_garden
+
+    captures_dir = tmp_path / "captures"
+    captures_dir.mkdir()
+    capture_ids = []
+    for index in range(5):
+        capture_id = f"cap{index}"
+        capture_ids.append(capture_id)
+        (captures_dir / f"{capture_id}.md").write_text(
+            f"---\ntitle: 来源 {index}\nstory: 摘要\n---\n\n正文内容\n",
+            encoding="utf-8",
+        )
+        repo.conn.execute(
+            "INSERT INTO captures (id, file_path, created_at) VALUES (?, ?, datetime('now'))",
+            (capture_id, f"captures/{capture_id}.md"),
+        )
+    repo.conn.commit()
+    agent_result = {
+        "title": "综合卡",
+        "one_liner": "需要能追溯全部来源。",
+        "card_kind": "method",
+        "core_arguments": [{"claim": "综合来自多篇材料"}],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": "# 综合卡\n",
+    }
+    db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
+
+    with patch("bridge.garden_bridge.load_config") as mock_cfg, \
+            patch.object(GardenAgent, "synthesize", return_value=agent_result):
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        result = synthesize_garden(capture_ids=capture_ids)
+
+    for index in range(5):
+        assert f"来源 {index}" in result["chat_preview"]
+
+
 def test_commit_garden_draft_writes_card_file_and_marks_draft(repo, tmp_path):
     """确认 Garden Draft 后才写 garden_cards 和 Obsidian 文件。"""
     from agents.garden_agent import create_garden_draft
@@ -256,18 +422,36 @@ def test_commit_garden_draft_writes_card_file_and_marks_draft(repo, tmp_path):
 
 
 def test_commit_garden_draft_writes_card_frontmatter(repo, tmp_path):
-    """确认 Garden Draft 后，Obsidian 文件应包含 Garden card frontmatter。"""
+    """确认 Garden Draft 后，Obsidian Properties 应面向人可读。"""
     import yaml
     from agents.garden_agent import create_garden_draft
     from bridge.garden_bridge import commit_garden_draft
 
+    captures_dir = tmp_path / "captures"
+    captures_dir.mkdir()
+    (captures_dir / "cap.md").write_text(
+        "---\ntitle: 来源文章\n---\n\n正文",
+        encoding="utf-8",
+    )
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path, created_at) VALUES (?, ?, datetime('now'))",
+        ("cap1", "captures/cap.md"),
+    )
+    repo.conn.execute(
+        """INSERT INTO garden_cards
+           (id, title, one_liner, card_kind, core_arguments, knowledge_links,
+            key_materials, status, capture_ids)
+           VALUES (?, ?, ?, ?, '[]', '[]', '[]', 'seed', '[]')""",
+        ("card1", "相关卡片", "相关卡片摘要", "method"),
+    )
+    repo.conn.commit()
     draft_id = create_garden_draft(repo, {
         "title": "方法卡",
         "one_liner": "确认才进入 garden。",
         "card_kind": "method",
         "core_arguments": [],
         "key_materials": [],
-        "knowledge_links": [],
+        "knowledge_links": ["card1"],
         "markdown": "# 方法卡\n\n正文",
         "capture_ids": ["cap1"],
     })
@@ -288,7 +472,11 @@ def test_commit_garden_draft_writes_card_frontmatter(repo, tmp_path):
     frontmatter = yaml.safe_load(text.split("---", 2)[1])
     assert frontmatter["type"] == "garden_card"
     assert frontmatter["card_kind"] == "method"
-    assert frontmatter["source_captures"] == ["cap1"]
+    assert "id" not in frontmatter
+    assert "source_captures" not in frontmatter
+    assert "related_cards" not in frontmatter
+    assert frontmatter["sources"] == ["[[captures/cap|来源文章]]"]
+    assert frontmatter["related"] == ["[[garden/相关卡片-card1|相关卡片]]"]
 
 
 def test_commit_garden_draft_rejects_internal_prompt_markdown(repo, tmp_path):

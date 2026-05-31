@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import struct
+import json
 from pathlib import Path
 
 from agents.capture_agent import CaptureConfig
@@ -56,6 +57,23 @@ def test_search_knowledge_base_uses_best_section_embedding(monkeypatch, tmp_path
         "INSERT INTO captures (id, file_path) VALUES (?, ?)",
         ("cap1", rel_path),
     )
+    conn.execute(
+        """INSERT INTO garden_cards
+           (id, title, one_liner, core_arguments, knowledge_links, key_materials,
+            my_view, status, capture_ids, created_at, updated_at, review_interval)
+           VALUES (?, ?, ?, ?, ?, ?, '', 'seed', ?, ?, ?, '1d')""",
+        (
+            "g1",
+            "AI Agent 工程化",
+            "从单次调用走向流程化协作。",
+            "[]",
+            "[]",
+            "[]",
+            json.dumps(["cap1"], ensure_ascii=False),
+            "2026-05-31T00:00:00+00:00",
+            "2026-05-31T00:00:00+00:00",
+        ),
+    )
     repo = CaptureEmbeddingRepo(conn)
     repo.upsert(
         capture_id="cap1",
@@ -95,12 +113,20 @@ def test_search_knowledge_base_uses_best_section_embedding(monkeypatch, tmp_path
 
     class FakeRagAgent:
         seen_captures: list[dict] = []
+        seen_context_pack: dict = {}
 
         def __init__(self, **_kwargs):
             pass
 
-        def query(self, _question: str, captures: list[dict]) -> dict:
+        def query(
+            self,
+            _question: str,
+            captures: list[dict],
+            *,
+            context_pack: dict | None = None,
+        ) -> dict:
             FakeRagAgent.seen_captures = captures
+            FakeRagAgent.seen_context_pack = context_pack or {}
             return {
                 "answer": "第二部分是重点。[1]",
                 "sources": [
@@ -135,6 +161,11 @@ def test_search_knowledge_base_uses_best_section_embedding(monkeypatch, tmp_path
     assert FakeRagAgent.seen_captures[0]["section_title"] == "第二部分"
     assert "Terminal-Bench" in FakeRagAgent.seen_captures[0]["body"]
     assert "背景材料" not in FakeRagAgent.seen_captures[0]["body"]
+    assert FakeRagAgent.seen_context_pack["garden_count"] == 1
+    assert envelope["meta"]["context_pack"]["garden_count"] == 1
+    assert "trace" in envelope["meta"]
+    assert envelope["meta"]["graph_trace"]["seed_count"] == 1
+    assert envelope["meta"]["graph_trace"]["final_count"] >= 1
 
 
 def test_indexed_search_ignores_managed_section_embeddings(tmp_path):
@@ -193,3 +224,121 @@ def test_indexed_search_ignores_managed_section_embeddings(tmp_path):
     assert len(results) == 1
     assert results[0]["section_title"] == "第二部分"
     assert results[0]["matched_kind"] == "section"
+
+
+def test_search_knowledge_base_graph_expands_to_related_capture(monkeypatch, tmp_path):
+    from bridge import rag_bridge
+
+    db_path = tmp_path / "captures.db"
+    vault = tmp_path / "vault"
+    rel_path = _write_capture(vault)
+    second_path = "captures/related.md"
+    second_note = vault / second_path
+    second_note.parent.mkdir(parents=True, exist_ok=True)
+    second_note.write_text(
+        """---
+id: cap2
+title: 相关材料
+story: 工作流材料。
+---
+
+## 工作流模式
+这里补充 workflow router evaluator optimizer。
+""",
+        encoding="utf-8",
+    )
+    conn = init_db(str(db_path))
+    conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap1", rel_path),
+    )
+    conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap2", second_path),
+    )
+    conn.execute(
+        """INSERT INTO garden_cards
+           (id, title, one_liner, core_arguments, knowledge_links, key_materials,
+            my_view, status, capture_ids, created_at, updated_at, review_interval)
+           VALUES (?, ?, ?, ?, ?, ?, '', 'seed', ?, ?, ?, '1d')""",
+        (
+            "g1",
+            "AI Agent 工程化",
+            "工程化来自工具、流程和护栏。",
+            "[]",
+            "[]",
+            "[]",
+            json.dumps(["cap1", "cap2"], ensure_ascii=False),
+            "2026-05-31T00:00:00+00:00",
+            "2026-05-31T00:00:00+00:00",
+        ),
+    )
+    repo = CaptureEmbeddingRepo(conn)
+    repo.upsert(
+        capture_id="cap1",
+        kind="section",
+        section_id="second",
+        section_title="第二部分",
+        index_text="节奏狙击 Terminal-Bench",
+        embedding=_vec(1.0, 0.0),
+        source_hash="second",
+        file_path=rel_path,
+    )
+    repo.upsert(
+        capture_id="cap2",
+        kind="section",
+        section_id="workflow",
+        section_title="工作流模式",
+        index_text="workflow router evaluator optimizer",
+        embedding=_vec(0.95, 0.0),
+        source_hash="workflow",
+        file_path=second_path,
+    )
+
+    class FakeEmbedder:
+        def __init__(self, **_kwargs):
+            pass
+
+        def embed(self, _text: str) -> bytes:
+            return _vec(1.0, 0.0)
+
+    class FakeRagAgent:
+        seen_captures: list[dict] = []
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def query(self, _question, captures, *, context_pack=None):
+            FakeRagAgent.seen_captures = captures
+            return {
+                "answer": "回答。[1][2]",
+                "sources": [
+                    {
+                        "title": item["title"],
+                        "file_path": item["file_path"],
+                        "section_title": item.get("section_title", ""),
+                    }
+                    for item in captures
+                ],
+            }
+
+    monkeypatch.setattr(
+        rag_bridge,
+        "load_config",
+        lambda _path: CaptureConfig(
+            vault_path=str(vault),
+            db_path=str(db_path),
+            qwen_api_key="qwen-test",
+            llm_api_key="llm-test",
+        ),
+    )
+    monkeypatch.setattr(rag_bridge, "Embedder", FakeEmbedder)
+    monkeypatch.setattr(rag_bridge, "RagAgent", FakeRagAgent)
+    rag_bridge._config = None
+    rag_bridge._repo = None
+
+    envelope = rag_bridge.search_knowledge_base("Terminal-Bench")
+
+    assert envelope["meta"]["graph_trace"]["garden_count"] == 1
+    assert envelope["meta"]["graph_trace"]["expanded_capture_count"] == 2
+    assert [item["id"] for item in FakeRagAgent.seen_captures] == ["cap1", "cap2"]

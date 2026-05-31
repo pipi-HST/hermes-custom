@@ -18,7 +18,9 @@ from agents.garden_agent import (
     get_latest_open_garden_draft,
     update_garden_draft,
 )
+from agents.garden_duplicates import find_garden_duplicate
 from bridge.result_envelope import artifact_ref, error_envelope, next_action, success_envelope
+from bridge.run_ledger import run_with_ledger
 from db.schema import init_db
 from db.repo import CaptureRepo
 
@@ -73,6 +75,7 @@ def _draft_preview(
     arguments: list[dict],
     draft_id: str,
     card_kind: str = "viewpoint",
+    source_titles: list[str] | None = None,
 ) -> str:
     label = CARD_KIND_LABELS.get(card_kind, CARD_KIND_LABELS["viewpoint"])
     claims = []
@@ -81,12 +84,22 @@ def _draft_preview(
         if claim:
             claims.append(f"- {claim}")
     claims_text = "\n".join(claims) if claims else "- 暂无明确观点，请补充修改意见"
+    source_lines = []
+    for index, source_title in enumerate(source_titles or [], 1):
+        title_text = str(source_title or "").strip()
+        if title_text:
+            source_lines.append(f"[{index}] {title_text}")
+    source_text = (
+        "\n\n参考来源：\n" + "\n".join(source_lines)
+        if source_lines else ""
+    )
     return (
         f"已生成 Garden {label}草稿：《{title}》\n\n"
         f"一句话：{one_liner}\n\n"
         f"卡片预览：\n{claims_text}\n\n"
         f"草稿编号：{draft_id}\n"
         "满意回复“确认卡片”或“存入花园”；不满意直接说怎么改。"
+        f"{source_text}"
     )
 
 
@@ -106,19 +119,81 @@ def _has_internal_prompt_markers(markdown: str) -> bool:
     return any(marker in (markdown or "") for marker in markers)
 
 
-def _garden_card_markdown(draft: dict, card_id: str) -> str:
+def _duplicate_garden_response(duplicate: dict) -> dict:
+    match = duplicate.get("match") or {}
+    item_type = match.get("type") or "garden_card"
+    item_label = "已有 Garden 卡" if item_type == "garden_card" else "已有待确认 Garden 草稿"
+    title = str(match.get("title") or "未命名").strip()
+    item_id = str(match.get("id") or "").strip()
+    reasons = duplicate.get("reasons") or []
+    reason_text = "、".join(str(reason) for reason in reasons if reason) or "内容高度相似"
+    artifact_type = "garden_card" if item_type == "garden_card" else "garden_draft"
+    actions = []
+    if artifact_type == "garden_draft":
+        actions.append(
+            next_action(
+                label="确认已有卡片草稿入库",
+                intent="commit_garden_draft",
+                payload={"draft_id": item_id},
+                requires_confirmation=True,
+            )
+        )
+    return success_envelope(
+        agent="garden",
+        intent="synthesize_garden",
+        chat_preview=(
+            f"没有新建 Garden 草稿：这张卡和{item_label}《{title}》高度重复。\n\n"
+            f"重复原因：{reason_text}\n\n"
+            "建议直接沿用已有卡；如果你想保留新角度，可以告诉我“换一个角度生成”。"
+        ),
+        durable_artifacts=[
+            artifact_ref(
+                type=artifact_type,
+                id=item_id,
+                title=title,
+                status="duplicate_match",
+            )
+        ],
+        next_actions=actions,
+        warnings=["Garden duplicate blocked"],
+        meta={
+            "duplicate_status": "duplicate",
+            "duplicate_match": match,
+            "duplicate_reasons": reasons,
+        },
+    )
+
+
+def _possible_duplicate_warning(duplicate: dict) -> str:
+    if duplicate.get("status") != "possible_duplicate":
+        return ""
+    match = duplicate.get("match") or {}
+    title = str(match.get("title") or "未命名").strip()
+    reasons = duplicate.get("reasons") or []
+    reason_text = "、".join(str(reason) for reason in reasons if reason) or "内容相近"
+    return f"提醒：可能和已有 Garden 卡相近：《{title}》（{reason_text}）。"
+
+
+def _garden_card_markdown(
+    draft: dict,
+    card_id: str,
+    *,
+    source_links: list[str] | None = None,
+    related_links: list[str] | None = None,
+) -> str:
     now = datetime.now(timezone.utc).isoformat()
     frontmatter = {
-        "id": card_id,
         "type": "garden_card",
         "card_kind": draft.get("card_kind", "viewpoint"),
         "status": "seed",
         "title": draft.get("title", ""),
-        "source_captures": _json_list(draft.get("capture_ids", "[]")),
-        "related_cards": _json_list(draft.get("knowledge_links", "[]")),
         "created": draft.get("created_at", ""),
         "updated": now,
     }
+    if source_links:
+        frontmatter["sources"] = source_links
+    if related_links:
+        frontmatter["related"] = related_links
     body = (draft.get("markdown") or "").strip()
     return (
         "---\n"
@@ -126,6 +201,49 @@ def _garden_card_markdown(draft: dict, card_id: str) -> str:
         "---\n\n"
         f"{body}\n"
     )
+
+
+def _capture_property_links(conn, vault_path: Path, capture_ids: list[str]) -> list[str]:
+    links: list[str] = []
+    for capture_id in capture_ids:
+        row = _resolve_capture_row(conn, capture_id)
+        if not row:
+            continue
+        data = dict(row)
+        file_path = data.get("file_path") or ""
+        title = ""
+        if file_path:
+            note = read_note(vault_path, file_path)
+            if note:
+                title = str(note[0].get("title") or "").strip()
+        title = title or Path(file_path).stem or str(data.get("id") or capture_id)
+        if file_path:
+            link = f"[[{Path(file_path).with_suffix('')}|{title}]]"
+        else:
+            link = title
+        if link not in links:
+            links.append(link)
+    return links
+
+
+def _garden_property_links(conn, card_ids: list[str]) -> list[str]:
+    links: list[str] = []
+    for card_id in card_ids:
+        card_id = str(card_id or "").strip()
+        if not card_id:
+            continue
+        row = conn.execute(
+            "SELECT id, title FROM garden_cards WHERE id = ?",
+            (card_id,),
+        ).fetchone()
+        if not row:
+            continue
+        title = str(row["title"] or "").strip() or card_id
+        target = _safe_garden_filename(title, card_id).removesuffix(".md")
+        link = f"[[garden/{target}|{title}]]"
+        if link not in links:
+            links.append(link)
+    return links
 
 
 def synthesize_garden(capture_ids: list[str] = None,
@@ -145,6 +263,36 @@ def synthesize_garden(capture_ids: list[str] = None,
     """
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     repo = CaptureRepo(init_db(config.db_path))
+    return run_with_ledger(
+        repo.conn,
+        agent="garden",
+        intent="synthesize_garden",
+        trigger="wechat",
+        input_ref={
+            "capture_ids": capture_ids or [],
+            "question_id": question_id,
+            "title": title,
+            "card_kind": card_kind,
+        },
+        operation=lambda: _synthesize_garden(
+            config,
+            repo,
+            capture_ids=capture_ids,
+            question_id=question_id,
+            title=title,
+            card_kind=card_kind,
+        ),
+    )
+
+
+def _synthesize_garden(
+    config,
+    repo: CaptureRepo,
+    capture_ids: list[str] = None,
+    question_id: str = "",
+    title: str = "",
+    card_kind: str = "",
+) -> dict:
     conn = repo.conn
     vault_path = Path(config.vault_path).expanduser()
 
@@ -225,20 +373,29 @@ def synthesize_garden(capture_ids: list[str] = None,
         "question_id": question_id,
         "instruction": title,
     }
+    duplicate = find_garden_duplicate(conn, garden_data)
+    if duplicate["status"] == "duplicate":
+        return _duplicate_garden_response(duplicate)
+
     draft_id = create_garden_draft(repo, garden_data)
 
     title_text = result.get("title", "")
     one_liner = result.get("one_liner", "")
+    duplicate_warning = _possible_duplicate_warning(duplicate)
+    preview = _draft_preview(
+        title_text,
+        one_liner,
+        result.get("core_arguments", []),
+        draft_id,
+        result.get("card_kind", "viewpoint"),
+        [capture.get("title") or capture.get("id") or "" for capture in captures],
+    )
+    if duplicate_warning:
+        preview = duplicate_warning + "\n\n" + preview
     return success_envelope(
         agent="garden",
         intent="synthesize_garden",
-        chat_preview=_draft_preview(
-            title_text,
-            one_liner,
-            result.get("core_arguments", []),
-            draft_id,
-            result.get("card_kind", "viewpoint"),
-        ),
+        chat_preview=preview,
         durable_artifacts=[
             artifact_ref(
                 type="garden_draft",
@@ -261,7 +418,11 @@ def synthesize_garden(capture_ids: list[str] = None,
             "card_kind": result.get("card_kind", "viewpoint"),
             "capture_ids": capture_ids,
             "draft_id": draft_id,
+            "knowledge_link_count": len(result.get("knowledge_links", [])),
+            "duplicate_status": duplicate["status"],
+            "duplicate_match": duplicate.get("match") or {},
         },
+        warnings=[duplicate_warning] if duplicate_warning else [],
     )
 
 
@@ -269,6 +430,27 @@ def revise_garden_draft(draft_id: str = "", instruction: str = "") -> dict:
     """修改最近或指定 Garden Draft。"""
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     repo = CaptureRepo(init_db(config.db_path))
+    return run_with_ledger(
+        repo.conn,
+        agent="garden",
+        intent="revise_garden_draft",
+        trigger="wechat",
+        input_ref={"draft_id": draft_id, "instruction": instruction},
+        operation=lambda: _revise_garden_draft(
+            config,
+            repo,
+            draft_id=draft_id,
+            instruction=instruction,
+        ),
+    )
+
+
+def _revise_garden_draft(
+    config,
+    repo: CaptureRepo,
+    draft_id: str = "",
+    instruction: str = "",
+) -> dict:
     conn = repo.conn
     vault_path = Path(config.vault_path).expanduser()
 
@@ -377,6 +559,17 @@ def commit_garden_draft(draft_id: str = "") -> dict:
     """确认 Garden Draft，写入 garden_cards 和 Obsidian garden 文件。"""
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     repo = CaptureRepo(init_db(config.db_path))
+    return run_with_ledger(
+        repo.conn,
+        agent="garden",
+        intent="commit_garden_draft",
+        trigger="wechat",
+        input_ref={"draft_id": draft_id},
+        operation=lambda: _commit_garden_draft(config, repo, draft_id=draft_id),
+    )
+
+
+def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
     vault_path = Path(config.vault_path).expanduser()
 
     if not draft_id:
@@ -408,7 +601,21 @@ def commit_garden_draft(draft_id: str = "") -> dict:
     garden_dir.mkdir(exist_ok=True)
     filename = _safe_garden_filename(draft["title"], card_id)
     md_path = garden_dir / filename
-    md_path.write_text(_garden_card_markdown(draft, card_id), encoding="utf-8")
+    source_links = _capture_property_links(
+        repo.conn, vault_path, _json_list(draft["capture_ids"])
+    )
+    related_links = _garden_property_links(
+        repo.conn, _json_list(draft["knowledge_links"])
+    )
+    md_path.write_text(
+        _garden_card_markdown(
+            draft,
+            card_id,
+            source_links=source_links,
+            related_links=related_links,
+        ),
+        encoding="utf-8",
+    )
     rel_path = f"garden/{filename}"
 
     if draft["question_id"]:
@@ -435,5 +642,6 @@ def commit_garden_draft(draft_id: str = "") -> dict:
             "draft_id": draft_id,
             "card_id": card_id,
             "path": rel_path,
+            "knowledge_link_count": len(_json_list(draft["knowledge_links"])),
         },
     )

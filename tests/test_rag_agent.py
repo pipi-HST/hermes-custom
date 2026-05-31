@@ -55,6 +55,46 @@ def test_build_prompt_falls_back_to_summary():
     assert "只用摘要" in prompt
 
 
+def test_build_prompt_includes_garden_and_theme_as_orientation_only():
+    captures = [{"title": "材料", "story": "", "body": "正文证据"}]
+    context_pack = {
+        "garden_cards": [
+            {"title": "AI 工程化", "one_liner": "复杂度要受控。"}
+        ],
+        "theme_pages": [
+            {"title": "Agent 方法论", "path": "themes/Agent 方法论.md"}
+        ],
+    }
+
+    prompt = build_rag_prompt("怎么理解？", captures, context_pack=context_pack)
+
+    assert "高层线索" in prompt
+    assert "AI 工程化" in prompt
+    assert "Agent 方法论" in prompt
+    assert "不要把高层线索当作编号来源" in prompt
+    assert "[1] 《材料》" in prompt
+
+
+def test_build_prompt_includes_graph_theme_groups_as_orientation_only():
+    captures = [{"title": "材料", "story": "", "body": "正文证据"}]
+    context_pack = {
+        "garden_cards": [
+            {"title": "Agent 工程化", "one_liner": "用流程和护栏管理模型。"}
+        ],
+        "theme_groups": [
+            {"title": "复杂度控制", "capture_ids": ["cap1", "cap2"]}
+        ],
+        "graph_trace": {"seed_count": 1, "garden_count": 1, "theme_count": 1, "final_count": 1},
+    }
+
+    prompt = build_rag_prompt("怎么理解？", captures, context_pack=context_pack)
+
+    assert "检索路径" in prompt
+    assert "复杂度控制" in prompt
+    assert "Garden/Theme 是理解线索" in prompt
+    assert "[1] 《材料》" in prompt
+
+
 @patch("agents.rag_agent.RagAgent._call_llm")
 def test_rag_query_returns_answer_and_sources(mock_call):
     mock_call.return_value = "RAG 是一种技术。"
