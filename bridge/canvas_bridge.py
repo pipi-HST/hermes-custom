@@ -23,8 +23,6 @@ from bridge.run_ledger import run_with_ledger
 from db.repo import CaptureRepo
 from db.schema import init_db
 
-HERMES_CANVAS_MARKER = '"generated_by": "hermes"'
-
 
 def generate_canvas(
     *,
@@ -149,9 +147,14 @@ def _resolve_theme(vault_path: Path, theme: str) -> CanvasTheme | None:
         rel_path = path.relative_to(vault_path).as_posix()
         note = read_note(vault_path, rel_path)
         frontmatter = note[0] if note else {}
+        body = note[1] if note else ""
         title = str(frontmatter.get("title") or path.stem)
         if not query or query in _norm(title) or query in _norm(path.stem):
-            return CanvasTheme(title=title, file_path=rel_path)
+            return CanvasTheme(
+                title=title,
+                file_path=rel_path,
+                summary=_first_plain_paragraph(body),
+            )
     return None
 
 
@@ -218,8 +221,12 @@ def _resolve_captures(
         if not (vault_path / rel_path).exists():
             missing.append(capture_id)
             continue
-        title = _note_title(vault_path, rel_path) or Path(rel_path).stem
-        captures.append(CanvasItem(id=capture_id, title=title, file_path=rel_path))
+        note = read_note(vault_path, rel_path)
+        frontmatter = note[0] if note else {}
+        body = note[1] if note else ""
+        title = str(frontmatter.get("title") or "") or Path(rel_path).stem
+        summary = str(frontmatter.get("story") or "") or _first_plain_paragraph(body)
+        captures.append(CanvasItem(id=capture_id, title=title, file_path=rel_path, summary=summary))
     return captures, missing
 
 
@@ -258,6 +265,7 @@ def _garden_items(rows: list[dict[str, Any]]) -> list[CanvasItem]:
                 title=title,
                 file_path=f"garden/{_safe_note_stem(title, card_id)}.md",
                 kind=str(row.get("card_kind") or ""),
+                summary=str(row.get("one_liner") or ""),
             )
         )
     return items
@@ -274,10 +282,19 @@ def _write_canvas(vault_path: Path, title: str, json_text: str) -> Path:
     canvas_dir = vault_path / "canvas"
     canvas_dir.mkdir(parents=True, exist_ok=True)
     target = canvas_dir / safe_canvas_filename(title)
-    if target.exists() and HERMES_CANVAS_MARKER not in target.read_text(encoding="utf-8"):
+    if target.exists() and not _is_hermes_canvas(target):
         target = canvas_dir / safe_canvas_filename(f"{title}-Hermes").replace("-Hermes-关系图", "-关系图-Hermes")
     target.write_text(json_text + "\n", encoding="utf-8")
     return target
+
+
+def _is_hermes_canvas(path: Path) -> bool:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
+    return isinstance(metadata, dict) and metadata.get("generated_by") == "hermes"
 
 
 def _canvas_preview(*, title: str, rel_path: str, capture_count: int, garden_count: int) -> str:
@@ -314,6 +331,18 @@ def _json_list(value: Any) -> list[str]:
 def _safe_note_stem(title: str, card_id: str) -> str:
     cleaned = "".join(ch for ch in title if ch not in '/:*?"<>|\\').strip() or "未命名"
     return f"{cleaned}-{card_id}"
+
+
+def _first_plain_paragraph(body: str) -> str:
+    for block in re.split(r"\n\s*\n", body or ""):
+        lines = [
+            re.sub(r"^[#>*\-\d.\s]+", "", line).strip()
+            for line in block.splitlines()
+        ]
+        text = " ".join(line for line in lines if line)
+        if text:
+            return text
+    return ""
 
 
 def _norm(value: str) -> str:

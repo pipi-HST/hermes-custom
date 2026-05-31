@@ -85,9 +85,12 @@ def test_generate_canvas_from_theme_writes_obsidian_canvas(tmp_path):
     assert envelope["status"] == "success"
     assert canvas_path.exists()
     payload = json.loads(canvas_path.read_text(encoding="utf-8"))
-    assert any(node.get("file") == "themes/ai-agent.md" for node in payload["nodes"])
-    assert any(node.get("file") == "captures/effective.md" for node in payload["nodes"])
-    assert any(node.get("file") == "garden/AI Agent 工程化方法卡-card1.md" for node in payload["nodes"])
+    text = "\n".join(node.get("text", "") for node in payload["nodes"])
+    assert all(node.get("type") == "text" for node in payload["nodes"])
+    assert "[[themes/ai-agent|AI Agent]]" in text
+    assert "[[captures/effective|Building Effective AI Agents]]" in text
+    assert "[[garden/AI Agent 工程化方法卡-card1|AI Agent 工程化方法卡]]" in text
+    assert "一句话" in text
     assert "已生成 Obsidian Canvas" in envelope["chat_preview"]
     assert envelope["durable_artifacts"][0]["type"] == "obsidian_canvas"
 
@@ -145,12 +148,12 @@ def test_generate_canvas_uses_moc_wiki_links_to_limit_sources(tmp_path):
     )
 
     payload = json.loads((vault / "canvas" / "AI Agent-关系图.canvas").read_text(encoding="utf-8"))
-    files = {node.get("file") for node in payload["nodes"] if node.get("type") == "file"}
+    text = "\n".join(node.get("text", "") for node in payload["nodes"])
     assert envelope["status"] == "success"
-    assert "captures/effective.md" in files
-    assert "garden/AI Agent 工程化方法卡-card1.md" in files
-    assert "captures/unrelated.md" not in files
-    assert "garden/不相关卡片-card2.md" not in files
+    assert "[[captures/effective|Building Effective AI Agents]]" in text
+    assert "[[garden/AI Agent 工程化方法卡-card1|AI Agent 工程化方法卡]]" in text
+    assert "captures/unrelated" not in text
+    assert "garden/不相关卡片-card2" not in text
 
 
 def test_generate_canvas_from_pending_theme_candidate_uses_related_captures(tmp_path):
@@ -176,7 +179,8 @@ def test_generate_canvas_from_pending_theme_candidate_uses_related_captures(tmp_
 
     payload = json.loads((vault / "canvas" / "AI Agent-关系图.canvas").read_text(encoding="utf-8"))
     assert envelope["status"] == "success"
-    assert any(node.get("file") == "captures/effective.md" for node in payload["nodes"])
+    text = "\n".join(node.get("text", "") for node in payload["nodes"])
+    assert "[[captures/effective|Building Effective AI Agents]]" in text
     assert envelope["meta"]["capture_count"] == 1
 
 
@@ -218,3 +222,29 @@ def test_generate_canvas_does_not_overwrite_non_hermes_canvas(tmp_path):
     assert envelope["status"] == "success"
     assert original.read_text(encoding="utf-8") == '{"nodes":[],"edges":[]}'
     assert (canvas_dir / "AI Agent-关系图-Hermes.canvas").exists()
+
+
+def test_generate_canvas_updates_compacted_hermes_canvas(tmp_path):
+    conn, db_path, vault = _setup_db_and_vault(tmp_path)
+    _write_note(vault, "themes/ai-agent.md", "AI Agent")
+    _write_note(vault, "captures/effective.md", "Building Effective AI Agents")
+    _insert_capture(conn, "cap1", "captures/effective.md")
+    canvas_dir = vault / "canvas"
+    canvas_dir.mkdir(parents=True)
+    original = canvas_dir / "AI Agent-关系图.canvas"
+    original.write_text(
+        '{"nodes":[],"edges":[],"metadata":{"generated_by":"hermes","title":"AI Agent"}}',
+        encoding="utf-8",
+    )
+
+    envelope = generate_canvas(
+        theme="AI Agent",
+        capture_ids=["cap1"],
+        db_path=str(db_path),
+        vault_path=str(vault),
+    )
+
+    assert envelope["status"] == "success"
+    payload = json.loads(original.read_text(encoding="utf-8"))
+    assert payload["nodes"]
+    assert not (canvas_dir / "AI Agent-关系图-Hermes.canvas").exists()
