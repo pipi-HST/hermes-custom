@@ -46,8 +46,8 @@ def test_build_obsidian_canvas_uses_garden_cards_as_main_board_nodes():
     assert by_id["theme"]["type"] == "text"
     assert by_id["theme"]["y"] < by_id["garden-1"]["y"]
     assert by_id["garden-1"]["type"] == "text"
-    assert by_id["source-1"]["type"] == "file"
-    assert by_id["source-1"]["file"] == "captures/effective.md"
+    assert by_id["source-1"]["type"] == "text"
+    assert "[[captures/effective|Building Effective AI Agents]]" in by_id["source-1"]["text"]
     assert by_id["source-1"]["y"] > by_id["garden-1"]["y"]
     text = "\n".join(node.get("text", "") for node in payload["nodes"])
     assert "[[themes/ai-agent|AI Agent]]" in text
@@ -79,7 +79,7 @@ def test_build_obsidian_canvas_positions_theme_garden_and_sources_as_board():
     by_id = {node["id"]: node for node in payload["nodes"]}
     assert by_id["theme"]["y"] < by_id["garden-1"]["y"]
     assert by_id["source-1"]["y"] > by_id["garden-1"]["y"]
-    assert by_id["garden-1"]["x"] < by_id["source-1"]["x"] + by_id["source-1"]["width"]
+    assert by_id["source-1"]["height"] <= 72
 
 
 def test_build_obsidian_canvas_caps_large_graph_and_reports_trimmed_items():
@@ -108,8 +108,12 @@ def test_build_obsidian_canvas_caps_large_graph_and_reports_trimmed_items():
 
     payload = json.loads(result.json_text)
     text_nodes = [node for node in payload["nodes"] if node["type"] == "text"]
-    file_nodes = [node for node in payload["nodes"] if node["type"] == "file"]
-    assert len([node for node in file_nodes if node["id"].startswith("source-")]) == 5
+    source_nodes = [
+        node for node in text_nodes
+        if node["id"].startswith("source-") and node["id"] != "source-more"
+    ]
+    assert len(source_nodes) == 5
+    assert all(node["height"] <= 72 for node in source_nodes)
     assert len([node for node in text_nodes if node["id"].startswith("garden-") and node["id"] != "garden-more"]) == 6
     assert any("还有 2 篇来源收起" in node["text"] for node in text_nodes)
     assert any("还有 1 张 Garden Card 收起" in node["text"] for node in text_nodes)
@@ -117,7 +121,7 @@ def test_build_obsidian_canvas_caps_large_graph_and_reports_trimmed_items():
     assert "已省略 1 张 Garden 卡片" in result.warnings
 
 
-def test_build_obsidian_canvas_connects_garden_cards_to_related_sources():
+def test_build_obsidian_canvas_avoids_visual_spiderweb_edges():
     result = build_obsidian_canvas(
         CanvasBuildInput(
             title="AI Agent工程化",
@@ -134,12 +138,10 @@ def test_build_obsidian_canvas_connects_garden_cards_to_related_sources():
     )
 
     payload = json.loads(result.json_text)
-    edge_pairs = {(edge["fromNode"], edge["toNode"]) for edge in payload["edges"]}
-    assert ("theme", "garden-1") in edge_pairs
-    assert ("theme", "garden-2") in edge_pairs
-    assert ("garden-1", "source-1") in edge_pairs
-    assert ("garden-2", "source-2") in edge_pairs
-    assert all("label" not in edge for edge in payload["edges"])
+    text = "\n".join(node.get("text", "") for node in payload["nodes"])
+    assert payload["edges"] == []
+    assert "来源：S1" in text
+    assert "来源：S2" in text
 
 
 def test_build_obsidian_canvas_limits_visible_source_edges_per_card():
@@ -165,13 +167,36 @@ def test_build_obsidian_canvas_limits_visible_source_edges_per_card():
     )
 
     payload = json.loads(result.json_text)
-    edge_pairs = {(edge["fromNode"], edge["toNode"]) for edge in payload["edges"]}
-    text = "\n".join(node.get("text", "") for node in payload["nodes"])
-    assert ("garden-1", "source-1") in edge_pairs
-    assert ("garden-1", "source-2") in edge_pairs
-    assert ("garden-1", "source-3") not in edge_pairs
+    by_id = {node["id"]: node for node in payload["nodes"]}
+    text = by_id["garden-1"]["text"]
+    assert payload["edges"] == []
     assert "来源：S1, S2" in text
     assert "S3" not in text
+
+
+def test_build_obsidian_canvas_places_overflow_nodes_outside_main_cards():
+    captures = [
+        CanvasItem(id=f"cap{i}", title=f"来源{i}", file_path=f"captures/{i}.md")
+        for i in range(7)
+    ]
+    cards = [
+        CanvasItem(id=f"card{i}", title=f"卡片{i}", file_path=f"garden/{i}.md")
+        for i in range(8)
+    ]
+
+    result = build_obsidian_canvas(
+        CanvasBuildInput(
+            title="大主题",
+            theme=CanvasTheme(title="大主题", file_path="themes/big.md"),
+            captures=captures,
+            garden_cards=cards,
+        )
+    )
+
+    payload = json.loads(result.json_text)
+    by_id = {node["id"]: node for node in payload["nodes"]}
+    assert by_id["garden-more"]["x"] >= 800
+    assert by_id["source-more"]["y"] >= 610
 
 
 def test_build_obsidian_canvas_uses_light_custom_colors():

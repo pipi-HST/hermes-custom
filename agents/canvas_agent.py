@@ -82,53 +82,28 @@ def build_obsidian_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
                 _color_for_kind(card.kind),
             )
         )
-        edges.append(
-            _edge(
-                f"edge-theme-garden-{index + 1}",
-                "theme",
-                node_id,
-                from_side="bottom",
-                to_side="top",
-            )
-        )
-    source_node_ids = {}
     for index, capture in enumerate(captures):
         node_id = f"source-{index + 1}"
-        source_node_ids[capture.id] = node_id
         nodes.append(
-            _file_node(
+            _text_node(
                 node_id,
-                f"S{index + 1} · {capture.title}",
-                capture.file_path,
+                _source_text(capture, index + 1),
                 -560 + index * 280,
-                360,
-                250,
-                90,
+                400,
+                240,
+                64,
                 SOURCE_COLOR,
             )
         )
-    for card_index, card in enumerate(cards):
-        for source_id in card.source_ids[:MAX_SOURCE_REFS_PER_CARD]:
-            source_node_id = source_node_ids.get(source_id)
-            if source_node_id:
-                edges.append(
-                    _edge(
-                        f"edge-garden-{card_index + 1}-{source_node_id}",
-                        f"garden-{card_index + 1}",
-                        source_node_id,
-                        from_side="bottom",
-                        to_side="top",
-                    )
-                )
     if len(data.captures) > len(captures):
         nodes.append(
             _text_node(
                 "source-more",
                 f"还有 {len(data.captures) - len(captures)} 篇来源收起",
-                150,
-                480,
+                500,
+                620,
                 280,
-                70,
+                62,
                 MORE_COLOR,
             )
         )
@@ -137,10 +112,10 @@ def build_obsidian_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
             _text_node(
                 "garden-more",
                 f"还有 {len(data.garden_cards) - len(cards)} 张 Garden Card 收起",
-                460,
+                820,
                 110,
                 280,
-                70,
+                62,
                 MORE_COLOR,
             )
         )
@@ -156,29 +131,6 @@ def build_obsidian_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
         node_count=len(nodes),
         edge_count=len(edges),
     )
-
-
-def _file_node(
-    node_id: str,
-    label: str,
-    file_path: str,
-    x: int,
-    y: int,
-    width: int,
-    height: int,
-    color: str,
-) -> dict:
-    return {
-        "id": node_id,
-        "type": "file",
-        "file": file_path,
-        "label": label,
-        "x": x,
-        "y": y,
-        "width": width,
-        "height": height,
-        "color": color,
-    }
 
 
 def _text_node(
@@ -202,39 +154,12 @@ def _text_node(
     }
 
 
-def _edge(
-    edge_id: str,
-    from_node: str,
-    to_node: str,
-    *,
-    from_side: str = "right",
-    to_side: str = "left",
-) -> dict:
-    return {
-        "id": edge_id,
-        "fromNode": from_node,
-        "fromSide": from_side,
-        "toNode": to_node,
-        "toSide": to_side,
-    }
-
-
 def _theme_text(theme: CanvasTheme) -> str:
     lines = [
         f"# {_wiki_link(theme.file_path, theme.title)}",
         "",
         theme.summary.strip() or "这个主题用于汇集相关来源笔记和 Garden 知识卡片。",
     ]
-    return "\n".join(lines).strip()
-
-
-def _capture_text(item: CanvasItem) -> str:
-    lines = [
-        "**Capture**",
-        f"### {_wiki_link(item.file_path, item.title)}",
-    ]
-    if item.summary.strip():
-        lines.extend(["", _clip(item.summary)])
     return "\n".join(lines).strip()
 
 
@@ -249,6 +174,13 @@ def _garden_text(item: CanvasItem, refs: list[str] | None = None) -> str:
     if refs:
         lines.extend(["", f"来源：{', '.join(refs)}"])
     return "\n".join(lines).strip()
+
+
+def _source_text(item: CanvasItem, index: int) -> str:
+    return "\n".join([
+        f"**S{index} · Capture**",
+        _wiki_link(item.file_path, item.title),
+    ])
 
 
 def _source_refs(card: CanvasItem, captures: list[CanvasItem]) -> list[str]:
