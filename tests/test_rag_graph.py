@@ -120,3 +120,43 @@ def test_graph_retrieval_skips_managed_sections_from_expanded_captures(tmp_path)
 
     assert result["final_hits"][0]["matched_kind"] == "identity"
     assert result["final_hits"][0]["section_title"] == ""
+
+
+def test_graph_retrieval_prefers_sections_over_whole_note_for_same_capture(tmp_path):
+    conn = init_db(str(tmp_path / "captures.db"))
+    conn.execute(
+        "INSERT INTO captures (id, file_path, created_at) VALUES (?, ?, ?)",
+        ("cap1", "captures/cap1.md", "2026-05-31T00:00:00+00:00"),
+    )
+    repo = CaptureEmbeddingRepo(conn)
+    repo.upsert(
+        capture_id="cap1",
+        kind="section",
+        section_id="s1",
+        section_title="关键章节",
+        index_text="AI Agent 工程化 Harness",
+        embedding=_vec(0.95, 0.0),
+        source_hash="cap1-s1",
+        file_path="captures/cap1.md",
+    )
+
+    result = build_graph_retrieval(
+        conn,
+        query_embedding=_vec(1.0, 0.0),
+        seed_hits=[
+            {
+                "id": "cap1",
+                "file_path": "captures/cap1.md",
+                "matched_kind": "identity",
+                "section_id": "",
+                "section_title": "",
+                "score": 1.0,
+            }
+        ],
+        vault_path=str(tmp_path),
+        final_limit=3,
+    )
+
+    assert len(result["final_hits"]) == 1
+    assert result["final_hits"][0]["matched_kind"] == "section"
+    assert result["final_hits"][0]["section_title"] == "关键章节"

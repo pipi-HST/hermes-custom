@@ -31,6 +31,34 @@ def test_format_answer_only_lists_cited_sources():
     assert "[2]" not in result
 
 
+def test_format_answer_removes_dangling_partial_citation():
+    answer = "AI Agent 工程化依赖 Harness 约束层。[1][2]["
+    sources = [
+        {"title": "来源一", "story": "", "file_path": "captures/one.md"},
+        {"title": "来源二", "story": "", "file_path": "captures/two.md"},
+    ]
+
+    result = format_answer(answer, sources)
+
+    body = result.split("\n\n📎 来源", 1)[0]
+    assert body.endswith("[1][2]")
+    assert not body.endswith("[")
+
+
+def test_format_answer_does_not_truncate_inside_citation_marker():
+    answer = "这是一段很长的回答。" * 40 + "[1][2]"
+    sources = [
+        {"title": "来源一", "story": "", "file_path": "captures/one.md"},
+        {"title": "来源二", "story": "", "file_path": "captures/two.md"},
+    ]
+
+    result = format_answer(answer, sources)
+
+    body = result.split("\n\n📎 来源", 1)[0]
+    assert not body.endswith("[")
+    assert not body.endswith("[1")
+
+
 def test_format_answer_without_url():
     sources = [{"title": "测试", "story": "概要", "file_path": ""}]
     result = format_answer("答案", sources)

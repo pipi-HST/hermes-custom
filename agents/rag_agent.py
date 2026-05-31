@@ -38,8 +38,9 @@ def build_rag_prompt(
 
 def format_answer(answer: str, sources: list[dict]) -> str:
     # 答案截断（微信友好）
+    answer = _clean_partial_citation_suffix(answer or "")
     if len(answer) > 600:
-        answer = answer[:597] + "..."
+        answer = _truncate_answer(answer, 600)
 
     lines = [answer, "", "📎 来源"]
     cited_indexes = _cited_source_indexes(answer, len(sources))
@@ -62,6 +63,15 @@ def format_answer(answer: str, sources: list[dict]) -> str:
     if len(result) > 900:
         result = result[:897] + "..."
     return result
+
+
+def _truncate_answer(answer: str, limit: int) -> str:
+    cutoff = _clean_partial_citation_suffix(answer[:max(0, limit - 3)]).rstrip()
+    return cutoff + "..."
+
+
+def _clean_partial_citation_suffix(answer: str) -> str:
+    return re.sub(r"\[(?:\d{0,3})?$", "", answer).rstrip()
 
 
 def _cited_source_indexes(answer: str, source_count: int) -> list[int]:

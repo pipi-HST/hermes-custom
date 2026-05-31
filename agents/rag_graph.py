@@ -217,7 +217,30 @@ def _select_final_hits(
                 by_key[key] = item
 
     ranked = sorted(by_key.values(), key=lambda item: item.get("score", 0), reverse=True)
+    ranked = _prefer_sections_over_whole_note(ranked)
     return ranked[:final_limit]
+
+
+def _prefer_sections_over_whole_note(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    section_capture_ids = {
+        str(hit.get("id") or hit.get("capture_id") or "")
+        for hit in hits
+        if hit.get("matched_kind") == "section"
+        and (hit.get("section_id") or hit.get("section_title"))
+    }
+    if not section_capture_ids:
+        return hits
+    filtered = []
+    for hit in hits:
+        capture_id = str(hit.get("id") or hit.get("capture_id") or "")
+        is_concrete_section = (
+            hit.get("matched_kind") == "section"
+            and (hit.get("section_id") or hit.get("section_title"))
+        )
+        if capture_id in section_capture_ids and not is_concrete_section:
+            continue
+        filtered.append(hit)
+    return filtered
 
 
 def _expanded_capture_ids(
