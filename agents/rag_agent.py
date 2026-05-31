@@ -4,6 +4,10 @@ from __future__ import annotations
 import re
 import httpx
 
+ANSWER_PREVIEW_LIMIT = 600
+TOTAL_PREVIEW_LIMIT = 900
+CONTINUATION_HINT = "\n\n（已省略后续内容，回复“继续展开”可查看更多。）"
+
 RAG_SYSTEM_PROMPT = """你是个人知识助手。根据用户的知识库内容回答问题。
 
 规则：
@@ -38,36 +42,81 @@ def build_rag_prompt(
 
 def format_answer(answer: str, sources: list[dict]) -> str:
     # 答案截断（微信友好）
-    answer = _clean_partial_citation_suffix(answer or "")
-    if len(answer) > 600:
-        answer = _truncate_answer(answer, 600)
+    raw_answer = _clean_partial_citation_suffix(answer or "")
+    answer = raw_answer
+    if len(raw_answer) > ANSWER_PREVIEW_LIMIT:
+        answer = _truncate_answer(raw_answer, ANSWER_PREVIEW_LIMIT)
 
-    lines = [answer, "", "📎 来源"]
+    source_lines = _format_source_lines(answer, sources)
+    result = _join_answer_and_sources(answer, source_lines)
+    if len(result) > TOTAL_PREVIEW_LIMIT:
+        source_block = _join_answer_and_sources("", source_lines)
+        answer_limit = max(220, TOTAL_PREVIEW_LIMIT - len(source_block))
+        answer = _truncate_answer(raw_answer, answer_limit)
+        result = _join_answer_and_sources(answer, source_lines)
+    return result
+
+
+def _format_source_lines(answer: str, sources: list[dict]) -> list[str]:
     cited_indexes = _cited_source_indexes(answer, len(sources))
     if cited_indexes:
         selected = [(idx, sources[idx - 1]) for idx in cited_indexes]
     else:
         selected = [(idx, source) for idx, source in enumerate(sources[:3], 1)]
 
+    lines: list[str] = []
     for i, s in selected:
         title = s.get("title") or "无标题"
         story = s.get("story", "") or s.get("summary", "")
-        story = story[:30] + "..." if len(story) > 30 else story
+        story = _clip_source_summary(story)
         line = f"[{i}] {title}"
         if story:
             line += f" — {story}"
         lines.append(line)
+    return lines
 
-    result = "\n".join(lines)
-    # 总长度兜底
-    if len(result) > 900:
-        result = result[:897] + "..."
-    return result
+
+def _join_answer_and_sources(answer: str, source_lines: list[str]) -> str:
+    return "\n".join([answer, "", "📎 来源", *source_lines]).strip()
 
 
 def _truncate_answer(answer: str, limit: int) -> str:
-    cutoff = _clean_partial_citation_suffix(answer[:max(0, limit - 3)]).rstrip()
-    return cutoff + "..."
+    budget = max(0, limit - len(CONTINUATION_HINT))
+    cutoff = _natural_cutoff(answer, budget)
+    cutoff = _clean_partial_citation_suffix(cutoff).rstrip()
+    return cutoff + CONTINUATION_HINT
+
+
+def _natural_cutoff(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    snippet = text[:limit].rstrip()
+    boundary = max(
+        snippet.rfind("\n\n"),
+        snippet.rfind("。"),
+        snippet.rfind("！"),
+        snippet.rfind("？"),
+        snippet.rfind(". "),
+        snippet.rfind("! "),
+        snippet.rfind("? "),
+    )
+    if boundary >= max(80, int(limit * 0.55)):
+        end = boundary + 1
+        if snippet[boundary:boundary + 2] in (". ", "! ", "? "):
+            end = boundary + 1
+        elif snippet[boundary:boundary + 2] == "\n\n":
+            end = boundary
+        return snippet[:end].rstrip()
+    return snippet.rstrip("，,、；;：:")
+
+
+def _clip_source_summary(story: str) -> str:
+    if len(story) <= 30:
+        return story
+    clipped = _natural_cutoff(story, 30)
+    if len(clipped) >= 12 and clipped[-1] in "。！？.!?":
+        return clipped.rstrip()
+    return ""
 
 
 def _clean_partial_citation_suffix(answer: str) -> str:

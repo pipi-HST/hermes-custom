@@ -59,11 +59,44 @@ def test_format_answer_does_not_truncate_inside_citation_marker():
     assert not body.endswith("[1")
 
 
+def test_format_answer_truncates_long_body_at_sentence_boundary_with_continue_hint():
+    answer = (
+        "第一段说明工程化要从简单工作流开始。" * 40
+        + "\n\n第二段会继续解释调度器工作者这种复杂工作流模式，以及后续治理要求。[1]"
+    )
+    sources = [
+        {"title": "来源一", "story": "摘要", "file_path": "captures/one.md"},
+    ]
+
+    result = format_answer(answer, sources)
+    body = result.split("\n\n📎 来源", 1)[0]
+
+    assert "复杂工..." not in body
+    assert "回复“继续展开”" in body
+    assert body.endswith("可查看更多。）")
+    assert "📎 来源" in result
+    assert "[1] 来源一" in result
+
+
 def test_format_answer_without_url():
     sources = [{"title": "测试", "story": "概要", "file_path": ""}]
     result = format_answer("答案", sources)
     assert "测试" in result
     assert "概要" in result
+
+
+def test_format_answer_omits_long_source_summary_instead_of_mid_phrase_ellipsis():
+    sources = [{
+        "title": "长来源",
+        "story": "AI编程助手个人普及但组织收益滞后，工程底座成熟度决定AI放大收益还是放大风险。",
+        "file_path": "captures/source.md",
+    }]
+
+    result = format_answer("答案", sources)
+
+    assert "[1] 长来源" in result
+    assert "放..." not in result
+    assert " — " not in result
 
 
 def test_build_prompt_includes_context():
