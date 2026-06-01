@@ -87,3 +87,12 @@ def test_meaningful_content_rejects_extraction_failure_placeholder():
     )
 
     assert is_meaningful_content(text) is False
+
+
+def test_meaningful_content_rejects_xiaohongshu_failure_placeholder():
+    text = (
+        "[小红书内容未能提取] https://www.xiaohongshu.com/explore/empty\n"
+        + "可以把正文复制给我，或把关键图片/截图发给我，我会继续 OCR 整理。" * 4
+    )
+
+    assert is_meaningful_content(text) is False

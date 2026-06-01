@@ -10,6 +10,7 @@ from agents.capture_agent import CaptureAgent, CaptureConfig
 from agents.extractors.image_extractor import ImageExtractor
 from agents.extractors.voice_extractor import VoiceExtractor
 from agents.extractors.text_extractor import TextExtractor
+from agents.extractors.xiaohongshu_extractor import XiaohongshuExtractor
 
 
 @pytest.fixture
@@ -51,6 +52,70 @@ def test_image_extractor_rejects_non_image_path():
     assert ext.can_handle("/tmp/test.txt") is False
     assert ext.can_handle("/tmp/test.mp3") is False
     assert ext.can_handle("https://example.com/article") is False
+
+
+def test_image_extractor_preserves_multiline_ocr_from_vl_response(monkeypatch):
+    """VL OCR text can span many lines; parsing must not keep only the first line."""
+    captured_body = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [{
+                    "message": {
+                        "content": (
+                            "---\n"
+                            "text: 第一段文字\n"
+                            "第二段文字\n"
+                            "第三段文字\n"
+                            "description: 一张文字长图\n"
+                            "---"
+                        )
+                    }
+                }]
+            }
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def post(self, url, headers, json):
+            captured_body.update(json)
+            return FakeResponse()
+
+    monkeypatch.setattr("agents.extractors.image_extractor.httpx.Client", FakeClient)
+
+    text, description = ImageExtractor(api_key="sk-test")._call_vl("data:image/jpeg;base64,abc")
+
+    assert "第一段文字" in text
+    assert "第二段文字" in text
+    assert "第三段文字" in text
+    assert description == "一张文字长图"
+    assert captured_body["max_tokens"] >= 2000
+
+
+def test_image_extractor_prefers_ocr_text_over_visual_summary(monkeypatch, tmp_path: Path):
+    """Text-heavy captures should store the OCR content, not lead with a visual summary."""
+    img = tmp_path / "xhs_text_card.jpg"
+    img.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+    monkeypatch.setattr(
+        ImageExtractor,
+        "_call_vl",
+        lambda self, image_data: ("第一段原文\n第二段原文", "一张包含中文技术文章的图片"),
+    )
+
+    result = ImageExtractor(api_key="sk-test").extract(str(img))
+
+    assert result.raw_text == "第一段原文\n第二段原文"
 
 
 # ── VoiceExtractor.can_handle ──
@@ -148,6 +213,37 @@ def test_create_draft_from_voice_text(agent: CaptureAgent):
     assert result["source_type"] == "note"  # treated as plain text
 
 
+def test_create_draft_from_xiaohongshu_link(agent: CaptureAgent, tmp_path: Path):
+    """Xiaohongshu link → multimodal package with note text and image OCR."""
+    html = """
+    <meta property="og:title" content="AI 产品经理书单">
+    <meta name="description" content="这篇小红书介绍 AI 产品经理的阅读方法和评测思路。">
+    <meta property="og:image" content="https://sns-webpic-qc.xhscdn.com/one.jpg">
+    """
+    img = tmp_path / "01.jpg"
+    img.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+
+    with patch.object(
+        XiaohongshuExtractor,
+        "_fetch_url",
+        return_value=("https://www.xiaohongshu.com/explore/xhs-note-1", html),
+    ), patch.object(
+        XiaohongshuExtractor,
+        "_download_image",
+        return_value=img,
+    ), patch.object(
+        ImageExtractor,
+        "_call_vl",
+        return_value=("图片文字：评测和数据飞轮。", "一张小红书图文卡片"),
+    ):
+        result = agent.create_draft("快来看 http://xhslink.com/test")
+
+    assert result["status"] == "raw_extracted"
+    assert result["source_type"] == "xiaohongshu"
+    assert "AI 产品经理书单" in result["raw_text"]
+    assert "图片文字：评测和数据飞轮。" in result["raw_text"]
+
+
 # ── Extractor routing ──
 
 
@@ -167,6 +263,12 @@ def test_extractor_routing_voice(agent: CaptureAgent, tmp_path: Path):
 
     matched = next(e for e in agent.extractors if e.can_handle(str(audio)))
     assert isinstance(matched, VoiceExtractor)
+
+
+def test_extractor_routing_xiaohongshu_before_generic_link(agent: CaptureAgent):
+    """CaptureAgent should route Xiaohongshu links to the multimodal extractor."""
+    matched = next(e for e in agent.extractors if e.can_handle("http://xhslink.com/test"))
+    assert isinstance(matched, XiaohongshuExtractor)
 
 
 def test_extractor_routing_text(agent: CaptureAgent):

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 from pathlib import Path
 
 import httpx
@@ -12,12 +13,12 @@ from .base import BaseExtractor, ExtractionResult
 logger = logging.getLogger(__name__)
 
 IMAGE_PROMPT = """请对这张图片做两件事：
-1. 提取图片中的所有文字（OCR）
-2. 用一句话描述图片的视觉内容
+1. 逐字提取图片中的所有可见文字（OCR），尽量保留原文顺序、段落和换行。不要总结、不要改写、不要只提标题。
+2. 用一句话描述图片的视觉内容。如果图片主要是文字长图，描述只做辅助，不能替代 OCR。
 
 按以下格式回复：
 ---
-text: <提取的文字，如果没有文字写"无文字">
+text: <完整 OCR 文字，如果没有文字写"无文字">
 description: <一句话视觉描述>
 ---"""
 
@@ -62,8 +63,8 @@ class ImageExtractor(BaseExtractor):
         try:
             text, description = self._call_vl(image_data)
             result_text = text if text and text != "无文字" else ""
-            if description and description != "无文字":
-                result_text = f"{description}\n{result_text}" if result_text else description
+            if not result_text and description and description != "无文字":
+                result_text = description
             return ExtractionResult(
                 raw_text=result_text or "[图片中无文字内容]",
                 source_type="image",
@@ -118,7 +119,7 @@ class ImageExtractor(BaseExtractor):
                 ],
             }],
             "temperature": 0.1,
-            "max_tokens": 500,
+            "max_tokens": 3000,
         }
         with httpx.Client(timeout=30) as client:
             resp = client.post(
@@ -128,9 +129,22 @@ class ImageExtractor(BaseExtractor):
             resp.raise_for_status()
             raw = resp.json()["choices"][0]["message"]["content"]
 
-        import re
-        text_match = re.search(r"text:\s*(.+?)(?:\n|$)", raw)
-        desc_match = re.search(r"description:\s*(.+?)(?:\n|$)", raw)
+        text, desc = self._parse_vl_response(raw)
+        return text, desc
+
+    def _parse_vl_response(self, raw: str) -> tuple[str, str]:
+        raw = (raw or "").strip()
+        raw = raw.removeprefix("---").removesuffix("---").strip()
+
+        desc = ""
+        desc_match = re.search(r"(?ims)^description\s*:\s*(.+?)\s*$", raw)
+        if desc_match:
+            desc = desc_match.group(1).strip()
+
+        text_match = re.search(
+            r"(?ims)^text\s*:\s*(.+?)(?=^\s*description\s*:|\Z)",
+            raw,
+        )
         text = text_match.group(1).strip() if text_match else raw.strip()
-        desc = desc_match.group(1).strip() if desc_match else ""
+        text = text.removesuffix("---").strip()
         return text, desc

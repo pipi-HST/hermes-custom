@@ -34,6 +34,7 @@ def run_with_ledger(
             errors=[str(exc)],
             evidence={"has_envelope": False},
         )
+        repo.record_event(run["id"], event_type="failed", payload={"error": str(exc)})
         raise
 
     extracted = extract_run_evidence(agent, intent, result)
@@ -43,6 +44,11 @@ def run_with_ledger(
             errors=extracted["errors"] or ["agent returned error"],
             evidence=extracted["evidence"],
         )
+        repo.record_event(
+            run["id"],
+            event_type="failed",
+            payload={"errors": extracted["errors"] or ["agent returned error"]},
+        )
     else:
         repo.complete_run(
             run["id"],
@@ -50,5 +56,13 @@ def run_with_ledger(
             evidence=extracted["evidence"],
             warnings=extracted["warnings"],
             status=extracted["status"],
+        )
+        repo.record_event(
+            run["id"],
+            event_type="completed",
+            payload={
+                "status": extracted["status"],
+                "evidence": extracted["evidence"],
+            },
         )
     return result

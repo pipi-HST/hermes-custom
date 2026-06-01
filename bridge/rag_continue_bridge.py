@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.capture_agent import load_config
 from agents.rag_agent import ANSWER_PREVIEW_LIMIT, CONTINUATION_HINT, format_answer
+from bridge.rag_bridge import _rag_report_artifact
 from bridge.result_envelope import error_envelope, source_ref, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.repo import CaptureRepo
@@ -29,19 +30,19 @@ def _init():
     return _config, _repo
 
 
-def continue_latest_rag_answer() -> dict:
+def continue_latest_rag_answer(export_file: bool = False) -> dict:
     _config, repo = _init()
     return run_with_ledger(
         repo.conn,
         agent="rag",
         intent="continue_rag_answer",
         trigger="wechat",
-        input_ref={},
-        operation=lambda: _continue_latest_rag_answer(repo),
+        input_ref={"export_file": export_file},
+        operation=lambda: _continue_latest_rag_answer(repo, export_file=export_file),
     )
 
 
-def _continue_latest_rag_answer(repo: CaptureRepo) -> dict:
+def _continue_latest_rag_answer(repo: CaptureRepo, *, export_file: bool = False) -> dict:
     source_run = _latest_rag_run_with_answer(repo)
     if not source_run:
         return error_envelope(
@@ -54,6 +55,26 @@ def _continue_latest_rag_answer(repo: CaptureRepo) -> dict:
     output = _json_obj(source_run["output_json"])
     answer = str(output.get("answer") or "")
     sources = _source_rows(output.get("sources"))
+    if export_file:
+        query = str(output.get("query") or "")
+        artifact = _rag_report_artifact(
+            query=query,
+            answer=answer,
+            sources=sources,
+            results=[],
+        )
+        return success_envelope(
+            agent="rag",
+            intent="continue_rag_answer",
+            chat_preview="已生成 RAG 完整回答与引用报告文件。我会把文件发给你。",
+            durable_artifacts=[artifact],
+            source_map=_source_map(sources),
+            meta={
+                "source_run_id": source_run["id"],
+                "export_file": True,
+            },
+        )
+
     page = _next_page(repo, source_run["id"])
     chunk = _answer_page(answer, page)
     if not chunk:

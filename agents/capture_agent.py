@@ -22,6 +22,9 @@ from agents.extractors.link_extractor import LinkExtractor
 from agents.extractors.text_extractor import TextExtractor
 from agents.extractors.voice_extractor import VoiceExtractor
 from agents.extractors.image_extractor import ImageExtractor
+from agents.extractors.xiaohongshu_extractor import XiaohongshuExtractor
+from agents.library_agent import LibraryAgent
+from agents.outliner import Outliner
 from db.repo import CaptureDraftRepo, CaptureRepo
 from db.embedding_repo import CaptureEmbeddingRepo
 from db.schema import init_db
@@ -108,6 +111,7 @@ class CaptureAgent:
             base_url=config.llm_base_url or None,
         )
         self.extractors: list[BaseExtractor] = [
+            XiaohongshuExtractor(image_extractor=ImageExtractor(api_key=config.qwen_api_key)),
             LinkExtractor(),
             VoiceExtractor(api_key=config.qwen_api_key),
             ImageExtractor(api_key=config.qwen_api_key),
@@ -182,10 +186,10 @@ class CaptureAgent:
             raw_text=draft.get("raw_text", ""),
         )
         if isinstance(llm_result, LLMResult):
-            new_text = llm_result.text
+            new_text = _strip_draft_preamble(llm_result.text)
             incomplete = llm_result.incomplete
         else:
-            new_text = llm_result
+            new_text = _strip_draft_preamble(llm_result)
             incomplete = getattr(self, "_last_llm_incomplete", False)
 
         if incomplete:
@@ -579,6 +583,7 @@ class CaptureAgent:
             "- 基于分段笔记直接写最终整理稿，由你决定详略、结构和自然小标题。\n"
             "- 不要机械套模板；不要输出内部计划；不要输出标签、摘要、目录或任务合同。\n"
             "- 不要逐段搬运分段笔记；把它们综合成一篇可读的整理稿。\n"
+            "- 不要输出“好的，我们开始”这类对话开场白；第一行就进入正文。\n"
             "- 如果用户明确说“只要/仅保留/删除其他内容”，才只处理指定部分。\n"
             f"{emphasis_rule}\n"
             f"分段阅读笔记：\n{section_notes}\n\n"
@@ -618,6 +623,7 @@ class CaptureAgent:
             "- 由你决定最终整理稿的详略和结构：可以精炼，可以保留必要细节，也可以使用少量自然小标题。\n"
             "- 不要逐段搬运原文；不要为了格式而格式化；不要机械套用固定模板。\n"
             "- 不要输出标签、摘要、提纲、目录或任务合同；这些元信息由系统另行处理。\n"
+            "- 不要输出“好的，我们开始”这类对话开场白；第一行就进入正文。\n"
             "- 如果用户明确说“只要/仅保留/删除其他内容”，才只处理指定部分。\n"
             f"{emphasis_rule}\n"
             f"{material}\n\n"
@@ -706,6 +712,7 @@ class CaptureAgent:
         file_path = write_note(vault_path, capture_meta, body, stage="captures")
         self.repo.update(capture["id"], raw_path=raw_path, file_path=file_path)
         self._index_committed_identity(capture["id"], file_path)
+        library_postprocess = self._postprocess_committed_library(capture["id"])
         self.draft_repo.update(
             draft_id,
             status="committed",
@@ -724,6 +731,7 @@ class CaptureAgent:
             "tags": tags,
             "raw_path": raw_path,
             "file_path": file_path,
+            "library_postprocess": library_postprocess,
         }
 
     def _index_committed_identity(self, capture_id: str, file_path: str) -> None:
@@ -751,6 +759,30 @@ class CaptureAgent:
             )
         except Exception as exc:
             logger.warning(f"Identity embedding failed for {capture_id}: {exc}")
+
+    def _postprocess_committed_library(self, capture_id: str) -> dict:
+        """Run one-capture Library maintenance after a successful commit."""
+        try:
+            outliner = Outliner(
+                api_key=self.config.llm_api_key,
+                model="deepseek-v4-flash",
+                base_url=self.config.llm_base_url or "https://api.deepseek.com",
+            )
+            agent = LibraryAgent(
+                self.config.vault_path,
+                outliner=outliner,
+                db_conn=self.conn,
+                embedder=(
+                    Embedder(api_key=self.config.qwen_api_key)
+                    if self.config.qwen_api_key
+                    else None
+                ),
+                min_outline_chars=2000,
+            )
+            return agent.maintain_capture(capture_id, apply=True)
+        except Exception as exc:
+            logger.warning(f"Library postprocess failed for {capture_id}: {exc}")
+            return {"error": str(exc)}
 
     def _extract_and_clean(self, raw_input: str, source_url: str = "",
                            source_type: str = ""):
@@ -873,3 +905,21 @@ def _derive_title(extracted_title: str | None, text: str) -> str:
             candidate = re.split(r"[。！？!?；;\n]", candidate, maxsplit=1)[0].strip()
             return candidate[:40] or "未命名"
     return "未命名"
+
+
+def _strip_draft_preamble(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    paragraphs = re.split(r"\n\s*\n", text)
+    while paragraphs:
+        first = paragraphs[0].strip()
+        normalized = re.sub(r"[\W_]+", "", first.strip("。.!！"))
+        if normalized in {"好的我们开始", "好的开始", "好我们开始", "开始"}:
+            paragraphs.pop(0)
+            continue
+        if first in {"---", "----", "——"}:
+            paragraphs.pop(0)
+            continue
+        break
+    return "\n\n".join(paragraphs).strip()

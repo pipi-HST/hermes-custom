@@ -19,6 +19,8 @@ data/*.log
 data/backups/
 data/repair_reports/
 data/reports/
+data/exports/
+data/media/
 reports/
 
 dashboard/node_modules/

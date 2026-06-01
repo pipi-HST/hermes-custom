@@ -6,12 +6,14 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import CaptureAgent, CaptureConfig, load_config
+from bridge.file_artifacts import write_markdown_export
 from bridge.result_envelope import (
     artifact_ref,
     error_envelope,
     next_action,
     success_envelope,
 )
+from bridge.run_ledger import run_with_ledger
 
 _config = None
 _agent = None
@@ -90,6 +92,25 @@ def _full_text_saved_preview(result: dict, action: str) -> tuple[str, bool]:
     return message, any([title_truncated, summary_truncated, message_truncated])
 
 
+def _capture_draft_file_artifact(draft: dict, export_dir: Path | None = None) -> dict:
+    draft_id = str(draft.get("id") or "")
+    title = str(draft.get("title") or "未命名")
+    body = str(draft.get("draft_text") or draft.get("raw_text") or "").strip()
+    base_dir = export_dir or (Path(__file__).parent.parent / "data" / "exports" / "capture")
+    path = write_markdown_export(
+        base_dir=base_dir,
+        stem=f"capture-draft-{draft_id or title}",
+        content=f"# {title}\n\n{body}",
+    )
+    return artifact_ref(
+        type="capture_draft_fulltext",
+        id=draft_id,
+        title="Capture 草稿全文",
+        path=path,
+        status="created",
+    )
+
+
 def _key_response_preview(result: dict) -> str:
     draft_text = result.get("draft_text", "")
     emphasis = _preview_emphasis(result.get("capture_intent"))
@@ -134,13 +155,34 @@ def _preview_blocks(draft_text: str) -> list[str]:
     text = (draft_text or "").strip()
     if not text:
         return []
-    return [_clean_preview_block(block) for block in re.split(r"\n\s*\n", text) if block.strip()]
+    blocks = []
+    for block in re.split(r"\n\s*\n", text):
+        cleaned = _clean_preview_block(block)
+        if cleaned and not _is_preview_boilerplate(cleaned):
+            blocks.append(cleaned)
+    return blocks
 
 
 def _clean_preview_block(block: str) -> str:
     block = re.sub(r"^#+\s*", "", block.strip())
     block = re.sub(r"^\*\*(.+?)\*\*$", r"\1", block)
+    block = re.sub(r"^-{3,}$", "", block)
     return block.strip()
+
+
+def _is_preview_boilerplate(text: str) -> bool:
+    normalized = re.sub(r"[\W_]+", "", (text or "").strip().strip("。.!！"))
+    if not normalized:
+        return True
+    exact = {
+        "好的我们开始",
+        "好的开始",
+        "好我们开始",
+        "开始",
+    }
+    if normalized in exact:
+        return True
+    return bool(re.match(r"^(下面|以下|接下来)(是|为)?(我)?(对|关于)?.{0,18}(整理|总结|提炼|草稿)$", normalized))
 
 
 def _find_emphasis_block(blocks: list[str], emphasis: str, used: set[int]) -> tuple[int, str] | None:
@@ -182,22 +224,41 @@ def _first_sentence(text: str) -> str:
 
 
 def _first_meaningful_chunk(draft_text: str) -> str:
-    text = (draft_text or "").strip()
-    if not text:
-        return "暂无可预览正文。"
-    text = re.sub(r"^#+\s*.+$", "", text, count=1, flags=re.MULTILINE).strip()
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-    if paragraphs:
-        chunk = paragraphs[0]
-    else:
-        chunk = text
-    chunk = re.sub(r"^#+\s*", "", chunk).strip()
+    blocks = _preview_blocks(draft_text)
+    chunk = blocks[0] if blocks else ""
     return chunk or "暂无可预览正文。"
+
+
+def _run_capture_with_ledger(agent_obj, intent: str, input_ref: dict, operation):
+    conn = getattr(agent_obj, "conn", None)
+    if conn is None:
+        return operation()
+    return run_with_ledger(
+        conn,
+        agent="capture",
+        intent=intent,
+        trigger="wechat",
+        input_ref=input_ref,
+        operation=operation,
+    )
 
 
 def capture_content(content: str, instruction: str = "") -> dict:
     """提取内容并生成可确认的草稿；不直接写入 Obsidian 正式库。"""
     _, agent = _init()
+    return _run_capture_with_ledger(
+        agent,
+        "create_capture_draft",
+        {
+            "content_length": len(content or ""),
+            "content_preview": _clip_text(content or "", 120),
+            "instruction": instruction,
+        },
+        lambda: _capture_content(agent, content, instruction),
+    )
+
+
+def _capture_content(agent, content: str, instruction: str = "") -> dict:
     result = agent.create_draft(content, instruction=instruction)
     if "error" in result:
         hint = result.get("hint", "")
@@ -280,9 +341,18 @@ def capture_content(content: str, instruction: str = "") -> dict:
     )
 
 
-def show_capture_draft(draft_id: str = "", page: int = 1) -> dict:
+def show_capture_draft(draft_id: str = "", page: int = 1, as_file: bool = False) -> dict:
     """显示最近或指定的待确认草稿正文；只读草稿，不入库。"""
     _, agent = _init()
+    return _run_capture_with_ledger(
+        agent,
+        "show_capture_draft",
+        {"draft_id": draft_id, "page": page, "as_file": as_file},
+        lambda: _show_capture_draft(agent, draft_id=draft_id, page=page, as_file=as_file),
+    )
+
+
+def _show_capture_draft(agent, draft_id: str = "", page: int = 1, as_file: bool = False) -> dict:
     if not draft_id:
         draft = agent.draft_repo.get_latest_open()
     else:
@@ -308,6 +378,31 @@ def show_capture_draft(draft_id: str = "", page: int = 1) -> dict:
             error=f"草稿 {draft.get('id', '')} 没有可显示正文。",
         )
 
+    title = _clip_text(draft.get("title") or "无标题", 80)
+    artifacts = [
+        artifact_ref(
+            type="capture_draft",
+            id=draft.get("id", ""),
+            title=draft.get("title", ""),
+            status=draft.get("status", ""),
+        )
+    ]
+    if as_file:
+        file_artifact = _capture_draft_file_artifact(draft)
+        return success_envelope(
+            agent="capture",
+            intent="show_capture_draft",
+            chat_preview=f"已生成草稿全文文件：《{title}》。我会把文件发给你。",
+            durable_artifacts=[file_artifact],
+            meta={
+                "draft_id": draft.get("id", ""),
+                "title": draft.get("title", ""),
+                "draft_status": draft.get("status", ""),
+                "as_file": True,
+                "file_path": file_artifact.get("path", ""),
+            },
+        )
+
     total_pages = max(1, (len(body) + DRAFT_PAGE_SIZE - 1) // DRAFT_PAGE_SIZE)
     if page_num > total_pages:
         return error_envelope(
@@ -318,7 +413,6 @@ def show_capture_draft(draft_id: str = "", page: int = 1) -> dict:
 
     start = (page_num - 1) * DRAFT_PAGE_SIZE
     has_next = page_num < total_pages
-    title = _clip_text(draft.get("title") or "无标题", 80)
     next_hint = "回复「继续看」查看下一页；" if has_next else ""
     header = f"草稿《{title}》\n第 {page_num}/{total_pages} 页\n\n"
     footer = f"\n\n{next_hint}回复修改意见继续改；满意回复「存库」。"
@@ -339,14 +433,7 @@ def show_capture_draft(draft_id: str = "", page: int = 1) -> dict:
         agent="capture",
         intent="show_capture_draft",
         chat_preview=_clip_text(message, PREVIEW_LIMIT),
-        durable_artifacts=[
-            artifact_ref(
-                type="capture_draft",
-                id=draft.get("id", ""),
-                title=draft.get("title", ""),
-                status=draft.get("status", ""),
-            )
-        ],
+        durable_artifacts=artifacts,
         next_actions=actions,
         meta={
             "draft_id": draft.get("id", ""),
@@ -362,6 +449,15 @@ def show_capture_draft(draft_id: str = "", page: int = 1) -> dict:
 def revise_capture_draft(draft_id: str = "", instruction: str = "") -> dict:
     """按用户反馈修改最近或指定草稿，不写入正式库。"""
     _, agent = _init()
+    return _run_capture_with_ledger(
+        agent,
+        "revise_capture_draft",
+        {"draft_id": draft_id, "instruction": instruction},
+        lambda: _revise_capture_draft(agent, draft_id=draft_id, instruction=instruction),
+    )
+
+
+def _revise_capture_draft(agent, draft_id: str = "", instruction: str = "") -> dict:
     if not draft_id:
         latest = agent.draft_repo.get_latest_open()
         draft_id = latest["id"] if latest else ""
@@ -436,6 +532,15 @@ def revise_capture_draft(draft_id: str = "", instruction: str = "") -> dict:
 def commit_capture_draft(draft_id: str = "") -> dict:
     """用户确认后将草稿写入 Obsidian raw/ 和 captures/。"""
     _, agent = _init()
+    return _run_capture_with_ledger(
+        agent,
+        "commit_capture_draft",
+        {"draft_id": draft_id},
+        lambda: _commit_capture_draft(agent, draft_id=draft_id),
+    )
+
+
+def _commit_capture_draft(agent, draft_id: str = "") -> dict:
     if not draft_id:
         latest = agent.draft_repo.get_latest_open()
         draft_id = latest["id"] if latest else ""
@@ -497,4 +602,10 @@ def commit_capture_draft(draft_id: str = "") -> dict:
 
 def refine_capture(draft_id: str = "", instruction: str = "") -> dict:
     """兼容旧工具名：现在只修改草稿，不直接入库。"""
-    return revise_capture_draft(draft_id, instruction)
+    _, agent = _init()
+    return _run_capture_with_ledger(
+        agent,
+        "refine_capture",
+        {"draft_id": draft_id, "instruction": instruction},
+        lambda: _revise_capture_draft(agent, draft_id=draft_id, instruction=instruction),
+    )

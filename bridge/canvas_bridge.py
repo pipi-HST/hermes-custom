@@ -12,11 +12,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.canvas_agent import (
     CanvasBuildInput,
     CanvasItem,
+    CanvasStructure,
+    CanvasStructureGroup,
     CanvasTheme,
     build_obsidian_canvas,
     safe_canvas_filename,
 )
 from agents.capture_agent import load_config
+from agents.garden_structure_agent import GardenStructureAgent
 from agents.markdown_writer import read_note
 from bridge.result_envelope import artifact_ref, error_envelope, success_envelope
 from bridge.run_ledger import run_with_ledger
@@ -52,6 +55,7 @@ def generate_canvas(
         operation=lambda: _generate_canvas(
             repo,
             Path(resolved_vault_path).expanduser(),
+            config=config,
             theme=theme,
             question_id=question_id,
             capture_ids=capture_ids or [],
@@ -64,6 +68,7 @@ def _generate_canvas(
     repo: CaptureRepo,
     vault_path: Path,
     *,
+    config,
     theme: str,
     question_id: str,
     capture_ids: list[str],
@@ -98,12 +103,46 @@ def _generate_canvas(
     if not garden_items:
         warnings.append("暂时没有找到关联的 Garden 卡")
 
+    structure = None
+    structure_status = "fallback"
+    if len(garden_items) >= 2:
+        planner = GardenStructureAgent(
+            llm_api_key=config.llm_api_key,
+            llm_model=config.llm_model,
+            llm_base_url=config.llm_base_url or "https://api.deepseek.com",
+        )
+        plan = planner.plan(theme_node.title, garden_cards)
+        if plan.get("status") != "structured":
+            reason = str(plan.get("reason") or "这些卡只是同主题，没有形成清晰结构。")
+            return error_envelope(
+                agent="canvas",
+                intent="generate_canvas",
+                error=reason,
+                chat_preview="\n".join([
+                    "这组 Garden Card 暂时不适合生成 Canvas。",
+                    "",
+                    reason,
+                    "",
+                    "这种情况用 Theme/MOC 单向整理就够了；等材料之间形成更明确的支撑、方法、风险或问题关系，再生成画板会更有用。",
+                ]),
+                warnings=warnings,
+                meta={
+                    "theme": theme_node.title,
+                    "capture_count": len(captures),
+                    "garden_count": len(garden_items),
+                    "structure_status": "not_worth_canvas",
+                },
+            )
+        structure_status = "structured"
+        structure = _canvas_structure_from_plan(plan)
+
     built = build_obsidian_canvas(
         CanvasBuildInput(
             title=theme_node.title,
             theme=theme_node,
             captures=captures,
             garden_cards=garden_items,
+            structure=structure,
         )
     )
     warnings.extend(built.warnings)
@@ -136,6 +175,7 @@ def _generate_canvas(
             "garden_count": len(garden_items),
             "node_count": built.node_count,
             "edge_count": built.edge_count,
+            "structure_status": structure_status,
         },
     )
 
@@ -265,11 +305,44 @@ def _garden_items(rows: list[dict[str, Any]]) -> list[CanvasItem]:
                 title=title,
                 file_path=f"garden/{_safe_note_stem(title, card_id)}.md",
                 kind=str(row.get("card_kind") or ""),
-                summary=str(row.get("one_liner") or ""),
+                summary=_garden_card_summary(row),
                 source_ids=_json_list(row.get("capture_ids")),
             )
         )
     return items
+
+
+def _garden_card_summary(row: dict[str, Any]) -> str:
+    title = str(row.get("title") or "").strip()
+    one_liner = str(row.get("one_liner") or "").strip()
+    if one_liner and _norm(one_liner) != _norm(title):
+        return one_liner
+
+    claims = []
+    for argument in _json_list_of_dicts(row.get("core_arguments")):
+        claim = str(argument.get("claim") or "").strip()
+        if claim:
+            claims.append(claim)
+    if claims:
+        return "；".join(claims[:2])
+    return one_liner
+
+
+def _canvas_structure_from_plan(plan: dict[str, Any]) -> CanvasStructure:
+    return CanvasStructure(
+        core_claim=str(plan.get("core_claim") or ""),
+        groups=[
+            CanvasStructureGroup(
+                role=str(group.get("role") or ""),
+                title=str(group.get("title") or ""),
+                card_ids=[str(card_id) for card_id in group.get("card_ids") or []],
+                reason=str(group.get("reason") or ""),
+            )
+            for group in plan.get("groups") or []
+            if isinstance(group, dict)
+        ],
+        evidence_ids=[str(item) for item in plan.get("evidence_ids") or []],
+    )
 
 
 def _capture_ids_from_cards(rows: list[dict[str, Any]]) -> list[str]:
@@ -327,6 +400,16 @@ def _json_list(value: Any) -> list[str]:
     if not isinstance(parsed, list):
         return []
     return [str(item) for item in parsed if str(item)]
+
+
+def _json_list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(value or "[]") if isinstance(value, str) else value
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
 
 
 def _safe_note_stem(title: str, card_id: str) -> str:

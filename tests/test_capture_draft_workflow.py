@@ -594,6 +594,93 @@ def test_commit_draft_builds_identity_embedding_index(
     assert row["file_path"] == committed["file_path"]
 
 
+def test_commit_draft_runs_targeted_library_postprocess(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """入库后应只为当前 capture 补 Library 元数据和章节索引。"""
+
+    class FakeEmbedder:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+
+        def embed(self, text: str) -> bytes:
+            if "章节：Codex 路线" in text:
+                return b"section-codex"
+            if "章节：Claude 路线" in text:
+                return b"section-claude"
+            return b"identity"
+
+    class FakeOutliner:
+        def __init__(self, **_kwargs):
+            pass
+
+        def generate(self, _body: str, _length: int):
+            return [
+                {"level": 1, "title": "Codex 路线", "summary": "用户显式触发。"},
+                {"level": 1, "title": "Claude 路线", "summary": "模型主动委派。"},
+            ]
+
+    long_body = (
+        "一、Codex 路线\n"
+        + ("Codex 要求用户显式触发 subagent，避免奖励归因模糊。" * 30)
+        + "\n\n二、Claude 路线\n"
+        + ("Claude Code 把上下文视为稀缺资源，让模型主动判断何时委派。" * 30)
+    )
+    agent.config.qwen_api_key = "sk-test-qwen"
+    monkeypatch.setattr("agents.capture_agent.Embedder", FakeEmbedder, raising=False)
+    monkeypatch.setattr("agents.capture_agent.Outliner", FakeOutliner, raising=False)
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: long_body)
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {
+            "title": "Subagent 的三岔路",
+            "summary": "比较 Codex、Claude Code、Cursor 的委派策略。",
+            "tags": ["ai-agent"],
+        },
+    )
+
+    draft = agent.create_draft(TEST_CONTENT, instruction="总结全文核心内容")
+    committed = agent.commit_draft(draft["id"])
+
+    capture_frontmatter, capture_body = read_note(tmp_path, committed["file_path"])
+    raw_frontmatter, _raw_body = read_note(tmp_path, committed["raw_path"])
+    assert capture_frontmatter["type"] == "capture"
+    assert capture_frontmatter["status"] == "processed"
+    assert raw_frontmatter["type"] == "raw"
+    assert raw_frontmatter["status"] == "raw"
+    assert raw_frontmatter["capture_id"] == committed["capture_id"]
+    assert "## 目录纲要" in capture_body
+
+    metadata = agent.repo.conn.execute(
+        "SELECT outline_json FROM capture_metadata WHERE capture_id = ?",
+        (committed["capture_id"],),
+    ).fetchone()
+    assert metadata is not None
+    assert "Codex 路线" in metadata["outline_json"]
+
+    rows = agent.repo.conn.execute(
+        """SELECT kind, section_title, embedding
+           FROM capture_embeddings
+           WHERE capture_id = ?
+           ORDER BY kind, section_title""",
+        (committed["capture_id"],),
+    ).fetchall()
+    assert ("identity", "", b"identity") in [
+        (row["kind"], row["section_title"], row["embedding"]) for row in rows
+    ]
+    assert ("section", "Codex 路线", b"section-codex") in [
+        (row["kind"], row["section_title"], row["embedding"]) for row in rows
+    ]
+    assert ("section", "Claude 路线", b"section-claude") in [
+        (row["kind"], row["section_title"], row["embedding"]) for row in rows
+    ]
+    assert committed["library_postprocess"]["outlines"]["updated"] == 1
+    assert committed["library_postprocess"]["embedding_index"]["updated"] >= 2
+
+
 def test_commit_full_text_save_writes_full_capture_without_outline(
     agent: CaptureAgent,
     tmp_path: Path,

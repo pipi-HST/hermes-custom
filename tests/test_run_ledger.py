@@ -33,6 +33,10 @@ def test_run_with_ledger_records_success(tmp_path):
     assert json.loads(latest["input_json"]) == {"query": "AI"}
     assert json.loads(latest["output_json"])["answer"] == "完整答案"
     assert json.loads(latest["evidence_json"])["result_count"] == 0
+    assert [event["event_type"] for event in AgentRunRepo(conn).events(latest["id"])] == [
+        "started",
+        "completed",
+    ]
 
 
 def test_run_with_ledger_records_error_and_reraises(tmp_path):
@@ -54,3 +58,7 @@ def test_run_with_ledger_records_error_and_reraises(tmp_path):
     latest = AgentRunRepo(conn).latest(limit=1)[0]
     assert latest["status"] == "error"
     assert json.loads(latest["errors_json"]) == ["boom"]
+    assert [event["event_type"] for event in AgentRunRepo(conn).events(latest["id"])] == [
+        "started",
+        "failed",
+    ]

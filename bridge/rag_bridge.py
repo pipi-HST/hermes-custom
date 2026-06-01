@@ -14,7 +14,8 @@ from agents.rag_agent import RagAgent, format_answer
 from agents.rag_context import build_rag_context_pack
 from agents.rag_graph import build_graph_retrieval
 from agents.embedder import Embedder
-from bridge.result_envelope import source_ref, success_envelope
+from bridge.file_artifacts import write_markdown_export
+from bridge.result_envelope import artifact_ref, source_ref, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.embedding_repo import CaptureEmbeddingRepo
 from db.vector_search import search as vector_search
@@ -47,19 +48,30 @@ def _init():
         _repo = CaptureRepo(init_db(_config.db_path))
     return _config, _repo
 
-def search_knowledge_base(query: str) -> dict:
+def search_knowledge_base(query: str, export_file: bool = False) -> dict:
     config, repo = _init()
     return run_with_ledger(
         repo.conn,
         agent="rag",
         intent="search_knowledge_base",
         trigger="wechat",
-        input_ref={"query": query},
-        operation=lambda: _search_knowledge_base(query, config, repo),
+        input_ref={"query": query, "export_file": export_file},
+        operation=lambda: _search_knowledge_base(
+            query,
+            config,
+            repo,
+            export_file=export_file,
+        ),
     )
 
 
-def _search_knowledge_base(query: str, config, repo: CaptureRepo) -> dict:
+def _search_knowledge_base(
+    query: str,
+    config,
+    repo: CaptureRepo,
+    *,
+    export_file: bool = False,
+) -> dict:
     _log(f"QUERY: {query}")
     logger.info("[RAG] query=%r", query)
 
@@ -146,10 +158,25 @@ def _search_knowledge_base(query: str, config, repo: CaptureRepo) -> dict:
     _log(f"ANSWER: {len(resp.get('answer', ''))} chars")
     logger.info("[RAG] answer generated (%d chars)", len(resp.get("answer", "")))
 
+    artifacts = []
+    if export_file:
+        artifacts.append(
+            _rag_report_artifact(
+                query=query,
+                answer=resp["answer"],
+                sources=resp["sources"],
+                results=results,
+            )
+        )
+    chat_preview = format_answer(resp["answer"], resp["sources"])
+    if export_file:
+        chat_preview = "已生成 RAG 完整回答与引用报告文件。我会把文件发给你。"
+
     return success_envelope(
         agent="rag",
         intent="search_knowledge_base",
-        chat_preview=format_answer(resp["answer"], resp["sources"]),
+        chat_preview=chat_preview,
+        durable_artifacts=artifacts,
         source_map=[
             source_ref(
                 role="evidence",
@@ -182,7 +209,65 @@ def _search_knowledge_base(query: str, config, repo: CaptureRepo) -> dict:
                 "retrieval": "indexed" if used_index else "fallback" if used_fallback else "vector",
                 "source_titles": titles,
             },
+            "export_file": export_file,
         },
+    )
+
+
+def _rag_report_artifact(
+    *,
+    query: str,
+    answer: str,
+    sources: list[dict],
+    results: list[dict],
+    export_dir: Path | None = None,
+) -> dict:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    base_dir = export_dir or (Path(__file__).parent.parent / "data" / "exports" / "rag")
+    lines = [
+        "# RAG 完整回答与引用报告",
+        "",
+        "## 问题",
+        "",
+        query.strip(),
+        "",
+        "## 完整回答",
+        "",
+        answer.strip(),
+        "",
+        "## 完整引用",
+        "",
+    ]
+    if sources:
+        for index, source in enumerate(sources, 1):
+            title = str(source.get("title") or "").strip()
+            section = str(source.get("section") or source.get("section_title") or "").strip()
+            path = str(source.get("path") or source.get("file_path") or "").strip()
+            label = f"[{index}] {title or path or '未命名'}"
+            if section:
+                label += f" / {section}"
+            lines.extend([f"- {label}", f"  - 路径：{path or '无'}"])
+    else:
+        for index, result in enumerate(results, 1):
+            title = str(result.get("title") or "").strip()
+            section = str(result.get("section_title") or "").strip()
+            path = str(result.get("file_path") or "").strip()
+            label = f"[{index}] {title or path or '未命名'}"
+            if section:
+                label += f" / {section}"
+            lines.extend([f"- {label}", f"  - 路径：{path or '无'}"])
+
+    file_path = write_markdown_export(
+        base_dir=base_dir,
+        stem=f"rag-answer-{timestamp}",
+        content="\n".join(lines),
+    )
+    return artifact_ref(
+        type="rag_answer_report",
+        id=f"rag-answer-{timestamp}",
+        title="RAG 完整回答与引用报告",
+        path=file_path,
+        status="created",
     )
 
 

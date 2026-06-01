@@ -101,6 +101,7 @@ def is_meaningful_content(text: str) -> bool:
 
     failure_markers = (
         "[内容未能提取]",
+        "[小红书内容未能提取]",
         "请复制粘贴正文给我",
         "内容提取失败",
     )

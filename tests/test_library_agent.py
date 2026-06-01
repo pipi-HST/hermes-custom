@@ -221,6 +221,41 @@ def test_apply_inserts_markdown_headings_for_unstructured_long_note(
     assert updated_body.count("## 第二部分") == 1
 
 
+def test_apply_inserts_markdown_headings_from_outline_ranges(
+    tmp_path: Path,
+) -> None:
+    outline = [
+        {"level": 1, "title": "开篇判断", "range": "段1-2", "summary": "提出主问题。"},
+        {"level": 1, "title": "Codex 路线", "range": "段3", "summary": "说明被动触发。"},
+        {"level": 1, "title": "Claude 路线", "range": "段4", "summary": "说明主动委派。"},
+    ]
+    body = (
+        "# 测试长文\n\n"
+        "第一段提出 subagent 的核心问题。\n\n"
+        "第二段解释上下文污染。\n\n"
+        "第三段解释 Codex 为什么被动触发。\n\n"
+        "第四段解释 Claude 为什么主动委派。\n"
+    )
+    rel_path = _write_capture(tmp_path, body=body)
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("long", rel_path))
+    conn.commit()
+
+    LibraryAgent(
+        tmp_path,
+        outliner=FakeOutliner(outline=outline),
+        min_outline_chars=20,
+        db_conn=conn,
+    ).maintain_outlines(apply=True)
+
+    note = read_note(tmp_path, rel_path)
+    assert note is not None
+    _frontmatter, updated_body = note
+    assert "## 开篇判断\n\n第一段提出 subagent 的核心问题。" in updated_body
+    assert "## Codex 路线\n\n第三段解释 Codex 为什么被动触发。" in updated_body
+    assert "## Claude 路线\n\n第四段解释 Claude 为什么主动委派。" in updated_body
+
+
 def test_repaired_long_note_builds_section_embeddings(tmp_path: Path) -> None:
     outline = [
         {"level": 1, "title": "第一部分", "summary": "第一段内容。"},

@@ -161,23 +161,104 @@ class LibraryAgent:
 
         return actions
 
+    def maintain_capture(self, capture_id: str, *, apply: bool = False) -> dict[str, Any]:
+        """Run Library maintenance only for one newly committed capture."""
+        report = {
+            "dry_run": not apply,
+            "capture_id": capture_id,
+            "property_gaps": {
+                "planned_action_count": 0,
+                "applied_action_count": 0,
+                "planned_actions": [],
+            },
+            "outlines": {
+                "dry_run": not apply,
+                "scanned": 0,
+                "needs_outline": 0,
+                "updated": 0,
+                "skipped_short": 0,
+                "skipped_existing": 0,
+                "errors": 0,
+                "items": [],
+            },
+            "embedding_index": {
+                "dry_run": not apply,
+                "scanned": 0,
+                "missing_or_stale": 0,
+                "updated": 0,
+                "skipped_missing_file": 0,
+                "errors": 0,
+                "items": [],
+            },
+        }
+        conn = self._index_db_conn()
+        if conn is None:
+            report["skipped"] = True
+            report["reason"] = "db_not_configured"
+            return report
+        row = conn.execute(
+            "SELECT id, file_path, raw_path FROM captures WHERE id = ?",
+            (capture_id,),
+        ).fetchone()
+        if row is None:
+            report["skipped"] = True
+            report["reason"] = "capture_not_found"
+            return report
+
+        file_path = str(row["file_path"] or "")
+        raw_path = str(row["raw_path"] or "")
+        target_paths = {path for path in (file_path, raw_path) if path}
+        actions = [
+            action
+            for action in self._property_backfill_actions()
+            if str(action.get("file_path") or "") in target_paths
+        ]
+        applied_count = 0
+        if apply:
+            for action in actions:
+                if _apply_property_backfill(self.vault_path, action):
+                    applied_count += 1
+        report["property_gaps"] = {
+            "planned_action_count": len(actions),
+            "applied_action_count": applied_count,
+            "planned_actions": actions,
+        }
+
+        if file_path:
+            note_path = self.vault_path / file_path
+            if note_path.exists():
+                report["outlines"]["scanned"] += 1
+                try:
+                    self._maintain_one(note_path, file_path, apply, report["outlines"])
+                except Exception as exc:  # pragma: no cover - defensive per-note isolation
+                    report["outlines"]["errors"] += 1
+                    report["outlines"]["items"].append(
+                        {"file_path": file_path, "action": "error", "error": str(exc)}
+                    )
+
+        report["embedding_index"] = self._maintain_embedding_index_rows([row], apply=apply)
+        return report
+
     def _raw_capture_id_map(self) -> dict[str, str]:
-        if self.db_path is None or not self.db_path.exists():
-            return {}
-        try:
+        conn = self.db_conn
+        should_close = False
+        if conn is None:
+            if self.db_path is None or not self.db_path.exists():
+                return {}
             conn = sqlite3.connect(str(self.db_path))
+            should_close = True
+        try:
             rows = conn.execute(
                 "SELECT id, raw_path FROM captures "
                 "WHERE raw_path IS NOT NULL AND raw_path != ''"
             ).fetchall()
         except sqlite3.Error:
             return {}
+        try:
+            return {str(raw_path): str(capture_id) for capture_id, raw_path in rows}
         finally:
-            try:
+            if should_close:
                 conn.close()
-            except UnboundLocalError:
-                pass
-        return {str(raw_path): str(capture_id) for capture_id, raw_path in rows}
 
     def maintain_outlines(self, *, apply: bool = False) -> dict[str, Any]:
         report: dict[str, Any] = {
@@ -209,6 +290,25 @@ class LibraryAgent:
         return report
 
     def maintain_embedding_index(self, *, apply: bool = False) -> dict[str, Any]:
+        conn = self._index_db_conn()
+        if conn is None:
+            return {
+                "dry_run": not apply,
+                "scanned": 0,
+                "missing_or_stale": 0,
+                "updated": 0,
+                "skipped_missing_file": 0,
+                "errors": 0,
+                "items": [],
+                "skipped": True,
+                "reason": "db_not_configured",
+            }
+        rows = conn.execute(
+            "SELECT id, file_path FROM captures ORDER BY created_at ASC"
+        ).fetchall()
+        return self._maintain_embedding_index_rows(rows, apply=apply)
+
+    def _maintain_embedding_index_rows(self, rows, *, apply: bool = False) -> dict[str, Any]:
         report: dict[str, Any] = {
             "dry_run": not apply,
             "scanned": 0,
@@ -228,9 +328,6 @@ class LibraryAgent:
             }
 
         repo = CaptureEmbeddingRepo(conn)
-        rows = conn.execute(
-            "SELECT id, file_path FROM captures ORDER BY created_at ASC"
-        ).fetchall()
         for row in rows:
             capture_id = str(row["id"])
             file_path = str(row["file_path"] or "")
@@ -526,7 +623,8 @@ def _insert_outline_headings(body: str, outline: list[dict]) -> str:
     result = "\n".join(updated)
     if body.endswith("\n"):
         result += "\n"
-    return _insert_inline_outline_headings(result, outline)
+    result = _insert_inline_outline_headings(result, outline)
+    return _insert_range_outline_headings(result, outline)
 
 
 def _insert_inline_outline_headings(body: str, outline: list[dict]) -> str:
@@ -552,6 +650,89 @@ def _insert_inline_outline_headings(body: str, outline: list[dict]) -> str:
             suffix = f"{heading}\n\n{after}"
 
     return prefix + suffix
+
+
+def _insert_range_outline_headings(body: str, outline: list[dict]) -> str:
+    directory_end = _directory_end_offset(body)
+    prefix = body[:directory_end]
+    suffix = body[directory_end:]
+    existing_titles = _existing_markdown_section_titles(prefix + suffix)
+    insertions: dict[int, list[dict]] = {}
+
+    for item in outline:
+        title = _single_line(str(item.get("title") or ""))
+        if not title or title in existing_titles:
+            continue
+        paragraph_number = _outline_range_start(str(item.get("range") or ""))
+        if paragraph_number <= 0:
+            continue
+        insertions.setdefault(paragraph_number, []).append(item)
+
+    if not insertions:
+        return body
+
+    blocks = [block.strip() for block in re.split(r"\n\s*\n", suffix.strip()) if block.strip()]
+    updated: list[str] = []
+    content_index = 0
+    inserted_titles: set[str] = set()
+    for block in blocks:
+        if _is_content_paragraph(block):
+            content_index += 1
+            for item in insertions.get(content_index, []):
+                title = _single_line(str(item.get("title") or ""))
+                if title and title not in inserted_titles:
+                    updated.append(f"{_heading_level(item)} {title}")
+                    inserted_titles.add(title)
+        updated.append(block)
+
+    if not inserted_titles:
+        return body
+    return prefix + "\n\n".join(updated).strip()
+
+
+def _outline_range_start(value: str) -> int:
+    match = re.search(r"段\s*([0-9一二三四五六七八九十]+)", value)
+    if not match:
+        return 0
+    token = match.group(1)
+    if token.isdigit():
+        return int(token)
+    return _chinese_number_to_int(token)
+
+
+def _chinese_number_to_int(value: str) -> int:
+    digits = {
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    if value in digits:
+        return digits[value]
+    if value == "十":
+        return 10
+    if value.startswith("十") and len(value) == 2:
+        return 10 + digits.get(value[1], 0)
+    if "十" in value:
+        head, _, tail = value.partition("十")
+        return digits.get(head, 0) * 10 + digits.get(tail, 0)
+    return 0
+
+
+def _is_content_paragraph(block: str) -> bool:
+    stripped = block.strip()
+    if not stripped or stripped.startswith("#"):
+        return False
+    if stripped == DIRECTORY_HEADING:
+        return False
+    if all(_is_directory_line(line.strip()) for line in stripped.splitlines()):
+        return False
+    return True
 
 
 def _inline_outline_match(text: str, title: str) -> re.Match[str] | None:

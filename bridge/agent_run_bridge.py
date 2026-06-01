@@ -44,6 +44,8 @@ def _preview(runs: list[dict[str, Any]]) -> str:
             "result_count",
             "source_count",
             "draft_id",
+            "draft_status",
+            "capture_id",
             "card_id",
             "scanned_count",
             "pending_questions_created",

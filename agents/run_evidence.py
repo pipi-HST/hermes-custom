@@ -127,6 +127,35 @@ def extract_run_evidence(
                 "source_count": len(sources),
             }
         )
+    elif intent in {
+        "create_capture_draft",
+        "show_capture_draft",
+        "revise_capture_draft",
+        "commit_capture_draft",
+        "refine_capture",
+    }:
+        draft_artifact = _first_artifact(artifacts, "capture_draft")
+        capture_artifact = _first_artifact(artifacts, "capture_note")
+        draft_id = str(meta.get("draft_id") or draft_artifact.get("id") or "")
+        capture_id = str(meta.get("capture_id") or capture_artifact.get("id") or "")
+        evidence.update(
+            {
+                "draft_id": draft_id,
+                "capture_id": capture_id,
+                "draft_status": str(meta.get("draft_status") or draft_artifact.get("status") or ""),
+                "title": str(meta.get("title") or draft_artifact.get("title") or capture_artifact.get("title") or ""),
+                "preview_truncated": bool(meta.get("preview_truncated")),
+            }
+        )
+        output_ref.update(
+            {
+                "draft_id": draft_id,
+                "capture_id": capture_id,
+                "title": evidence["title"],
+                "draft_status": evidence["draft_status"],
+                "file_path": str(meta.get("file_path") or capture_artifact.get("path") or ""),
+            }
+        )
 
     status = _completion_status(result, intent, evidence)
     return {
