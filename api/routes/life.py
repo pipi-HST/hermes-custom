@@ -1014,7 +1014,7 @@ def _latest_rate_limit_failure(conn: sqlite3.Connection, current: datetime) -> d
 def _reminder_bursts(conn: sqlite3.Connection, *, since: datetime) -> list[dict[str, Any]]:
     min_gap_minutes = {"exercise": 120, "sedentary": LifeConfig().sedentary_repeat_minutes}
     rows = conn.execute(
-        """SELECT reminder_type, scheduled_for, status
+        """SELECT reminder_type, scheduled_for, status, payload_json
            FROM life_reminder_logs
            WHERE reminder_type IN ('exercise', 'sedentary')
              AND status IN ('scheduled', 'sending', 'sent')
@@ -1025,6 +1025,9 @@ def _reminder_bursts(conn: sqlite3.Connection, *, since: datetime) -> list[dict[
     for row in rows:
         reminder_type = str(row["reminder_type"])
         scheduled_for = str(row["scheduled_for"])
+        payload = _load_json(row["payload_json"], {})
+        if payload.get("source") == "user_reschedule":
+            continue
         previous = previous_by_type.get(reminder_type)
         previous_by_type[reminder_type] = scheduled_for
         if not previous:

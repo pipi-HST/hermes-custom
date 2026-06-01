@@ -617,6 +617,34 @@ def test_life_runtime_returns_cron_delivery_and_recent_triggers(tmp_path) -> Non
     assert rules["water"]["latest_log"]["status"] == "failed"
 
 
+def test_life_runtime_ignores_user_rescheduled_exercise_plan_as_burst(tmp_path) -> None:
+    client, repo = _client(tmp_path)
+    repo.create_reminder_log(
+        reminder_type="exercise",
+        scheduled_for="2026-06-01T22:00:00+08:00",
+        status="scheduled",
+        dedupe_key="exercise_reschedule:2026-06-01T22:00:00+08:00",
+        payload={"source": "user_reschedule"},
+    )
+    repo.create_reminder_log(
+        reminder_type="exercise",
+        scheduled_for="2026-06-01T22:00:18+08:00",
+        status="sent",
+        sent_at="2026-06-01T22:01:18+08:00",
+        dedupe_key="exercise:2026-06-01T22:00",
+    )
+
+    response = client.get(
+        "/api/life/runtime",
+        params={"now": "2026-06-01T23:00:00+08:00"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["delivery"]["status"] == "ok"
+    assert data["delivery"]["recent_burst_count"] == 0
+
+
 def test_life_runtime_missing_files_has_stable_shape(tmp_path) -> None:
     client, _repo = _client(
         tmp_path,
