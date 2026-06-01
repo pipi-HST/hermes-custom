@@ -70,27 +70,27 @@ def test_life_tick_can_notify_when_config_enabled(tmp_path, monkeypatch) -> None
     assert checked["meta"]["selected_reminder_type"] == "exercise"
 
 
-def test_recent_mac_sleep_interruption_requires_ten_minutes() -> None:
+def test_recent_mac_sleep_interruption_requires_six_minutes() -> None:
     short_log = "\n".join(
         [
             "2026-06-01 10:31:09 +0800 Sleep                 Entering Sleep state due to 'Idle Sleep'",
-            "2026-06-01 10:39:43 +0800 Wake                  Wake from Deep Idle",
+            "2026-06-01 10:35:43 +0800 Wake                  Wake from Deep Idle",
         ]
     )
     long_log = "\n".join(
         [
             "2026-06-01 10:31:09 +0800 Sleep                 Entering Sleep state due to 'Idle Sleep'",
-            "2026-06-01 10:45:43 +0800 Wake                  Wake from Deep Idle",
+            "2026-06-01 10:38:43 +0800 Wake                  Wake from Deep Idle",
         ]
     )
-    now = life_bridge._parse_pmset_time("2026-06-01 10:47:00 +0800")
+    now = life_bridge._parse_pmset_time("2026-06-01 10:40:00 +0800")
 
     assert life_bridge._recent_mac_interruption(short_log, now=now) is None
     assert life_bridge._recent_mac_interruption(long_log, now=now) == (
         "sleep",
-        874,
+        454,
         "2026-06-01T10:31:09+08:00",
-        "2026-06-01T10:45:43+08:00",
+        "2026-06-01T10:38:43+08:00",
     )
 
 

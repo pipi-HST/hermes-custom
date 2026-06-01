@@ -1121,7 +1121,7 @@ def test_sedentary_activity_reply_does_not_resolve_active_window(agent: LifeAgen
         "SELECT * FROM life_events WHERE event_type = 'sedentary_start'"
     ).fetchone()
     assert result["status"] == "rejected"
-    assert "离开电脑超过10分钟" in result["chat_preview"]
+    assert "离开电脑超过6分钟" in result["chat_preview"]
     assert active_window["status"] == "active"
 
 
@@ -1205,7 +1205,7 @@ def test_life_tick_records_break_after_idle_exceeds_threshold(agent: LifeAgent) 
     ).fetchone()
     break_row = agent.repo._event_row_to_dict(break_row_raw)
     assert break_row is not None
-    assert break_row["duration_minutes"] == 69
+    assert break_row["duration_minutes"] == 65
 
 
 def test_life_tick_closes_sedentary_window_at_last_input_time_after_long_idle(agent: LifeAgent) -> None:
@@ -1231,12 +1231,12 @@ def test_life_tick_closes_sedentary_window_at_last_input_time_after_long_idle(ag
     ).fetchone()
     break_row = agent.repo._event_row_to_dict(break_row_raw)
     assert (result["selected"] or {}).get("reminder_type") != "sedentary"
-    assert updated["ended_at"] == "2026-05-31T02:39:07+08:00"
-    assert updated["duration_minutes"] == 10
-    assert break_row["occurred_at"] == "2026-05-31T02:39:07+08:00"
+    assert updated["ended_at"] == "2026-05-31T02:35:07+08:00"
+    assert updated["duration_minutes"] == 6
+    assert break_row["occurred_at"] == "2026-05-31T02:35:07+08:00"
 
 
-def test_life_tick_requires_ten_minute_mac_interruption_to_close_sedentary_window(agent: LifeAgent) -> None:
+def test_life_tick_requires_six_minute_mac_interruption_to_close_sedentary_window(agent: LifeAgent) -> None:
     active = agent.repo.create_event(
         event_type="sedentary_start",
         occurred_at="2026-05-29T09:00:00+08:00",
@@ -1256,23 +1256,23 @@ def test_life_tick_requires_ten_minute_mac_interruption_to_close_sedentary_windo
     )
 
     short_interruption = agent.life_tick(
-        now="2026-05-29T10:09:00+08:00",
+        now="2026-05-29T10:05:00+08:00",
         activity=ActivitySnapshot(
             idle_seconds=0,
             available=True,
             sleeping=True,
-            interruption_seconds=9 * 60,
+            interruption_seconds=5 * 60,
             interruption_source="sleep",
         ),
         dry_run=True,
     )
     long_interruption = agent.life_tick(
-        now="2026-05-29T10:11:00+08:00",
+        now="2026-05-29T10:07:00+08:00",
         activity=ActivitySnapshot(
             idle_seconds=0,
             available=True,
             sleeping=True,
-            interruption_seconds=11 * 60,
+            interruption_seconds=7 * 60,
             interruption_source="sleep",
         ),
         dry_run=True,
@@ -1286,7 +1286,7 @@ def test_life_tick_requires_ten_minute_mac_interruption_to_close_sedentary_windo
     assert short_interruption["selected"] is None
     assert long_interruption["selected"] is None
     assert updated["status"] == "auto_resolved"
-    assert updated["ended_at"] == "2026-05-29T10:10:00+08:00"
+    assert updated["ended_at"] == "2026-05-29T10:06:00+08:00"
     assert break_row["payload_json"]["resolution_source"] == "mac_interrupted:sleep"
 
 
@@ -1486,7 +1486,7 @@ def test_life_tick_handles_existing_naive_sedentary_window_with_aware_now(agent:
     ).fetchone()
     assert result["selected"] is None
     assert break_row is not None
-    assert break_row["duration_minutes"] == 69
+    assert break_row["duration_minutes"] == 65
 
 
 def test_life_tick_does_not_close_sedentary_window_when_tick_time_is_before_window(agent: LifeAgent) -> None:

@@ -141,7 +141,7 @@ def _sedentary_scenario(
         (alert_tick["selected"] or {}).get("reminder_type") == "sedentary",
     )
     _check(checks, "sedentary break clears alert", break_tick["selected"] is None)
-    _check(checks, "sedentary break duration is stored", records["sedentary_break_minutes"] == 79)
+    _check(checks, "sedentary break duration is stored", records["sedentary_break_minutes"] == 75)
     _check(checks, "sedentary reply does not create event", reply["status"] == "rejected" and reply["event"] is None)
 
 

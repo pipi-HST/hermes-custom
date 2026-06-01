@@ -32,7 +32,7 @@ class ActivitySnapshot:
 class LifeConfig:
     sedentary_threshold_minutes: int = 60
     sedentary_repeat_minutes: int = 20
-    break_threshold_minutes: int = 10
+    break_threshold_minutes: int = 6
     reminder_due_window_minutes: int = 15
     exercise_first_time: str = "10:30"
     exercise_repeat_hours: int = 2

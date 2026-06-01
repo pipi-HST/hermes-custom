@@ -1246,7 +1246,7 @@ function SittingSection({
   rows: SittingRow[]
 }) {
   const activeRow = rows.find(row => row.active)
-  const idleProgress = idleSeconds === null ? 0 : percent(Math.min(idleSeconds, 600), 600)
+  const idleProgress = idleSeconds === null ? 0 : percent(Math.min(idleSeconds, 360), 360)
   return (
     <section className="rounded-md border border-stone-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
       <div className="grid gap-4 lg:grid-cols-[.9fr_1.1fr]">
@@ -1262,7 +1262,7 @@ function SittingSection({
             <MiniStat label="今日总坐姿" value={formatMinutes(displayedTotalMinutes)} />
             <MiniStat label="久坐超标" value={formatMinutes(sedentaryMinutes)} />
             <MiniStat label="Mac idle" value={formatIdleSeconds(idleSeconds)} />
-            <MiniStat label="离座阈值" value="10分钟" />
+            <MiniStat label="离座阈值" value="6分钟" />
           </div>
           <div className="mt-4">
             <div className="mb-1 flex items-center justify-between text-xs opacity-75">
@@ -1276,7 +1276,7 @@ function SittingSection({
               />
             </div>
             <p className="mt-2 text-xs opacity-70">
-              idle 连续超过 10 分钟会被视为离座活动，用来结束当前坐姿窗口。
+              idle 连续超过 6 分钟会被视为离座活动，用来结束当前坐姿窗口。
             </p>
           </div>
         </div>

@@ -493,7 +493,7 @@ def test_life_runtime_returns_cron_delivery_and_recent_triggers(tmp_path) -> Non
     assert rules["sleep_record"]["schedule_text"] == "每天 13:00 检查；缺完整睡眠时长时提醒补记"
     assert rules["daily_review"]["next_due_at"] == "2026-05-31T00:00:00+08:00"
     assert rules["weekly_review"]["next_due_at"] == "2026-05-31T21:30:00+08:00"
-    assert rules["sedentary"]["schedule_text"] == "连续坐姿 60 分钟后触发；之后每 20 分钟重复，直到离开 10 分钟"
+    assert rules["sedentary"]["schedule_text"] == "连续坐姿 60 分钟后触发；之后每 20 分钟重复，直到离开 6 分钟"
     assert rules["water"]["today_status"] == "failed"
     assert rules["water"]["latest_log"]["status"] == "failed"
 

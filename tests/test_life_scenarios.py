@@ -76,4 +76,4 @@ def test_life_sedentary_scenario_requires_activity_break(tmp_path) -> None:
     assert first_tick["selected"] is None
     assert alert_tick["selected"]["reminder_type"] == "sedentary"
     assert break_tick["selected"] is None
-    assert break_row["duration_minutes"] == 79
+    assert break_row["duration_minutes"] == 75
