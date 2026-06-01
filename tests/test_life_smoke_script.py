@@ -10,7 +10,9 @@ from bridge import life_bridge
 from db.life_repo import LifeRepo
 from db.life_schema import init_life_db
 from scripts import life_tick_cron
+from scripts.life_acceptance import run_acceptance
 from scripts.life_audit import run_audit
+from scripts.life_repair import apply_repairs, plan_repairs
 from scripts.life_smoke import run_smoke
 
 
@@ -49,6 +51,126 @@ def test_life_smoke_cli_outputs_summary(tmp_path) -> None:
     assert result.returncode == 0
     assert '"status": "passed"' in result.stdout
     assert '"sleep_duration_minutes": 600' in result.stdout
+
+
+def test_life_acceptance_reports_live_pipeline_sections(tmp_path) -> None:
+    db_path = str(tmp_path / "life-acceptance.db")
+    repo = LifeRepo(init_life_db(db_path))
+    repo.create_event(
+        event_type="sleep_end",
+        occurred_at="2026-06-01T08:00:00+08:00",
+        duration_minutes=420,
+        source="wechat",
+        payload={"wake_date": "2026-06-01"},
+    )
+    repo.create_event(
+        event_type="meal",
+        occurred_at="2026-06-01T12:30:00+08:00",
+        source="wechat",
+        raw_text="午饭吃了牛肉饭",
+        payload={"meal_slot": "lunch", "content": "牛肉饭", "meal_time_precision": "exact"},
+    )
+    repo.create_event(
+        event_type="water",
+        occurred_at="2026-06-01T10:00:00+08:00",
+        source="wechat",
+    )
+    repo.create_event(
+        event_type="exercise",
+        occurred_at="2026-06-01T18:00:00+08:00",
+        duration_minutes=30,
+        source="wechat",
+    )
+    repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-06-01T09:00:00+08:00",
+        ended_at="2026-06-01T09:45:00+08:00",
+        duration_minutes=45,
+        source="mac_activity",
+        status="auto_resolved",
+    )
+    repo.create_reminder_log(
+        reminder_type="water",
+        scheduled_for="2026-06-01T10:00:00+08:00",
+        status="sent",
+        sent_at="2026-06-01T10:00:05+08:00",
+        dedupe_key="water:2026-06-01T10:00",
+    )
+    repo.create_daily_review(
+        review_date="2026-06-01",
+        summary="记录完整。",
+        metrics={"sleep_minutes": 420},
+        notes={},
+    )
+    repo.create_weekly_review(
+        week_start="2026-06-01",
+        week_end="2026-06-07",
+        summary="本周开始记录。",
+        labels={},
+        patterns={},
+        recommendations=[],
+    )
+
+    report = run_acceptance(
+        db_path=db_path,
+        now="2026-06-01T22:00:00+08:00",
+        api_base="",
+        dashboard_url="",
+    )
+
+    assert report["status"] == "passed"
+    assert report["sections"]["live_database"]["status"] == "passed"
+    assert report["sections"]["pipeline_coverage"]["status"] == "passed"
+    check_names = {check["name"] for check in report["checks"]}
+    assert {
+        "sleep_records_exist",
+        "meal_records_exist",
+        "water_records_exist",
+        "exercise_records_exist",
+        "reminder_logs_exist",
+        "daily_reviews_exist",
+        "weekly_reviews_exist",
+    }.issubset(check_names)
+
+
+def test_life_repair_dry_run_and_apply_stale_sending_reminder(tmp_path) -> None:
+    db_path = str(tmp_path / "life-repair.db")
+    repo = LifeRepo(init_life_db(db_path))
+    reminder = repo.create_reminder_log(
+        reminder_type="daily_review",
+        scheduled_for="2026-06-02T00:00:52+08:00",
+        status="sending",
+        dedupe_key="daily_review:2026-06-01",
+    )
+
+    planned = plan_repairs(
+        db_path=db_path,
+        completed_at="2026-06-02T00:00:53+08:00",
+        delivery_error="",
+    )
+    row_after_plan = repo.conn.execute(
+        "SELECT status FROM life_reminder_logs WHERE id = ?",
+        (reminder["id"],),
+    ).fetchone()
+
+    assert planned["summary"]["action_count"] == 1
+    assert planned["actions"][0]["kind"] == "stale_sending_reminder"
+    assert row_after_plan["status"] == "sending"
+
+    applied = apply_repairs(
+        db_path=db_path,
+        completed_at="2026-06-02T00:00:53+08:00",
+        delivery_error="",
+    )
+    row_after_apply = repo.conn.execute(
+        "SELECT status, sent_at, error FROM life_reminder_logs WHERE id = ?",
+        (reminder["id"],),
+    ).fetchone()
+
+    assert applied["summary"]["applied_count"] == 1
+    assert row_after_apply["status"] == "sent"
+    assert row_after_apply["sent_at"] == "2026-06-02T00:00:53+08:00"
+    assert row_after_apply["error"] == ""
 
 
 def test_life_audit_reports_runtime_warning_without_writing(tmp_path) -> None:
