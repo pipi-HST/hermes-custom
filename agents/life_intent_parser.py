@@ -113,6 +113,7 @@ class LifeIntentParser:
             payload = {
                 "change_text": text,
                 "meal_occurred_at": meal_time_update["occurred_at"].isoformat(),
+                "meal_time_period": meal_time_update.get("time_period", ""),
             }
             if meal_time_update.get("meal_slot"):
                 payload["meal_slot"] = meal_time_update["meal_slot"]
@@ -528,6 +529,7 @@ def _parse_meal_time_update(text: str, received: datetime) -> dict[str, Any] | N
     return {
         "occurred_at": parsed,
         "meal_slot": _explicit_meal_slot(text),
+        "time_period": _clock_time_period(text),
         "explicit_change": explicit_change,
     }
 
@@ -584,6 +586,11 @@ def _parse_clock_time(text: str, received: datetime) -> datetime | None:
     if not 0 <= hour <= 23 or not 0 <= minute <= 59:
         return None
     return received.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def _clock_time_period(text: str) -> str:
+    match = re.search(r"(凌晨|早上|上午|中午|下午|晚上|今晚)?\s*[0-9一二两三四五六七八九十]{1,3}\s*点", text)
+    return match.group(1) or "" if match else ""
 
 
 def _parse_number(text: str) -> int | None:

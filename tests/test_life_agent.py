@@ -287,6 +287,25 @@ def test_follow_up_time_updates_latest_pending_meal(agent: LifeAgent) -> None:
     assert updated["payload_json"]["meal_time_precision"] == "exact"
 
 
+def test_bare_follow_up_time_uses_pending_dinner_context(agent: LifeAgent) -> None:
+    meal = agent.record_life_event(
+        "晚饭吃了馄饨和烤肠和桂花糕",
+        received_at="2026-06-01T21:00:00+08:00",
+    )
+
+    result = agent.record_life_event(
+        "七点吃的",
+        received_at="2026-06-01T21:05:00+08:00",
+    )
+
+    updated = agent.repo.get_event(meal["event"]["id"])
+    assert result["status"] == "modified"
+    assert result["event"]["id"] == meal["event"]["id"]
+    assert updated["occurred_at"] == "2026-06-01T19:00:00+08:00"
+    assert updated["payload_json"]["meal_time_precision"] == "exact"
+    assert "19:00" in result["chat_preview"]
+
+
 def test_meal_slot_time_phrase_updates_latest_pending_meal_without_changing_content(agent: LifeAgent) -> None:
     meal = agent.record_life_event(
         "中午吃了面包",

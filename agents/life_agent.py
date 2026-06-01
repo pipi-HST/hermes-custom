@@ -389,6 +389,7 @@ class LifeAgent:
                 str(intent.payload["meal_occurred_at"]),
                 received,
                 meal_slot=str(intent.payload.get("meal_slot") or ""),
+                meal_time_period=str(intent.payload.get("meal_time_period") or ""),
             )
 
         latest = self.repo.latest_user_event(
@@ -674,6 +675,7 @@ class LifeAgent:
         received: datetime,
         *,
         meal_slot: str = "",
+        meal_time_period: str = "",
     ) -> dict[str, Any]:
         try:
             occurred = _parse_datetime(occurred_at_text)
@@ -700,6 +702,11 @@ class LifeAgent:
                 return _rejected("没有找到当天待补时间的这顿饮食记录。")
             return _rejected("没有找到 60 分钟内待补时间的饮食记录。")
         payload = dict(latest.get("payload_json") or {})
+        occurred = _disambiguate_meal_time(
+            occurred,
+            meal_slot=str(payload.get("meal_slot") or meal_slot),
+            time_period=meal_time_period,
+        )
         payload["meal_time_precision"] = "exact"
         updated = self.repo.update_event(
             latest["id"],
@@ -2310,6 +2317,16 @@ def _meal_slot_from_text(text: str) -> str:
         if keyword in text:
             return slot
     return ""
+
+
+def _disambiguate_meal_time(value: datetime, *, meal_slot: str, time_period: str) -> datetime:
+    if time_period:
+        return value
+    if meal_slot == "dinner" and 1 <= value.hour <= 10:
+        return value + timedelta(hours=12)
+    if meal_slot == "lunch" and 1 <= value.hour <= 3:
+        return value + timedelta(hours=12)
+    return value
 
 
 def _memory_domains_for_reminder(reminder_type: str) -> list[str]:
