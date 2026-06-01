@@ -658,6 +658,7 @@ def _parse_meal(text: str, received: datetime) -> dict[str, Any] | None:
     meal_item_kind = "beverage" if has_drink_verb and "吃" not in meal_text else ""
     content = re.sub(r"^(吃了?|喝了?|饮了?)\s*", "", meal_text).strip()
     content = re.sub(r"^一\s*(杯|瓶|碗|口)\s*", "", content).strip()
+    content = _clean_meal_content(content)
     if not content:
         return None
     inferred = False
@@ -695,6 +696,10 @@ def _strip_meal_context(text: str) -> str:
         text,
         count=1,
     ).strip()
+
+
+def _clean_meal_content(text: str) -> str:
+    return re.sub(r"[，,。.\s]*(吃的|吃了|吃|喝的|喝了|喝|饮的|饮了|饮)$", "", text).strip()
 
 
 def _explicit_meal_slot(text: str) -> str:

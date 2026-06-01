@@ -66,6 +66,22 @@ def test_parser_extracts_explicit_meal_time() -> None:
     assert intent.payload["meal_time_precision"] == "exact"
 
 
+def test_parser_removes_trailing_eating_time_phrase_from_meal_content() -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        "中午吃了蘑菇肉臊蛋包饭，十二点半吃的",
+        received_at=datetime.fromisoformat("2026-06-01T21:32:35+08:00"),
+    )
+
+    assert intent.intent == "record_event"
+    assert intent.event_type == "meal"
+    assert intent.occurred_at == "2026-06-01T12:30:00+08:00"
+    assert intent.payload["meal_slot"] == "lunch"
+    assert intent.payload["content"] == "蘑菇肉臊蛋包饭"
+    assert intent.payload["meal_time_precision"] == "exact"
+
+
 def test_parser_treats_meal_slot_time_phrase_as_pending_time_update() -> None:
     parser = LifeIntentParser()
 
