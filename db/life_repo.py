@@ -1047,6 +1047,57 @@ class LifeRepo:
         ).fetchall()
         return [self._memory_hit_row_to_dict(row) for row in rows]
 
+    def create_decision_trace(
+        self,
+        *,
+        tick_at: str,
+        status: str,
+        selected_reminder_type: str = "",
+        selected_reminder_id: str = "",
+        context: dict[str, Any] | None = None,
+        candidates: list[dict[str, Any]] | None = None,
+        memory_influences: list[dict[str, Any]] | None = None,
+        decision_reason: str = "",
+        suppression_reason: str = "",
+        warnings: list[str] | None = None,
+    ) -> dict[str, Any]:
+        trace_id = uuid.uuid4().hex[:12]
+        self.conn.execute(
+            """INSERT INTO life_decision_traces
+               (id, tick_at, status, selected_reminder_type, selected_reminder_id,
+                context_json, candidates_json, memory_influences_json,
+                decision_reason, suppression_reason, warnings_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                trace_id,
+                tick_at,
+                status,
+                selected_reminder_type,
+                selected_reminder_id,
+                json.dumps(context or {}, ensure_ascii=False),
+                json.dumps(candidates or [], ensure_ascii=False),
+                json.dumps(memory_influences or [], ensure_ascii=False),
+                decision_reason,
+                suppression_reason,
+                json.dumps(warnings or [], ensure_ascii=False),
+            ),
+        )
+        self.conn.commit()
+        row = self.conn.execute(
+            "SELECT * FROM life_decision_traces WHERE id = ?",
+            (trace_id,),
+        ).fetchone()
+        return self._decision_trace_row_to_dict(row)
+
+    def list_decision_traces(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """SELECT * FROM life_decision_traces
+               ORDER BY tick_at DESC, rowid DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [self._decision_trace_row_to_dict(row) for row in rows]
+
     def count_reminder_logs(self, reminder_type: str) -> int:
         row = self.conn.execute(
             "SELECT count(*) AS cnt FROM life_reminder_logs WHERE reminder_type = ?",
@@ -1084,6 +1135,14 @@ class LifeRepo:
     def _memory_hit_row_to_dict(self, row: sqlite3.Row | None) -> dict[str, Any]:
         result = dict(row or {})
         result["effect_json"] = _load_json(result.get("effect_json"), {})
+        return result
+
+    def _decision_trace_row_to_dict(self, row: sqlite3.Row | None) -> dict[str, Any]:
+        result = dict(row or {})
+        result["context_json"] = _load_json(result.get("context_json"), {})
+        result["candidates_json"] = _load_json(result.get("candidates_json"), [])
+        result["memory_influences_json"] = _load_json(result.get("memory_influences_json"), [])
+        result["warnings_json"] = _load_json(result.get("warnings_json"), [])
         return result
 
     def _decision_with_latest_review(self, decision: dict[str, Any]) -> dict[str, Any]:

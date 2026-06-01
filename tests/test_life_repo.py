@@ -36,6 +36,7 @@ def test_life_schema_creates_isolated_life_tables(tmp_path) -> None:
         "life_memory_items",
         "life_memory_observations",
         "life_memory_hits",
+        "life_decision_traces",
     }.issubset(tables)
     assert "captures" in tables
 
@@ -186,6 +187,37 @@ def test_life_repo_records_reviews_blocks_and_hits_memories(life_repo: LifeRepo)
     assert observations[0]["id"] == observation["id"]
     assert hits[0]["memory_id"] == item["id"]
     assert life_repo.get_memory_item(item["id"])["last_used_at"] == "2026-06-01T10:05:00+08:00"
+
+
+def test_life_schema_creates_decision_trace_table(tmp_path) -> None:
+    conn = init_life_db(str(tmp_path / "life.db"))
+
+    assert conn.execute(
+        "SELECT name FROM sqlite_master WHERE name='life_decision_traces'"
+    ).fetchone()
+
+
+def test_life_repo_records_and_lists_decision_traces(life_repo: LifeRepo) -> None:
+    trace = life_repo.create_decision_trace(
+        tick_at="2026-06-01T10:00:00+08:00",
+        status="selected",
+        selected_reminder_type="water",
+        selected_reminder_id="reminder-1",
+        context={"date": "2026-06-01", "water_count": 0},
+        candidates=[{"reminder_type": "water", "reason": "due_time"}],
+        memory_influences=[{"memory_id": "m1", "effect": "context_only"}],
+        decision_reason="喝水提醒到点，且最近1小时没有喝水记录。",
+        suppression_reason="",
+        warnings=["mac_activity_unavailable"],
+    )
+
+    traces = life_repo.list_decision_traces(limit=5)
+
+    assert trace["status"] == "selected"
+    assert trace["context_json"] == {"date": "2026-06-01", "water_count": 0}
+    assert trace["candidates_json"][0]["reminder_type"] == "water"
+    assert traces[0]["id"] == trace["id"]
+    assert traces[0]["warnings_json"] == ["mac_activity_unavailable"]
 
 
 def test_life_repo_lists_latest_user_event_within_window(life_repo: LifeRepo) -> None:

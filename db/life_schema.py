@@ -176,6 +176,23 @@ CREATE TABLE IF NOT EXISTS life_memory_hits (
 )
 """
 
+CREATE_LIFE_DECISION_TRACES_TABLE = """
+CREATE TABLE IF NOT EXISTS life_decision_traces (
+    id TEXT PRIMARY KEY,
+    tick_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    selected_reminder_type TEXT NOT NULL DEFAULT '',
+    selected_reminder_id TEXT NOT NULL DEFAULT '',
+    context_json TEXT NOT NULL DEFAULT '{}',
+    candidates_json TEXT NOT NULL DEFAULT '[]',
+    memory_influences_json TEXT NOT NULL DEFAULT '[]',
+    decision_reason TEXT NOT NULL DEFAULT '',
+    suppression_reason TEXT NOT NULL DEFAULT '',
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 
 def init_life_db(db_path: str) -> sqlite3.Connection:
     """Initialize the shared Hermes DB with Life Assistant tables."""
@@ -202,6 +219,7 @@ def migrate_life_schema(conn: sqlite3.Connection) -> None:
     conn.execute(CREATE_LIFE_MEMORY_ITEMS_TABLE)
     conn.execute(CREATE_LIFE_MEMORY_OBSERVATIONS_TABLE)
     conn.execute(CREATE_LIFE_MEMORY_HITS_TABLE)
+    conn.execute(CREATE_LIFE_DECISION_TRACES_TABLE)
     conn.commit()
 
 
