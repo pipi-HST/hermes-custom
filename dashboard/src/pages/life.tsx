@@ -167,6 +167,11 @@ function formatDurationFromSeconds(seconds: number): string {
   return formatDurationSeconds(Math.max(0, Math.floor(seconds)))
 }
 
+function formatIdleSeconds(seconds?: number | null): string {
+  if (seconds === null || seconds === undefined) return '未知'
+  return formatDurationSeconds(Math.max(0, Math.floor(seconds)))
+}
+
 function formatMinutes(minutes?: number): string {
   const value = minutes || 0
   const hours = Math.floor(value / 60)
@@ -611,6 +616,7 @@ export default function LifePage() {
 
               <SittingSection
                 activeSeconds={activeSeconds}
+                idleSeconds={runtime?.last_tick?.idle_seconds ?? null}
                 displayedTotalMinutes={displayedTotalMinutes}
                 sedentaryMinutes={summary?.metrics.sedentary_over_limit_minutes || 0}
                 rows={sittingRows}
@@ -703,7 +709,8 @@ function RuntimeStatusPanel({ runtime }: { runtime: LifeRuntimeStatus | null }) 
           <div className="mt-2 space-y-1 text-xs opacity-80">
             <p>{tick?.tick_time ? formatDateTime(tick.tick_time) : '还没有 tick 日志'}</p>
             <p>选中提醒：{selectedLabel} · {tick?.should_notify ? '会推送' : '不推送'}</p>
-            <p>Mac 活动：{tick?.activity_available ? '可读取' : '不可读取'} · 坐姿 {tick?.sedentary_state === 'active' ? '进行中' : '未进行'}</p>
+            <p>Mac 活动：{tick?.activity_available ? '可读取' : '不可读取'} · idle {formatIdleSeconds(tick?.idle_seconds)}</p>
+            <p>坐姿：{tick?.sedentary_state === 'active' ? '进行中' : '未进行'}</p>
             {tick?.interruption_seconds ? <p>离座证据：{interruptionLabel(tick.interruption_source)} · {formatDurationFromSeconds(tick.interruption_seconds)}</p> : null}
             {tick?.warnings?.length ? <p className="break-words">提醒：{tick.warnings.join('、')}</p> : null}
           </div>
@@ -1227,16 +1234,19 @@ function LongTermDecisionCard({ decision }: { decision: LifeLongTermDecision }) 
 
 function SittingSection({
   activeSeconds,
+  idleSeconds,
   displayedTotalMinutes,
   sedentaryMinutes,
   rows,
 }: {
   activeSeconds: number
+  idleSeconds: number | null
   displayedTotalMinutes: number
   sedentaryMinutes: number
   rows: SittingRow[]
 }) {
   const activeRow = rows.find(row => row.active)
+  const idleProgress = idleSeconds === null ? 0 : percent(Math.min(idleSeconds, 600), 600)
   return (
     <section className="rounded-md border border-stone-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
       <div className="grid gap-4 lg:grid-cols-[.9fr_1.1fr]">
@@ -1251,6 +1261,23 @@ function SittingSection({
           <div className="mt-4 grid grid-cols-2 gap-2">
             <MiniStat label="今日总坐姿" value={formatMinutes(displayedTotalMinutes)} />
             <MiniStat label="久坐超标" value={formatMinutes(sedentaryMinutes)} />
+            <MiniStat label="Mac idle" value={formatIdleSeconds(idleSeconds)} />
+            <MiniStat label="离座阈值" value="10分钟" />
+          </div>
+          <div className="mt-4">
+            <div className="mb-1 flex items-center justify-between text-xs opacity-75">
+              <span>键鼠无输入计时</span>
+              <span>{idleSeconds === null ? '未知' : `${idleProgress}%`}</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-white/50 dark:bg-neutral-900/40">
+              <div
+                className="h-full rounded-full bg-emerald-700 transition-all dark:bg-emerald-300"
+                style={{ width: `${idleProgress}%` }}
+              />
+            </div>
+            <p className="mt-2 text-xs opacity-70">
+              idle 连续超过 10 分钟会被视为离座活动，用来结束当前坐姿窗口。
+            </p>
           </div>
         </div>
 
