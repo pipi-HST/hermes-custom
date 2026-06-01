@@ -307,6 +307,61 @@ def test_parser_uses_fallback_only_when_rules_do_not_match() -> None:
     assert len(calls) == 1
 
 
+def test_parser_can_prefer_llm_for_ambiguous_life_records() -> None:
+    calls = []
+
+    def fallback(text, received_at):
+        calls.append(text)
+        return LifeIntent(
+            intent="record_event",
+            event_type="meal",
+            occurred_at="",
+            payload={
+                "meal_slot": "lunch",
+                "content": "茉莉乌龙茶",
+                "meal_item_kind": "beverage",
+                "meal_time_precision": "missing",
+            },
+        )
+
+    parser = LifeIntentParser(
+        llm_fallback=fallback,
+        prefer_llm_for_life_records=True,
+    )
+
+    intent = parser.parse(
+        "中午还喝了茉莉乌龙茶",
+        received_at=datetime.fromisoformat("2026-05-31T14:05:00+08:00"),
+    )
+
+    assert calls == ["中午还喝了茉莉乌龙茶"]
+    assert intent.intent == "record_event"
+    assert intent.event_type == "meal"
+    assert intent.payload["content"] == "茉莉乌龙茶"
+
+
+def test_parser_keeps_high_confidence_rules_ahead_of_llm_preference() -> None:
+    calls = []
+
+    def fallback(text, received_at):
+        calls.append(text)
+        return LifeIntent(intent="unknown")
+
+    parser = LifeIntentParser(
+        llm_fallback=fallback,
+        prefer_llm_for_life_records=True,
+    )
+
+    intent = parser.parse(
+        "喝水了",
+        received_at=datetime.fromisoformat("2026-05-31T14:05:00+08:00"),
+    )
+
+    assert calls == []
+    assert intent.intent == "record_event"
+    assert intent.event_type == "water"
+
+
 def test_llm_fallback_converts_json_response_to_intent() -> None:
     requests = []
 

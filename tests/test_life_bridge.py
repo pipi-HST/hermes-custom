@@ -203,6 +203,7 @@ def test_init_configures_life_intent_llm_fallback(tmp_path, monkeypatch) -> None
     agent = life_bridge._init()
 
     assert agent.parser.llm_fallback is not None
+    assert agent.parser.prefer_llm_for_life_records is True
     assert created == [
         {
             "api_key": "sk-test",
@@ -210,3 +211,37 @@ def test_init_configures_life_intent_llm_fallback(tmp_path, monkeypatch) -> None
             "base_url": "https://example.com",
         }
     ]
+
+
+def test_init_allows_disabling_flexible_life_record_parser(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "database:",
+                f"  path: {tmp_path / 'life.db'}",
+                "llm:",
+                "  api_key: sk-test",
+                "life:",
+                "  prefer_llm_for_life_records: false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeFallback:
+        def __init__(self, **kwargs):
+            pass
+
+        def __call__(self, text, received_at):
+            return None
+
+    monkeypatch.setattr(life_bridge, "_agent", None)
+    monkeypatch.setattr(life_bridge, "_db_path", None)
+    monkeypatch.setattr(life_bridge, "_config_path", config_path)
+    monkeypatch.setattr(life_bridge, "LifeIntentLLMFallback", FakeFallback)
+
+    agent = life_bridge._init()
+
+    assert agent.parser.llm_fallback is not None
+    assert agent.parser.prefer_llm_for_life_records is False

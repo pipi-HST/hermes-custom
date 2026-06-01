@@ -62,15 +62,19 @@ def _load_life_parser(config_path: Path) -> LifeIntentParser:
     with config_path.open() as f:
         cfg = yaml.safe_load(f) or {}
     llm_cfg = cfg.get("llm", {}) or {}
+    life_cfg = cfg.get("life", {}) or {}
     api_key = llm_cfg.get("api_key", "")
     fallback = None
     if api_key:
         fallback = LifeIntentLLMFallback(
             api_key=api_key,
-            model=(cfg.get("life", {}) or {}).get("intent_model", "deepseek-v4-flash"),
+            model=life_cfg.get("intent_model", "deepseek-v4-flash"),
             base_url=llm_cfg.get("base_url", "https://api.deepseek.com"),
         )
-    return LifeIntentParser(llm_fallback=fallback)
+    return LifeIntentParser(
+        llm_fallback=fallback,
+        prefer_llm_for_life_records=bool(life_cfg.get("prefer_llm_for_life_records", True)),
+    )
 
 
 def record_life_event(message: str, received_at: str = "") -> dict:

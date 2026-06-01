@@ -24,8 +24,11 @@ class LifeIntentParser:
     def __init__(
         self,
         llm_fallback: Callable[[str, datetime], LifeIntent | None] | None = None,
+        *,
+        prefer_llm_for_life_records: bool = False,
     ):
         self.llm_fallback = llm_fallback
+        self.prefer_llm_for_life_records = prefer_llm_for_life_records
 
     def parse(self, message: str, *, received_at: datetime) -> LifeIntent:
         text = message.strip()
@@ -34,10 +37,22 @@ class LifeIntentParser:
             if fallback and fallback.intent != "unknown":
                 return fallback
         intent = self._parse_deterministic(text, received_at)
+        if self._should_prefer_llm_for_life_record(text, intent):
+            fallback = self.llm_fallback(text, received_at)
+            if fallback and fallback.intent != "unknown":
+                return fallback
         if intent.intent != "unknown" or self.llm_fallback is None:
             return intent
         fallback = self.llm_fallback(text, received_at)
         return fallback or intent
+
+    def _should_prefer_llm_for_life_record(self, text: str, intent: LifeIntent) -> bool:
+        return bool(
+            self.prefer_llm_for_life_records
+            and self.llm_fallback is not None
+            and _looks_like_life_record(text)
+            and not _is_high_confidence_intent(intent)
+        )
 
     def _parse_deterministic(self, text: str, received_at: datetime) -> LifeIntent:
         decision = _parse_explicit_long_term_decision(text)
@@ -242,6 +257,8 @@ occurred_at/scheduled_for: ISO 8601 字符串；没有就空字符串。
 duration_minutes: 整数或 null。
 status: completed_unknown 或空字符串。
 payload: 对象。meal 使用 meal_slot/content；exercise 使用 exercise_type。
+你要做语义判断，不要只按关键词机械分类；如果明显不是生活记录或提醒/复盘控制，输出 unknown。
+不要臆造发生时间。饮食只有餐别或内容、没有明确几点时，occurred_at 留空，payload.meal_time_precision="missing"。
 长期决定/长期决策用 record_long_term_decision，payload 至少包含 content；如果用户指定下次复盘时间，额外给 next_review_at。不要默认 30 天。
 用户只是在补充长期决定的下次复盘时间时，用 set_long_term_decision_review_time，payload 包含 next_review_at。
 长期决定复盘回复用 review_long_term_decision，payload 包含 review_note；如果用户调整决定，额外给 new_content；如果用户指定下一次复盘时间，额外给 next_review_at。用户明确结束/关闭/废弃这个长期决定时用 close_long_term_decision。
@@ -278,6 +295,59 @@ def _intent_from_mapping(data: dict[str, Any]) -> LifeIntent:
         scheduled_for=str(data.get("scheduled_for") or ""),
         payload=payload,
     )
+
+
+def _is_high_confidence_intent(intent: LifeIntent) -> bool:
+    if intent.intent == "unknown":
+        return False
+    if intent.intent != "record_event":
+        return True
+    if intent.event_type in {"sleep_start", "sleep_end", "sleep_session", "water"}:
+        return True
+    if intent.event_type == "exercise":
+        return bool(intent.duration_minutes or intent.status == "completed_unknown")
+    if intent.event_type != "meal":
+        return False
+    precision = str(intent.payload.get("meal_time_precision") or "")
+    return bool(
+        precision == "exact"
+        and not intent.payload.get("meal_slot_inferred")
+        and not intent.payload.get("meal_update_mode")
+    )
+
+
+def _looks_like_life_record(text: str) -> bool:
+    if not text:
+        return False
+    markers = (
+        "睡",
+        "醒",
+        "起床",
+        "吃",
+        "喝",
+        "饮",
+        "运动",
+        "跑步",
+        "健身",
+        "快走",
+        "散步",
+        "骑车",
+        "游泳",
+        "训练",
+        "八段锦",
+        "练",
+        "早餐",
+        "早饭",
+        "午餐",
+        "午饭",
+        "晚餐",
+        "晚饭",
+        "夜宵",
+        "加餐",
+        "补了",
+        "补记",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _post_json(url: str, *, headers: dict[str, str], json: dict[str, Any], timeout: float) -> dict[str, Any]:
