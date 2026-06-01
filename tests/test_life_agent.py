@@ -823,6 +823,52 @@ def test_water_reminder_notifies_only_once_per_due_time(agent: LifeAgent) -> Non
     assert agent.repo.count_reminder_logs("water") == 1
 
 
+def test_life_tick_records_decision_trace_without_changing_selection(agent: LifeAgent) -> None:
+    result = agent.life_tick(
+        now="2026-05-30T10:00:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    trace = agent.repo.list_decision_traces(limit=1)[0]
+    assert result["selected"]["reminder_type"] == "water"
+    assert trace["status"] == "selected"
+    assert trace["selected_reminder_type"] == "water"
+    assert trace["decision_reason"]
+    assert any(item["reminder_type"] == "water" for item in trace["candidates_json"])
+    assert trace["warnings_json"] == ["mac_activity_unavailable"]
+
+
+def test_life_tick_records_memory_influence_in_decision_trace(agent: LifeAgent) -> None:
+    agent.repo.create_event(
+        event_type="exercise",
+        occurred_at="2026-06-01T08:00:00+08:00",
+        source="wechat",
+        status="completed_unknown",
+    )
+    memory = agent.repo.upsert_memory_item(
+        domain="life.water",
+        memory_type="pattern",
+        status="weak",
+        content="最近14天有3天记录喝水，平均每天约1次。",
+        confidence="medium",
+        source="event_stats",
+        effective_from="2026-06-01T09:00:00+08:00",
+        evidence={"water_days": 3},
+    )
+
+    agent.life_tick(
+        now="2026-06-01T10:00:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    trace = agent.repo.list_decision_traces(limit=1)[0]
+    assert trace["selected_reminder_type"] == "water"
+    assert trace["memory_influences_json"][0]["memory_id"] == memory["id"]
+    assert trace["memory_influences_json"][0]["effect"] == "context_only"
+
+
 def test_sleep_record_reminder_prompts_when_last_night_sleep_is_missing(agent: LifeAgent) -> None:
     agent.repo.create_event(
         event_type="exercise",

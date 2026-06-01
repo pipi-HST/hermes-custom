@@ -918,6 +918,17 @@ class LifeAgent:
                 should_notify=False,
                 status="locked",
             )
+            self._record_decision_trace(
+                current=current,
+                activity=activity,
+                status="locked",
+                candidates=[],
+                selected=None,
+                selected_reminder_id="",
+                memory_influences=[],
+                warnings=result["warnings"],
+                suppression_reason="life_tick_lock_held",
+            )
             return result
 
         try:
@@ -946,6 +957,17 @@ class LifeAgent:
                     dry_run=dry_run,
                     should_notify=False,
                     status="idle",
+                )
+                self._record_decision_trace(
+                    current=current,
+                    activity=activity,
+                    status="idle",
+                    candidates=[],
+                    selected=None,
+                    selected_reminder_id="",
+                    memory_influences=[],
+                    warnings=warnings,
+                    suppression_reason="knowledge_workflow_active",
                 )
                 return result
 
@@ -987,6 +1009,8 @@ class LifeAgent:
                 warnings.append("notification_rate_limited")
                 selected = None
             should_notify = bool(selected and self.config.notifications_enabled and not dry_run)
+            selected_reminder_id = ""
+            memory_pack: list[dict[str, Any]] = []
             if selected:
                 self._store_selected_review(selected)
                 memory_pack = self._memory_pack_for_reminder(str(selected["reminder_type"]))
@@ -1000,6 +1024,7 @@ class LifeAgent:
                     dedupe_key=selected["dedupe_key"],
                     payload=payload,
                 )
+                selected_reminder_id = str(log["id"])
                 for memory in memory_pack:
                     self.repo.record_memory_hit(
                         memory_id=str(memory["id"]),
@@ -1038,6 +1063,21 @@ class LifeAgent:
                 dry_run=dry_run,
                 should_notify=should_notify,
                 status=result["status"],
+            )
+            trace_warnings = list(warnings)
+            self._record_decision_trace(
+                current=current,
+                activity=activity,
+                status=str(result["status"]),
+                candidates=candidates,
+                selected=selected,
+                selected_reminder_id=selected_reminder_id,
+                memory_influences=self._memory_influences_from_pack(
+                    memory_pack,
+                    str(selected["reminder_type"]) if selected else "",
+                ),
+                warnings=trace_warnings,
+                suppression_reason="notification_rate_limited" if "notification_rate_limited" in warnings else "",
             )
             return result
         finally:
@@ -1226,6 +1266,79 @@ class LifeAgent:
                 handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
         except OSError:
             return
+
+    def _record_decision_trace(
+        self,
+        *,
+        current: datetime,
+        activity: ActivitySnapshot,
+        status: str,
+        candidates: list[dict[str, Any]],
+        selected: dict[str, Any] | None,
+        selected_reminder_id: str,
+        memory_influences: list[dict[str, Any]],
+        warnings: list[str],
+        suppression_reason: str = "",
+    ) -> None:
+        try:
+            self.repo.create_decision_trace(
+                tick_at=current.isoformat(),
+                status=status,
+                selected_reminder_type=str(selected.get("reminder_type") or "") if selected else "",
+                selected_reminder_id=selected_reminder_id,
+                context=self._trace_context(current, activity),
+                candidates=self._trace_candidates(candidates),
+                memory_influences=memory_influences,
+                decision_reason=_decision_reason(selected, warnings),
+                suppression_reason=suppression_reason,
+                warnings=warnings,
+            )
+        except Exception:
+            warnings.append("life_decision_trace_failed")
+
+    def _trace_context(self, current: datetime, activity: ActivitySnapshot) -> dict[str, Any]:
+        return {
+            "date": current.date().isoformat(),
+            "idle_seconds": activity.idle_seconds,
+            "activity_available": activity.available,
+            "locked": activity.locked,
+            "sleeping": activity.sleeping,
+            "display_off": activity.display_off,
+            "logged_out": activity.logged_out,
+            "interruption_seconds": activity.interruption_seconds,
+            "interruption_source": activity.interruption_source,
+            "sedentary_state": "active" if self._active_sitting_window() else "inactive",
+            "notifications_enabled": self.config.notifications_enabled,
+        }
+
+    def _trace_candidates(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "reminder_type": str(item.get("reminder_type") or ""),
+                "priority": item.get("priority"),
+                "reason": _default_candidate_reason(str(item.get("reminder_type") or "")),
+                "dedupe_key": str(item.get("dedupe_key") or ""),
+            }
+            for item in candidates
+        ]
+
+    def _memory_influences_from_pack(
+        self,
+        memory_pack: list[dict[str, Any]],
+        reminder_type: str,
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "memory_id": str(item.get("id") or ""),
+                "domain": str(item.get("domain") or ""),
+                "memory_type": str(item.get("memory_type") or ""),
+                "status": str(item.get("status") or ""),
+                "content": str(item.get("content") or ""),
+                "effect": "context_only",
+                "reminder_type": reminder_type,
+            }
+            for item in memory_pack
+        ]
 
     def _latest_unmatched_sleep_start(self) -> dict[str, Any] | None:
         row = self.repo.conn.execute(
@@ -2032,6 +2145,33 @@ def _rejected(chat_preview: str) -> dict[str, Any]:
 
 def _reminder_updated(chat_preview: str) -> dict[str, Any]:
     return {"status": "reminder_updated", "event": None, "chat_preview": chat_preview}
+
+
+def _default_candidate_reason(reminder_type: str) -> str:
+    return {
+        "sedentary": "连续坐姿达到提醒条件",
+        "long_term_decision_review": "长期决定到达复盘时间",
+        "exercise": "今日运动提醒到达可触发窗口",
+        "sleep": "早睡提醒到达设定时间",
+        "water": "喝水提醒到达设定时间",
+        "sleep_record": "睡眠记录缺失且到达补记时间",
+        "meal": "饮食记录缺失且到达补记时间",
+        "daily_review": "每日复盘到达生成时间",
+        "weekly_review": "每周复盘到达生成时间",
+    }.get(reminder_type, "候选提醒达到触发条件")
+
+
+def _decision_reason(selected: dict[str, Any] | None, warnings: list[str]) -> str:
+    if selected:
+        reminder_type = str(selected.get("reminder_type") or "")
+        return _default_candidate_reason(reminder_type)
+    if "notification_rate_limited" in warnings:
+        return "当前命中通知限流冷却，本次不发送提醒。"
+    if "knowledge_workflow_active" in warnings:
+        return "Knowledge 流程正在等待用户选择，本次 Life tick 不打扰。"
+    if "life_tick_lock_held" in warnings:
+        return "已有 Life tick 在运行，本次跳过。"
+    return "本次没有符合条件的 Life 提醒。"
 
 
 def _parse_datetime(value: str) -> datetime:
