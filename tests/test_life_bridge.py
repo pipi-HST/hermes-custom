@@ -147,6 +147,30 @@ def test_reconcile_life_delivery_returns_envelope(tmp_path, monkeypatch) -> None
     assert checked["meta"]["delivery_status"] == "sent"
 
 
+def test_life_memory_review_and_forget_return_envelopes(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(life_bridge, "_agent", None)
+    monkeypatch.setattr(life_bridge, "_db_path", str(tmp_path / "life.db"))
+    agent = life_bridge._init()
+    agent.repo.upsert_memory_item(
+        domain="life.copy",
+        memory_type="copy_preference",
+        status="active",
+        content="用户喜欢直接、克制的提醒。",
+        confidence="medium",
+        source="user_statement",
+        effective_from="2026-06-01T10:00:00+08:00",
+        evidence={"text": "别太鸡汤"},
+    )
+
+    review = require_envelope(life_bridge.life_memory_review())
+    forget = require_envelope(life_bridge.life_memory_forget("克制"))
+
+    assert review["intent"] == "life_memory_review"
+    assert "直接、克制" in review["chat_preview"]
+    assert forget["intent"] == "life_memory_forget"
+    assert forget["meta"]["updated"] == 1
+
+
 def test_init_configures_life_intent_llm_fallback(tmp_path, monkeypatch) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

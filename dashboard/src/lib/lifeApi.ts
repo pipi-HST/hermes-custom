@@ -203,6 +203,49 @@ export interface LifeRuntimeStatus {
   reminder_rules: LifeReminderRuleStatus[]
 }
 
+export interface LifeMemoryItem {
+  id: string
+  domain: string
+  memory_type: string
+  status: string
+  content: string
+  confidence: string
+  evidence_json: Record<string, unknown>
+  source: string
+  effective_from: string
+  expires_at: string
+  last_used_at: string
+  created_at: string
+  updated_at: string
+}
+
+export interface LifeMemoryObservation {
+  id: string
+  domain: string
+  observation_type: string
+  content: string
+  evidence_json: Record<string, unknown>
+  source: string
+  observed_at: string
+  created_at: string
+}
+
+export interface LifeMemoryHit {
+  id: string
+  memory_id: string
+  used_by: string
+  target_id: string
+  used_at: string
+  effect_json: Record<string, unknown>
+  created_at: string
+}
+
+export interface LifeMemories {
+  items: LifeMemoryItem[]
+  observations: LifeMemoryObservation[]
+  hits: LifeMemoryHit[]
+}
+
 const API_BASE = 'http://localhost:8000/api'
 
 export async function fetchLifeSummary(date: string): Promise<LifeSummary> {
@@ -229,6 +272,10 @@ export async function fetchLifeWeek(date: string): Promise<LifeWeek> {
 
 export async function fetchLifeRuntime(): Promise<LifeRuntimeStatus> {
   return fetchJson<LifeRuntimeStatus>('/life/runtime')
+}
+
+export async function fetchLifeMemories(): Promise<LifeMemories> {
+  return fetchJson<LifeMemories>('/life/memories')
 }
 
 async function fetchJson<T>(path: string): Promise<T> {

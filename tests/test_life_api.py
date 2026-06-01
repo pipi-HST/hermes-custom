@@ -289,6 +289,43 @@ def test_life_reviews_empty_database_has_stable_shape(tmp_path) -> None:
     }
 
 
+def test_life_memories_returns_items_observations_and_hits(tmp_path) -> None:
+    client, repo = _client(tmp_path)
+    observation = repo.create_memory_observation(
+        domain="life.meal",
+        observation_type="meal_pattern",
+        content="最近14天午餐有3次记录。",
+        observed_at="2026-06-01T10:00:00+08:00",
+        source="event_stats",
+        evidence={"count": 3},
+    )
+    item = repo.upsert_memory_item(
+        domain="life.meal",
+        memory_type="pattern",
+        status="weak",
+        content="午餐常见记录时间约13:20。",
+        confidence="medium",
+        source="event_stats",
+        effective_from="2026-06-01T10:00:00+08:00",
+        evidence={"observation_id": observation["id"]},
+    )
+    repo.record_memory_hit(
+        memory_id=item["id"],
+        used_by="life_tick",
+        target_id="reminder-1",
+        used_at="2026-06-01T10:05:00+08:00",
+        effect={"reminder_type": "meal"},
+    )
+
+    response = client.get("/api/life/memories")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["items"][0]["content"] == "午餐常见记录时间约13:20。"
+    assert data["observations"][0]["id"] == observation["id"]
+    assert data["hits"][0]["memory_id"] == item["id"]
+
+
 def test_life_week_returns_weekly_metrics_trends_and_records(tmp_path) -> None:
     client, repo = _client(tmp_path)
     repo.create_event(

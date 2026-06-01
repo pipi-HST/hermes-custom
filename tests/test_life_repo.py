@@ -33,6 +33,9 @@ def test_life_schema_creates_isolated_life_tables(tmp_path) -> None:
         "life_locks",
         "life_daily_reviews",
         "life_weekly_reviews",
+        "life_memory_items",
+        "life_memory_observations",
+        "life_memory_hits",
     }.issubset(tables)
     assert "captures" in tables
 
@@ -48,6 +51,7 @@ def test_life_schema_migrates_existing_connection(tmp_path) -> None:
 
     assert migrated.execute("SELECT name FROM sqlite_master WHERE name='unrelated'").fetchone()
     assert migrated.execute("SELECT name FROM sqlite_master WHERE name='life_events'").fetchone()
+    assert migrated.execute("SELECT name FROM sqlite_master WHERE name='life_memory_items'").fetchone()
 
 
 def test_life_schema_adds_weekly_report_columns_to_existing_table(tmp_path) -> None:
@@ -135,6 +139,53 @@ def test_life_repo_records_and_fetches_events(life_repo: LifeRepo) -> None:
     assert fetched is not None
     assert fetched["event_type"] == "meal"
     assert fetched["payload_json"] == {"meal_slot": "lunch", "content": "牛肉饭"}
+
+
+def test_life_repo_records_reviews_blocks_and_hits_memories(life_repo: LifeRepo) -> None:
+    observation = life_repo.create_memory_observation(
+        domain="life.sleep",
+        observation_type="sleep_pattern",
+        content="最近14天有3次完整睡眠记录。",
+        observed_at="2026-06-01T10:00:00+08:00",
+        source="event_stats",
+        evidence={"event_ids": ["a", "b", "c"]},
+    )
+    item = life_repo.upsert_memory_item(
+        domain="life.sleep",
+        memory_type="pattern",
+        status="weak",
+        content="最近14天有3次完整睡眠记录，平均睡眠7小时。",
+        confidence="medium",
+        source="event_stats",
+        effective_from="2026-06-01T10:00:00+08:00",
+        evidence={"observation_id": observation["id"]},
+    )
+
+    hit = life_repo.record_memory_hit(
+        memory_id=item["id"],
+        used_by="life_tick",
+        target_id="reminder-1",
+        used_at="2026-06-01T10:05:00+08:00",
+        effect={"reminder_type": "sleep", "effect": "context_only"},
+    )
+    blocked = life_repo.update_memory_item_status(
+        item["id"],
+        status="blocked",
+        updated_at="2026-06-01T10:06:00+08:00",
+    )
+
+    items = life_repo.list_memory_items(statuses=["blocked"])
+    observations = life_repo.list_memory_observations(limit=5)
+    hits = life_repo.list_memory_hits(limit=5)
+
+    assert observation["evidence_json"] == {"event_ids": ["a", "b", "c"]}
+    assert item["status"] == "weak"
+    assert hit["effect_json"]["effect"] == "context_only"
+    assert blocked["status"] == "blocked"
+    assert items[0]["id"] == item["id"]
+    assert observations[0]["id"] == observation["id"]
+    assert hits[0]["memory_id"] == item["id"]
+    assert life_repo.get_memory_item(item["id"])["last_used_at"] == "2026-06-01T10:05:00+08:00"
 
 
 def test_life_repo_lists_latest_user_event_within_window(life_repo: LifeRepo) -> None:

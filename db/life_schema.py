@@ -133,6 +133,49 @@ CREATE TABLE IF NOT EXISTS life_decision_reviews (
 )
 """
 
+CREATE_LIFE_MEMORY_ITEMS_TABLE = """
+CREATE TABLE IF NOT EXISTS life_memory_items (
+    id TEXT PRIMARY KEY,
+    domain TEXT NOT NULL,
+    memory_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'weak',
+    content TEXT NOT NULL,
+    confidence TEXT NOT NULL DEFAULT 'low',
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    source TEXT NOT NULL DEFAULT '',
+    effective_from TEXT NOT NULL DEFAULT '',
+    expires_at TEXT NOT NULL DEFAULT '',
+    last_used_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+CREATE_LIFE_MEMORY_OBSERVATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS life_memory_observations (
+    id TEXT PRIMARY KEY,
+    domain TEXT NOT NULL,
+    observation_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    source TEXT NOT NULL DEFAULT '',
+    observed_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+CREATE_LIFE_MEMORY_HITS_TABLE = """
+CREATE TABLE IF NOT EXISTS life_memory_hits (
+    id TEXT PRIMARY KEY,
+    memory_id TEXT NOT NULL,
+    used_by TEXT NOT NULL,
+    target_id TEXT NOT NULL DEFAULT '',
+    used_at TEXT NOT NULL,
+    effect_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 
 def init_life_db(db_path: str) -> sqlite3.Connection:
     """Initialize the shared Hermes DB with Life Assistant tables."""
@@ -156,6 +199,9 @@ def migrate_life_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "life_weekly_reviews", "delivery_json", "TEXT NOT NULL DEFAULT '{}'")
     conn.execute(CREATE_LIFE_LONG_TERM_DECISIONS_TABLE)
     conn.execute(CREATE_LIFE_DECISION_REVIEWS_TABLE)
+    conn.execute(CREATE_LIFE_MEMORY_ITEMS_TABLE)
+    conn.execute(CREATE_LIFE_MEMORY_OBSERVATIONS_TABLE)
+    conn.execute(CREATE_LIFE_MEMORY_HITS_TABLE)
     conn.commit()
 
 

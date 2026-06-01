@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.life_intent_parser import LifeIntent, LifeIntentParser
+from agents.life_memory import LifeMemoryAnalyzer
 from db.life_repo import LifeRepo
 
 
@@ -923,6 +924,10 @@ class LifeAgent:
             warnings: list[str] = []
             candidates: list[dict[str, Any]] = []
             self._mark_missed_reviews(current)
+            try:
+                LifeMemoryAnalyzer(self.repo).refresh(now=current.isoformat())
+            except Exception:
+                warnings.append("life_memory_refresh_failed")
             if self._has_fresh_pending_knowledge_choice(current):
                 warnings.append("knowledge_workflow_active")
                 result = {
@@ -984,14 +989,28 @@ class LifeAgent:
             should_notify = bool(selected and self.config.notifications_enabled and not dry_run)
             if selected:
                 self._store_selected_review(selected)
+                memory_pack = self._memory_pack_for_reminder(str(selected["reminder_type"]))
                 payload = {"dry_run": dry_run, **(selected.get("payload") or {})}
-                self.repo.create_reminder_log(
+                if memory_pack:
+                    payload["memory_items"] = memory_pack
+                log = self.repo.create_reminder_log(
                     reminder_type=selected["reminder_type"],
                     scheduled_for=current.isoformat(),
                     status="sending" if should_notify else "scheduled",
                     dedupe_key=selected["dedupe_key"],
                     payload=payload,
                 )
+                for memory in memory_pack:
+                    self.repo.record_memory_hit(
+                        memory_id=str(memory["id"]),
+                        used_by="life_tick",
+                        target_id=str(log["id"]),
+                        used_at=current.isoformat(),
+                        effect={
+                            "reminder_type": selected["reminder_type"],
+                            "effect": "context_only",
+                        },
+                    )
                 if selected["reminder_type"] == "long_term_decision_review":
                     decision_id = str((selected.get("payload") or {}).get("decision_id") or "")
                     if decision_id:
@@ -1023,6 +1042,27 @@ class LifeAgent:
             return result
         finally:
             self.repo.release_lock(name="life_tick", owner=lock_owner)
+
+    def _memory_pack_for_reminder(self, reminder_type: str) -> list[dict[str, Any]]:
+        domains = _memory_domains_for_reminder(reminder_type)
+        if not domains:
+            return []
+        items = self.repo.list_memory_items(
+            statuses=["active", "temporary", "weak"],
+            domains=domains,
+            limit=5,
+        )
+        return [
+            {
+                "id": item["id"],
+                "domain": item["domain"],
+                "memory_type": item["memory_type"],
+                "status": item["status"],
+                "content": item["content"],
+                "confidence": item["confidence"],
+            }
+            for item in items
+        ]
 
     def _store_selected_review(self, selected: dict[str, Any]) -> None:
         if selected["reminder_type"] == "daily_review":
@@ -2130,3 +2170,17 @@ def _meal_slot_from_text(text: str) -> str:
         if keyword in text:
             return slot
     return ""
+
+
+def _memory_domains_for_reminder(reminder_type: str) -> list[str]:
+    if reminder_type in {"sleep", "sleep_record"}:
+        return ["life.sleep", "life.copy"]
+    if reminder_type == "meal":
+        return ["life.meal", "life.copy"]
+    if reminder_type == "water":
+        return ["life.water", "life.copy"]
+    if reminder_type == "sedentary":
+        return ["life.sedentary", "life.copy"]
+    if reminder_type in {"daily_review", "weekly_review"}:
+        return ["life.sleep", "life.meal", "life.water", "life.sedentary", "life.copy"]
+    return ["life.copy"]

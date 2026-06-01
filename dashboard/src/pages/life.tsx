@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   fetchLifeEvents,
+  fetchLifeMemories,
   fetchLifeReminders,
   fetchLifeReviews,
   fetchLifeRuntime,
@@ -9,6 +10,8 @@ import {
   type LifeDailyReview,
   type LifeEvent,
   type LifeLongTermDecision,
+  type LifeMemories,
+  type LifeMemoryItem,
   type LifeReminder,
   type LifeReminderRuleStatus,
   type LifeReviews,
@@ -231,6 +234,40 @@ function interruptionLabel(value?: string): string {
   return value || 'Mac 中断'
 }
 
+function memoryDomainLabel(value: string): string {
+  if (value === 'life.sleep') return '作息记忆'
+  if (value === 'life.meal') return '饮食记忆'
+  if (value === 'life.water') return '喝水记忆'
+  if (value === 'life.sedentary') return '久坐记忆'
+  if (value === 'life.copy') return '文案偏好'
+  return value || 'Life 记忆'
+}
+
+function memoryTypeLabel(value: string): string {
+  if (value === 'pattern') return '生活规律'
+  if (value === 'response') return '提醒反馈'
+  if (value === 'copy_preference') return '表达偏好'
+  if (value === 'stage_goal') return '阶段目标'
+  if (value === 'exception') return '例外状态'
+  return value || '记忆'
+}
+
+function memoryStatusLabel(value: string): string {
+  if (value === 'active') return '生效'
+  if (value === 'weak') return '弱推断'
+  if (value === 'temporary') return '临时'
+  if (value === 'archived') return '已归档'
+  if (value === 'blocked') return '已禁用'
+  return value || '未知'
+}
+
+function memoryConfidenceLabel(value: string): string {
+  if (value === 'high') return '高置信'
+  if (value === 'medium') return '中置信'
+  if (value === 'low') return '低置信'
+  return value || '置信未知'
+}
+
 function reminderStatusTone(status: string): string {
   if (status === 'failed') return 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950'
   if (status === 'sending') return 'border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950'
@@ -401,6 +438,7 @@ export default function LifePage() {
   const [reviews, setReviews] = useState<LifeReviews | null>(null)
   const [week, setWeek] = useState<LifeWeek | null>(null)
   const [runtime, setRuntime] = useState<LifeRuntimeStatus | null>(null)
+  const [memories, setMemories] = useState<LifeMemories | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
@@ -450,7 +488,8 @@ export default function LifePage() {
         fetchLifeReviews(date),
         fetchLifeWeek(date),
         fetchLifeRuntime(),
-      ]).then(([nextSummary, nextEvents, nextReminders, nextReviews, nextWeek, nextRuntime]) => {
+        fetchLifeMemories(),
+      ]).then(([nextSummary, nextEvents, nextReminders, nextReviews, nextWeek, nextRuntime, nextMemories]) => {
         if (cancelled) return
         setSummary(nextSummary)
         setEvents(nextEvents)
@@ -458,6 +497,7 @@ export default function LifePage() {
         setReviews(nextReviews)
         setWeek(nextWeek)
         setRuntime(nextRuntime)
+        setMemories(nextMemories)
         setLastSyncedAt(new Date().toISOString())
       }).catch(err => {
         if (cancelled) return
@@ -577,6 +617,8 @@ export default function LifePage() {
               />
 
               <ReviewSection reviews={reviews} />
+
+              <MemorySection memories={memories} />
 
               <div className="grid gap-4 lg:grid-cols-2">
                 <SleepSection rows={sleepSessions} />
@@ -1072,6 +1114,67 @@ function ReviewSection({ reviews }: { reviews: LifeReviews | null }) {
         </div>
       )}
     </ModuleSection>
+  )
+}
+
+function MemorySection({ memories }: { memories: LifeMemories | null }) {
+  const items = memories?.items || []
+  const observations = memories?.observations || []
+  const hits = memories?.hits || []
+  const visibleItems = items.filter(item => ['active', 'temporary', 'weak'].includes(item.status)).slice(0, 6)
+
+  return (
+    <ModuleSection title="Life 记忆" meta={visibleItems.length ? `${visibleItems.length} 条可用` : '暂无'}>
+      {visibleItems.length === 0 ? (
+        <EmptyState text="还没有形成稳定的生活记忆。" />
+      ) : (
+        <div className="grid gap-2 lg:grid-cols-2">
+          {visibleItems.map(item => (
+            <MemoryCard key={item.id} item={item} />
+          ))}
+        </div>
+      )}
+      <div className="mt-3 grid gap-2 md:grid-cols-2">
+        <div className="rounded-md border border-stone-200 px-3 py-3 dark:border-neutral-800">
+          <p className="text-xs font-medium text-neutral-500">最近观察</p>
+          {observations.length === 0 ? (
+            <p className="mt-2 text-sm text-neutral-500">暂无观察。</p>
+          ) : (
+            <p className="mt-2 break-words text-sm leading-6 text-neutral-700 dark:text-neutral-300">
+              {observations[0].content}
+            </p>
+          )}
+        </div>
+        <div className="rounded-md border border-stone-200 px-3 py-3 dark:border-neutral-800">
+          <p className="text-xs font-medium text-neutral-500">最近命中</p>
+          {hits.length === 0 ? (
+            <p className="mt-2 text-sm text-neutral-500">暂无命中。</p>
+          ) : (
+            <p className="mt-2 text-sm text-neutral-700 dark:text-neutral-300">
+              {formatDateTime(hits[0].used_at)} · {String(hits[0].effect_json.reminder_type || hits[0].used_by)}
+            </p>
+          )}
+        </div>
+      </div>
+    </ModuleSection>
+  )
+}
+
+function MemoryCard({ item }: { item: LifeMemoryItem }) {
+  return (
+    <div className="rounded-md border border-stone-200 px-3 py-3 dark:border-neutral-800">
+      <div className="flex items-start justify-between gap-3">
+        <p className="min-w-0 break-words text-sm font-semibold">{memoryDomainLabel(item.domain)}</p>
+        <span className="shrink-0 rounded-md bg-stone-100 px-2 py-1 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+          {memoryStatusLabel(item.status)}
+        </span>
+      </div>
+      <p className="mt-2 break-words text-sm leading-6 text-neutral-700 dark:text-neutral-300">{item.content}</p>
+      <p className="mt-2 text-xs text-neutral-500">
+        {memoryTypeLabel(item.memory_type)} · {memoryConfidenceLabel(item.confidence)}
+        {item.last_used_at ? ` · 上次使用 ${formatDateTime(item.last_used_at)}` : ''}
+      </p>
+    </div>
   )
 }
 

@@ -161,6 +161,20 @@ def create_life_router(
             "reminder_rules": reminder_rules,
         }
 
+    @router.get("/life/memories")
+    def get_life_memories(
+        limit: int = Query(default=50, le=200),
+    ):
+        with _life_connection(conn, db_path) as db:
+            items = _life_memory_items(db, limit=limit)
+            observations = _life_memory_observations(db, limit=limit)
+            hits = _life_memory_hits(db, limit=limit)
+        return {
+            "items": items,
+            "observations": observations,
+            "hits": hits,
+        }
+
     return router
 
 
@@ -292,6 +306,54 @@ def _decision_row_to_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[st
 def _reminder_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     item["payload_json"] = _load_json(item.get("payload_json"), {})
+    return item
+
+
+def _life_memory_items(conn: sqlite3.Connection, *, limit: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT * FROM life_memory_items
+           ORDER BY status ASC, updated_at DESC, rowid DESC
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    return [_memory_item_row_to_dict(row) for row in rows]
+
+
+def _life_memory_observations(conn: sqlite3.Connection, *, limit: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT * FROM life_memory_observations
+           ORDER BY observed_at DESC, rowid DESC
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    return [_memory_observation_row_to_dict(row) for row in rows]
+
+
+def _life_memory_hits(conn: sqlite3.Connection, *, limit: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT * FROM life_memory_hits
+           ORDER BY used_at DESC, rowid DESC
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    return [_memory_hit_row_to_dict(row) for row in rows]
+
+
+def _memory_item_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item["evidence_json"] = _load_json(item.get("evidence_json"), {})
+    return item
+
+
+def _memory_observation_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item["evidence_json"] = _load_json(item.get("evidence_json"), {})
+    return item
+
+
+def _memory_hit_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item["effect_json"] = _load_json(item.get("effect_json"), {})
     return item
 
 

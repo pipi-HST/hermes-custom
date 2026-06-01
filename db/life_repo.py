@@ -831,6 +831,222 @@ class LifeRepo:
             ).fetchall()
         return [self._decision_with_latest_review(dict(row)) for row in rows]
 
+    def create_memory_observation(
+        self,
+        *,
+        domain: str,
+        observation_type: str,
+        content: str,
+        observed_at: str,
+        source: str,
+        evidence: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        observation_id = uuid.uuid4().hex[:12]
+        self.conn.execute(
+            """INSERT INTO life_memory_observations
+               (id, domain, observation_type, content, evidence_json, source, observed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                observation_id,
+                domain,
+                observation_type,
+                content,
+                json.dumps(evidence or {}, ensure_ascii=False),
+                source,
+                observed_at,
+            ),
+        )
+        self.conn.commit()
+        row = self.conn.execute(
+            "SELECT * FROM life_memory_observations WHERE id = ?",
+            (observation_id,),
+        ).fetchone()
+        return self._memory_observation_row_to_dict(row)
+
+    def list_memory_observations(
+        self,
+        *,
+        domain: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        if domain:
+            rows = self.conn.execute(
+                """SELECT * FROM life_memory_observations
+                   WHERE domain = ?
+                   ORDER BY observed_at DESC, rowid DESC
+                   LIMIT ?""",
+                (domain, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """SELECT * FROM life_memory_observations
+                   ORDER BY observed_at DESC, rowid DESC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [self._memory_observation_row_to_dict(row) for row in rows]
+
+    def upsert_memory_item(
+        self,
+        *,
+        domain: str,
+        memory_type: str,
+        status: str,
+        content: str,
+        confidence: str,
+        source: str,
+        effective_from: str,
+        evidence: dict[str, Any] | None = None,
+        expires_at: str = "",
+    ) -> dict[str, Any]:
+        row = self.conn.execute(
+            """SELECT * FROM life_memory_items
+               WHERE domain = ?
+                 AND memory_type = ?
+                 AND source = ?
+                 AND content = ?
+               ORDER BY rowid DESC
+               LIMIT 1""",
+            (domain, memory_type, source, content),
+        ).fetchone()
+        now_text = datetime.now().isoformat()
+        if row:
+            item = self._memory_item_row_to_dict(row)
+            if item["status"] == "blocked":
+                return item
+            self.conn.execute(
+                """UPDATE life_memory_items
+                   SET status = ?, confidence = ?, evidence_json = ?,
+                       effective_from = ?, expires_at = ?, updated_at = ?
+                   WHERE id = ?""",
+                (
+                    status,
+                    confidence,
+                    json.dumps(evidence or {}, ensure_ascii=False),
+                    effective_from,
+                    expires_at,
+                    now_text,
+                    item["id"],
+                ),
+            )
+            self.conn.commit()
+            return self.get_memory_item(str(item["id"])) or item
+
+        memory_id = uuid.uuid4().hex[:12]
+        self.conn.execute(
+            """INSERT INTO life_memory_items
+               (id, domain, memory_type, status, content, confidence,
+                evidence_json, source, effective_from, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                memory_id,
+                domain,
+                memory_type,
+                status,
+                content,
+                confidence,
+                json.dumps(evidence or {}, ensure_ascii=False),
+                source,
+                effective_from,
+                expires_at,
+            ),
+        )
+        self.conn.commit()
+        return self.get_memory_item(memory_id) or {}
+
+    def get_memory_item(self, memory_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM life_memory_items WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        return self._memory_item_row_to_dict(row) if row else None
+
+    def list_memory_items(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        domains: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if statuses:
+            clauses.append(f"status IN ({','.join('?' for _ in statuses)})")
+            params.extend(statuses)
+        if domains:
+            clauses.append(f"domain IN ({','.join('?' for _ in domains)})")
+            params.extend(domains)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.conn.execute(
+            f"""SELECT * FROM life_memory_items
+                {where}
+                ORDER BY status ASC, updated_at DESC, rowid DESC
+                LIMIT ?""",
+            (*params, limit),
+        ).fetchall()
+        return [self._memory_item_row_to_dict(row) for row in rows]
+
+    def update_memory_item_status(
+        self,
+        memory_id: str,
+        *,
+        status: str,
+        updated_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        self.conn.execute(
+            """UPDATE life_memory_items
+               SET status = ?, updated_at = ?
+               WHERE id = ?""",
+            (status, updated_at or datetime.now().isoformat(), memory_id),
+        )
+        self.conn.commit()
+        return self.get_memory_item(memory_id)
+
+    def record_memory_hit(
+        self,
+        *,
+        memory_id: str,
+        used_by: str,
+        target_id: str,
+        used_at: str,
+        effect: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        hit_id = uuid.uuid4().hex[:12]
+        self.conn.execute(
+            """INSERT INTO life_memory_hits
+               (id, memory_id, used_by, target_id, used_at, effect_json)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                hit_id,
+                memory_id,
+                used_by,
+                target_id,
+                used_at,
+                json.dumps(effect or {}, ensure_ascii=False),
+            ),
+        )
+        self.conn.execute(
+            """UPDATE life_memory_items
+               SET last_used_at = ?, updated_at = ?
+               WHERE id = ?""",
+            (used_at, datetime.now().isoformat(), memory_id),
+        )
+        self.conn.commit()
+        row = self.conn.execute(
+            "SELECT * FROM life_memory_hits WHERE id = ?",
+            (hit_id,),
+        ).fetchone()
+        return self._memory_hit_row_to_dict(row)
+
+    def list_memory_hits(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """SELECT * FROM life_memory_hits
+               ORDER BY used_at DESC, rowid DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [self._memory_hit_row_to_dict(row) for row in rows]
+
     def count_reminder_logs(self, reminder_type: str) -> int:
         row = self.conn.execute(
             "SELECT count(*) AS cnt FROM life_reminder_logs WHERE reminder_type = ?",
@@ -853,6 +1069,21 @@ class LifeRepo:
     def _context_row_to_dict(self, row: sqlite3.Row | None) -> dict[str, Any]:
         result = dict(row or {})
         result["payload_json"] = _load_json(result.get("payload_json"), {})
+        return result
+
+    def _memory_item_row_to_dict(self, row: sqlite3.Row | None) -> dict[str, Any]:
+        result = dict(row or {})
+        result["evidence_json"] = _load_json(result.get("evidence_json"), {})
+        return result
+
+    def _memory_observation_row_to_dict(self, row: sqlite3.Row | None) -> dict[str, Any]:
+        result = dict(row or {})
+        result["evidence_json"] = _load_json(result.get("evidence_json"), {})
+        return result
+
+    def _memory_hit_row_to_dict(self, row: sqlite3.Row | None) -> dict[str, Any]:
+        result = dict(row or {})
+        result["effect_json"] = _load_json(result.get("effect_json"), {})
         return result
 
     def _decision_with_latest_review(self, decision: dict[str, Any]) -> dict[str, Any]:

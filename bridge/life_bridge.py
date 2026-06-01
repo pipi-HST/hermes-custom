@@ -141,6 +141,74 @@ def reconcile_life_delivery(completed_at: str, delivery_error: str = "") -> dict
     )
 
 
+def life_memory_review() -> dict:
+    """Review active Life Assistant memories."""
+    agent = _init()
+    items = agent.repo.list_memory_items(
+        statuses=["active", "temporary", "weak"],
+        limit=50,
+    )
+    if not items:
+        preview = "目前还没有形成可用的 Life 记忆。"
+    else:
+        preview = "\n".join(f"- {item['content']}" for item in items[:10])
+    return success_envelope(
+        agent="life",
+        intent="life_memory_review",
+        chat_preview=preview,
+        meta={
+            "should_notify": False,
+            "count": len(items),
+            "items": items,
+        },
+    )
+
+
+def life_memory_forget(query: str, mode: str = "blocked") -> dict:
+    """Disable Life memories matching a user-provided query."""
+    agent = _init()
+    normalized = query.strip()
+    if not normalized:
+        return success_envelope(
+            agent="life",
+            intent="life_memory_forget",
+            chat_preview="没有提供要禁用的 Life 记忆关键词。",
+            warnings=["life_memory_forget_empty_query"],
+            meta={"should_notify": False, "updated": 0},
+        )
+    status = "archived" if mode == "archived" else "blocked"
+    candidates = agent.repo.list_memory_items(limit=200)
+    updated = []
+    for item in candidates:
+        haystack = " ".join(
+            [
+                str(item.get("domain") or ""),
+                str(item.get("memory_type") or ""),
+                str(item.get("content") or ""),
+            ]
+        )
+        if normalized not in haystack:
+            continue
+        changed = agent.repo.update_memory_item_status(item["id"], status=status)
+        if changed:
+            updated.append(changed)
+    preview = (
+        f"已禁用 {len(updated)} 条 Life 记忆。"
+        if updated
+        else "没有找到匹配的 Life 记忆。"
+    )
+    return success_envelope(
+        agent="life",
+        intent="life_memory_forget",
+        chat_preview=preview,
+        meta={
+            "should_notify": False,
+            "updated": len(updated),
+            "items": updated,
+        },
+    )
+
+
 def _read_mac_activity() -> ActivitySnapshot:
     interruption = _read_recent_mac_interruption()
     try:
