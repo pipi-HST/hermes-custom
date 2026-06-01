@@ -140,6 +140,17 @@ def run_audit(
             f"{len(duplicate_sleep_sessions)} duplicate sleep session group(s)",
         )
 
+        meal_quality_issues = _meal_quality_issues(conn)
+        summary["meal_quality_issues_count"] = len(meal_quality_issues)
+        if meal_quality_issues:
+            summary["meal_quality_issues"] = meal_quality_issues[:10]
+        _check(
+            checks,
+            "meal_record_quality",
+            "warning" if meal_quality_issues else "ok",
+            f"{len(meal_quality_issues)} dirty meal record(s)",
+        )
+
         reminder_bursts = _reminder_bursts(conn, since=warning_cutoff)
         historical_reminder_bursts = _reminder_bursts(conn, before=warning_cutoff, limit=None)
         summary["reminder_bursts"] = reminder_bursts
@@ -230,6 +241,46 @@ def _duplicate_sleep_sessions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     ]
 
 
+def _meal_quality_issues(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT id, occurred_at, raw_text, payload_json
+           FROM life_events
+           WHERE event_type = 'meal'
+             AND status NOT IN ('undone', 'superseded')
+           ORDER BY occurred_at DESC, rowid DESC"""
+    ).fetchall()
+    issues: list[dict[str, Any]] = []
+    for row in rows:
+        payload = _load_json(str(row["payload_json"] or "{}"), {})
+        content = str(payload.get("content") or "")
+        meal_slot = str(payload.get("meal_slot") or "")
+        precision = str(payload.get("meal_time_precision") or "")
+        try:
+            occurred = _parse_datetime(str(row["occurred_at"]))
+        except ValueError:
+            continue
+        flags: list[str] = []
+        if any(token in content for token in ("吃的", "喝的", "大概", "左右", "前后")):
+            flags.append("content_time_tail")
+        if precision == "exact" and meal_slot == "dinner" and 1 <= occurred.hour <= 10:
+            flags.append("dinner_morning_time")
+        if precision == "exact" and meal_slot == "lunch" and 1 <= occurred.hour <= 3:
+            flags.append("lunch_early_time")
+        if precision == "missing" and str(row["occurred_at"])[11:16] != "00:00":
+            flags.append("missing_precision_non_anchor")
+        if flags:
+            issues.append(
+                {
+                    "id": str(row["id"]),
+                    "occurred_at": str(row["occurred_at"]),
+                    "flags": flags,
+                    "content": content,
+                    "raw_text": str(row["raw_text"] or ""),
+                }
+            )
+    return issues
+
+
 def _failed_reminders(
     conn: sqlite3.Connection,
     *,
@@ -272,7 +323,7 @@ def _reminder_bursts(
         "sedentary": 10,
     }
     rows = conn.execute(
-        """SELECT reminder_type, scheduled_for, status
+        """SELECT reminder_type, scheduled_for, status, payload_json
            FROM life_reminder_logs
            WHERE reminder_type IN ('exercise', 'sedentary')
              AND status IN ('scheduled', 'sending', 'sent')
@@ -283,6 +334,9 @@ def _reminder_bursts(
     for row in rows:
         reminder_type = str(row["reminder_type"])
         scheduled_for = str(row["scheduled_for"])
+        payload = _load_json(str(row["payload_json"] or "{}"), {})
+        if payload.get("source") == "user_reschedule":
+            continue
         previous = previous_by_type.get(reminder_type)
         previous_by_type[reminder_type] = scheduled_for
         if not previous:
@@ -309,6 +363,13 @@ def _reminder_bursts(
     if limit is None:
         return bursts
     return bursts[:limit]
+
+
+def _load_json(value: str, default: Any) -> Any:
+    try:
+        return json.loads(value or "")
+    except (TypeError, json.JSONDecodeError):
+        return default
 
 
 def _check(checks: list[dict[str, Any]], name: str, status: str, detail: str) -> None:

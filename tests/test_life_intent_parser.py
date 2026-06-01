@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from agents.life_intent_parser import LifeIntent, LifeIntentLLMFallback, LifeIntentParser
 
 
@@ -79,6 +81,56 @@ def test_parser_removes_trailing_eating_time_phrase_from_meal_content() -> None:
     assert intent.occurred_at == "2026-06-01T12:30:00+08:00"
     assert intent.payload["meal_slot"] == "lunch"
     assert intent.payload["content"] == "蘑菇肉臊蛋包饭"
+    assert intent.payload["meal_time_precision"] == "exact"
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_time", "expected_slot", "expected_content"),
+    [
+        (
+            "晚饭吃了馄饨和烤肠和桂花糕，大概七点吃的",
+            "2026-06-01T19:00:00+08:00",
+            "dinner",
+            "馄饨和烤肠和桂花糕",
+        ),
+        (
+            "七点晚饭吃了馄饨和烤肠",
+            "2026-06-01T19:00:00+08:00",
+            "dinner",
+            "馄饨和烤肠",
+        ),
+        (
+            "午饭吃了面包，大概一点吃的",
+            "2026-06-01T13:00:00+08:00",
+            "lunch",
+            "面包",
+        ),
+        (
+            "一点午饭吃了面包",
+            "2026-06-01T13:00:00+08:00",
+            "lunch",
+            "面包",
+        ),
+    ],
+)
+def test_parser_uses_meal_context_for_ambiguous_inline_meal_times(
+    message: str,
+    expected_time: str,
+    expected_slot: str,
+    expected_content: str,
+) -> None:
+    parser = LifeIntentParser()
+
+    intent = parser.parse(
+        message,
+        received_at=datetime.fromisoformat("2026-06-01T21:00:00+08:00"),
+    )
+
+    assert intent.intent == "record_event"
+    assert intent.event_type == "meal"
+    assert intent.occurred_at == expected_time
+    assert intent.payload["meal_slot"] == expected_slot
+    assert intent.payload["content"] == expected_content
     assert intent.payload["meal_time_precision"] == "exact"
 
 

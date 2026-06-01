@@ -645,6 +645,7 @@ def _parse_meal(text: str, received: datetime) -> dict[str, Any] | None:
         return None
     has_explicit_slot = bool(slot)
     occurred_at = _parse_clock_time(text, received)
+    time_period = _clock_time_period(text)
     meal_time_precision = "exact" if occurred_at else "missing"
     if not occurred_at and any(keyword in text for keyword in ("刚", "刚刚", "才")):
         occurred_at = received
@@ -652,6 +653,12 @@ def _parse_meal(text: str, received: datetime) -> dict[str, Any] | None:
     if not occurred_at and not has_explicit_slot:
         occurred_at = received
         meal_time_precision = "inferred_current"
+    if occurred_at and slot:
+        occurred_at = _disambiguate_meal_time(
+            occurred_at,
+            meal_slot=slot,
+            time_period=time_period,
+        )
     meal_text = _strip_meal_context(_strip_clock_time(text))
     append_to_existing = bool(re.match(r"^(还|又|另外|再|也)\s*", meal_text))
     meal_text = re.sub(r"^(还|又|另外|再|也)\s*", "", meal_text).strip()
@@ -699,7 +706,21 @@ def _strip_meal_context(text: str) -> str:
 
 
 def _clean_meal_content(text: str) -> str:
-    return re.sub(r"[，,。.\s]*(吃的|吃了|吃|喝的|喝了|喝|饮的|饮了|饮)$", "", text).strip()
+    return re.sub(
+        r"[，,。.\s]*(大概|差不多|左右|前后)?\s*(吃的|吃了|吃|喝的|喝了|喝|饮的|饮了|饮)$",
+        "",
+        text,
+    ).strip()
+
+
+def _disambiguate_meal_time(value: datetime, *, meal_slot: str, time_period: str) -> datetime:
+    if time_period:
+        return value
+    if meal_slot == "dinner" and 1 <= value.hour <= 10:
+        return value + timedelta(hours=12)
+    if meal_slot == "lunch" and 1 <= value.hour <= 3:
+        return value + timedelta(hours=12)
+    return value
 
 
 def _explicit_meal_slot(text: str) -> str:

@@ -117,6 +117,33 @@ def test_life_audit_warns_on_duplicate_sleep_sessions(tmp_path) -> None:
     assert any(check["name"] == "duplicate_sleep_sessions" for check in report["checks"])
 
 
+def test_life_audit_warns_on_dirty_meal_records(tmp_path) -> None:
+    db_path = str(tmp_path / "life-audit.db")
+    repo = LifeRepo(init_life_db(db_path))
+    repo.create_event(
+        event_type="meal",
+        occurred_at="2026-06-01T07:00:00+08:00",
+        source="wechat",
+        raw_text="晚饭吃了馄饨，大概七点吃的",
+        payload={
+            "meal_slot": "dinner",
+            "meal_slot_inferred": False,
+            "content": "馄饨，大概",
+            "meal_time_precision": "exact",
+        },
+    )
+
+    report = run_audit(db_path=db_path, now="2026-06-01T22:00:00+08:00")
+
+    assert report["status"] == "warning"
+    assert report["summary"]["meal_quality_issues_count"] == 1
+    assert report["summary"]["meal_quality_issues"][0]["flags"] == [
+        "content_time_tail",
+        "dinner_morning_time",
+    ]
+    assert any(check["name"] == "meal_record_quality" for check in report["checks"])
+
+
 def test_life_audit_ignores_historical_failed_reminders_and_bursts(tmp_path) -> None:
     db_path = str(tmp_path / "life-audit.db")
     repo = LifeRepo(init_life_db(db_path))
@@ -174,6 +201,30 @@ def test_life_audit_warns_on_recent_successful_reminder_burst(tmp_path) -> None:
     assert report["summary"]["reminder_bursts"][0]["reminder_type"] == "exercise"
     assert report["summary"]["reminder_bursts"][0]["gap_minutes"] == 1
     assert any(check["name"] == "reminder_bursts" for check in report["checks"])
+
+
+def test_life_audit_ignores_user_rescheduled_exercise_plan_as_burst(tmp_path) -> None:
+    db_path = str(tmp_path / "life-audit.db")
+    repo = LifeRepo(init_life_db(db_path))
+    repo.create_reminder_log(
+        reminder_type="exercise",
+        scheduled_for="2026-06-01T22:00:00+08:00",
+        status="scheduled",
+        dedupe_key="exercise_reschedule:2026-06-01T22:00:00+08:00",
+        payload={"source": "user_reschedule"},
+    )
+    repo.create_reminder_log(
+        reminder_type="exercise",
+        scheduled_for="2026-06-01T22:00:18+08:00",
+        status="sent",
+        sent_at="2026-06-01T22:01:18+08:00",
+        dedupe_key="exercise:2026-06-01T22:00",
+    )
+
+    report = run_audit(db_path=db_path, now="2026-06-01T23:00:00+08:00")
+
+    assert report["status"] == "ok"
+    assert report["summary"]["reminder_bursts"] == []
 
 
 def test_life_tick_cron_outputs_one_sleep_reminder_per_day(tmp_path, monkeypatch, capsys) -> None:
