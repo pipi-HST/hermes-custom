@@ -866,6 +866,7 @@ def test_run_graph_report_returns_report_string(tmp_path: Path) -> None:
     assert "总笔记: 2" in report["chat_preview"]
     assert "主题: 1" in report["chat_preview"]
     artifact = report["durable_artifacts"][0]
-    assert artifact["type"] == "librarian_report"
+    assert artifact["type"] == "graph_report"
     assert artifact["status"] == "reported"
-    assert (Path(__file__).parent.parent / artifact["path"]).exists()
+    assert Path(artifact["path"]).is_absolute()
+    assert Path(artifact["path"]).exists()

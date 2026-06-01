@@ -245,11 +245,11 @@ MEDIA:/path/to/report.md
 - 你可以在电脑上直接打开完整文件看。
 - 后续 RAG / Review / Library 都能引用这个报告文件。
 
-## 7. 还需要补的一层
+## 7. 当前文件输出协议
 
-现在 `send_message` 已经能发文件，但各个业务工具还没有完全统一“长输出生成文件”的协议。
+现在 `send_message` 已经能发文件，关键知识库工具也已经接入“按需生成文件”的协议。
 
-建议下一步做一个很薄的约定：
+统一约定是：
 
 ```json
 {
@@ -262,18 +262,20 @@ MEDIA:/path/to/report.md
 }
 ```
 
-主 Agent 看到 `artifact.path` 后，如果用户在微信里，就优先用 `send_message` 附件发送文件。
+主 Agent 看到 `durable_artifacts[].path` 是绝对本地路径，并且用户明确要求文件/导出/附件时，会用 `send_message` 附件发送文件。
 
-这不是重构 Agent，只是补一个跨工具输出约定。最应该先接入的是：
+当前已经接入：
 
-1. `audit_library`
-2. `search_my_notes`
-3. `capture_content` / `show_capture_draft`
-4. `synthesize_garden`
-5. `graph_report`
+1. `search_my_notes`：RAG 完整回答与引用报告。
+2. `show_capture_draft`：Capture 草稿全文。
+3. `audit_library`：Library 审计与修复报告。
+4. `theme_scan`：Theme 扫描报告。
+5. `synthesize_garden`：Garden 草稿全文。
+6. `graph_report`：知识图谱健康报告。
+7. `generate_canvas`：Obsidian Canvas 文件。
 
 ## 8. 当前判断
 
 结论：可以用“发文件”解决长上下文/长输出问题，而且这条路比继续压微信消息更合理。
 
-短期不需要大改网关，只需要让关键工具在长输出时生成本地文件，并让主 Agent 调 `send_message` 发 `MEDIA:/path/to/file`。
+短期不需要大改网关；继续扩展时只要让新工具返回带绝对路径的 `durable_artifacts`，主 Agent 就能在用户明确要求时发送文件。

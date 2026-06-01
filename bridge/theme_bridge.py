@@ -17,6 +17,7 @@ from agents.theme_graph import (
     cluster_relationship_graph,
     filter_theme_nodes,
 )
+from bridge.file_artifacts import write_markdown_export
 from bridge.result_envelope import artifact_ref, next_action, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.schema import init_db
@@ -409,7 +410,7 @@ def list_theme_candidates(*, limit: int = 5) -> dict:
     )
 
 
-def run_theme_scan(*, rescan_all: bool = False) -> dict:
+def run_theme_scan(*, rescan_all: bool = False, export_file: bool = False) -> dict:
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     repo = CaptureRepo(init_db(config.db_path))
     return run_with_ledger(
@@ -417,12 +418,23 @@ def run_theme_scan(*, rescan_all: bool = False) -> dict:
         agent="theme",
         intent="run_theme_scan",
         trigger="wechat",
-        input_ref={"rescan_all": rescan_all},
-        operation=lambda: _run_theme_scan(config, repo, rescan_all=rescan_all),
+        input_ref={"rescan_all": rescan_all, "export_file": export_file},
+        operation=lambda: _run_theme_scan(
+            config,
+            repo,
+            rescan_all=rescan_all,
+            export_file=export_file,
+        ),
     )
 
 
-def _run_theme_scan(config, repo: CaptureRepo, *, rescan_all: bool = False) -> dict:
+def _run_theme_scan(
+    config,
+    repo: CaptureRepo,
+    *,
+    rescan_all: bool = False,
+    export_file: bool = False,
+) -> dict:
     conn = repo.conn
 
     scan_filter = "" if rescan_all else "AND c.theme_scanned_at IS NULL"
@@ -441,7 +453,7 @@ def _run_theme_scan(config, repo: CaptureRepo, *, rescan_all: bool = False) -> d
     if not rows:
         unindexed_count = _unindexed_capture_count(conn, rescan_all=rescan_all)
         if unindexed_count:
-            return success_envelope(
+            envelope = success_envelope(
                 agent="theme",
                 intent="run_theme_scan",
                 chat_preview=(
@@ -452,14 +464,38 @@ def _run_theme_scan(config, repo: CaptureRepo, *, rescan_all: bool = False) -> d
                     "scanned_count": 0,
                     "rescan_all": rescan_all,
                     "unindexed_count": unindexed_count,
+                    "export_file": export_file,
                 },
             )
-        return success_envelope(
+            if export_file:
+                envelope["durable_artifacts"] = [
+                    _theme_scan_report_artifact(
+                        title="Theme 扫描报告",
+                        chat_preview=envelope["chat_preview"],
+                        meta=envelope["meta"],
+                    )
+                ]
+            return envelope
+        envelope = success_envelope(
             agent="theme",
             intent="run_theme_scan",
             chat_preview="没有待扫描的新内容。",
-            meta={"scanned_count": 0, "rescan_all": rescan_all, "unindexed_count": 0},
+            meta={
+                "scanned_count": 0,
+                "rescan_all": rescan_all,
+                "unindexed_count": 0,
+                "export_file": export_file,
+            },
         )
+        if export_file:
+            envelope["durable_artifacts"] = [
+                _theme_scan_report_artifact(
+                    title="Theme 扫描报告",
+                    chat_preview=envelope["chat_preview"],
+                    meta=envelope["meta"],
+                )
+            ]
+        return envelope
 
     vault_path = Path(config.vault_path).expanduser()
     row_dicts = [dict(r) for r in rows]
@@ -590,6 +626,27 @@ def _run_theme_scan(config, repo: CaptureRepo, *, rescan_all: bool = False) -> d
         cluster_questions=results,
         partial=partial,
     )
+    if export_file:
+        theme_artifacts.append(
+            _theme_scan_report_artifact(
+                title="Theme 扫描报告",
+                chat_preview=chat_preview,
+                meta={
+                    "scanned_count": len(new_caps),
+                    "rescan_all": rescan_all,
+                    "partial": partial,
+                    "cluster_count": len(results),
+                    "links_injected": links_injected,
+                    "theme_pages_created": mocs_created,
+                    "theme_pages_updated": mocs_updated,
+                    "capture_theme_tags": capture_theme_tags,
+                    "relationship_edges": len(edges),
+                    "skipped_test_garbage": skipped_test_count,
+                    "scanned_real_count": len(eligible_scan_ids),
+                },
+                next_actions=question_actions,
+            )
+        )
     return success_envelope(
         agent="theme",
         intent="run_theme_scan",
@@ -608,7 +665,53 @@ def _run_theme_scan(config, repo: CaptureRepo, *, rescan_all: bool = False) -> d
             "relationship_edges": len(edges),
             "skipped_test_garbage": skipped_test_count,
             "scanned_real_count": len(eligible_scan_ids),
+            "export_file": export_file,
         },
+    )
+
+
+def _theme_scan_report_artifact(
+    *,
+    title: str,
+    chat_preview: str,
+    meta: dict,
+    next_actions: list[dict] | None = None,
+    export_dir: Path | None = None,
+) -> dict:
+    lines = [
+        f"# {title or 'Theme 扫描报告'}",
+        "",
+        "## 摘要",
+        "",
+        (chat_preview or "").strip() or "无摘要。",
+        "",
+        "## 统计",
+        "",
+    ]
+    for key, value in sorted((meta or {}).items()):
+        lines.append(f"- {key}: {value}")
+    actions = next_actions or []
+    if actions:
+        lines.extend(["", "## 候选动作", ""])
+        for index, action in enumerate(actions, 1):
+            payload = action.get("payload") or {}
+            lines.append(f"{index}. {action.get('label') or '候选'}")
+            if payload.get("question_id"):
+                lines.append(f"   - question_id: {payload['question_id']}")
+            if payload.get("capture_ids"):
+                lines.append(f"   - capture_ids: {', '.join(payload['capture_ids'])}")
+    base_dir = export_dir or (Path(__file__).parent.parent / "data" / "exports" / "theme")
+    path = write_markdown_export(
+        base_dir=base_dir,
+        stem="theme-scan-report",
+        content="\n".join(lines),
+    )
+    return artifact_ref(
+        type="theme_scan_report",
+        id=Path(path).stem,
+        title=title or "Theme 扫描报告",
+        path=path,
+        status="created",
     )
 
 
@@ -625,20 +728,21 @@ def run_graph_report() -> dict:
     )
     report = agent.graph_report(vault_path)
     report_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    report_rel_path = f"data/reports/graph-report-{report_id}.md"
-    report_path = Path(__file__).parent.parent / report_rel_path
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(report, encoding="utf-8")
+    report_path = write_markdown_export(
+        base_dir=Path(__file__).parent.parent / "data" / "exports" / "theme",
+        stem=f"graph-report-{report_id}",
+        content=report,
+    )
     return success_envelope(
         agent="theme",
         intent="run_graph_report",
         chat_preview=_graph_report_preview(report),
         durable_artifacts=[
             artifact_ref(
-                type="librarian_report",
+                type="graph_report",
                 id=report_id,
                 title="知识图谱健康报告",
-                path=report_rel_path,
+                path=report_path,
                 status="reported",
             )
         ],

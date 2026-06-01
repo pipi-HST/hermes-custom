@@ -35,6 +35,7 @@ def generate_canvas(
     garden_card_ids: list[str] | None = None,
     db_path: str = "",
     vault_path: str = "",
+    export_file: bool = False,
 ) -> dict[str, Any]:
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     resolved_db_path = db_path or config.db_path
@@ -51,6 +52,7 @@ def generate_canvas(
             "question_id": question_id,
             "capture_ids": capture_ids or [],
             "garden_card_ids": garden_card_ids or [],
+            "export_file": export_file,
         },
         operation=lambda: _generate_canvas(
             repo,
@@ -60,6 +62,7 @@ def generate_canvas(
             question_id=question_id,
             capture_ids=capture_ids or [],
             garden_card_ids=garden_card_ids or [],
+            export_file=export_file,
         ),
     )
 
@@ -73,6 +76,7 @@ def _generate_canvas(
     question_id: str,
     capture_ids: list[str],
     garden_card_ids: list[str],
+    export_file: bool = False,
 ) -> dict[str, Any]:
     question_capture_ids = _capture_ids_for_question(repo, question_id)
     resolved_capture_ids = _dedupe(capture_ids + question_capture_ids)
@@ -148,6 +152,17 @@ def _generate_canvas(
     warnings.extend(built.warnings)
     canvas_path = _write_canvas(vault_path, theme_node.title, built.json_text)
     rel_path = canvas_path.relative_to(vault_path).as_posix()
+    artifacts = [
+        artifact_ref(
+            type="obsidian_canvas",
+            id=canvas_path.stem,
+            title=canvas_path.stem,
+            path=rel_path,
+            status="created",
+        )
+    ]
+    if export_file:
+        artifacts.append(_canvas_file_artifact(canvas_path))
     chat_preview = _canvas_preview(
         title=canvas_path.stem,
         rel_path=rel_path,
@@ -158,25 +173,29 @@ def _generate_canvas(
         agent="canvas",
         intent="generate_canvas",
         chat_preview=chat_preview,
-        durable_artifacts=[
-            artifact_ref(
-                type="obsidian_canvas",
-                id=canvas_path.stem,
-                title=canvas_path.stem,
-                path=rel_path,
-                status="created",
-            )
-        ],
+        durable_artifacts=artifacts,
         warnings=warnings,
         meta={
             "path": rel_path,
+            "file_path": str(canvas_path.resolve()) if export_file else "",
             "theme": theme_node.title,
             "capture_count": len(captures),
             "garden_count": len(garden_items),
             "node_count": built.node_count,
             "edge_count": built.edge_count,
             "structure_status": structure_status,
+            "export_file": export_file,
         },
+    )
+
+
+def _canvas_file_artifact(canvas_path: Path) -> dict[str, Any]:
+    return artifact_ref(
+        type="obsidian_canvas_file",
+        id=canvas_path.stem,
+        title=canvas_path.stem,
+        path=str(canvas_path.resolve()),
+        status="created",
     )
 
 

@@ -19,6 +19,7 @@ from agents.garden_agent import (
     update_garden_draft,
 )
 from agents.garden_duplicates import find_garden_duplicate
+from bridge.file_artifacts import write_markdown_export
 from bridge.result_envelope import artifact_ref, error_envelope, next_action, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.schema import init_db
@@ -249,7 +250,8 @@ def _garden_property_links(conn, card_ids: list[str]) -> list[str]:
 def synthesize_garden(capture_ids: list[str] = None,
                       question_id: str = "",
                       title: str = "",
-                      card_kind: str = "") -> dict:
+                      card_kind: str = "",
+                      export_file: bool = False) -> dict:
     """合成知识花园卡片。
 
     Args:
@@ -273,6 +275,7 @@ def synthesize_garden(capture_ids: list[str] = None,
             "question_id": question_id,
             "title": title,
             "card_kind": card_kind,
+            "export_file": export_file,
         },
         operation=lambda: _synthesize_garden(
             config,
@@ -281,6 +284,7 @@ def synthesize_garden(capture_ids: list[str] = None,
             question_id=question_id,
             title=title,
             card_kind=card_kind,
+            export_file=export_file,
         ),
     )
 
@@ -292,6 +296,7 @@ def _synthesize_garden(
     question_id: str = "",
     title: str = "",
     card_kind: str = "",
+    export_file: bool = False,
 ) -> dict:
     conn = repo.conn
     vault_path = Path(config.vault_path).expanduser()
@@ -392,18 +397,27 @@ def _synthesize_garden(
     )
     if duplicate_warning:
         preview = duplicate_warning + "\n\n" + preview
+    artifacts = [
+        artifact_ref(
+            type="garden_draft",
+            id=draft_id,
+            title=title_text,
+            status="draft_ready",
+        )
+    ]
+    if export_file:
+        artifacts.append(
+            _garden_draft_export_artifact(
+                draft_id=draft_id,
+                title=title_text,
+                markdown=result.get("markdown", ""),
+            )
+        )
     return success_envelope(
         agent="garden",
         intent="synthesize_garden",
         chat_preview=preview,
-        durable_artifacts=[
-            artifact_ref(
-                type="garden_draft",
-                id=draft_id,
-                title=title_text,
-                status="draft_ready",
-            )
-        ],
+        durable_artifacts=artifacts,
         next_actions=[
             next_action(
                 label="确认卡片入库",
@@ -421,8 +435,34 @@ def _synthesize_garden(
             "knowledge_link_count": len(result.get("knowledge_links", [])),
             "duplicate_status": duplicate["status"],
             "duplicate_match": duplicate.get("match") or {},
+            "export_file": export_file,
         },
         warnings=[duplicate_warning] if duplicate_warning else [],
+    )
+
+
+def _garden_draft_export_artifact(
+    *,
+    draft_id: str,
+    title: str,
+    markdown: str,
+    export_dir: Path | None = None,
+) -> dict:
+    title_text = (title or "Garden 草稿").strip()
+    body = (markdown or "").strip()
+    content = f"# {title_text}\n\n{body}" if body else f"# {title_text}\n"
+    base_dir = export_dir or (Path(__file__).parent.parent / "data" / "exports" / "garden")
+    path = write_markdown_export(
+        base_dir=base_dir,
+        stem=f"garden-draft-{draft_id or title_text}",
+        content=content,
+    )
+    return artifact_ref(
+        type="garden_draft_report",
+        id=draft_id,
+        title="Garden 草稿全文",
+        path=path,
+        status="created",
     )
 
 

@@ -13,12 +13,13 @@ from agents.capture_agent import load_config
 from agents.embedder import Embedder
 from agents.library_agent import LibraryAgent
 from agents.outliner import Outliner
+from bridge.file_artifacts import write_markdown_export
 from bridge.result_envelope import artifact_ref, next_action, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.schema import init_db
 
 
-def run_librarian_audit(*, apply: bool = False) -> dict[str, Any]:
+def run_librarian_audit(*, apply: bool = False, export_file: bool = False) -> dict[str, Any]:
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     conn = init_db(config.db_path)
     return run_with_ledger(
@@ -26,12 +27,12 @@ def run_librarian_audit(*, apply: bool = False) -> dict[str, Any]:
         agent="librarian",
         intent="apply_librarian_repair" if apply else "audit_library",
         trigger="wechat",
-        input_ref={"apply": apply},
-        operation=lambda: _run_librarian_audit(config, apply=apply),
+        input_ref={"apply": apply, "export_file": export_file},
+        operation=lambda: _run_librarian_audit(config, apply=apply, export_file=export_file),
     )
 
 
-def _run_librarian_audit(config, *, apply: bool = False) -> dict[str, Any]:
+def _run_librarian_audit(config, *, apply: bool = False, export_file: bool = False) -> dict[str, Any]:
     outliner = Outliner(
         api_key=config.llm_api_key,
         model="deepseek-v4-flash",
@@ -91,6 +92,13 @@ def _run_librarian_audit(config, *, apply: bool = False) -> dict[str, Any]:
                 status="dry_run" if not apply else "applied",
             )
         )
+    if export_file:
+        artifacts.append(
+            _librarian_markdown_report_artifact(
+                summary=summary,
+                json_report_path=report_path,
+            )
+        )
 
     return success_envelope(
         agent="librarian",
@@ -106,6 +114,7 @@ def _run_librarian_audit(config, *, apply: bool = False) -> dict[str, Any]:
             "embedding_index": summary["embedding_index"],
             "report_path": report_path,
             "backup_path": str(database_sync.get("backup_path") or ""),
+            "export_file": export_file,
         },
     )
 
@@ -120,6 +129,60 @@ def _write_librarian_report(*, db_path: str, payload: dict[str, Any]) -> str:
         encoding="utf-8",
     )
     return str(report_path)
+
+
+def _librarian_markdown_report_artifact(
+    *,
+    summary: dict[str, Any],
+    json_report_path: str,
+    export_dir: Path | None = None,
+) -> dict[str, Any]:
+    db = summary.get("database_sync") or {}
+    outlines = summary.get("outlines") or {}
+    props = summary.get("property_gaps") or {}
+    embedding = summary.get("embedding_index") or {}
+    lines = [
+        "# Library 审计与修复报告",
+        "",
+        "## 总览",
+        "",
+        f"- 模式：{'已执行修复' if summary.get('applied') else '仅审计'}",
+        f"- Capture 数量：{db.get('capture_count', 0)}",
+        f"- DB/vault 待处理项：{db.get('planned_action_count', 0)}",
+        f"- JSON 明细：{json_report_path or '无'}",
+        "",
+        "## Outline",
+        "",
+        f"- 扫描：{outlines.get('scanned', 0)}",
+        f"- 缺失：{outlines.get('needs_outline', 0)}",
+        f"- 已补：{outlines.get('updated', 0)}",
+        f"- 错误：{outlines.get('errors', 0)}",
+        "",
+        "## Properties",
+        "",
+        f"- 计划补齐：{props.get('planned_action_count', 0)}",
+        f"- 已补齐：{props.get('applied_action_count', 0)}",
+        "",
+        "## Embedding",
+        "",
+        f"- 扫描：{embedding.get('scanned', 0)}",
+        f"- 缺失或过期：{embedding.get('missing_or_stale', 0)}",
+        f"- 已更新：{embedding.get('updated', 0)}",
+        f"- 错误：{embedding.get('errors', 0)}",
+    ]
+    base_dir = export_dir or (Path(__file__).parent.parent / "data" / "exports" / "library")
+    path = write_markdown_export(
+        base_dir=base_dir,
+        stem="library-audit-report",
+        content="\n".join(lines),
+    )
+    return artifact_ref(
+        type="librarian_markdown_report",
+        id=Path(path).stem,
+        title="Library 审计与修复报告",
+        path=path,
+        status="created",
+    )
 
 
 def _summarize(
