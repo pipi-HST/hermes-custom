@@ -216,6 +216,94 @@ def test_life_reminders_returns_selected_day_only(tmp_path) -> None:
     assert data["items"][0]["payload_json"] == {"dry_run": False}
 
 
+def test_life_daily_status_returns_today_closure_items(tmp_path) -> None:
+    client, repo = _client(tmp_path)
+    repo.create_event(
+        event_type="sleep_end",
+        occurred_at="2026-06-01T13:30:00+08:00",
+        duration_minutes=510,
+        source="wechat",
+        raw_text="中午13点半醒的",
+        payload={"wake_date": "2026-06-01"},
+    )
+    repo.create_event(
+        event_type="meal",
+        occurred_at="2026-06-01T12:30:00+08:00",
+        source="wechat",
+        raw_text="中午吃了面包",
+        payload={"meal_slot": "lunch", "content": "面包", "meal_time_precision": "exact"},
+    )
+    repo.create_event(
+        event_type="water",
+        occurred_at="2026-06-01T10:00:00+08:00",
+        source="wechat",
+        raw_text="喝水了",
+    )
+    repo.create_reminder_log(
+        reminder_type="exercise",
+        scheduled_for="2026-06-01T20:00:00+08:00",
+        status="scheduled",
+        dedupe_key="exercise_reschedule:2026-06-01T20:00:00+08:00",
+        payload={"source": "user_reschedule", "exercise_type": "八段锦"},
+    )
+    repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-06-01T09:00:00+08:00",
+        ended_at="2026-06-01T09:40:00+08:00",
+        duration_minutes=40,
+        source="mac_activity",
+        status="auto_resolved",
+    )
+
+    response = client.get(
+        "/api/life/daily-status",
+        params={"date": "2026-06-01", "now": "2026-06-01T15:00:00+08:00"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["date"] == "2026-06-01"
+    by_key = {item["key"]: item for item in data["items"]}
+    assert by_key["sleep"]["status"] == "done"
+    assert by_key["sleep"]["summary"] == "已记录 1 段睡眠，共 8小时30分"
+    assert by_key["meal"]["status"] == "done"
+    assert by_key["exercise"]["status"] == "planned"
+    assert by_key["exercise"]["detail"] == "计划 20:00。"
+    assert by_key["water"]["status"] == "pending"
+    assert by_key["water"]["summary"] == "已记录 1/2 次喝水"
+    assert by_key["sedentary"]["status"] == "done"
+    assert data["counts"] == {"done": 3, "planned": 1, "pending": 1}
+
+
+def test_life_daily_status_marks_missing_meal_time_and_active_sedentary(tmp_path) -> None:
+    client, repo = _client(tmp_path)
+    repo.create_event(
+        event_type="meal",
+        occurred_at="2026-06-01T00:00:00+08:00",
+        source="wechat",
+        raw_text="晚饭吃了馄饨",
+        payload={"meal_slot": "dinner", "content": "馄饨", "meal_time_precision": "missing"},
+    )
+    repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-06-01T10:00:00+08:00",
+        source="mac_activity",
+        status="active",
+    )
+
+    response = client.get(
+        "/api/life/daily-status",
+        params={"date": "2026-06-01", "now": "2026-06-01T11:05:00+08:00"},
+    )
+
+    assert response.status_code == 200
+    by_key = {item["key"]: item for item in response.json()["items"]}
+    assert by_key["meal"]["status"] == "attention"
+    assert by_key["meal"]["detail"] == "1 条还缺具体时间。"
+    assert by_key["sedentary"]["status"] == "attention"
+    assert by_key["sedentary"]["summary"] == "当前连续坐姿 1小时5分"
+
+
 def test_life_reviews_returns_daily_and_weekly_reviews(tmp_path) -> None:
     client, repo = _client(tmp_path)
     repo.create_daily_review(

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  fetchLifeDailyStatus,
   fetchLifeDecisionTraces,
   fetchLifeEvents,
   fetchLifeMemories,
@@ -8,6 +9,8 @@ import {
   fetchLifeRuntime,
   fetchLifeSummary,
   fetchLifeWeek,
+  type LifeDailyStatus,
+  type LifeDailyStatusItem,
   type LifeDailyReview,
   type LifeDecisionTrace,
   type LifeEvent,
@@ -289,6 +292,21 @@ function reminderStatusTone(status: string): string {
   return 'border-stone-200 bg-white dark:border-neutral-800 dark:bg-neutral-900'
 }
 
+function dailyStatusLabel(status: string): string {
+  if (status === 'done') return '已完成'
+  if (status === 'planned') return '已安排'
+  if (status === 'pending') return '待补'
+  if (status === 'attention') return '需留意'
+  return status || '未知'
+}
+
+function dailyStatusTone(status: string): string {
+  if (status === 'done') return 'border-emerald-200 bg-emerald-50 text-emerald-950 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-100'
+  if (status === 'planned') return 'border-sky-200 bg-sky-50 text-sky-950 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-100'
+  if (status === 'attention') return 'border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100'
+  return 'border-stone-200 bg-stone-50 text-neutral-800 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-200'
+}
+
 function ruleStatusLabel(rule: LifeReminderRuleStatus): string {
   if (!rule.enabled) return '手动'
   if (rule.today_status === 'not_triggered') return '未触发'
@@ -447,6 +465,7 @@ export default function LifePage() {
   const [date, setDate] = useState(todayKey())
   const [mode, setMode] = useState<ViewMode>('day')
   const [summary, setSummary] = useState<LifeSummary | null>(null)
+  const [dailyStatus, setDailyStatus] = useState<LifeDailyStatus | null>(null)
   const [events, setEvents] = useState<LifeEvent[]>([])
   const [reminders, setReminders] = useState<LifeReminder[]>([])
   const [reviews, setReviews] = useState<LifeReviews | null>(null)
@@ -498,6 +517,7 @@ export default function LifePage() {
       setError('')
       Promise.all([
         fetchLifeSummary(date),
+        fetchLifeDailyStatus(date),
         fetchLifeEvents(date),
         fetchLifeReminders(date),
         fetchLifeReviews(date),
@@ -505,9 +525,10 @@ export default function LifePage() {
         fetchLifeRuntime(),
         fetchLifeMemories(),
         fetchLifeDecisionTraces(date),
-      ]).then(([nextSummary, nextEvents, nextReminders, nextReviews, nextWeek, nextRuntime, nextMemories, nextDecisionTraces]) => {
+      ]).then(([nextSummary, nextDailyStatus, nextEvents, nextReminders, nextReviews, nextWeek, nextRuntime, nextMemories, nextDecisionTraces]) => {
         if (cancelled) return
         setSummary(nextSummary)
+        setDailyStatus(nextDailyStatus)
         setEvents(nextEvents)
         setReminders(nextReminders)
         setReviews(nextReviews)
@@ -625,6 +646,8 @@ export default function LifePage() {
           ) : (
             <div className="space-y-4">
               <RuntimeStatusPanel runtime={runtime} />
+
+              <DailyStatusSection status={dailyStatus} />
 
               <SittingSection
                 activeSeconds={activeSeconds}
@@ -763,6 +786,46 @@ function RuntimeStatusPanel({ runtime }: { runtime: LifeRuntimeStatus | null }) 
         )}
       </div>
     </section>
+  )
+}
+
+function DailyStatusSection({ status }: { status: LifeDailyStatus | null }) {
+  if (!status) {
+    return (
+      <section className="rounded-md border border-stone-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+        <SectionTitle title="今日闭环" meta="等待同步" />
+        <EmptyState text="还没有拿到今日待补状态。" />
+      </section>
+    )
+  }
+
+  const completed = (status.counts.done || 0) + (status.counts.planned || 0)
+  const needsAttention = (status.counts.pending || 0) + (status.counts.attention || 0)
+
+  return (
+    <section className="rounded-md border border-stone-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+      <SectionTitle title="今日闭环" meta={`${completed}/${status.items.length} 已闭环${needsAttention ? ` · ${needsAttention} 项待看` : ''}`} />
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+        {status.items.map(item => (
+          <DailyStatusCard key={item.key} item={item} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function DailyStatusCard({ item }: { item: LifeDailyStatusItem }) {
+  return (
+    <div className={`rounded-md border px-3 py-3 ${dailyStatusTone(item.status)}`}>
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-sm font-semibold">{item.label}</p>
+        <span className="shrink-0 rounded-md bg-white/70 px-2 py-1 text-xs dark:bg-neutral-900/40">
+          {dailyStatusLabel(item.status)}
+        </span>
+      </div>
+      <p className="mt-3 break-words text-sm font-medium">{item.summary}</p>
+      <p className="mt-2 break-words text-xs opacity-75">{item.detail}</p>
+    </div>
   )
 }
 

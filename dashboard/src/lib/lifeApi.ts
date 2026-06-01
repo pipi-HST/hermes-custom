@@ -39,6 +39,20 @@ export interface LifeReminder {
   updated_at: string
 }
 
+export interface LifeDailyStatusItem {
+  key: string
+  label: string
+  status: 'done' | 'planned' | 'pending' | 'attention' | string
+  summary: string
+  detail: string
+}
+
+export interface LifeDailyStatus {
+  date: string
+  items: LifeDailyStatusItem[]
+  counts: Record<string, number>
+}
+
 export interface LifeDailyReview {
   id: string
   review_date: string
@@ -292,6 +306,10 @@ export async function fetchLifeEvents(date: string): Promise<LifeEvent[]> {
 export async function fetchLifeReminders(date: string): Promise<LifeReminder[]> {
   const data = await fetchJson<{ items: LifeReminder[] }>(`/life/reminders?date=${encodeURIComponent(date)}`)
   return Array.isArray(data.items) ? data.items : []
+}
+
+export async function fetchLifeDailyStatus(date: string): Promise<LifeDailyStatus> {
+  return fetchJson<LifeDailyStatus>(`/life/daily-status?date=${encodeURIComponent(date)}`)
 }
 
 export async function fetchLifeReviews(date: string): Promise<LifeReviews> {

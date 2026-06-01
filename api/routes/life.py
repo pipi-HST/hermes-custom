@@ -96,6 +96,22 @@ def create_life_router(
             items = _reminders_on_date(db, selected_date, limit=limit)
         return {"date": selected_date, "items": items, "total": len(items)}
 
+    @router.get("/life/daily-status")
+    def get_life_daily_status(
+        date: str = Query(default=""),
+        now: str = Query(default=""),
+    ):
+        selected_date = date or datetime.now().astimezone().date().isoformat()
+        current = _parse_datetime_or_now(now)
+        with _life_connection(conn, db_path) as db:
+            events = _events_on_date(db, selected_date, limit=10000)
+            reminders = _reminders_on_date(db, selected_date, limit=10000)
+        items = _daily_status_items(events, reminders, selected_date=selected_date, current=current)
+        counts: dict[str, int] = {}
+        for item in items:
+            counts[item["status"]] = counts.get(item["status"], 0) + 1
+        return {"date": selected_date, "items": items, "counts": counts}
+
     @router.get("/life/reviews")
     def get_life_reviews(date: str = Query(default="")):
         selected_date = date or datetime.now().astimezone().date().isoformat()
@@ -380,6 +396,178 @@ def _decision_traces_on_date(conn: sqlite3.Connection, selected_date: str, *, li
         if _date_key(str(row["tick_at"])) == selected_date
     ]
     return items[:limit]
+
+
+def _daily_status_items(
+    events: list[dict[str, Any]],
+    reminders: list[dict[str, Any]],
+    *,
+    selected_date: str,
+    current: datetime,
+) -> list[dict[str, Any]]:
+    return [
+        _sleep_status_item(events),
+        _meal_status_item(events),
+        _exercise_status_item(events, reminders),
+        _water_status_item(events),
+        _sedentary_status_item(events, selected_date=selected_date, current=current),
+    ]
+
+
+def _sleep_status_item(events: list[dict[str, Any]]) -> dict[str, Any]:
+    sleep_ends = [event for event in events if event["event_type"] == "sleep_end"]
+    complete = [event for event in sleep_ends if int(event.get("duration_minutes") or 0) > 0]
+    if complete:
+        minutes = sum(int(event.get("duration_minutes") or 0) for event in complete)
+        latest = max(complete, key=lambda item: str(item.get("occurred_at") or ""))
+        return _status_item(
+            "sleep",
+            "睡眠",
+            "done",
+            f"已记录 {len(complete)} 段睡眠，共 {_format_minutes_cn(minutes)}",
+            f"最近醒来 {str(latest.get('occurred_at') or '')[11:16]}",
+        )
+    if any(event["event_type"] in {"sleep_start", "sleep_end"} for event in events):
+        return _status_item("sleep", "睡眠", "pending", "有睡眠记录，但还缺完整时长", "补一句入睡或醒来时间即可配对。")
+    return _status_item("sleep", "睡眠", "pending", "今天还没有完整睡眠记录", "需要补记睡觉和醒来的时间。")
+
+
+def _meal_status_item(events: list[dict[str, Any]]) -> dict[str, Any]:
+    meals = [event for event in events if event["event_type"] == "meal"]
+    if not meals:
+        return _status_item("meal", "饮食", "pending", "今天还没有饮食记录", "只要记录吃了什么；时间不明确时会追问。")
+    missing_time = [
+        event for event in meals
+        if (event.get("payload_json") or {}).get("meal_time_precision") == "missing"
+    ]
+    slots = [_meal_slot_cn((event.get("payload_json") or {}).get("meal_slot")) for event in meals]
+    summary = f"已记录 {len(meals)} 条饮食：{'、'.join(slots)}"
+    if missing_time:
+        return _status_item("meal", "饮食", "attention", summary, f"{len(missing_time)} 条还缺具体时间。")
+    return _status_item("meal", "饮食", "done", summary, "内容和时间都已留存。")
+
+
+def _exercise_status_item(events: list[dict[str, Any]], reminders: list[dict[str, Any]]) -> dict[str, Any]:
+    exercises = [event for event in events if event["event_type"] == "exercise"]
+    if exercises:
+        minutes = sum(int(event.get("duration_minutes") or 0) for event in exercises)
+        detail = f"累计 {_format_minutes_cn(minutes)}" if minutes else "已记录运动完成。"
+        return _status_item("exercise", "运动", "done", f"已记录 {len(exercises)} 次运动", detail)
+
+    plans = [reminder for reminder in reminders if reminder["reminder_type"] == "exercise"]
+    skipped = [reminder for reminder in plans if reminder["status"] == "skipped"]
+    if skipped:
+        return _status_item("exercise", "运动", "done", "今天已标记不练", "运动提醒不会继续追。")
+    user_plans = [
+        reminder for reminder in plans
+        if str(reminder.get("dedupe_key") or "").startswith("exercise_reschedule:")
+        or (reminder.get("payload_json") or {}).get("source") == "user_reschedule"
+    ]
+    if user_plans:
+        latest = max(user_plans, key=lambda item: str(item.get("scheduled_for") or ""))
+        return _status_item("exercise", "运动", "planned", "今天已有运动安排", f"计划 {str(latest.get('scheduled_for') or '')[11:16]}。")
+    if plans:
+        latest = max(plans, key=lambda item: str(item.get("scheduled_for") or ""))
+        return _status_item("exercise", "运动", "pending", "运动提醒已触发，等待回应或记录", f"最近提醒 {str(latest.get('scheduled_for') or '')[11:16]}。")
+    return _status_item("exercise", "运动", "pending", "今天还没有运动记录或安排", "可以直接说几点练、练什么，或说今天不练。")
+
+
+def _water_status_item(events: list[dict[str, Any]]) -> dict[str, Any]:
+    count = sum(1 for event in events if event["event_type"] == "water")
+    if count >= 2:
+        return _status_item("water", "喝水", "done", f"已记录 {count}/2 次喝水", "达到今天的基础目标。")
+    if count == 1:
+        return _status_item("water", "喝水", "pending", "已记录 1/2 次喝水", "白天目标还差 1 次。")
+    return _status_item("water", "喝水", "pending", "今天还没有喝水记录", "白天会轻提醒两次。")
+
+
+def _sedentary_status_item(
+    events: list[dict[str, Any]],
+    *,
+    selected_date: str,
+    current: datetime,
+) -> dict[str, Any]:
+    config = LifeConfig()
+    sitting_events = [event for event in events if event["event_type"] == "sedentary_start"]
+    resolved_minutes = sum(
+        int(event.get("duration_minutes") or 0)
+        for event in sitting_events
+        if event.get("status") != "active"
+    )
+    over_limit_minutes = sum(
+        int(event.get("duration_minutes") or 0)
+        for event in sitting_events
+        if event.get("status") != "active"
+        and int(event.get("duration_minutes") or 0) >= config.sedentary_threshold_minutes
+    )
+    active = next(
+        (
+            event for event in sorted(sitting_events, key=lambda item: str(item.get("occurred_at") or ""), reverse=True)
+            if event.get("status") == "active"
+        ),
+        None,
+    )
+    active_minutes = 0
+    if active and selected_date == current.date().isoformat():
+        active_minutes = max(0, int((current - _parse_datetime(str(active["occurred_at"]))).total_seconds() // 60))
+    total_minutes = resolved_minutes + active_minutes
+    if active_minutes >= config.sedentary_threshold_minutes:
+        return _status_item(
+            "sedentary",
+            "久坐",
+            "attention",
+            f"当前连续坐姿 {_format_minutes_cn(active_minutes)}",
+            f"已超过 {config.sedentary_threshold_minutes} 分钟阈值，需要离座 {config.break_threshold_minutes} 分钟解除。",
+        )
+    if over_limit_minutes:
+        return _status_item(
+            "sedentary",
+            "久坐",
+            "attention",
+            f"今日久坐超标 {_format_minutes_cn(over_limit_minutes)}",
+            f"累计坐姿 {_format_minutes_cn(total_minutes)}。",
+        )
+    if active:
+        return _status_item(
+            "sedentary",
+            "久坐",
+            "planned",
+            f"当前连续坐姿 {_format_minutes_cn(active_minutes)}",
+            f"未超过 {config.sedentary_threshold_minutes} 分钟阈值。",
+        )
+    return _status_item("sedentary", "久坐", "done", f"累计坐姿 {_format_minutes_cn(total_minutes)}", "今天暂时没有久坐超标。")
+
+
+def _status_item(key: str, label: str, status: str, summary: str, detail: str) -> dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "status": status,
+        "summary": summary,
+        "detail": detail,
+    }
+
+
+def _format_minutes_cn(minutes: int) -> str:
+    hours = minutes // 60
+    rest = minutes % 60
+    if hours and rest:
+        return f"{hours}小时{rest}分"
+    if hours:
+        return f"{hours}小时"
+    return f"{rest}分"
+
+
+def _meal_slot_cn(value: Any) -> str:
+    if value == "breakfast":
+        return "早餐"
+    if value == "lunch":
+        return "午饭"
+    if value == "dinner":
+        return "晚饭"
+    if value == "snack":
+        return "加餐"
+    return "饮食"
 
 
 def _decision_trace_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
