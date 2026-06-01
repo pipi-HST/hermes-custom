@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  fetchLifeDecisionTraces,
   fetchLifeEvents,
   fetchLifeMemories,
   fetchLifeReminders,
@@ -8,6 +9,7 @@ import {
   fetchLifeSummary,
   fetchLifeWeek,
   type LifeDailyReview,
+  type LifeDecisionTrace,
   type LifeEvent,
   type LifeLongTermDecision,
   type LifeMemories,
@@ -232,6 +234,13 @@ function tickStatusLabel(value?: string): string {
   return value || '未知'
 }
 
+function decisionTraceStatusLabel(value?: string): string {
+  if (value === 'selected') return '已选择提醒'
+  if (value === 'idle') return '未触发'
+  if (value === 'locked') return '锁占用跳过'
+  return value || '未知'
+}
+
 function interruptionLabel(value?: string): string {
   if (value === 'sleep') return '睡眠/唤醒'
   if (value === 'display_off') return '显示器关闭'
@@ -444,6 +453,7 @@ export default function LifePage() {
   const [week, setWeek] = useState<LifeWeek | null>(null)
   const [runtime, setRuntime] = useState<LifeRuntimeStatus | null>(null)
   const [memories, setMemories] = useState<LifeMemories | null>(null)
+  const [decisionTraces, setDecisionTraces] = useState<LifeDecisionTrace[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
@@ -494,7 +504,8 @@ export default function LifePage() {
         fetchLifeWeek(date),
         fetchLifeRuntime(),
         fetchLifeMemories(),
-      ]).then(([nextSummary, nextEvents, nextReminders, nextReviews, nextWeek, nextRuntime, nextMemories]) => {
+        fetchLifeDecisionTraces(date),
+      ]).then(([nextSummary, nextEvents, nextReminders, nextReviews, nextWeek, nextRuntime, nextMemories, nextDecisionTraces]) => {
         if (cancelled) return
         setSummary(nextSummary)
         setEvents(nextEvents)
@@ -503,6 +514,7 @@ export default function LifePage() {
         setWeek(nextWeek)
         setRuntime(nextRuntime)
         setMemories(nextMemories)
+        setDecisionTraces(nextDecisionTraces)
         setLastSyncedAt(new Date().toISOString())
       }).catch(err => {
         if (cancelled) return
@@ -623,6 +635,8 @@ export default function LifePage() {
               />
 
               <ReviewSection reviews={reviews} />
+
+              <DecisionTraceSection traces={decisionTraces} />
 
               <MemorySection memories={memories} />
 
@@ -1164,6 +1178,76 @@ function MemorySection({ memories }: { memories: LifeMemories | null }) {
         </div>
       </div>
     </ModuleSection>
+  )
+}
+
+function DecisionTraceSection({ traces }: { traces: LifeDecisionTrace[] }) {
+  const visibleTraces = traces.slice(0, 5)
+  return (
+    <ModuleSection title="提醒判断" meta={visibleTraces.length ? `最近 ${visibleTraces.length} 次` : '暂无'}>
+      {visibleTraces.length === 0 ? (
+        <EmptyState text="这一天还没有 tick 判断记录。" />
+      ) : (
+        <div className="space-y-2">
+          {visibleTraces.map(trace => (
+            <DecisionTraceCard key={trace.id} trace={trace} />
+          ))}
+        </div>
+      )}
+    </ModuleSection>
+  )
+}
+
+function DecisionTraceCard({ trace }: { trace: LifeDecisionTrace }) {
+  const selected = trace.selected_reminder_type
+    ? REMINDER_LABELS[trace.selected_reminder_type] || trace.selected_reminder_type
+    : '无'
+  const candidates = trace.candidates_json.slice(0, 4)
+  const influences = trace.memory_influences_json.slice(0, 3)
+
+  return (
+    <div className="rounded-md border border-stone-200 px-3 py-3 dark:border-neutral-800">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold">{formatDateTime(trace.tick_at)} · {decisionTraceStatusLabel(trace.status)}</p>
+          <p className="mt-1 break-words text-sm text-neutral-700 dark:text-neutral-300">
+            选择：{selected}。{trace.decision_reason || '没有记录判断原因。'}
+          </p>
+        </div>
+        {trace.warnings_json.length > 0 && (
+          <span className="rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-100">
+            {trace.warnings_json.length} 个提醒
+          </span>
+        )}
+      </div>
+
+      {candidates.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {candidates.map(candidate => (
+            <span key={`${trace.id}:${candidate.reminder_type}:${candidate.dedupe_key}`} className="rounded-md bg-stone-100 px-2 py-1 text-xs text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+              {REMINDER_LABELS[candidate.reminder_type] || candidate.reminder_type} · P{candidate.priority ?? '-'}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {influences.length > 0 && (
+        <div className="mt-3 space-y-1.5">
+          {influences.map(item => (
+            <p key={`${trace.id}:${item.memory_id}`} className="break-words rounded-md bg-emerald-50 px-2 py-1.5 text-xs text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100">
+              {memoryDomainLabel(item.domain)}：{item.content}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {trace.suppression_reason && (
+        <p className="mt-2 break-words text-xs text-neutral-500">未发送原因：{trace.suppression_reason}</p>
+      )}
+      {trace.warnings_json.length > 0 && (
+        <p className="mt-2 break-words text-xs text-neutral-500">系统提醒：{trace.warnings_json.join('、')}</p>
+      )}
+    </div>
   )
 }
 

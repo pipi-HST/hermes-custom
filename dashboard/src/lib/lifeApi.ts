@@ -246,6 +246,38 @@ export interface LifeMemories {
   hits: LifeMemoryHit[]
 }
 
+export interface LifeDecisionTraceCandidate {
+  reminder_type: string
+  priority?: number
+  reason: string
+  dedupe_key: string
+}
+
+export interface LifeDecisionTraceMemoryInfluence {
+  memory_id: string
+  domain: string
+  memory_type: string
+  status: string
+  content: string
+  effect: string
+  reminder_type: string
+}
+
+export interface LifeDecisionTrace {
+  id: string
+  tick_at: string
+  status: string
+  selected_reminder_type: string
+  selected_reminder_id: string
+  context_json: Record<string, unknown>
+  candidates_json: LifeDecisionTraceCandidate[]
+  memory_influences_json: LifeDecisionTraceMemoryInfluence[]
+  decision_reason: string
+  suppression_reason: string
+  warnings_json: string[]
+  created_at: string
+}
+
 const API_BASE = 'http://localhost:8000/api'
 
 export async function fetchLifeSummary(date: string): Promise<LifeSummary> {
@@ -276,6 +308,11 @@ export async function fetchLifeRuntime(): Promise<LifeRuntimeStatus> {
 
 export async function fetchLifeMemories(): Promise<LifeMemories> {
   return fetchJson<LifeMemories>('/life/memories')
+}
+
+export async function fetchLifeDecisionTraces(date: string): Promise<LifeDecisionTrace[]> {
+  const data = await fetchJson<{ items: LifeDecisionTrace[] }>(`/life/decision-traces?date=${encodeURIComponent(date)}`)
+  return Array.isArray(data.items) ? data.items : []
 }
 
 async function fetchJson<T>(path: string): Promise<T> {

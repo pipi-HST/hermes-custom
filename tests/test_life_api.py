@@ -326,6 +326,37 @@ def test_life_memories_returns_items_observations_and_hits(tmp_path) -> None:
     assert data["hits"][0]["memory_id"] == item["id"]
 
 
+def test_life_decision_traces_returns_selected_day_only(tmp_path) -> None:
+    client, repo = _client(tmp_path)
+    repo.create_decision_trace(
+        tick_at="2026-06-01T10:00:00+08:00",
+        status="selected",
+        selected_reminder_type="water",
+        selected_reminder_id="reminder-1",
+        context={"date": "2026-06-01"},
+        candidates=[{"reminder_type": "water", "reason": "喝水提醒到点"}],
+        memory_influences=[{"memory_id": "m1", "effect": "context_only"}],
+        decision_reason="喝水提醒到点。",
+        warnings=["mac_activity_unavailable"],
+    )
+    repo.create_decision_trace(
+        tick_at="2026-05-31T10:00:00+08:00",
+        status="idle",
+        context={"date": "2026-05-31"},
+    )
+
+    response = client.get("/api/life/decision-traces?date=2026-06-01")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["date"] == "2026-06-01"
+    assert data["total"] == 1
+    assert data["items"][0]["selected_reminder_type"] == "water"
+    assert data["items"][0]["candidates_json"][0]["reminder_type"] == "water"
+    assert data["items"][0]["memory_influences_json"][0]["memory_id"] == "m1"
+    assert data["items"][0]["warnings_json"] == ["mac_activity_unavailable"]
+
+
 def test_life_week_returns_weekly_metrics_trends_and_records(tmp_path) -> None:
     client, repo = _client(tmp_path)
     repo.create_event(

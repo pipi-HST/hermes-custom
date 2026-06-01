@@ -175,6 +175,16 @@ def create_life_router(
             "hits": hits,
         }
 
+    @router.get("/life/decision-traces")
+    def get_life_decision_traces(
+        date: str = Query(default=""),
+        limit: int = Query(default=20, le=100),
+    ):
+        selected_date = date or datetime.now().astimezone().date().isoformat()
+        with _life_connection(conn, db_path) as db:
+            items = _decision_traces_on_date(db, selected_date, limit=limit)
+        return {"date": selected_date, "items": items, "total": len(items)}
+
     return router
 
 
@@ -354,6 +364,30 @@ def _memory_observation_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 def _memory_hit_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     item["effect_json"] = _load_json(item.get("effect_json"), {})
+    return item
+
+
+def _decision_traces_on_date(conn: sqlite3.Connection, selected_date: str, *, limit: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT * FROM life_decision_traces
+           ORDER BY tick_at DESC, rowid DESC
+           LIMIT ?""",
+        (limit * 3,),
+    ).fetchall()
+    items = [
+        _decision_trace_row_to_dict(row)
+        for row in rows
+        if _date_key(str(row["tick_at"])) == selected_date
+    ]
+    return items[:limit]
+
+
+def _decision_trace_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item["context_json"] = _load_json(item.get("context_json"), {})
+    item["candidates_json"] = _load_json(item.get("candidates_json"), [])
+    item["memory_influences_json"] = _load_json(item.get("memory_influences_json"), [])
+    item["warnings_json"] = _load_json(item.get("warnings_json"), [])
     return item
 
 
