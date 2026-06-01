@@ -685,6 +685,33 @@ def test_weixin_rate_limit_suppresses_notification_candidates_temporarily(agent:
     assert after_cooldown["selected"]["reminder_type"] == "daily_review"
 
 
+def test_generic_rate_limited_delivery_suppresses_notification_candidates_temporarily(agent: LifeAgent) -> None:
+    agent.config = LifeConfig(notifications_enabled=True)
+    agent.repo.create_reminder_log(
+        reminder_type="sedentary",
+        scheduled_for="2026-05-31T23:40:00+08:00",
+        status="failed",
+        dedupe_key="sedentary:2026-05-31T23:40",
+        error="rate limited",
+    )
+    agent.repo.create_event(
+        event_type="exercise",
+        occurred_at="2026-05-31T18:00:00+08:00",
+        source="wechat",
+        status="completed_unknown",
+    )
+
+    suppressed = agent.life_tick(
+        now="2026-06-01T00:00:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=False,
+    )
+
+    assert suppressed["selected"] is None
+    assert suppressed["meta"]["should_notify"] is False
+    assert "notification_rate_limited" in suppressed["warnings"]
+
+
 def test_exercise_failed_delivery_gets_two_short_retries_then_waits(agent: LifeAgent) -> None:
     agent.config = LifeConfig(notifications_enabled=True)
 
@@ -695,7 +722,7 @@ def test_exercise_failed_delivery_gets_two_short_retries_then_waits(agent: LifeA
     )
     agent.reconcile_delivery_result(
         completed_at="2026-05-30T10:30:30+08:00",
-        delivery_error="rate limited",
+        delivery_error="temporary delivery timeout",
     )
     retry_one = agent.life_tick(
         now="2026-05-30T10:31:00+08:00",
@@ -704,7 +731,7 @@ def test_exercise_failed_delivery_gets_two_short_retries_then_waits(agent: LifeA
     )
     agent.reconcile_delivery_result(
         completed_at="2026-05-30T10:31:30+08:00",
-        delivery_error="rate limited",
+        delivery_error="temporary delivery timeout",
     )
     retry_two = agent.life_tick(
         now="2026-05-30T10:32:00+08:00",
@@ -713,7 +740,7 @@ def test_exercise_failed_delivery_gets_two_short_retries_then_waits(agent: LifeA
     )
     agent.reconcile_delivery_result(
         completed_at="2026-05-30T10:32:30+08:00",
-        delivery_error="rate limited",
+        delivery_error="temporary delivery timeout",
     )
     after_retries = agent.life_tick(
         now="2026-05-30T10:33:00+08:00",
@@ -794,6 +821,91 @@ def test_water_reminder_notifies_only_once_per_due_time(agent: LifeAgent) -> Non
     assert (repeated["selected"] or {}).get("reminder_type") != "water"
     assert repeated["meta"]["should_notify"] is False
     assert agent.repo.count_reminder_logs("water") == 1
+
+
+def test_sleep_record_reminder_prompts_when_last_night_sleep_is_missing(agent: LifeAgent) -> None:
+    agent.repo.create_event(
+        event_type="exercise",
+        occurred_at="2026-05-30T10:30:00+08:00",
+        source="wechat",
+        status="completed_unknown",
+    )
+
+    result = agent.life_tick(
+        now="2026-05-30T13:00:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert result["selected"]["reminder_type"] == "sleep_record"
+    assert "昨晚" in result["chat_preview"]
+    assert "几点睡" in result["chat_preview"]
+
+
+def test_sleep_record_reminder_skips_when_wake_day_has_duration(agent: LifeAgent) -> None:
+    agent.repo.create_event(
+        event_type="exercise",
+        occurred_at="2026-05-30T10:30:00+08:00",
+        source="wechat",
+        status="completed_unknown",
+    )
+    agent.repo.create_event(
+        event_type="sleep_end",
+        occurred_at="2026-05-30T08:00:00+08:00",
+        source="wechat",
+        duration_minutes=420,
+        payload={"wake_date": "2026-05-30"},
+    )
+
+    result = agent.life_tick(
+        now="2026-05-30T13:00:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert (result["selected"] or {}).get("reminder_type") != "sleep_record"
+
+
+def test_meal_record_reminder_prompts_when_day_has_no_meals(agent: LifeAgent) -> None:
+    agent.repo.create_event(
+        event_type="exercise",
+        occurred_at="2026-05-30T10:30:00+08:00",
+        source="wechat",
+        status="completed_unknown",
+    )
+
+    result = agent.life_tick(
+        now="2026-05-30T21:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert result["selected"]["reminder_type"] == "meal"
+    assert "今天吃了什么" in result["chat_preview"]
+
+
+def test_meal_record_reminder_skips_when_any_meal_exists(agent: LifeAgent) -> None:
+    agent.repo.create_event(
+        event_type="exercise",
+        occurred_at="2026-05-30T10:30:00+08:00",
+        source="wechat",
+        status="completed_unknown",
+    )
+    agent.repo.create_event(
+        event_type="meal",
+        occurred_at="2026-05-30T12:30:00+08:00",
+        source="wechat",
+        raw_text="午饭吃了面包",
+        payload={"meal_slot": "lunch", "content": "面包"},
+    )
+
+    result = agent.life_tick(
+        now="2026-05-30T21:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert (result["selected"] or {}).get("reminder_type") != "meal"
 
 
 def test_daily_review_reminder_notifies_only_once_per_review_date(agent: LifeAgent) -> None:
@@ -1009,7 +1121,7 @@ def test_sedentary_activity_reply_does_not_resolve_active_window(agent: LifeAgen
         "SELECT * FROM life_events WHERE event_type = 'sedentary_start'"
     ).fetchone()
     assert result["status"] == "rejected"
-    assert "离开电脑超过5分钟" in result["chat_preview"]
+    assert "离开电脑超过10分钟" in result["chat_preview"]
     assert active_window["status"] == "active"
 
 
@@ -1031,6 +1143,30 @@ def test_life_tick_sends_sedentary_alert_before_exercise(agent: LifeAgent) -> No
     assert result["selected"]["reminder_type"] == "sedentary"
     assert result["meta"]["should_notify"] is False
     assert "起来活动" in result["chat_preview"]
+
+
+def test_life_tick_does_not_let_repeated_sedentary_starve_first_exercise(agent: LifeAgent) -> None:
+    agent.repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-05-29T09:00:00+08:00",
+        source="mac_activity",
+        raw_text="",
+        status="active",
+    )
+    agent.repo.create_reminder_log(
+        reminder_type="sedentary",
+        scheduled_for="2026-05-29T10:30:00+08:00",
+        status="sent",
+        dedupe_key="sedentary:2026-05-29T10:30",
+    )
+
+    result = agent.life_tick(
+        now="2026-05-29T10:50:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=60, available=True),
+        dry_run=True,
+    )
+
+    assert result["selected"]["reminder_type"] == "exercise"
 
 
 def test_life_tick_starts_sitting_window_without_alert_before_threshold(agent: LifeAgent) -> None:
@@ -1059,14 +1195,15 @@ def test_life_tick_records_break_after_idle_exceeds_threshold(agent: LifeAgent) 
 
     result = agent.life_tick(
         now="2026-05-29T10:20:00+08:00",
-        activity=ActivitySnapshot(idle_seconds=360, available=True),
+        activity=ActivitySnapshot(idle_seconds=660, available=True),
         dry_run=True,
     )
 
     assert (result["selected"] or {}).get("reminder_type") != "sedentary"
-    break_row = agent.repo.conn.execute(
+    break_row_raw = agent.repo.conn.execute(
         "SELECT * FROM life_events WHERE event_type = 'sedentary_break'"
     ).fetchone()
+    break_row = agent.repo._event_row_to_dict(break_row_raw)
     assert break_row is not None
     assert break_row["duration_minutes"] == 69
 
@@ -1089,13 +1226,137 @@ def test_life_tick_closes_sedentary_window_at_last_input_time_after_long_idle(ag
     updated = agent.repo.conn.execute(
         "SELECT * FROM life_events WHERE event_type = 'sedentary_start'"
     ).fetchone()
-    break_row = agent.repo.conn.execute(
+    break_row_raw = agent.repo.conn.execute(
         "SELECT * FROM life_events WHERE event_type = 'sedentary_break'"
     ).fetchone()
+    break_row = agent.repo._event_row_to_dict(break_row_raw)
     assert (result["selected"] or {}).get("reminder_type") != "sedentary"
-    assert updated["ended_at"] == "2026-05-31T02:34:07+08:00"
-    assert updated["duration_minutes"] == 5
-    assert break_row["occurred_at"] == "2026-05-31T02:34:07+08:00"
+    assert updated["ended_at"] == "2026-05-31T02:39:07+08:00"
+    assert updated["duration_minutes"] == 10
+    assert break_row["occurred_at"] == "2026-05-31T02:39:07+08:00"
+
+
+def test_life_tick_requires_ten_minute_mac_interruption_to_close_sedentary_window(agent: LifeAgent) -> None:
+    active = agent.repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-05-29T09:00:00+08:00",
+        source="mac_activity",
+        raw_text="",
+        status="active",
+    )
+    agent.repo.create_event(
+        event_type="water",
+        occurred_at="2026-05-29T10:00:00+08:00",
+        source="wechat",
+    )
+    agent.repo.create_event(
+        event_type="water",
+        occurred_at="2026-05-29T10:00:00+08:00",
+        source="wechat",
+    )
+
+    short_interruption = agent.life_tick(
+        now="2026-05-29T10:09:00+08:00",
+        activity=ActivitySnapshot(
+            idle_seconds=0,
+            available=True,
+            sleeping=True,
+            interruption_seconds=9 * 60,
+            interruption_source="sleep",
+        ),
+        dry_run=True,
+    )
+    long_interruption = agent.life_tick(
+        now="2026-05-29T10:11:00+08:00",
+        activity=ActivitySnapshot(
+            idle_seconds=0,
+            available=True,
+            sleeping=True,
+            interruption_seconds=11 * 60,
+            interruption_source="sleep",
+        ),
+        dry_run=True,
+    )
+
+    updated = agent.repo.get_event(active["id"])
+    break_row_raw = agent.repo.conn.execute(
+        "SELECT * FROM life_events WHERE event_type = 'sedentary_break'"
+    ).fetchone()
+    break_row = agent.repo._event_row_to_dict(break_row_raw)
+    assert short_interruption["selected"] is None
+    assert long_interruption["selected"] is None
+    assert updated["status"] == "auto_resolved"
+    assert updated["ended_at"] == "2026-05-29T10:10:00+08:00"
+    assert break_row["payload_json"]["resolution_source"] == "mac_interrupted:sleep"
+
+
+def test_life_tick_starts_new_sedentary_window_after_interruption_closed_previous_one(agent: LifeAgent) -> None:
+    active = agent.repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-05-29T09:00:00+08:00",
+        source="mac_activity",
+        raw_text="",
+        status="active",
+    )
+    agent.repo.create_event(
+        event_type="water",
+        occurred_at="2026-05-29T10:00:00+08:00",
+        source="wechat",
+    )
+
+    close_tick = agent.life_tick(
+        now="2026-05-29T10:11:00+08:00",
+        activity=ActivitySnapshot(
+            idle_seconds=0,
+            available=True,
+            sleeping=True,
+            interruption_seconds=11 * 60,
+            interruption_source="sleep",
+            interruption_started_at="2026-05-29T10:00:00+08:00",
+            interruption_ended_at="2026-05-29T10:11:00+08:00",
+        ),
+        dry_run=True,
+    )
+    restart_tick = agent.life_tick(
+        now="2026-05-29T10:12:00+08:00",
+        activity=ActivitySnapshot(
+            idle_seconds=0,
+            available=True,
+            sleeping=True,
+            interruption_seconds=11 * 60,
+            interruption_source="sleep",
+            interruption_started_at="2026-05-29T10:00:00+08:00",
+            interruption_ended_at="2026-05-29T10:11:00+08:00",
+        ),
+        dry_run=True,
+    )
+    follow_up_tick = agent.life_tick(
+        now="2026-05-29T10:13:00+08:00",
+        activity=ActivitySnapshot(
+            idle_seconds=0,
+            available=True,
+            sleeping=True,
+            interruption_seconds=11 * 60,
+            interruption_source="sleep",
+            interruption_started_at="2026-05-29T10:00:00+08:00",
+            interruption_ended_at="2026-05-29T10:11:00+08:00",
+        ),
+        dry_run=True,
+    )
+
+    closed = agent.repo.get_event(active["id"])
+    new_active = agent.repo.conn.execute(
+        """SELECT * FROM life_events
+           WHERE event_type = 'sedentary_start' AND status = 'active'
+           ORDER BY occurred_at DESC LIMIT 1"""
+    ).fetchone()
+    assert close_tick["selected"] is None
+    assert restart_tick["selected"] is None
+    assert follow_up_tick["selected"] is None
+    assert closed["status"] == "auto_resolved"
+    assert new_active is not None
+    assert new_active["occurred_at"] == "2026-05-29T10:12:00+08:00"
+    assert new_active["ended_at"] is None
 
 
 def test_sedentary_alert_repeats_only_after_repeat_interval(agent: LifeAgent) -> None:
@@ -1118,7 +1379,7 @@ def test_sedentary_alert_repeats_only_after_repeat_interval(agent: LifeAgent) ->
         dry_run=False,
     )
     repeated = agent.life_tick(
-        now="2026-05-29T10:10:00+08:00",
+        now="2026-05-29T10:20:00+08:00",
         activity=ActivitySnapshot(idle_seconds=30, available=True),
         dry_run=False,
     )
@@ -1153,7 +1414,7 @@ def test_sedentary_alert_throttles_after_sent_delivery(agent: LifeAgent) -> None
         dry_run=False,
     )
     repeated = agent.life_tick(
-        now="2026-05-29T10:10:00+08:00",
+        now="2026-05-29T10:20:00+08:00",
         activity=ActivitySnapshot(idle_seconds=30, available=True),
         dry_run=False,
     )
@@ -1192,10 +1453,17 @@ def test_sedentary_alert_throttles_after_failed_delivery(agent: LifeAgent) -> No
         activity=ActivitySnapshot(idle_seconds=30, available=True),
         dry_run=False,
     )
+    after_cooldown = agent.life_tick(
+        now="2026-05-29T10:31:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=30, available=True),
+        dry_run=False,
+    )
 
     assert first["selected"]["reminder_type"] == "sedentary"
     assert (too_soon_after_failed["selected"] or {}).get("reminder_type") != "sedentary"
-    assert repeated["selected"]["reminder_type"] == "sedentary"
+    assert repeated["selected"] is None
+    assert "notification_rate_limited" in repeated["warnings"]
+    assert after_cooldown["selected"]["reminder_type"] == "sedentary"
 
 
 def test_life_tick_handles_existing_naive_sedentary_window_with_aware_now(agent: LifeAgent) -> None:
@@ -1209,7 +1477,7 @@ def test_life_tick_handles_existing_naive_sedentary_window_with_aware_now(agent:
 
     result = agent.life_tick(
         now="2026-05-29T10:20:00+08:00",
-        activity=ActivitySnapshot(idle_seconds=360, available=True),
+        activity=ActivitySnapshot(idle_seconds=660, available=True),
         dry_run=True,
     )
 

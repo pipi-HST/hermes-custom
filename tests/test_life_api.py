@@ -13,14 +13,34 @@ from db.life_repo import LifeRepo
 from db.life_schema import init_life_db
 
 
-def _client(tmp_path, *, fresh_connections: bool = False) -> tuple[TestClient, LifeRepo]:
+def _client(
+    tmp_path,
+    *,
+    fresh_connections: bool = False,
+    cron_jobs_path: str | None = None,
+    life_log_path: str | None = None,
+) -> tuple[TestClient, LifeRepo]:
     db_path = str(tmp_path / "life.db")
     conn = init_life_db(db_path)
     app = FastAPI()
     if fresh_connections:
-        app.include_router(create_life_router(db_path=db_path), prefix="/api")
+        app.include_router(
+            create_life_router(
+                db_path=db_path,
+                cron_jobs_path=cron_jobs_path,
+                life_log_path=life_log_path,
+            ),
+            prefix="/api",
+        )
     else:
-        app.include_router(create_life_router(conn), prefix="/api")
+        app.include_router(
+            create_life_router(
+                conn,
+                cron_jobs_path=cron_jobs_path,
+                life_log_path=life_log_path,
+            ),
+            prefix="/api",
+        )
     return TestClient(app), LifeRepo(conn)
 
 
@@ -347,6 +367,143 @@ def test_life_week_empty_database_has_stable_shape(tmp_path) -> None:
         "water": [],
     }
     assert data["weekly_review"] is None
+
+
+def test_life_runtime_returns_cron_delivery_and_recent_triggers(tmp_path) -> None:
+    jobs_path = tmp_path / "jobs.json"
+    log_path = tmp_path / "life.log"
+    jobs_path.write_text(
+        """
+        {
+          "jobs": [
+            {
+              "name": "life-assistant-tick",
+              "script": "life_tick_cron.py",
+              "schedule_display": "every 1m",
+              "enabled": true,
+              "state": "scheduled",
+              "last_run_at": "2026-05-30T10:19:00+08:00",
+              "next_run_at": "2026-05-30T10:20:00+08:00",
+              "last_status": "ok",
+              "last_error": null,
+              "last_delivery_error": "rate limited",
+              "repeat": {"completed": 42}
+            }
+          ],
+          "updated_at": "2026-05-30T10:19:00+08:00"
+        }
+        """,
+        encoding="utf-8",
+    )
+    log_path.write_text(
+        "\n".join(
+            [
+                '{"tick_time":"2026-05-30T10:18:00+08:00","status":"idle","selected_reminder":"","should_notify":false,"warnings":[]}',
+                '{"tick_time":"2026-05-30T10:19:00+08:00","status":"selected","selected_reminder":"water","should_notify":true,"warnings":["notification_rate_limited"],"idle_seconds":12,"activity_available":true,"sedentary_state":"active","due_candidates":["water"]}',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    client, repo = _client(
+        tmp_path,
+        cron_jobs_path=str(jobs_path),
+        life_log_path=str(log_path),
+    )
+    repo.create_reminder_log(
+        reminder_type="water",
+        scheduled_for="2026-05-30T10:10:00+08:00",
+        status="failed",
+        dedupe_key="water:failed",
+        error="rate limited",
+    )
+    repo.create_reminder_log(
+        reminder_type="sedentary",
+        scheduled_for="2026-05-30T10:15:00+08:00",
+        status="sending",
+        dedupe_key="sedentary:sending",
+    )
+
+    response = client.get(
+        "/api/life/runtime",
+        params={"now": "2026-05-30T10:20:00+08:00"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["cron"]["found"] is True
+    assert data["cron"]["health"] == "ok"
+    assert data["cron"]["schedule_display"] == "every 1m"
+    assert data["cron"]["last_run_age_seconds"] == 60
+    assert data["delivery"]["status"] == "rate_limited"
+    assert data["delivery"]["cooling_down"] is True
+    assert data["delivery"]["cooldown_until"] == "2026-05-30T10:40:00+08:00"
+    assert data["delivery"]["recent_failed_count"] == 1
+    assert data["delivery"]["recent_sending_count"] == 1
+    assert data["last_tick"]["selected_reminder"] == "water"
+    assert data["last_tick"]["warnings"] == ["notification_rate_limited"]
+    assert data["recent_reminders"][0]["reminder_type"] == "sedentary"
+    rules = {item["reminder_type"]: item for item in data["reminder_rules"]}
+    assert rules["exercise"]["schedule_text"] == "每天 10:30 起；未回复时每 2 小时提醒一次"
+    assert rules["exercise"]["next_due_at"] == "2026-05-30T10:30:00+08:00"
+    assert rules["water"]["schedule_text"] == "每天 10:00、16:00"
+    assert rules["water"]["planned_times"] == [
+        "2026-05-30T10:00:00+08:00",
+        "2026-05-30T16:00:00+08:00",
+    ]
+    assert rules["meal"]["enabled"] is True
+    assert rules["meal"]["schedule_text"] == "每天 21:30 检查；当天无饮食记录时提醒补记"
+    assert rules["sleep_record"]["enabled"] is True
+    assert rules["sleep_record"]["schedule_text"] == "每天 13:00 检查；缺完整睡眠时长时提醒补记"
+    assert rules["daily_review"]["next_due_at"] == "2026-05-31T00:00:00+08:00"
+    assert rules["weekly_review"]["next_due_at"] == "2026-05-31T21:30:00+08:00"
+    assert rules["sedentary"]["schedule_text"] == "连续坐姿 60 分钟后触发；之后每 20 分钟重复，直到离开 10 分钟"
+    assert rules["water"]["today_status"] == "failed"
+    assert rules["water"]["latest_log"]["status"] == "failed"
+
+
+def test_life_runtime_missing_files_has_stable_shape(tmp_path) -> None:
+    client, _repo = _client(
+        tmp_path,
+        cron_jobs_path=str(tmp_path / "missing_jobs.json"),
+        life_log_path=str(tmp_path / "missing_life.log"),
+    )
+
+    response = client.get(
+        "/api/life/runtime",
+        params={"now": "2026-05-30T10:20:00+08:00"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["cron"]["found"] is False
+    assert data["cron"]["health"] == "missing"
+    assert data["delivery"]["status"] == "ok"
+    assert data["last_tick"] is None
+    assert data["recent_reminders"] == []
+
+
+def test_life_runtime_uses_newest_tick_time_not_last_log_line(tmp_path) -> None:
+    log_path = tmp_path / "life.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                '{"tick_time":"2026-06-01T00:50:00+08:00","status":"idle","selected_reminder":"","should_notify":false,"warnings":[]}',
+                '{"tick_time":"2026-05-30T23:31:00+08:00","status":"idle","selected_reminder":"","should_notify":false,"warnings":["old_manual_run"]}',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    client, _repo = _client(
+        tmp_path,
+        cron_jobs_path=str(tmp_path / "missing_jobs.json"),
+        life_log_path=str(log_path),
+    )
+
+    response = client.get("/api/life/runtime")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["last_tick"]["tick_time"] == "2026-06-01T00:50:00+08:00"
 
 
 def test_life_summary_empty_database_has_stable_shape(tmp_path) -> None:

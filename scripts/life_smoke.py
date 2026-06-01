@@ -119,7 +119,7 @@ def _sedentary_scenario(
     )
     break_tick = agent.life_tick(
         now="2026-05-30T10:20:00+08:00",
-        activity=ActivitySnapshot(idle_seconds=360, available=True),
+        activity=ActivitySnapshot(idle_seconds=660, available=True),
         dry_run=True,
     )
     reply = agent.record_life_event(

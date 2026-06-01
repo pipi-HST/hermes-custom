@@ -70,6 +70,60 @@ def test_life_tick_can_notify_when_config_enabled(tmp_path, monkeypatch) -> None
     assert checked["meta"]["selected_reminder_type"] == "exercise"
 
 
+def test_recent_mac_sleep_interruption_requires_ten_minutes() -> None:
+    short_log = "\n".join(
+        [
+            "2026-06-01 10:31:09 +0800 Sleep                 Entering Sleep state due to 'Idle Sleep'",
+            "2026-06-01 10:39:43 +0800 Wake                  Wake from Deep Idle",
+        ]
+    )
+    long_log = "\n".join(
+        [
+            "2026-06-01 10:31:09 +0800 Sleep                 Entering Sleep state due to 'Idle Sleep'",
+            "2026-06-01 10:45:43 +0800 Wake                  Wake from Deep Idle",
+        ]
+    )
+    now = life_bridge._parse_pmset_time("2026-06-01 10:47:00 +0800")
+
+    assert life_bridge._recent_mac_interruption(short_log, now=now) is None
+    assert life_bridge._recent_mac_interruption(long_log, now=now) == (
+        "sleep",
+        874,
+        "2026-06-01T10:31:09+08:00",
+        "2026-06-01T10:45:43+08:00",
+    )
+
+
+def test_read_mac_activity_includes_recent_sleep_interruption(monkeypatch) -> None:
+    def fake_check_output(command, **kwargs):
+        if command[:3] == ["ioreg", "-c", "IOHIDSystem"]:
+            return '    | |   "HIDIdleTime" = 1000000000\n'
+        if command[:3] == ["pmset", "-g", "log"]:
+            return "\n".join(
+                [
+                    "2026-06-01 10:31:09 +0800 Sleep                 Entering Sleep state due to 'Idle Sleep'",
+                    "2026-06-01 10:45:43 +0800 Wake                  Wake from Deep Idle",
+                ]
+            )
+        raise AssertionError(command)
+
+    monkeypatch.setattr(life_bridge.subprocess, "check_output", fake_check_output)
+    monkeypatch.setattr(
+        life_bridge,
+        "_now",
+        lambda: life_bridge._parse_pmset_time("2026-06-01 10:47:00 +0800"),
+    )
+
+    activity = life_bridge._read_mac_activity()
+
+    assert activity.idle_seconds == 1
+    assert activity.sleeping is True
+    assert activity.interruption_seconds == 874
+    assert activity.interruption_source == "sleep"
+    assert activity.interruption_started_at == "2026-06-01T10:31:09+08:00"
+    assert activity.interruption_ended_at == "2026-06-01T10:45:43+08:00"
+
+
 def test_reconcile_life_delivery_returns_envelope(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(life_bridge, "_agent", None)
     monkeypatch.setattr(life_bridge, "_db_path", str(tmp_path / "life.db"))

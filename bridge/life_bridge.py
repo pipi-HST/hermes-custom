@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 import subprocess
+import re
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -48,6 +50,10 @@ def _load_life_config(config_path: Path) -> LifeConfig:
     default_log_path = Path(__file__).parent.parent / "data" / "life.log"
     return LifeConfig(
         notifications_enabled=bool(life_cfg.get("notifications_enabled", False)),
+        sedentary_repeat_minutes=int(life_cfg.get("sedentary_repeat_minutes", LifeConfig.sedentary_repeat_minutes)),
+        break_threshold_minutes=int(life_cfg.get("break_threshold_minutes", LifeConfig.break_threshold_minutes)),
+        sleep_record_check_time=str(life_cfg.get("sleep_record_check_time", LifeConfig.sleep_record_check_time)),
+        meal_record_check_time=str(life_cfg.get("meal_record_check_time", LifeConfig.meal_record_check_time)),
         log_path=str(life_cfg.get("log_path") or default_log_path),
     )
 
@@ -136,6 +142,7 @@ def reconcile_life_delivery(completed_at: str, delivery_error: str = "") -> dict
 
 
 def _read_mac_activity() -> ActivitySnapshot:
+    interruption = _read_recent_mac_interruption()
     try:
         output = subprocess.check_output(
             ["ioreg", "-c", "IOHIDSystem"],
@@ -151,7 +158,93 @@ def _read_mac_activity() -> ActivitySnapshot:
         raw_value = line.split(marker, 1)[1].strip()
         try:
             # HIDIdleTime is reported in nanoseconds.
-            return ActivitySnapshot(idle_seconds=int(raw_value) // 1_000_000_000)
+            source, seconds, started_at, ended_at = interruption or ("", None, "", "")
+            return ActivitySnapshot(
+                idle_seconds=int(raw_value) // 1_000_000_000,
+                sleeping=source == "sleep",
+                display_off=source == "display_off",
+                interruption_seconds=seconds,
+                interruption_source=source,
+                interruption_started_at=started_at,
+                interruption_ended_at=ended_at,
+            )
         except ValueError:
             return ActivitySnapshot(idle_seconds=None, available=False)
     return ActivitySnapshot(idle_seconds=None, available=False)
+
+
+def _read_recent_mac_interruption() -> tuple[str, int, str, str] | None:
+    try:
+        output = subprocess.check_output(
+            ["pmset", "-g", "log"],
+            text=True,
+            timeout=3,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, TimeoutError):
+        return None
+    return _recent_mac_interruption(output, now=_now())
+
+
+def _now() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _recent_mac_interruption(log_output: str, *, now: datetime) -> tuple[str, int, str, str] | None:
+    latest: tuple[str, int, datetime, datetime] | None = None
+    open_start: tuple[str, datetime] | None = None
+    for line in log_output.splitlines():
+        timestamp = _parse_pmset_line_time(line, now=now)
+        if timestamp is None:
+            continue
+        source = _pmset_start_source(line)
+        if source:
+            open_start = (source, timestamp)
+            continue
+        end_source = _pmset_end_source(line)
+        if not end_source or not open_start:
+            continue
+        start_source, started_at = open_start
+        if end_source != start_source:
+            continue
+        duration = int((timestamp - started_at).total_seconds())
+        open_start = None
+        if duration < LifeConfig.break_threshold_minutes * 60:
+            continue
+        if int((now - timestamp).total_seconds()) > 30 * 60:
+            continue
+        latest = (start_source, duration, started_at, timestamp)
+    if not latest:
+        return None
+    return latest[0], latest[1], latest[2].isoformat(), latest[3].isoformat()
+
+
+def _parse_pmset_line_time(line: str, *, now: datetime) -> datetime | None:
+    match = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?: ([+-]\d{4}))?", line)
+    if not match:
+        return None
+    time_text, offset = match.groups()
+    return _parse_pmset_time(f"{time_text} {offset}" if offset else time_text, now=now)
+
+
+def _parse_pmset_time(value: str, *, now: datetime | None = None) -> datetime:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S %z")
+    except ValueError:
+        parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+        return parsed.replace(tzinfo=(now or _now()).tzinfo)
+
+
+def _pmset_start_source(line: str) -> str:
+    if "Entering Sleep state" in line or re.search(r"\bSleep\b", line):
+        return "sleep"
+    if "Display is turned off" in line:
+        return "display_off"
+    return ""
+
+
+def _pmset_end_source(line: str) -> str:
+    if "Wake from" in line or re.search(r"\bWake\b", line):
+        return "sleep"
+    if "Display is turned on" in line:
+        return "display_off"
+    return ""

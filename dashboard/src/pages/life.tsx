@@ -3,13 +3,16 @@ import {
   fetchLifeEvents,
   fetchLifeReminders,
   fetchLifeReviews,
+  fetchLifeRuntime,
   fetchLifeSummary,
   fetchLifeWeek,
   type LifeDailyReview,
   type LifeEvent,
   type LifeLongTermDecision,
   type LifeReminder,
+  type LifeReminderRuleStatus,
   type LifeReviews,
+  type LifeRuntimeStatus,
   type LifeSummary,
   type LifeWeek,
   type LifeWeekTrendRow,
@@ -69,6 +72,16 @@ interface SleepSession {
   start?: LifeEvent
   end?: LifeEvent
   durationMinutes?: number
+}
+
+interface ReminderGroup {
+  key: string
+  reminderType: string
+  status: string
+  firstTime: string
+  lastTime: string
+  count: number
+  error: string
 }
 
 function todayKey(): string {
@@ -147,6 +160,10 @@ function formatDurationSeconds(seconds: number): string {
   return `${rest}秒`
 }
 
+function formatDurationFromSeconds(seconds: number): string {
+  return formatDurationSeconds(Math.max(0, Math.floor(seconds)))
+}
+
 function formatMinutes(minutes?: number): string {
   const value = minutes || 0
   const hours = Math.floor(value / 60)
@@ -154,6 +171,16 @@ function formatMinutes(minutes?: number): string {
   if (hours && rest) return `${hours}小时${rest}分`
   if (hours) return `${hours}小时`
   return `${rest}分`
+}
+
+function formatAge(seconds?: number | null): string {
+  if (seconds === null || seconds === undefined) return '未知'
+  if (seconds < 60) return `${seconds}秒前`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}分钟前`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return rest ? `${hours}小时${rest}分钟前` : `${hours}小时前`
 }
 
 function percent(value: number, max: number, min = 0): number {
@@ -171,6 +198,65 @@ function deliveryLabel(value: unknown): string {
   if (value === 'failed') return '失败'
   if (typeof value === 'string' && value) return value
   return '未知'
+}
+
+function cronHealthLabel(value: string): string {
+  if (value === 'ok') return '正常运行'
+  if (value === 'stale') return '可能停了'
+  if (value === 'failed') return '最近失败'
+  if (value === 'paused') return '已暂停'
+  if (value === 'missing') return '未找到'
+  if (value === 'warning') return '需留意'
+  return value || '未知'
+}
+
+function deliveryStatusLabel(value: string): string {
+  if (value === 'ok') return '通道正常'
+  if (value === 'rate_limited') return '微信限流冷却中'
+  if (value === 'warning') return '有失败待看'
+  return value || '未知'
+}
+
+function tickStatusLabel(value?: string): string {
+  if (value === 'selected') return '选中提醒'
+  if (value === 'idle') return '无提醒'
+  if (value === 'locked') return '跳过：锁占用'
+  return value || '未知'
+}
+
+function interruptionLabel(value?: string): string {
+  if (value === 'sleep') return '睡眠/唤醒'
+  if (value === 'display_off') return '显示器关闭'
+  if (value === 'locked') return '锁屏'
+  return value || 'Mac 中断'
+}
+
+function reminderStatusTone(status: string): string {
+  if (status === 'failed') return 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950'
+  if (status === 'sending') return 'border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950'
+  if (status === 'sent' || status === 'completed') return 'border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950'
+  return 'border-stone-200 bg-white dark:border-neutral-800 dark:bg-neutral-900'
+}
+
+function ruleStatusLabel(rule: LifeReminderRuleStatus): string {
+  if (!rule.enabled) return '手动'
+  if (rule.today_status === 'not_triggered') return '未触发'
+  return statusLabel(rule.today_status)
+}
+
+function ruleStatusTone(rule: LifeReminderRuleStatus): string {
+  if (!rule.enabled) return 'bg-stone-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'
+  if (rule.today_status === 'failed') return 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-100'
+  if (rule.today_status === 'sent' || rule.today_status === 'completed') return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-100'
+  if (rule.today_status === 'sending') return 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-100'
+  return 'bg-stone-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'
+}
+
+function runtimeTone(status: string): string {
+  if (status === 'ok') return 'border-emerald-200 bg-emerald-50 text-emerald-950 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-100'
+  if (status === 'rate_limited' || status === 'warning' || status === 'stale') return 'border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100'
+  if (status === 'failed' || status === 'missing') return 'border-red-200 bg-red-50 text-red-950 dark:border-red-900 dark:bg-red-950 dark:text-red-100'
+  return 'border-stone-200 bg-stone-50 text-neutral-800 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-200'
 }
 
 function evidenceText(value: Record<string, unknown>): string {
@@ -193,6 +279,31 @@ function payloadText(payload?: Record<string, unknown>): string {
 function payloadString(payload: Record<string, unknown> | undefined, key: string): string {
   const value = payload?.[key]
   return typeof value === 'string' ? value : ''
+}
+
+function groupReminderTriggers(reminders: LifeReminder[]): ReminderGroup[] {
+  const groups: ReminderGroup[] = []
+  for (const reminder of reminders) {
+    const errorKey = reminder.error ? reminder.error.split(':')[0] : ''
+    const key = `${reminder.reminder_type}:${reminder.status}:${errorKey}`
+    const latest = groups[groups.length - 1]
+    if (latest && latest.key === key) {
+      latest.count += 1
+      latest.firstTime = reminder.scheduled_for
+      if (!latest.error && reminder.error) latest.error = reminder.error
+      continue
+    }
+    groups.push({
+      key,
+      reminderType: reminder.reminder_type,
+      status: reminder.status,
+      firstTime: reminder.scheduled_for,
+      lastTime: reminder.scheduled_for,
+      count: 1,
+      error: reminder.error,
+    })
+  }
+  return groups
 }
 
 function mealSlotLabel(slot: unknown): string {
@@ -289,6 +400,7 @@ export default function LifePage() {
   const [reminders, setReminders] = useState<LifeReminder[]>([])
   const [reviews, setReviews] = useState<LifeReviews | null>(null)
   const [week, setWeek] = useState<LifeWeek | null>(null)
+  const [runtime, setRuntime] = useState<LifeRuntimeStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
@@ -337,13 +449,15 @@ export default function LifePage() {
         fetchLifeReminders(date),
         fetchLifeReviews(date),
         fetchLifeWeek(date),
-      ]).then(([nextSummary, nextEvents, nextReminders, nextReviews, nextWeek]) => {
+        fetchLifeRuntime(),
+      ]).then(([nextSummary, nextEvents, nextReminders, nextReviews, nextWeek, nextRuntime]) => {
         if (cancelled) return
         setSummary(nextSummary)
         setEvents(nextEvents)
         setReminders(nextReminders)
         setReviews(nextReviews)
         setWeek(nextWeek)
+        setRuntime(nextRuntime)
         setLastSyncedAt(new Date().toISOString())
       }).catch(err => {
         if (cancelled) return
@@ -453,6 +567,8 @@ export default function LifePage() {
             <WeekView week={week} />
           ) : (
             <div className="space-y-4">
+              <RuntimeStatusPanel runtime={runtime} />
+
               <SittingSection
                 activeSeconds={activeSeconds}
                 displayedTotalMinutes={displayedTotalMinutes}
@@ -494,6 +610,131 @@ export default function LifePage() {
         )}
       </div>
     </main>
+  )
+}
+
+function RuntimeStatusPanel({ runtime }: { runtime: LifeRuntimeStatus | null }) {
+  if (!runtime) {
+    return (
+      <section className="rounded-md border border-stone-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+        <SectionTitle title="提醒调度状态" meta="等待同步" />
+        <EmptyState text="还没有拿到 cron 和提醒 hook 的运行状态。" />
+      </section>
+    )
+  }
+
+  const cron = runtime.cron
+  const delivery = runtime.delivery
+  const tick = runtime.last_tick
+  const recentGroups = groupReminderTriggers(runtime.recent_reminders).slice(0, 5)
+  const selectedLabel = tick?.selected_reminder
+    ? REMINDER_LABELS[tick.selected_reminder] || tick.selected_reminder
+    : '无'
+
+  return (
+    <section className="rounded-md border border-stone-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+      <SectionTitle title="提醒调度状态" meta={`运行态 · ${formatTime(runtime.now)}`} />
+      <div className="grid gap-3 lg:grid-cols-3">
+        <div className={`rounded-md border p-3 ${runtimeTone(cron.health)}`}>
+          <p className="text-xs font-medium opacity-70">Cron</p>
+          <p className="mt-1 text-lg font-semibold">{cronHealthLabel(cron.health)}</p>
+          <div className="mt-2 space-y-1 text-xs opacity-80">
+            <p>{cron.enabled ? '已启用' : '未启用'} · {cron.schedule_display || '无计划'}</p>
+            <p>上次运行 {cron.last_run_at ? `${formatDateTime(cron.last_run_at)} · ${formatAge(cron.last_run_age_seconds)}` : '未知'}</p>
+            <p>下次运行 {cron.next_run_at ? formatDateTime(cron.next_run_at) : '未知'}</p>
+          </div>
+        </div>
+
+        <div className={`rounded-md border p-3 ${runtimeTone(delivery.status)}`}>
+          <p className="text-xs font-medium opacity-70">微信通道 / 回写 Hook</p>
+          <p className="mt-1 text-lg font-semibold">{deliveryStatusLabel(delivery.status)}</p>
+          <div className="mt-2 space-y-1 text-xs opacity-80">
+            <p>失败 {delivery.recent_failed_count} · 发送中 {delivery.recent_sending_count} · 疑似风暴 {delivery.recent_burst_count}</p>
+            <p>{delivery.cooling_down ? `冷却到 ${formatDateTime(delivery.cooldown_until)}` : '当前没有限流冷却'}</p>
+            {delivery.last_failure && <p className="break-words">最近失败：{REMINDER_LABELS[delivery.last_failure.reminder_type] || delivery.last_failure.reminder_type}</p>}
+          </div>
+        </div>
+
+        <div className={`rounded-md border p-3 ${runtimeTone(tick?.warnings?.length ? 'warning' : 'ok')}`}>
+          <p className="text-xs font-medium opacity-70">最近 Tick</p>
+          <p className="mt-1 text-lg font-semibold">{tickStatusLabel(tick?.status)}</p>
+          <div className="mt-2 space-y-1 text-xs opacity-80">
+            <p>{tick?.tick_time ? formatDateTime(tick.tick_time) : '还没有 tick 日志'}</p>
+            <p>选中提醒：{selectedLabel} · {tick?.should_notify ? '会推送' : '不推送'}</p>
+            <p>Mac 活动：{tick?.activity_available ? '可读取' : '不可读取'} · 坐姿 {tick?.sedentary_state === 'active' ? '进行中' : '未进行'}</p>
+            {tick?.interruption_seconds ? <p>离座证据：{interruptionLabel(tick.interruption_source)} · {formatDurationFromSeconds(tick.interruption_seconds)}</p> : null}
+            {tick?.warnings?.length ? <p className="break-words">提醒：{tick.warnings.join('、')}</p> : null}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <SectionTitle title="规则时间表" meta={`${runtime.reminder_rules.length} 条`} />
+        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {runtime.reminder_rules.map(rule => (
+            <RuleScheduleCard key={`${rule.reminder_type}:${rule.next_due_at || rule.label}`} rule={rule} />
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <SectionTitle title="最近触发" meta={`${recentGroups.length} 组`} />
+        {recentGroups.length === 0 ? (
+          <EmptyState text="还没有提醒触发记录。" />
+        ) : (
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+            {recentGroups.map(group => (
+              <div key={`${group.key}:${group.lastTime}`} className={`rounded-md border px-3 py-2 ${reminderStatusTone(group.status)}`}>
+                <div className="flex items-start justify-between gap-2">
+                  <p className="truncate text-sm font-medium">{REMINDER_LABELS[group.reminderType] || group.reminderType}</p>
+                  {group.count > 1 && <span className="rounded bg-white/70 px-1.5 py-0.5 text-xs dark:bg-neutral-900/50">x{group.count}</span>}
+                </div>
+                <p className="mt-1 text-xs text-neutral-500">
+                  {formatDateTime(group.lastTime)}
+                  {group.count > 1 ? ` - ${formatTime(group.firstTime)}` : ''} · {statusLabel(group.status)}
+                </p>
+                {group.error && <p className="mt-1 line-clamp-2 break-words text-xs text-red-600">{group.error}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function RuleScheduleCard({ rule }: { rule: LifeReminderRuleStatus }) {
+  const times = rule.planned_times.slice(0, 3)
+  return (
+    <div className="rounded-md border border-stone-200 px-3 py-3 dark:border-neutral-800">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold">{rule.label}</p>
+          <p className="mt-1 break-words text-xs text-neutral-500">{rule.schedule_text}</p>
+        </div>
+        <span className={`shrink-0 rounded-md px-2 py-1 text-xs ${ruleStatusTone(rule)}`}>
+          {ruleStatusLabel(rule)}
+        </span>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        {times.length > 0 ? times.map(time => (
+          <span key={time} className="rounded-md bg-stone-100 px-2 py-1 text-xs text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+            {formatDateTime(time)}
+          </span>
+        )) : (
+          <span className="rounded-md bg-stone-100 px-2 py-1 text-xs text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+            无固定时刻
+          </span>
+        )}
+      </div>
+      <p className="mt-2 break-words text-xs text-neutral-500">{rule.detail}</p>
+      {rule.next_due_at && (
+        <p className="mt-2 text-xs text-neutral-500">下次：{formatDateTime(rule.next_due_at)}</p>
+      )}
+      {rule.latest_log?.error && (
+        <p className="mt-2 line-clamp-2 break-words text-xs text-red-600">{rule.latest_log.error}</p>
+      )}
+    </div>
   )
 }
 

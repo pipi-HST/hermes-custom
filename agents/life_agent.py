@@ -19,17 +19,24 @@ class ActivitySnapshot:
     available: bool = True
     locked: bool = False
     sleeping: bool = False
+    display_off: bool = False
     logged_out: bool = False
+    interruption_seconds: int | None = None
+    interruption_source: str = ""
+    interruption_started_at: str = ""
+    interruption_ended_at: str = ""
 
 
 @dataclass(frozen=True)
 class LifeConfig:
     sedentary_threshold_minutes: int = 60
-    sedentary_repeat_minutes: int = 10
-    break_threshold_minutes: int = 5
+    sedentary_repeat_minutes: int = 20
+    break_threshold_minutes: int = 10
     reminder_due_window_minutes: int = 15
     exercise_first_time: str = "10:30"
     exercise_repeat_hours: int = 2
+    sleep_record_check_time: str = "13:00"
+    meal_record_check_time: str = "21:30"
     sleep_reminder_time: str = "23:30"
     water_times: tuple[str, str] = ("10:00", "16:00")
     notifications_enabled: bool = False
@@ -66,7 +73,9 @@ class LifeAgent:
             return _rejected("我不能做医学诊断；如果症状持续、明显影响生活，建议咨询医生或专业人士。")
 
         if intent.intent == "sedentary_activity_reply":
-            return _rejected("久坐警报不能靠回复解除；离开电脑超过5分钟后我会自动停止提醒。")
+            return _rejected(
+                f"久坐警报不能靠回复解除；离开电脑超过{self.config.break_threshold_minutes}分钟后我会自动停止提醒。"
+            )
 
         if intent.intent == "record_long_term_decision":
             return self._record_long_term_decision(intent, received)
@@ -954,6 +963,12 @@ class LifeAgent:
             water = self._water_candidate(current)
             if water:
                 candidates.append(water)
+            sleep_record = self._sleep_record_candidate(current)
+            if sleep_record:
+                candidates.append(sleep_record)
+            meal_record = self._meal_record_candidate(current)
+            if meal_record:
+                candidates.append(meal_record)
             daily_review = self._daily_review_candidate(current)
             if daily_review:
                 candidates.append(daily_review)
@@ -1153,6 +1168,10 @@ class LifeAgent:
             "status": status,
             "idle_seconds": activity.idle_seconds,
             "activity_available": activity.available,
+            "interruption_seconds": activity.interruption_seconds,
+            "interruption_source": activity.interruption_source,
+            "interruption_started_at": activity.interruption_started_at,
+            "interruption_ended_at": activity.interruption_ended_at,
             "sedentary_state": "active" if self._active_sitting_window() else "inactive",
             "due_candidates": [item["reminder_type"] for item in candidates],
             "selected_reminder": selected.get("reminder_type") if selected else "",
@@ -1211,10 +1230,20 @@ class LifeAgent:
         activity: ActivitySnapshot,
     ) -> dict[str, Any] | None:
         active_window = self._split_cross_midnight_sitting_window(current)
-        if activity.locked or activity.sleeping or activity.logged_out:
+        if activity.locked or activity.logged_out:
             if active_window:
-                self._close_sitting_window(active_window, current, "mac_interrupted")
+                break_at = self._mac_interruption_break_time(active_window, current, activity)
+                if break_at:
+                    source = activity.interruption_source or "mac"
+                    self._close_sitting_window(active_window, break_at, f"mac_interrupted:{source}")
             return None
+        if activity.sleeping or activity.display_off:
+            if active_window:
+                break_at = self._mac_interruption_break_time(active_window, current, activity)
+                if break_at:
+                    source = activity.interruption_source or "mac"
+                    self._close_sitting_window(active_window, break_at, f"mac_interrupted:{source}")
+                return None
         if activity.idle_seconds is None:
             return None
         if activity.idle_seconds > self.config.break_threshold_minutes * 60:
@@ -1248,7 +1277,9 @@ class LifeAgent:
                 "priority": 1,
                 "reminder_type": "sedentary",
                 "dedupe_key": f"sedentary:{current.strftime('%Y-%m-%dT%H:%M')}",
-                "message": "久坐警报：起来活动一下，离开电脑超过5分钟后我会停止提醒。",
+                "message": (
+                    f"久坐警报：起来活动一下，离开电脑超过{self.config.break_threshold_minutes}分钟后我会停止提醒。"
+                ),
                 "payload": retry_payload,
             }
 
@@ -1256,7 +1287,9 @@ class LifeAgent:
             "priority": 1,
             "reminder_type": "sedentary",
             "dedupe_key": f"sedentary:{current.strftime('%Y-%m-%dT%H:%M')}",
-            "message": "久坐警报：起来活动一下，离开电脑超过5分钟后我会停止提醒。",
+            "message": (
+                f"久坐警报：起来活动一下，离开电脑超过{self.config.break_threshold_minutes}分钟后我会停止提醒。"
+            ),
             "payload": {"retry_count": 0},
         }
 
@@ -1344,6 +1377,31 @@ class LifeAgent:
             return started_at
         return break_at
 
+    def _mac_interruption_break_time(
+        self,
+        active_window: dict[str, Any],
+        current: datetime,
+        activity: ActivitySnapshot,
+    ) -> datetime | None:
+        interruption_seconds = activity.interruption_seconds
+        if interruption_seconds is None:
+            return None
+        if interruption_seconds < self.config.break_threshold_minutes * 60:
+            return None
+        started_at = _parse_datetime(active_window["occurred_at"])
+        if _seconds_between(started_at, current) < 0:
+            return None
+        break_at = current - timedelta(seconds=interruption_seconds)
+        if activity.interruption_started_at:
+            try:
+                break_at = _parse_datetime(activity.interruption_started_at)
+            except ValueError:
+                return None
+        break_at = break_at + timedelta(minutes=self.config.break_threshold_minutes)
+        if _seconds_between(started_at, break_at) <= 0:
+            return None
+        return break_at
+
     def _exercise_candidate(self, current: datetime) -> dict[str, Any] | None:
         if current.strftime("%H:%M") < self.config.exercise_first_time:
             return None
@@ -1351,10 +1409,11 @@ class LifeAgent:
             return None
         if self._has_reminder_log_on_day("exercise", "skipped", current):
             return None
+        priority = 0 if self._has_sedentary_reminder_since_exercise_due(current) else 2
         retry_payload = self._short_retry_payload("exercise", current)
         if retry_payload:
             return {
-                "priority": 2,
+                "priority": priority,
                 "reminder_type": "exercise",
                 "dedupe_key": f"exercise:{current.strftime('%Y-%m-%dT%H:%M')}",
                 "message": "运动提醒：今天找个时间动一动吧。回复已运动、今天不练了，或告诉我具体时间。",
@@ -1375,7 +1434,7 @@ class LifeAgent:
                 if current < next_repeat:
                     return None
         return {
-            "priority": 2,
+            "priority": priority,
             "reminder_type": "exercise",
             "dedupe_key": f"exercise:{current.strftime('%Y-%m-%dT%H:%M')}",
             "message": "运动提醒：今天找个时间动一动吧。回复已运动、今天不练了，或告诉我具体时间。",
@@ -1422,6 +1481,48 @@ class LifeAgent:
             "reminder_type": "water",
             "dedupe_key": dedupe_key,
             "message": "喝水提醒：白天补点水。",
+        }
+
+    def _sleep_record_candidate(self, current: datetime) -> dict[str, Any] | None:
+        due_at = _due_time_on_day(
+            current,
+            self.config.sleep_record_check_time,
+            window_minutes=self.config.reminder_due_window_minutes,
+        )
+        if not due_at:
+            return None
+        wake_day = current.date().isoformat()
+        if self._has_sleep_duration_for_wake_day(wake_day):
+            return None
+        dedupe_key = f"sleep_record:{wake_day}"
+        if self._has_any_reminder_log(dedupe_key):
+            return None
+        return {
+            "priority": 7,
+            "reminder_type": "sleep_record",
+            "dedupe_key": dedupe_key,
+            "message": "睡眠补记：昨晚大概几点睡、今天几点醒？我会帮你算睡眠时长。",
+        }
+
+    def _meal_record_candidate(self, current: datetime) -> dict[str, Any] | None:
+        due_at = _due_time_on_day(
+            current,
+            self.config.meal_record_check_time,
+            window_minutes=self.config.reminder_due_window_minutes,
+        )
+        if not due_at:
+            return None
+        meal_day = current.date().isoformat()
+        if self._has_meal_on_date(meal_day):
+            return None
+        dedupe_key = f"meal_record:{meal_day}"
+        if self._has_any_reminder_log(dedupe_key):
+            return None
+        return {
+            "priority": 7,
+            "reminder_type": "meal",
+            "dedupe_key": dedupe_key,
+            "message": "饮食补记：今天吃了什么？大概几点吃的？",
         }
 
     def _daily_review_candidate(self, current: datetime) -> dict[str, Any] | None:
@@ -1708,6 +1809,28 @@ class LifeAgent:
         ).fetchall()
         return any(_parse_datetime(row["occurred_at"]).date() == current.date() for row in rows)
 
+    def _has_sleep_duration_for_wake_day(self, wake_day: str) -> bool:
+        rows = self.repo.conn.execute(
+            """SELECT occurred_at, duration_minutes, payload_json FROM life_events
+               WHERE event_type = 'sleep_end'
+                 AND status NOT IN ('undone', 'superseded')"""
+        ).fetchall()
+        for row in rows:
+            event = self.repo._event_row_to_dict(row)
+            payload = event.get("payload_json") or {}
+            event_day = str(payload.get("wake_date") or _date_key(str(event.get("occurred_at") or "")))
+            if event_day == wake_day and int(event.get("duration_minutes") or 0) > 0:
+                return True
+        return False
+
+    def _has_meal_on_date(self, meal_day: str) -> bool:
+        rows = self.repo.conn.execute(
+            """SELECT occurred_at FROM life_events
+               WHERE event_type = 'meal'
+                 AND status NOT IN ('undone', 'superseded')"""
+        ).fetchall()
+        return any(_date_key(str(row["occurred_at"])) == meal_day for row in rows)
+
     def _has_reminder_log_on_day(
         self,
         reminder_type: str,
@@ -1732,6 +1855,20 @@ class LifeAgent:
             if scheduled.date() == current.date():
                 return self.repo._reminder_row_to_dict(row)
         return None
+
+    def _has_sedentary_reminder_since_exercise_due(self, current: datetime) -> bool:
+        hour, minute = [int(part) for part in self.config.exercise_first_time.split(":", 1)]
+        due_at = current.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        rows = self.repo.conn.execute(
+            """SELECT scheduled_for FROM life_reminder_logs
+               WHERE reminder_type = 'sedentary'
+                 AND status IN ('scheduled', 'sending', 'sent', 'failed')"""
+        ).fetchall()
+        for row in rows:
+            scheduled = _parse_datetime(row["scheduled_for"])
+            if due_at <= scheduled <= current:
+                return True
+        return False
 
     def _short_retry_payload(self, reminder_type: str, current: datetime) -> dict[str, Any] | None:
         row = self.repo.conn.execute(
@@ -1802,7 +1939,7 @@ class LifeAgent:
         ).fetchall()
         for row in rows:
             error = str(row["error"] or "")
-            if "Weixin send failed" not in error and "iLink sendmessage rate limited" not in error:
+            if not _is_rate_limit_error(error):
                 continue
             scheduled = _parse_datetime(row["scheduled_for"])
             elapsed_seconds = _seconds_between(scheduled, current)
@@ -1954,6 +2091,11 @@ def _compatible_datetime_pair(left: datetime, right: datetime) -> tuple[datetime
 
 def _is_aware(value: datetime) -> bool:
     return value.tzinfo is not None and value.utcoffset() is not None
+
+
+def _is_rate_limit_error(error: str) -> bool:
+    normalized = error.lower().replace("_", " ").replace("-", " ")
+    return "rate limit" in normalized or "too many requests" in normalized
 
 
 def _due_time_on_day(current: datetime, time_text: str, *, window_minutes: int) -> datetime | None:

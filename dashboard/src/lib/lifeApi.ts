@@ -135,6 +135,74 @@ export interface LifeWeek {
   weekly_review: LifeWeeklyReview | null
 }
 
+export interface LifeRuntimeCron {
+  found: boolean
+  health: string
+  path: string
+  enabled: boolean
+  state: string
+  schedule_display: string
+  last_run_at: string
+  next_run_at: string
+  last_run_age_seconds: number | null
+  last_status: string
+  last_error: string
+  last_delivery_error: string
+  repeat_completed: number
+}
+
+export interface LifeRuntimeDelivery {
+  status: string
+  cooling_down: boolean
+  cooldown_until: string
+  recent_failed_count: number
+  recent_sending_count: number
+  recent_burst_count: number
+  last_failure: {
+    reminder_type: string
+    scheduled_for: string
+    error: string
+  } | null
+}
+
+export interface LifeRuntimeTick {
+  tick_time?: string
+  status?: string
+  idle_seconds?: number | null
+  activity_available?: boolean
+  interruption_seconds?: number | null
+  interruption_source?: string
+  interruption_started_at?: string
+  interruption_ended_at?: string
+  sedentary_state?: string
+  due_candidates?: string[]
+  selected_reminder?: string
+  should_notify?: boolean
+  dry_run?: boolean
+  warnings?: string[]
+}
+
+export interface LifeReminderRuleStatus {
+  reminder_type: string
+  label: string
+  enabled: boolean
+  schedule_text: string
+  planned_times: string[]
+  next_due_at: string
+  today_status: string
+  latest_log: LifeReminder | null
+  detail: string
+}
+
+export interface LifeRuntimeStatus {
+  now: string
+  cron: LifeRuntimeCron
+  delivery: LifeRuntimeDelivery
+  last_tick: LifeRuntimeTick | null
+  recent_reminders: LifeReminder[]
+  reminder_rules: LifeReminderRuleStatus[]
+}
+
 const API_BASE = 'http://localhost:8000/api'
 
 export async function fetchLifeSummary(date: string): Promise<LifeSummary> {
@@ -157,6 +225,10 @@ export async function fetchLifeReviews(date: string): Promise<LifeReviews> {
 
 export async function fetchLifeWeek(date: string): Promise<LifeWeek> {
   return fetchJson<LifeWeek>(`/life/week?date=${encodeURIComponent(date)}`)
+}
+
+export async function fetchLifeRuntime(): Promise<LifeRuntimeStatus> {
+  return fetchJson<LifeRuntimeStatus>('/life/runtime')
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
