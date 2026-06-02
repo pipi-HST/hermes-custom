@@ -5,6 +5,7 @@ import {
   fetchLifeEvents,
   fetchLifeMemories,
   fetchLifeReminders,
+  fetchLifeRepairs,
   fetchLifeReviews,
   fetchLifeRuntime,
   fetchLifeSummary,
@@ -18,6 +19,7 @@ import {
   type LifeMemories,
   type LifeMemoryItem,
   type LifeReminder,
+  type LifeRepairPlan,
   type LifeReminderRuleStatus,
   type LifeReviews,
   type LifeRuntimeStatus,
@@ -256,6 +258,7 @@ function memoryDomainLabel(value: string): string {
   if (value === 'life.meal') return '饮食记忆'
   if (value === 'life.water') return '喝水记忆'
   if (value === 'life.sedentary') return '久坐记忆'
+  if (value === 'life.decision') return '长期决定'
   if (value === 'life.copy') return '文案偏好'
   return value || 'Life 记忆'
 }
@@ -265,6 +268,7 @@ function memoryTypeLabel(value: string): string {
   if (value === 'response') return '提醒反馈'
   if (value === 'copy_preference') return '表达偏好'
   if (value === 'stage_goal') return '阶段目标'
+  if (value === 'decision_review') return '复盘结论'
   if (value === 'exception') return '例外状态'
   return value || '记忆'
 }
@@ -283,6 +287,21 @@ function memoryConfidenceLabel(value: string): string {
   if (value === 'medium') return '中置信'
   if (value === 'low') return '低置信'
   return value || '置信未知'
+}
+
+function memoryEffectLabel(value?: string): string {
+  if (value === 'message_context') return '用于提醒文案'
+  if (value === 'ranking_context') return '用于候选排序'
+  if (value === 'context_only') return '仅作上下文'
+  return value || '记忆参与'
+}
+
+function repairKindLabel(value: string): string {
+  if (value === 'stale_sending_reminder') return '卡住的发送中提醒'
+  if (value === 'superseded_duplicate_reminder') return '已被覆盖的重复提醒'
+  if (value === 'duplicate_sleep_session') return '疑似重复睡眠'
+  if (value === 'dirty_meal_record') return '疑似饮食解析异常'
+  return value || '修复候选'
 }
 
 function reminderStatusTone(status: string): string {
@@ -473,6 +492,7 @@ export default function LifePage() {
   const [runtime, setRuntime] = useState<LifeRuntimeStatus | null>(null)
   const [memories, setMemories] = useState<LifeMemories | null>(null)
   const [decisionTraces, setDecisionTraces] = useState<LifeDecisionTrace[]>([])
+  const [repairs, setRepairs] = useState<LifeRepairPlan | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
@@ -525,7 +545,8 @@ export default function LifePage() {
         fetchLifeRuntime(),
         fetchLifeMemories(),
         fetchLifeDecisionTraces(date),
-      ]).then(([nextSummary, nextDailyStatus, nextEvents, nextReminders, nextReviews, nextWeek, nextRuntime, nextMemories, nextDecisionTraces]) => {
+        fetchLifeRepairs(),
+      ]).then(([nextSummary, nextDailyStatus, nextEvents, nextReminders, nextReviews, nextWeek, nextRuntime, nextMemories, nextDecisionTraces, nextRepairs]) => {
         if (cancelled) return
         setSummary(nextSummary)
         setDailyStatus(nextDailyStatus)
@@ -536,6 +557,7 @@ export default function LifePage() {
         setRuntime(nextRuntime)
         setMemories(nextMemories)
         setDecisionTraces(nextDecisionTraces)
+        setRepairs(nextRepairs)
         setLastSyncedAt(new Date().toISOString())
       }).catch(err => {
         if (cancelled) return
@@ -662,6 +684,8 @@ export default function LifePage() {
               <DecisionTraceSection traces={decisionTraces} />
 
               <MemorySection memories={memories} />
+
+              <RepairSection repairs={repairs} />
 
               <div className="grid gap-4 lg:grid-cols-2">
                 <SleepSection rows={sleepSessions} />
@@ -1244,6 +1268,50 @@ function MemorySection({ memories }: { memories: LifeMemories | null }) {
   )
 }
 
+function RepairSection({ repairs }: { repairs: LifeRepairPlan | null }) {
+  const actions = repairs?.actions || []
+  const safeCount = repairs?.summary.safe_apply_count || 0
+  const highRiskCount = actions.filter(action => !action.safe_to_apply).length
+  const visibleActions = actions.slice(0, 4)
+
+  return (
+    <ModuleSection title="数据修复" meta={actions.length ? `${actions.length} 个候选` : '暂无候选'}>
+      {!repairs ? (
+        <EmptyState text="等待修复 dry-run 结果。" />
+      ) : actions.length === 0 ? (
+        <EmptyState text="当前没有需要处理的数据修复候选。" />
+      ) : (
+        <div className="space-y-2">
+          <div className="grid gap-2 md:grid-cols-2">
+            <div className="rounded-md bg-emerald-50 px-3 py-3 text-emerald-950 dark:bg-emerald-950 dark:text-emerald-100">
+              <p className="text-xs opacity-75">安全可修</p>
+              <p className="mt-1 text-lg font-semibold">{safeCount} 项</p>
+            </div>
+            <div className="rounded-md bg-amber-50 px-3 py-3 text-amber-950 dark:bg-amber-950 dark:text-amber-100">
+              <p className="text-xs opacity-75">只建议人工看</p>
+              <p className="mt-1 text-lg font-semibold">{highRiskCount} 项</p>
+            </div>
+          </div>
+          {visibleActions.map((action, index) => (
+            <div key={`${action.kind}:${action.id || index}`} className="rounded-md border border-stone-200 px-3 py-3 dark:border-neutral-800">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <p className="text-sm font-semibold">{repairKindLabel(action.kind)}</p>
+                <span className={`rounded-md px-2 py-1 text-xs ${action.safe_to_apply ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-100' : 'bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-100'}`}>
+                  {action.safe_to_apply ? '可安全 apply' : '仅建议'}
+                </span>
+              </div>
+              <p className="mt-2 break-words text-xs text-neutral-500">
+                {action.reminder_type ? `${REMINDER_LABELS[action.reminder_type] || action.reminder_type} · ` : ''}
+                {action.scheduled_for ? formatDateTime(String(action.scheduled_for)) : action.suggestion || '等待人工确认'}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+    </ModuleSection>
+  )
+}
+
 function DecisionTraceSection({ traces }: { traces: LifeDecisionTrace[] }) {
   const visibleTraces = traces.slice(0, 5)
   return (
@@ -1298,7 +1366,7 @@ function DecisionTraceCard({ trace }: { trace: LifeDecisionTrace }) {
         <div className="mt-3 space-y-1.5">
           {influences.map(item => (
             <p key={`${trace.id}:${item.memory_id}`} className="break-words rounded-md bg-emerald-50 px-2 py-1.5 text-xs text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100">
-              {memoryDomainLabel(item.domain)}：{item.content}
+              {memoryEffectLabel(item.effect)} · {memoryDomainLabel(item.domain)}：{item.content}
             </p>
           ))}
         </div>
@@ -1361,6 +1429,8 @@ function WeeklyReviewCard({ review }: { review: LifeWeeklyReview }) {
 
 function LongTermDecisionCard({ decision }: { decision: LifeLongTermDecision }) {
   const latest = decision.latest_review
+  const nextReviewDate = parseTime(decision.next_review_at)
+  const overdue = decision.status === 'active' && nextReviewDate !== null && nextReviewDate.getTime() < Date.now()
   const nextReviewText = decision.next_review_at
     ? `下次复盘 ${formatDateTime(decision.next_review_at)}`
     : '待补下次复盘时间'
@@ -1369,11 +1439,24 @@ function LongTermDecisionCard({ decision }: { decision: LifeLongTermDecision }) 
     : ''
   return (
     <div className="rounded-md border border-stone-200 px-3 py-3 dark:border-neutral-800">
-      <p className="text-sm font-semibold">长期决定</p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <p className="text-sm font-semibold">长期决定</p>
+        {overdue && (
+          <span className="rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-100">
+            逾期未复盘
+          </span>
+        )}
+        {decision.status === 'pending_review_time' && (
+          <span className="rounded-md bg-stone-100 px-2 py-1 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+            待补时间
+          </span>
+        )}
+      </div>
       <p className="mt-2 break-words text-sm leading-6 text-neutral-700 dark:text-neutral-300">{decision.content}</p>
       <div className="mt-2 space-y-1 text-xs text-neutral-500">
         <p>{nextReviewText}{intervalText}</p>
         {latest && <p className="break-words">上次复盘：{latest.review_note}</p>}
+        {overdue && <p className="break-words text-amber-700 dark:text-amber-300">已经到复盘时间，等待你回复继续、调整、完成或关闭。</p>}
       </div>
     </div>
   )

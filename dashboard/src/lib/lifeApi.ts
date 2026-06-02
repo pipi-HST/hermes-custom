@@ -292,6 +292,31 @@ export interface LifeDecisionTrace {
   created_at: string
 }
 
+export interface LifeRepairAction {
+  kind: string
+  safe_to_apply: boolean
+  id?: string
+  reminder_type?: string
+  dedupe_key?: string
+  scheduled_for?: string
+  suggestion?: string
+  [key: string]: unknown
+}
+
+export interface LifeRepairPlan {
+  status: string
+  db_path: string
+  completed_at: string
+  delivery_error: string
+  summary: {
+    action_count: number
+    safe_apply_count: number
+    applied_count?: number
+  }
+  actions: LifeRepairAction[]
+  applied?: LifeRepairAction[]
+}
+
 const API_BASE = 'http://localhost:8000/api'
 
 export async function fetchLifeSummary(date: string): Promise<LifeSummary> {
@@ -331,6 +356,10 @@ export async function fetchLifeMemories(): Promise<LifeMemories> {
 export async function fetchLifeDecisionTraces(date: string): Promise<LifeDecisionTrace[]> {
   const data = await fetchJson<{ items: LifeDecisionTrace[] }>(`/life/decision-traces?date=${encodeURIComponent(date)}`)
   return Array.isArray(data.items) ? data.items : []
+}
+
+export async function fetchLifeRepairs(): Promise<LifeRepairPlan> {
+  return fetchJson<LifeRepairPlan>('/life/repairs')
 }
 
 async function fetchJson<T>(path: string): Promise<T> {

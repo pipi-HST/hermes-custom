@@ -885,7 +885,83 @@ def test_life_tick_records_memory_influence_in_decision_trace(agent: LifeAgent) 
     trace = agent.repo.list_decision_traces(limit=1)[0]
     assert trace["selected_reminder_type"] == "water"
     assert trace["memory_influences_json"][0]["memory_id"] == memory["id"]
-    assert trace["memory_influences_json"][0]["effect"] == "context_only"
+    assert trace["memory_influences_json"][0]["effect"] == "message_context"
+    hit = agent.repo.list_memory_hits(limit=1)[0]
+    assert hit["memory_id"] == memory["id"]
+    assert hit["effect_json"]["effect"] == "message_context"
+
+
+def test_life_tick_uses_memory_in_reminder_copy_for_multiple_domains(agent: LifeAgent) -> None:
+    water_memory = agent.repo.upsert_memory_item(
+        domain="life.water",
+        memory_type="pattern",
+        status="weak",
+        content="最近白天喝水偏少。",
+        confidence="medium",
+        source="test",
+        effective_from="2026-06-01T09:00:00+08:00",
+    )
+    water = agent.life_tick(
+        now="2026-06-01T10:00:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+    water_trace = agent.repo.list_decision_traces(limit=1)[0]
+    agent.repo.create_event(
+        event_type="exercise",
+        occurred_at="2026-06-01T18:00:00+08:00",
+        source="wechat",
+        status="completed_unknown",
+    )
+
+    agent.repo.upsert_memory_item(
+        domain="life.meal",
+        memory_type="pattern",
+        status="weak",
+        content="晚饭经常漏记时间。",
+        confidence="medium",
+        source="test",
+        effective_from="2026-06-01T09:00:00+08:00",
+    )
+    meal = agent.life_tick(
+        now="2026-06-01T21:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+    meal_trace = agent.repo.list_decision_traces(limit=1)[0]
+
+    agent.repo.upsert_memory_item(
+        domain="life.sedentary",
+        memory_type="pattern",
+        status="weak",
+        content="下午容易连续久坐。",
+        confidence="medium",
+        source="test",
+        effective_from="2026-06-01T09:00:00+08:00",
+    )
+    agent.repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-06-01T13:00:00+08:00",
+        source="mac_activity",
+        status="active",
+    )
+    sedentary = agent.life_tick(
+        now="2026-06-01T14:00:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=0, available=True),
+        dry_run=True,
+    )
+    sedentary_trace = agent.repo.list_decision_traces(limit=1)[0]
+
+    assert water["selected"]["reminder_type"] == "water"
+    assert "最近白天喝水偏少" in water["chat_preview"]
+    assert water_trace["memory_influences_json"][0]["memory_id"] == water_memory["id"]
+    assert water_trace["memory_influences_json"][0]["effect"] == "message_context"
+    assert meal["selected"]["reminder_type"] == "meal"
+    assert "晚饭经常漏记时间" in meal["chat_preview"]
+    assert meal_trace["memory_influences_json"][0]["effect"] == "message_context"
+    assert sedentary["selected"]["reminder_type"] == "sedentary"
+    assert "下午容易连续久坐" in sedentary["chat_preview"]
+    assert sedentary_trace["memory_influences_json"][0]["effect"] == "message_context"
 
 
 def test_sleep_record_reminder_prompts_when_last_night_sleep_is_missing(agent: LifeAgent) -> None:
@@ -905,6 +981,31 @@ def test_sleep_record_reminder_prompts_when_last_night_sleep_is_missing(agent: L
     assert result["selected"]["reminder_type"] == "sleep_record"
     assert "昨晚" in result["chat_preview"]
     assert "几点睡" in result["chat_preview"]
+
+
+def test_sleep_record_reminder_only_asks_missing_sleep_start_when_wake_exists(agent: LifeAgent) -> None:
+    agent.repo.create_event(
+        event_type="exercise",
+        occurred_at="2026-05-30T10:30:00+08:00",
+        source="wechat",
+        status="completed_unknown",
+    )
+    agent.repo.create_event(
+        event_type="sleep_end",
+        occurred_at="2026-05-30T13:30:00+08:00",
+        source="wechat",
+        payload={"wake_date": "2026-05-30"},
+    )
+
+    result = agent.life_tick(
+        now="2026-05-30T13:00:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert result["selected"]["reminder_type"] == "sleep_record"
+    assert "还缺睡觉时间" in result["chat_preview"]
+    assert "今天几点醒" not in result["chat_preview"]
 
 
 def test_sleep_record_reminder_skips_when_wake_day_has_duration(agent: LifeAgent) -> None:
@@ -1872,6 +1973,57 @@ def test_weekly_review_is_concise_and_evidence_based(agent: LifeAgent) -> None:
     assert row["evidence_json"] == review["evidence"]
 
 
+def test_weekly_review_analyzes_domains_gaps_and_memory(agent: LifeAgent) -> None:
+    agent.repo.upsert_memory_item(
+        domain="life.sleep",
+        memory_type="pattern",
+        status="weak",
+        content="最近常见醒来时间约11:20，作息偏晚。",
+        confidence="medium",
+        source="test",
+        effective_from="2026-05-31T12:00:00+08:00",
+    )
+    agent.repo.create_event(
+        event_type="sleep_end",
+        occurred_at="2026-05-27T11:20:00+08:00",
+        duration_minutes=510,
+        source="wechat",
+        payload={"wake_date": "2026-05-27"},
+    )
+    agent.repo.create_event(
+        event_type="meal",
+        occurred_at="2026-05-28T12:30:00+08:00",
+        source="wechat",
+        raw_text="午饭吃了牛肉饭",
+        payload={"meal_slot": "lunch", "content": "牛肉饭"},
+    )
+    agent.repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-05-29T09:00:00+08:00",
+        ended_at="2026-05-29T11:10:00+08:00",
+        duration_minutes=130,
+        source="mac_activity",
+        status="auto_resolved",
+    )
+
+    review = agent._build_weekly_review("2026-05-25", "2026-05-31")
+
+    text = review["report_text"]
+    assert len(text) <= 600
+    assert "总体：" in text
+    assert "睡眠：" in text
+    assert "饮食：" in text
+    assert "运动：" in text
+    assert "久坐：" in text
+    assert "建议：" in text
+    assert "待补：" in text
+    assert "记忆：" in text
+    assert "作息偏晚" in text
+    assert review["patterns"]["missing"]["exercise_days"] == 7
+    assert review["patterns"]["missing"]["meal_days"] == 6
+    assert review["patterns"]["memory_items"]
+
+
 def test_long_term_decision_without_review_time_asks_follow_up(agent: LifeAgent) -> None:
     result = agent.record_life_event(
         "长期决定：未来三个月优先打磨 Life Assistant",
@@ -2114,6 +2266,29 @@ def test_long_term_decision_review_reply_uses_user_specified_next_time(tmp_path)
     assert updated["next_review_at"] == "2026-08-01T09:00:00+08:00"
     assert len(reviews) == 1
     assert reviews[0]["next_review_at"] == "2026-08-01T09:00:00+08:00"
+
+
+def test_long_term_decision_review_writes_review_conclusion_to_memory(agent: LifeAgent) -> None:
+    decision = agent.repo.create_long_term_decision(
+        content="未来三个月优先打磨 Life Assistant",
+        created_at="2026-05-31T16:00:00+08:00",
+        next_review_at="2026-06-30T16:00:00+08:00",
+        review_interval_days=30,
+    )
+
+    result = agent.record_life_event(
+        "继续有效，8月1号上午9点再复盘",
+        received_at="2026-06-30T16:05:00+08:00",
+    )
+
+    memories = agent.repo.list_memory_items(domains=["life.decision"], limit=10)
+    assert result["status"] == "decision_review_recorded"
+    assert len(memories) == 1
+    assert memories[0]["memory_type"] == "decision_review"
+    assert "未来三个月优先打磨 Life Assistant" in memories[0]["content"]
+    assert "继续有效" in memories[0]["content"]
+    assert memories[0]["evidence_json"]["decision_id"] == decision["id"]
+    assert memories[0]["evidence_json"]["outcome"] == "kept"
 
 
 def test_close_long_term_decision_reply(agent: LifeAgent) -> None:

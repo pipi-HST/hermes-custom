@@ -445,6 +445,50 @@ def test_life_decision_traces_returns_selected_day_only(tmp_path) -> None:
     assert data["items"][0]["warnings_json"] == ["mac_activity_unavailable"]
 
 
+def test_life_repairs_returns_dry_run_candidates(tmp_path) -> None:
+    client, repo = _client(tmp_path, fresh_connections=True)
+    repo.create_reminder_log(
+        reminder_type="daily_review",
+        scheduled_for="2026-06-02T00:00:52+08:00",
+        status="sending",
+        dedupe_key="daily_review:2026-06-01",
+    )
+
+    response = client.get(
+        "/api/life/repairs",
+        params={"completed_at": "2026-06-02T00:00:53+08:00"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"]["action_count"] == 1
+    assert data["summary"]["safe_apply_count"] == 1
+    assert data["actions"][0]["kind"] == "stale_sending_reminder"
+
+
+def test_life_repairs_apply_safe_candidates(tmp_path) -> None:
+    client, repo = _client(tmp_path, fresh_connections=True)
+    reminder = repo.create_reminder_log(
+        reminder_type="daily_review",
+        scheduled_for="2026-06-02T00:00:52+08:00",
+        status="sending",
+        dedupe_key="daily_review:2026-06-01",
+    )
+
+    response = client.post(
+        "/api/life/repairs/apply",
+        params={"completed_at": "2026-06-02T00:00:53+08:00"},
+    )
+
+    row_after_apply = repo.conn.execute(
+        "SELECT status FROM life_reminder_logs WHERE id = ?",
+        (reminder["id"],),
+    ).fetchone()
+    assert response.status_code == 200
+    assert response.json()["summary"]["applied_count"] == 1
+    assert row_after_apply["status"] == "sent"
+
+
 def test_life_week_returns_weekly_metrics_trends_and_records(tmp_path) -> None:
     client, repo = _client(tmp_path)
     repo.create_event(

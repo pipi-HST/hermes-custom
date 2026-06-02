@@ -36,6 +36,7 @@ def plan_repairs(
     try:
         if completed:
             actions.extend(_stale_sending_actions(conn, completed_at=completed, delivery_error=delivery_error))
+        actions.extend(_superseded_duplicate_reminder_actions(conn))
         actions.extend(_duplicate_sleep_actions(conn))
         actions.extend(_dirty_meal_actions(conn))
     finally:
@@ -76,6 +77,9 @@ def apply_repairs(
                 continue
             if action["kind"] == "stale_sending_reminder":
                 _apply_stale_sending(conn, action)
+                applied.append(action)
+            elif action["kind"] == "superseded_duplicate_reminder":
+                _apply_superseded_duplicate_reminder(conn, action)
                 applied.append(action)
         conn.commit()
     finally:
@@ -153,6 +157,44 @@ def _duplicate_sleep_actions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     ]
 
 
+def _superseded_duplicate_reminder_actions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT pending.id,
+                  pending.reminder_type,
+                  pending.scheduled_for,
+                  pending.dedupe_key,
+                  newer.id AS superseded_by_id
+           FROM life_reminder_logs AS pending
+           JOIN life_reminder_logs AS newer
+             ON newer.reminder_type = pending.reminder_type
+            AND newer.scheduled_for = pending.scheduled_for
+            AND newer.id != pending.id
+            AND newer.status IN ('sent', 'completed')
+           WHERE pending.status IN ('scheduled', 'sending')
+           ORDER BY pending.scheduled_for ASC, pending.rowid ASC"""
+    ).fetchall()
+    seen: set[str] = set()
+    actions: list[dict[str, Any]] = []
+    for row in rows:
+        reminder_id = str(row["id"])
+        if reminder_id in seen:
+            continue
+        seen.add(reminder_id)
+        actions.append(
+            {
+                "kind": "superseded_duplicate_reminder",
+                "safe_to_apply": True,
+                "id": reminder_id,
+                "reminder_type": str(row["reminder_type"]),
+                "dedupe_key": str(row["dedupe_key"]),
+                "scheduled_for": str(row["scheduled_for"]),
+                "target_status": "superseded",
+                "superseded_by_id": str(row["superseded_by_id"]),
+            }
+        )
+    return actions
+
+
 def _dirty_meal_actions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [
         {
@@ -174,6 +216,23 @@ def _apply_stale_sending(conn: sqlite3.Connection, action: dict[str, Any]) -> No
             action["target_status"],
             action["target_sent_at"] or None,
             action["target_error"],
+            datetime.now().astimezone().isoformat(),
+            action["id"],
+        ),
+    )
+
+
+def _apply_superseded_duplicate_reminder(conn: sqlite3.Connection, action: dict[str, Any]) -> None:
+    payload = {
+        "superseded_by_id": action["superseded_by_id"],
+        "superseded_reason": "duplicate_reminder_already_sent_or_completed",
+    }
+    conn.execute(
+        """UPDATE life_reminder_logs
+           SET status = 'superseded', payload_json = ?, updated_at = ?
+           WHERE id = ? AND status IN ('scheduled', 'sending')""",
+        (
+            json.dumps(payload, ensure_ascii=False),
             datetime.now().astimezone().isoformat(),
             action["id"],
         ),

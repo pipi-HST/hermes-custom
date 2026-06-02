@@ -173,6 +173,39 @@ def test_life_repair_dry_run_and_apply_stale_sending_reminder(tmp_path) -> None:
     assert row_after_apply["error"] == ""
 
 
+def test_life_repair_can_apply_superseded_duplicate_reminder(tmp_path) -> None:
+    db_path = str(tmp_path / "life-repair.db")
+    repo = LifeRepo(init_life_db(db_path))
+    duplicate = repo.create_reminder_log(
+        reminder_type="exercise",
+        scheduled_for="2026-06-02T10:30:00+08:00",
+        status="scheduled",
+        dedupe_key="exercise:2026-06-02T10:30:duplicate",
+    )
+    repo.create_reminder_log(
+        reminder_type="exercise",
+        scheduled_for="2026-06-02T10:30:00+08:00",
+        status="sent",
+        sent_at="2026-06-02T10:31:00+08:00",
+        dedupe_key="exercise:2026-06-02T10:30",
+    )
+
+    planned = plan_repairs(db_path=db_path)
+
+    assert planned["summary"]["safe_apply_count"] == 1
+    assert planned["actions"][0]["kind"] == "superseded_duplicate_reminder"
+    assert planned["actions"][0]["id"] == duplicate["id"]
+
+    applied = apply_repairs(db_path=db_path)
+    row_after_apply = repo.conn.execute(
+        "SELECT status FROM life_reminder_logs WHERE id = ?",
+        (duplicate["id"],),
+    ).fetchone()
+
+    assert applied["summary"]["applied_count"] == 1
+    assert row_after_apply["status"] == "superseded"
+
+
 def test_life_audit_reports_runtime_warning_without_writing(tmp_path) -> None:
     db_path = str(tmp_path / "life-audit.db")
     repo = LifeRepo(init_life_db(db_path))

@@ -583,7 +583,7 @@ class LifeAgent:
         new_content = str(intent.payload.get("new_content") or "").strip()
         next_review_at = _parse_optional_datetime(intent.payload.get("next_review_at"))
         outcome = "adjusted" if new_content else "kept"
-        self.repo.create_decision_review(
+        review = self.repo.create_decision_review(
             decision_id=decision["id"],
             reviewed_at=received.isoformat(),
             review_note=review_note,
@@ -601,6 +601,11 @@ class LifeAgent:
             )
             if context:
                 self.repo.resolve_interaction_context(context["id"], resolved_at=received.isoformat())
+            self._upsert_decision_review_memory(
+                decision=updated,
+                review=review,
+                current=received,
+            )
             self._open_context(
                 "long_term_review_time_missing",
                 target_type="long_term_decision",
@@ -628,6 +633,11 @@ class LifeAgent:
         if context:
             self.repo.resolve_interaction_context(context["id"], resolved_at=received.isoformat())
         display_content = str((updated or decision).get("content") or decision["content"])
+        self._upsert_decision_review_memory(
+            decision=updated or decision,
+            review=review,
+            current=received,
+        )
         return {
             "status": "decision_review_recorded",
             "decision": updated,
@@ -648,7 +658,7 @@ class LifeAgent:
         if not decision:
             return _rejected("没有找到可关闭的长期决定。")
         review_note = str(intent.payload.get("review_note") or "").strip() or "关闭这个决定"
-        self.repo.create_decision_review(
+        review = self.repo.create_decision_review(
             decision_id=decision["id"],
             reviewed_at=received.isoformat(),
             review_note=review_note,
@@ -662,12 +672,48 @@ class LifeAgent:
         )
         if context:
             self.repo.resolve_interaction_context(context["id"], resolved_at=received.isoformat())
+        self._upsert_decision_review_memory(
+            decision=updated or decision,
+            review=review,
+            current=received,
+        )
         return {
             "status": "decision_closed",
             "decision": updated,
             "event": None,
             "chat_preview": f"已关闭长期决定：{decision['content']}。",
         }
+
+    def _upsert_decision_review_memory(
+        self,
+        *,
+        decision: dict[str, Any] | None,
+        review: dict[str, Any],
+        current: datetime,
+    ) -> None:
+        if not decision or not review:
+            return
+        content = str(decision.get("content") or "").strip()
+        note = str(review.get("review_note") or "").strip()
+        if not content or not note:
+            return
+        outcome = str(review.get("outcome") or "")
+        memory_text = f"长期决定“{content}”最近复盘结论：{note}"
+        self.repo.upsert_memory_item(
+            domain="life.decision",
+            memory_type="decision_review",
+            status="active" if str(decision.get("status") or "") != "closed" else "archived",
+            content=memory_text,
+            confidence="high",
+            source="long_term_decision_review",
+            effective_from=current.isoformat(),
+            evidence={
+                "decision_id": decision.get("id"),
+                "review_id": review.get("id"),
+                "outcome": outcome,
+                "next_review_at": review.get("next_review_at") or decision.get("next_review_at") or "",
+            },
+        )
 
     def _modify_pending_meal_time(
         self,
@@ -1021,6 +1067,14 @@ class LifeAgent:
             if selected:
                 self._store_selected_review(selected)
                 memory_pack = self._memory_pack_for_reminder(str(selected["reminder_type"]))
+                if memory_pack:
+                    selected = {
+                        **selected,
+                        "message": self._message_with_memory(
+                            str(selected["message"]),
+                            memory_pack,
+                        ),
+                    }
                 payload = {"dry_run": dry_run, **(selected.get("payload") or {})}
                 if memory_pack:
                     payload["memory_items"] = memory_pack
@@ -1040,7 +1094,7 @@ class LifeAgent:
                         used_at=current.isoformat(),
                         effect={
                             "reminder_type": selected["reminder_type"],
-                            "effect": "context_only",
+                            "effect": "message_context",
                         },
                     )
                 if selected["reminder_type"] == "long_term_decision_review":
@@ -1110,6 +1164,12 @@ class LifeAgent:
             }
             for item in items
         ]
+
+    def _message_with_memory(self, message: str, memory_pack: list[dict[str, Any]]) -> str:
+        memory_text = _memory_copy_text(memory_pack)
+        if not memory_text:
+            return message
+        return f"{message} 参考记忆：{memory_text}"
 
     def _store_selected_review(self, selected: dict[str, Any]) -> None:
         if selected["reminder_type"] == "daily_review":
@@ -1341,7 +1401,7 @@ class LifeAgent:
                 "memory_type": str(item.get("memory_type") or ""),
                 "status": str(item.get("status") or ""),
                 "content": str(item.get("content") or ""),
-                "effect": "context_only",
+                "effect": "message_context",
                 "reminder_type": reminder_type,
             }
             for item in memory_pack
@@ -1654,6 +1714,9 @@ class LifeAgent:
         wake_day = current.date().isoformat()
         if self._has_sleep_duration_for_wake_day(wake_day):
             return None
+        message = "睡眠补记：昨晚大概几点睡、今天几点醒？我会帮你算睡眠时长。"
+        if self._has_sleep_end_without_duration_for_wake_day(wake_day):
+            message = "睡眠补记：已看到醒来记录，还缺睡觉时间。昨晚大概几点睡？"
         dedupe_key = f"sleep_record:{wake_day}"
         if self._has_any_reminder_log(dedupe_key):
             return None
@@ -1661,7 +1724,7 @@ class LifeAgent:
             "priority": 7,
             "reminder_type": "sleep_record",
             "dedupe_key": dedupe_key,
-            "message": "睡眠补记：昨晚大概几点睡、今天几点醒？我会帮你算睡眠时长。",
+            "message": message,
         }
 
     def _meal_record_candidate(self, current: datetime) -> dict[str, Any] | None:
@@ -1778,20 +1841,40 @@ class LifeAgent:
         sleep_days = sum(1 for item in daily_metrics if item["sleep_minutes"])
         total_sedentary = sum(item["sedentary_over_limit_minutes"] for item in daily_metrics)
         meal_days = sum(1 for item in daily_metrics if item["meal_count"])
+        water_days = sum(1 for item in daily_metrics if item["water_count"])
+        total_water = sum(item["water_count"] for item in daily_metrics)
         avg_sleep = round(total_sleep / sleep_days) if sleep_days else 0
+        missing = {
+            "sleep_days": 7 - sleep_days,
+            "exercise_days": 7 - exercise_days,
+            "meal_days": 7 - meal_days,
+            "water_days": 7 - water_days,
+        }
+        memory_items = self._weekly_memory_items()
         labels = {
             "sleep": "有记录" if sleep_days else "缺记录",
             "exercise": "有运动" if exercise_days else "缺运动",
             "sedentary": "偏高" if total_sedentary >= 60 else "可控",
             "meals": "有记录" if meal_days else "缺记录",
+            "water": "有记录" if water_days else "缺记录",
         }
         patterns = {
             "sleep_days": sleep_days,
             "exercise_days": exercise_days,
             "total_sedentary_minutes": total_sedentary,
             "meal_record_days": meal_days,
+            "water_days": water_days,
+            "water_count": total_water,
+            "missing": missing,
+            "memory_items": memory_items,
         }
-        recommendations = ["下周继续优先保证作息和减少连续久坐。"]
+        recommendations = self._weekly_recommendations(
+            sleep_days=sleep_days,
+            exercise_days=exercise_days,
+            total_sedentary=total_sedentary,
+            meal_days=meal_days,
+            water_days=water_days,
+        )
         evidence = self._weekly_evidence(week_start, week_end)
         headline = self._weekly_headline(
             sleep_days=sleep_days,
@@ -1812,6 +1895,10 @@ class LifeAgent:
             exercise_days=exercise_days,
             total_sedentary=total_sedentary,
             meal_days=meal_days,
+            water_days=water_days,
+            total_water=total_water,
+            missing=missing,
+            memory_items=memory_items,
             evidence=evidence,
             recommendations=recommendations,
         )
@@ -1846,6 +1933,34 @@ class LifeAgent:
             return "饮食记录偏少，先提高记录完整度"
         return "本周生活节律基本可控"
 
+    def _weekly_recommendations(
+        self,
+        *,
+        sleep_days: int,
+        exercise_days: int,
+        total_sedentary: int,
+        meal_days: int,
+        water_days: int,
+    ) -> list[str]:
+        if total_sedentary >= 180:
+            return ["下周先把连续坐姿拆开，优先在久坐提醒后真实离座。"]
+        if exercise_days == 0:
+            return ["下周先固定一次最容易执行的运动，不追求强度。"]
+        if sleep_days <= 2:
+            return ["下周优先补齐睡眠记录，先看清作息节律。"]
+        if meal_days <= 2:
+            return ["下周先稳定记录饮食时间和内容，不急着评价吃得好不好。"]
+        if water_days <= 2:
+            return ["下周继续保持两次喝水记录，让白天补水更可见。"]
+        return ["下周维持当前节律，优先减少连续久坐。"]
+
+    def _weekly_memory_items(self) -> list[dict[str, Any]]:
+        return self.repo.list_memory_items(
+            statuses=["active", "temporary", "weak"],
+            domains=["life.sleep", "life.meal", "life.water", "life.sedentary", "life.copy"],
+            limit=3,
+        )
+
     def _weekly_report_text(
         self,
         *,
@@ -1855,21 +1970,39 @@ class LifeAgent:
         exercise_days: int,
         total_sedentary: int,
         meal_days: int,
+        water_days: int,
+        total_water: int,
+        missing: dict[str, int],
+        memory_items: list[dict[str, Any]],
         evidence: list[dict[str, Any]],
         recommendations: list[str],
     ) -> str:
-        findings = [
-            f"睡眠记录{sleep_days}天" + (f"，平均{_fmt_duration(avg_sleep)}" if avg_sleep else "，证据不足"),
-            f"运动{exercise_days}天，{'偏少' if exercise_days < 3 else '有延续'}",
-            f"久坐超标{_fmt_duration(total_sedentary)}" if total_sedentary else "未见超过60分钟的久坐窗口",
-            f"饮食记录覆盖{meal_days}天" if meal_days else "饮食记录缺失，暂时无法判断饮食习惯",
-        ]
+        sleep_text = f"记录{sleep_days}天" + (f"，平均{_fmt_duration(avg_sleep)}" if avg_sleep else "，证据不足")
+        meal_text = f"覆盖{meal_days}天" if meal_days else "缺记录，暂时不评价饮食习惯"
+        exercise_text = f"{exercise_days}天，{'偏少' if exercise_days < 3 else '有延续'}"
+        sedentary_text = f"超标{_fmt_duration(total_sedentary)}" if total_sedentary else "未见超过60分钟窗口"
+        water_text = f"喝水{total_water}次，覆盖{water_days}天" if total_water else "喝水缺记录"
+        missing_text = "、".join(
+            text for text in [
+                f"睡眠缺{missing['sleep_days']}天" if missing["sleep_days"] else "",
+                f"运动缺{missing['exercise_days']}天" if missing["exercise_days"] else "",
+                f"饮食缺{missing['meal_days']}天" if missing["meal_days"] else "",
+                f"喝水缺{missing['water_days']}天" if missing["water_days"] else "",
+            ]
+            if text
+        ) or "关键记录基本完整"
+        memory_text = "；".join(str(item.get("content") or "") for item in memory_items[:2])
         evidence_text = "；".join(str(item.get("text") or "") for item in evidence[:2] if item.get("text"))
-        suggestion_text = "；".join(recommendations[:3])
+        suggestion_text = recommendations[0] if recommendations else "下周继续保持记录。"
         text = (
             f"总体：{headline}。\n"
-            f"发现：{'；'.join(findings)}。"
-            f"{f' 证据：{evidence_text}。' if evidence_text else ''}\n"
+            f"睡眠：{sleep_text}。\n"
+            f"饮食：{meal_text}；{water_text}。\n"
+            f"运动：{exercise_text}。\n"
+            f"久坐：{sedentary_text}。\n"
+            f"{f'记忆：{memory_text}。' if memory_text else ''}"
+            f"{f'证据：{evidence_text}。' if evidence_text else ''}\n"
+            f"待补：{missing_text}。\n"
             f"建议：{suggestion_text}"
         )
         return text[:600]
@@ -1980,6 +2113,20 @@ class LifeAgent:
             payload = event.get("payload_json") or {}
             event_day = str(payload.get("wake_date") or _date_key(str(event.get("occurred_at") or "")))
             if event_day == wake_day and int(event.get("duration_minutes") or 0) > 0:
+                return True
+        return False
+
+    def _has_sleep_end_without_duration_for_wake_day(self, wake_day: str) -> bool:
+        rows = self.repo.conn.execute(
+            """SELECT occurred_at, duration_minutes, payload_json FROM life_events
+               WHERE event_type = 'sleep_end'
+                 AND status NOT IN ('undone', 'superseded')"""
+        ).fetchall()
+        for row in rows:
+            event = self.repo._event_row_to_dict(row)
+            payload = event.get("payload_json") or {}
+            event_day = str(payload.get("wake_date") or _date_key(str(event.get("occurred_at") or "")))
+            if event_day == wake_day and int(event.get("duration_minutes") or 0) <= 0:
                 return True
         return False
 
@@ -2338,6 +2485,23 @@ def _memory_domains_for_reminder(reminder_type: str) -> list[str]:
         return ["life.water", "life.copy"]
     if reminder_type == "sedentary":
         return ["life.sedentary", "life.copy"]
+    if reminder_type == "long_term_decision_review":
+        return ["life.decision", "life.copy"]
     if reminder_type in {"daily_review", "weekly_review"}:
-        return ["life.sleep", "life.meal", "life.water", "life.sedentary", "life.copy"]
+        return ["life.sleep", "life.meal", "life.water", "life.sedentary", "life.decision", "life.copy"]
     return ["life.copy"]
+
+
+def _memory_copy_text(memory_pack: list[dict[str, Any]]) -> str:
+    for item in memory_pack:
+        domain = str(item.get("domain") or "")
+        if domain == "life.copy":
+            continue
+        content = str(item.get("content") or "").strip()
+        if content:
+            return content[:42]
+    for item in memory_pack:
+        content = str(item.get("content") or "").strip()
+        if content:
+            return content[:42]
+    return ""

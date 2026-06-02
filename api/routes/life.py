@@ -13,6 +13,7 @@ from typing import Any, Iterator
 from fastapi import APIRouter, Query
 
 from agents.life_agent import LifeConfig
+from scripts.life_repair import apply_repairs, plan_repairs
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CRON_JOBS_PATH = "/Users/pipi/.hermes/cron/jobs.json"
@@ -201,7 +202,53 @@ def create_life_router(
             items = _decision_traces_on_date(db, selected_date, limit=limit)
         return {"date": selected_date, "items": items, "total": len(items)}
 
+    @router.get("/life/repairs")
+    def get_life_repairs(
+        completed_at: str = Query(default=""),
+        delivery_error: str = Query(default=""),
+    ):
+        return plan_repairs(
+            db_path=_repair_db_path(conn, db_path),
+            completed_at=completed_at,
+            delivery_error=delivery_error,
+            cron_jobs_path=_runtime_path(
+                explicit=cron_jobs_path,
+                env_name="HERMES_LIFE_CRON_JOBS_PATH",
+                default=DEFAULT_CRON_JOBS_PATH,
+            ),
+        )
+
+    @router.post("/life/repairs/apply")
+    def apply_life_repairs(
+        completed_at: str = Query(default=""),
+        delivery_error: str = Query(default=""),
+    ):
+        return apply_repairs(
+            db_path=_repair_db_path(conn, db_path),
+            completed_at=completed_at,
+            delivery_error=delivery_error,
+            cron_jobs_path=_runtime_path(
+                explicit=cron_jobs_path,
+                env_name="HERMES_LIFE_CRON_JOBS_PATH",
+                default=DEFAULT_CRON_JOBS_PATH,
+            ),
+        )
+
     return router
+
+
+def _repair_db_path(conn: sqlite3.Connection | None, db_path: str | None) -> str | None:
+    if db_path:
+        return db_path
+    if conn is None:
+        return None
+    row = conn.execute("PRAGMA database_list").fetchone()
+    if not row:
+        return None
+    file_path = row["file"] if isinstance(row, sqlite3.Row) else row[2]
+    if file_path:
+        return str(file_path)
+    return None
 
 
 @contextmanager
