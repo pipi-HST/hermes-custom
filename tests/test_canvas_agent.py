@@ -636,7 +636,7 @@ def test_structured_canvas_uses_warmer_deeper_but_still_soft_colors():
 
     payload = json.loads(result.json_text)
     colors = {node["color"] for node in payload["nodes"] if "color" in node}
-    assert {"#D7EBFF", "#FBD2C7", "#E7F0DE", "#ECE5D8", "#E7DED2"} <= colors
+    assert {"#D7EBFF", "#FBD2C7", "#E7F0DE", "#D8B66F", "#D2B98E"} <= colors
     assert "#FAFAF8" not in colors
 
 
