@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  applyLifeRepairs,
   fetchLifeDailyStatus,
   fetchLifeDecisionTraces,
   fetchLifeEvents,
@@ -301,6 +302,7 @@ function repairKindLabel(value: string): string {
   if (value === 'superseded_duplicate_reminder') return '已被覆盖的重复提醒'
   if (value === 'duplicate_sleep_session') return '疑似重复睡眠'
   if (value === 'dirty_meal_record') return '疑似饮食解析异常'
+  if (value === 'cross_midnight_sedentary_anomaly') return '跨夜坐姿异常'
   return value || '修复候选'
 }
 
@@ -495,6 +497,7 @@ export default function LifePage() {
   const [repairs, setRepairs] = useState<LifeRepairPlan | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [repairApplying, setRepairApplying] = useState(false)
   const [error, setError] = useState('')
   const [lastSyncedAt, setLastSyncedAt] = useState('')
   const [clock, setClock] = useState(() => Date.now())
@@ -600,6 +603,20 @@ export default function LifePage() {
   const exercises = events.filter(event => event.event_type === 'exercise')
   const exercisePlans = reminders.filter(isUserExercisePlan)
   const dateShiftDays = mode === 'week' ? 7 : 1
+  const applySafeRepairs = async () => {
+    if (repairApplying) return
+    setRepairApplying(true)
+    setError('')
+    try {
+      const result = await applyLifeRepairs()
+      setRepairs(result)
+      setLastSyncedAt(new Date().toISOString())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Life 修复请求失败')
+    } finally {
+      setRepairApplying(false)
+    }
+  }
 
   return (
     <main className="min-h-screen bg-[#f6f2e9] text-neutral-950 dark:bg-neutral-950 dark:text-neutral-100">
@@ -685,7 +702,7 @@ export default function LifePage() {
 
               <MemorySection memories={memories} />
 
-              <RepairSection repairs={repairs} />
+              <RepairSection repairs={repairs} applying={repairApplying} onApplySafe={applySafeRepairs} />
 
               <div className="grid gap-4 lg:grid-cols-2">
                 <SleepSection rows={sleepSessions} />
@@ -1268,7 +1285,15 @@ function MemorySection({ memories }: { memories: LifeMemories | null }) {
   )
 }
 
-function RepairSection({ repairs }: { repairs: LifeRepairPlan | null }) {
+function RepairSection({
+  repairs,
+  applying,
+  onApplySafe,
+}: {
+  repairs: LifeRepairPlan | null
+  applying: boolean
+  onApplySafe: () => void
+}) {
   const actions = repairs?.actions || []
   const safeCount = repairs?.summary.safe_apply_count || 0
   const highRiskCount = actions.filter(action => !action.safe_to_apply).length
@@ -1286,6 +1311,15 @@ function RepairSection({ repairs }: { repairs: LifeRepairPlan | null }) {
             <div className="rounded-md bg-emerald-50 px-3 py-3 text-emerald-950 dark:bg-emerald-950 dark:text-emerald-100">
               <p className="text-xs opacity-75">安全可修</p>
               <p className="mt-1 text-lg font-semibold">{safeCount} 项</p>
+              {safeCount > 0 && (
+                <button
+                  className="mt-2 rounded-md bg-emerald-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60 dark:bg-emerald-200 dark:text-emerald-950"
+                  disabled={applying}
+                  onClick={onApplySafe}
+                >
+                  {applying ? '正在 apply' : 'Apply 安全项'}
+                </button>
+              )}
             </div>
             <div className="rounded-md bg-amber-50 px-3 py-3 text-amber-950 dark:bg-amber-950 dark:text-amber-100">
               <p className="text-xs opacity-75">只建议人工看</p>

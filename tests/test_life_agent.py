@@ -2309,6 +2309,26 @@ def test_close_long_term_decision_reply(agent: LifeAgent) -> None:
     assert updated["status"] == "closed"
 
 
+def test_completed_long_term_decision_reply_records_completed_outcome(agent: LifeAgent) -> None:
+    decision = agent.repo.create_long_term_decision(
+        content="未来三个月优先打磨 Life Assistant",
+        created_at="2026-05-31T16:00:00+08:00",
+        next_review_at="2026-06-30T16:00:00+08:00",
+        review_interval_days=30,
+    )
+
+    result = agent.record_life_event(
+        "这个决定完成了",
+        received_at="2026-06-30T16:05:00+08:00",
+    )
+
+    updated = agent.repo.get_long_term_decision(decision["id"])
+    review = agent.repo.conn.execute("SELECT * FROM life_decision_reviews").fetchone()
+    assert result["status"] == "decision_closed"
+    assert updated["status"] == "closed"
+    assert review["outcome"] == "completed"
+
+
 def test_life_tick_splits_cross_midnight_sitting_window(agent: LifeAgent) -> None:
     window = agent.repo.create_event(
         event_type="sedentary_start",

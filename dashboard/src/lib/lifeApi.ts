@@ -362,8 +362,12 @@ export async function fetchLifeRepairs(): Promise<LifeRepairPlan> {
   return fetchJson<LifeRepairPlan>('/life/repairs')
 }
 
-async function fetchJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`)
+export async function applyLifeRepairs(): Promise<LifeRepairPlan> {
+  return fetchJson<LifeRepairPlan>('/life/repairs/apply', { method: 'POST' })
+}
+
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, init)
   if (!res.ok) {
     throw new Error(`Life API 请求失败：${res.status}`)
   }

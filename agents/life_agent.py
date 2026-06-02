@@ -658,11 +658,14 @@ class LifeAgent:
         if not decision:
             return _rejected("没有找到可关闭的长期决定。")
         review_note = str(intent.payload.get("review_note") or "").strip() or "关闭这个决定"
+        outcome = str(intent.payload.get("outcome") or "closed")
+        if outcome not in {"completed", "abandoned", "closed"}:
+            outcome = "closed"
         review = self.repo.create_decision_review(
             decision_id=decision["id"],
             reviewed_at=received.isoformat(),
             review_note=review_note,
-            outcome="closed",
+            outcome=outcome,
         )
         updated = self.repo.update_long_term_decision(
             decision["id"],

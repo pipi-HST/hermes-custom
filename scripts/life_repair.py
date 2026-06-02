@@ -39,6 +39,7 @@ def plan_repairs(
         actions.extend(_superseded_duplicate_reminder_actions(conn))
         actions.extend(_duplicate_sleep_actions(conn))
         actions.extend(_dirty_meal_actions(conn))
+        actions.extend(_cross_midnight_sedentary_actions(conn))
     finally:
         conn.close()
 
@@ -205,6 +206,37 @@ def _dirty_meal_actions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         }
         for issue in _meal_quality_issues(conn)
     ]
+
+
+def _cross_midnight_sedentary_actions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT id, occurred_at, ended_at, duration_minutes, status
+           FROM life_events
+           WHERE event_type = 'sedentary_start'
+             AND ended_at IS NOT NULL
+             AND ended_at != ''
+             AND status NOT IN ('undone', 'superseded', 'day_split')
+           ORDER BY occurred_at DESC, rowid DESC"""
+    ).fetchall()
+    actions: list[dict[str, Any]] = []
+    for row in rows:
+        started = _parse_datetime(str(row["occurred_at"]))
+        ended = _parse_datetime(str(row["ended_at"]))
+        if started.date() == ended.date():
+            continue
+        actions.append(
+            {
+                "kind": "cross_midnight_sedentary_anomaly",
+                "safe_to_apply": False,
+                "id": str(row["id"]),
+                "started_at": str(row["occurred_at"]),
+                "ended_at": str(row["ended_at"]),
+                "duration_minutes": int(row["duration_minutes"] or 0),
+                "status": str(row["status"]),
+                "suggestion": "manual review; split or supersede only after confirming sleep/away period",
+            }
+        )
+    return actions
 
 
 def _apply_stale_sending(conn: sqlite3.Connection, action: dict[str, Any]) -> None:

@@ -262,7 +262,7 @@ payload: 对象。meal 使用 meal_slot/content；exercise 使用 exercise_type�
 不要臆造发生时间。饮食只有餐别或内容、没有明确几点时，occurred_at 留空，payload.meal_time_precision="missing"。
 长期决定/长期决策用 record_long_term_decision，payload 至少包含 content；如果用户指定下次复盘时间，额外给 next_review_at。不要默认 30 天。
 用户只是在补充长期决定的下次复盘时间时，用 set_long_term_decision_review_time，payload 包含 next_review_at。
-长期决定复盘回复用 review_long_term_decision，payload 包含 review_note；如果用户调整决定，额外给 new_content；如果用户指定下一次复盘时间，额外给 next_review_at。用户明确结束/关闭/废弃这个长期决定时用 close_long_term_decision。
+长期决定复盘回复用 review_long_term_decision，payload 包含 review_note；如果用户调整决定，额外给 new_content；如果用户指定下一次复盘时间，额外给 next_review_at。用户明确结束/关闭/废弃/完成这个长期决定时用 close_long_term_decision；完成时 payload.outcome="completed"，废弃/放弃时 payload.outcome="abandoned"。
 water 只表示明确记录补水或回应喝水提醒；带具体饮品名称、口味、咖啡因、酒精、汤羹，或跟一餐连续出现的“还/又/另外喝了”，优先解析为 meal 的饮品内容。
 不要输出解释。不要把久坐提醒解析成可由回复解除的意图。"""
 
@@ -406,6 +406,16 @@ def _parse_long_term_decision_reply(text: str, received: datetime) -> LifeIntent
         )
     if text == "关闭这个决定":
         return LifeIntent(intent="close_long_term_decision", payload={"review_note": text})
+    if "决定" in text and any(keyword in text for keyword in ("完成", "做完", "达成")):
+        return LifeIntent(
+            intent="close_long_term_decision",
+            payload={"review_note": text, "outcome": "completed"},
+        )
+    if "决定" in text and any(keyword in text for keyword in ("放弃", "废弃", "不做了")):
+        return LifeIntent(
+            intent="close_long_term_decision",
+            payload={"review_note": text, "outcome": "abandoned"},
+        )
     review = re.match(r"^复盘\s*[：:]\s*(.+)$", text)
     if review:
         return LifeIntent(

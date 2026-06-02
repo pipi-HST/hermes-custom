@@ -206,6 +206,26 @@ def test_life_repair_can_apply_superseded_duplicate_reminder(tmp_path) -> None:
     assert row_after_apply["status"] == "superseded"
 
 
+def test_life_repair_flags_cross_midnight_sedentary_anomaly_as_high_risk(tmp_path) -> None:
+    db_path = str(tmp_path / "life-repair.db")
+    repo = LifeRepo(init_life_db(db_path))
+    repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-06-01T23:30:00+08:00",
+        ended_at="2026-06-02T08:10:00+08:00",
+        duration_minutes=520,
+        source="mac_activity",
+        status="auto_resolved",
+    )
+
+    planned = plan_repairs(db_path=db_path)
+
+    assert planned["summary"]["action_count"] == 1
+    assert planned["summary"]["safe_apply_count"] == 0
+    assert planned["actions"][0]["kind"] == "cross_midnight_sedentary_anomaly"
+    assert planned["actions"][0]["safe_to_apply"] is False
+
+
 def test_life_audit_reports_runtime_warning_without_writing(tmp_path) -> None:
     db_path = str(tmp_path / "life-audit.db")
     repo = LifeRepo(init_life_db(db_path))
