@@ -261,6 +261,7 @@ function memoryDomainLabel(value: string): string {
   if (value === 'life.meal') return '饮食记忆'
   if (value === 'life.water') return '喝水记忆'
   if (value === 'life.sedentary') return '久坐记忆'
+  if (value === 'life.exercise') return '运动记忆'
   if (value === 'life.decision') return '长期决定'
   if (value === 'life.copy') return '文案偏好'
   return value || 'Life 记忆'

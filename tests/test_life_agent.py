@@ -993,6 +993,94 @@ def test_life_tick_keeps_diagnostic_memory_out_of_user_facing_exercise_copy(agen
     assert "发送失败" not in result["chat_preview"]
 
 
+def test_weekly_review_stores_temporary_strategy_memory(agent: LifeAgent) -> None:
+    agent.repo.create_event(
+        event_type="sleep_end",
+        occurred_at="2026-05-27T08:00:00+08:00",
+        duration_minutes=420,
+        source="wechat",
+        payload={"wake_date": "2026-05-27"},
+    )
+    agent.repo.create_event(
+        event_type="exercise",
+        occurred_at="2026-05-31T18:00:00+08:00",
+        source="wechat",
+        status="completed_unknown",
+    )
+
+    result = agent.life_tick(
+        now="2026-05-31T21:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    memories = agent.repo.list_memory_items(domains=["life.exercise"], limit=10)
+    assert result["selected"]["reminder_type"] == "weekly_review"
+    assert memories
+    assert memories[0]["memory_type"] == "stage_goal"
+    assert memories[0]["status"] == "temporary"
+    assert memories[0]["source"] == "weekly_review"
+    assert "下周策略" in memories[0]["content"]
+    assert memories[0]["expires_at"]
+
+
+def test_strategy_memory_adjusts_reminder_priority_and_trace(agent: LifeAgent) -> None:
+    memory = agent.repo.upsert_memory_item(
+        domain="life.exercise",
+        memory_type="stage_goal",
+        status="temporary",
+        content="下周策略：先固定一次最容易执行的运动。",
+        confidence="medium",
+        source="weekly_review",
+        effective_from="2026-06-01T00:00:00+08:00",
+        expires_at="2026-06-07T23:59:59+08:00",
+    )
+
+    result = agent.life_tick(
+        now="2026-06-02T10:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    trace = agent.repo.list_decision_traces(limit=1)[0]
+    exercise_candidate = next(
+        item for item in trace["candidates_json"] if item["reminder_type"] == "exercise"
+    )
+    assert result["selected"]["reminder_type"] == "exercise"
+    assert exercise_candidate["priority"] == 1
+    assert exercise_candidate["strategy_memory_id"] == memory["id"]
+    assert trace["memory_influences_json"][0]["memory_id"] == memory["id"]
+    assert trace["memory_influences_json"][0]["effect"] == "strategy_context"
+    assert agent.repo.list_memory_hits(limit=1)[0]["effect_json"]["effect"] == "strategy_context"
+
+
+def test_strategy_memory_does_not_override_sedentary_alert(agent: LifeAgent) -> None:
+    agent.repo.upsert_memory_item(
+        domain="life.exercise",
+        memory_type="stage_goal",
+        status="temporary",
+        content="下周策略：先固定一次最容易执行的运动。",
+        confidence="medium",
+        source="weekly_review",
+        effective_from="2026-06-01T00:00:00+08:00",
+        expires_at="2026-06-07T23:59:59+08:00",
+    )
+    agent.repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-06-02T09:00:00+08:00",
+        source="mac_activity",
+        status="active",
+    )
+
+    result = agent.life_tick(
+        now="2026-06-02T10:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=0, available=True),
+        dry_run=True,
+    )
+
+    assert result["selected"]["reminder_type"] == "sedentary"
+
+
 def test_sleep_record_reminder_prompts_when_last_night_sleep_is_missing(agent: LifeAgent) -> None:
     agent.repo.create_event(
         event_type="exercise",

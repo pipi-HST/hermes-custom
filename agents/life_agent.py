@@ -1060,6 +1060,7 @@ class LifeAgent:
             if weekly_review:
                 candidates.append(weekly_review)
 
+            self._apply_memory_strategy_to_candidates(candidates, current)
             candidates.sort(key=lambda item: item["priority"])
             selected = candidates[0] if candidates else None
             if selected and self._notification_rate_limited(current):
@@ -1068,6 +1069,7 @@ class LifeAgent:
             should_notify = bool(selected and self.config.notifications_enabled and not dry_run)
             selected_reminder_id = ""
             memory_pack: list[dict[str, Any]] = []
+            strategy_influences = list((selected or {}).get("memory_influences") or [])
             if selected:
                 self._store_selected_review(selected)
                 memory_pack = self._memory_pack_for_reminder(str(selected["reminder_type"]))
@@ -1082,6 +1084,8 @@ class LifeAgent:
                 payload = {"dry_run": dry_run, **(selected.get("payload") or {})}
                 if memory_pack:
                     payload["memory_items"] = memory_pack
+                if strategy_influences:
+                    payload["strategy_memory_items"] = strategy_influences
                 log = self.repo.create_reminder_log(
                     reminder_type=selected["reminder_type"],
                     scheduled_for=current.isoformat(),
@@ -1099,6 +1103,20 @@ class LifeAgent:
                         effect={
                             "reminder_type": selected["reminder_type"],
                             "effect": "message_context",
+                        },
+                    )
+                for influence in strategy_influences:
+                    memory_id = str(influence.get("memory_id") or "")
+                    if not memory_id:
+                        continue
+                    self.repo.record_memory_hit(
+                        memory_id=memory_id,
+                        used_by="life_tick",
+                        target_id=str(log["id"]),
+                        used_at=current.isoformat(),
+                        effect={
+                            "reminder_type": selected["reminder_type"],
+                            "effect": str(influence.get("effect") or "strategy_context"),
                         },
                     )
                 if selected["reminder_type"] == "long_term_decision_review":
@@ -1140,7 +1158,7 @@ class LifeAgent:
                 memory_influences=self._memory_influences_from_pack(
                     memory_pack,
                     str(selected["reminder_type"]) if selected else "",
-                ),
+                ) + strategy_influences,
                 warnings=trace_warnings,
                 suppression_reason="notification_rate_limited" if "notification_rate_limited" in warnings else "",
             )
@@ -1168,6 +1186,7 @@ class LifeAgent:
                 "source": item["source"],
             }
             for item in items
+            if not _is_strategy_memory_item(item)
         ]
 
     def _message_with_memory(self, message: str, memory_pack: list[dict[str, Any]]) -> str:
@@ -1175,6 +1194,52 @@ class LifeAgent:
         if not memory_text:
             return message
         return f"{message} 参考记忆：{memory_text}"
+
+    def _apply_memory_strategy_to_candidates(
+        self,
+        candidates: list[dict[str, Any]],
+        current: datetime,
+    ) -> None:
+        if not candidates:
+            return
+        memories = self._active_strategy_memories(current)
+        if not memories:
+            return
+        for candidate in candidates:
+            reminder_type = str(candidate.get("reminder_type") or "")
+            domains = _strategy_domains_for_reminder(reminder_type)
+            memory = next((item for item in memories if str(item.get("domain") or "") in domains), None)
+            if not memory:
+                continue
+            original_priority = int(candidate.get("priority") or 0)
+            adjusted_priority = original_priority if reminder_type == "sedentary" else max(0, original_priority - 1)
+            candidate["priority"] = adjusted_priority
+            influence = {
+                "memory_id": str(memory.get("id") or ""),
+                "domain": str(memory.get("domain") or ""),
+                "memory_type": str(memory.get("memory_type") or ""),
+                "status": str(memory.get("status") or ""),
+                "content": str(memory.get("content") or ""),
+                "effect": "strategy_context",
+                "reminder_type": reminder_type,
+                "priority_before": original_priority,
+                "priority_after": adjusted_priority,
+            }
+            candidate.setdefault("memory_influences", []).append(influence)
+            candidate["strategy_memory_id"] = influence["memory_id"]
+
+    def _active_strategy_memories(self, current: datetime) -> list[dict[str, Any]]:
+        items = self.repo.list_memory_items(
+            statuses=["active", "temporary", "weak"],
+            domains=["life.sleep", "life.meal", "life.water", "life.sedentary", "life.exercise"],
+            limit=20,
+        )
+        return [
+            item
+            for item in items
+            if _is_strategy_memory_item(item)
+            and _memory_item_active_at(item, current)
+        ]
 
     def _store_selected_review(self, selected: dict[str, Any]) -> None:
         if selected["reminder_type"] == "daily_review":
@@ -1199,6 +1264,19 @@ class LifeAgent:
                 evidence=list(review.get("evidence") or []),
                 delivery=review.get("delivery") or {},
             )
+            strategy = review.get("strategy_memory") or {}
+            if strategy:
+                self.repo.upsert_memory_item(
+                    domain=str(strategy["domain"]),
+                    memory_type="stage_goal",
+                    status="temporary",
+                    content=str(strategy["content"]),
+                    confidence="medium",
+                    source="weekly_review",
+                    effective_from=str(strategy["effective_from"]),
+                    expires_at=str(strategy["expires_at"]),
+                    evidence=strategy.get("evidence") or {},
+                )
 
     def _open_context(
         self,
@@ -1390,6 +1468,7 @@ class LifeAgent:
                 "priority": item.get("priority"),
                 "reason": _default_candidate_reason(str(item.get("reminder_type") or "")),
                 "dedupe_key": str(item.get("dedupe_key") or ""),
+                "strategy_memory_id": str(item.get("strategy_memory_id") or ""),
             }
             for item in candidates
         ]
@@ -1960,6 +2039,16 @@ class LifeAgent:
             evidence=evidence,
             recommendations=recommendations,
         )
+        strategy_memory = self._weekly_strategy_memory(
+            week_start=week_start,
+            week_end=week_end,
+            recommendation=recommendations[0] if recommendations else "",
+            sleep_days=sleep_days,
+            exercise_days=exercise_days,
+            total_sedentary=total_sedentary,
+            meal_days=meal_days,
+            water_days=water_days,
+        )
         return {
             "week_start": week_start,
             "week_end": week_end,
@@ -1970,7 +2059,59 @@ class LifeAgent:
             "patterns": patterns,
             "recommendations": recommendations,
             "evidence": evidence,
+            "strategy_memory": strategy_memory,
             "delivery": {"wechat": "pending", "feishu": "pending"},
+        }
+
+    def _weekly_strategy_memory(
+        self,
+        *,
+        week_start: str,
+        week_end: str,
+        recommendation: str,
+        sleep_days: int,
+        exercise_days: int,
+        total_sedentary: int,
+        meal_days: int,
+        water_days: int,
+    ) -> dict[str, Any]:
+        if total_sedentary >= 180:
+            domain = "life.sedentary"
+            reminder_type = "sedentary"
+        elif exercise_days < 3:
+            domain = "life.exercise"
+            reminder_type = "exercise"
+        elif sleep_days <= 2:
+            domain = "life.sleep"
+            reminder_type = "sleep_record"
+        elif meal_days <= 2:
+            domain = "life.meal"
+            reminder_type = "meal"
+        elif water_days <= 2:
+            domain = "life.water"
+            reminder_type = "water"
+        else:
+            domain = "life.sedentary"
+            reminder_type = "sedentary"
+        start = f"{week_end}T21:30:00+08:00"
+        expires_at = (_parse_datetime(f"{week_end}T23:59:59+08:00") + timedelta(days=7)).isoformat()
+        suggestion = recommendation or "下周维持记录，并优先减少连续久坐。"
+        return {
+            "domain": domain,
+            "reminder_type": reminder_type,
+            "content": f"下周策略：{suggestion}",
+            "effective_from": start,
+            "expires_at": expires_at,
+            "evidence": {
+                "week_start": week_start,
+                "week_end": week_end,
+                "target_reminder_type": reminder_type,
+                "sleep_days": sleep_days,
+                "exercise_days": exercise_days,
+                "total_sedentary_minutes": total_sedentary,
+                "meal_days": meal_days,
+                "water_days": water_days,
+            },
         }
 
     def _weekly_headline(
@@ -2002,7 +2143,7 @@ class LifeAgent:
     ) -> list[str]:
         if total_sedentary >= 180:
             return ["下周先把连续坐姿拆开，优先在久坐提醒后真实离座。"]
-        if exercise_days == 0:
+        if exercise_days < 3:
             return ["下周先固定一次最容易执行的运动，不追求强度。"]
         if sleep_days <= 2:
             return ["下周优先补齐睡眠记录，先看清作息节律。"]
@@ -2018,7 +2159,7 @@ class LifeAgent:
             domains=["life.sleep", "life.meal", "life.water", "life.sedentary", "life.copy"],
             limit=8,
         )
-        return [item for item in items if _is_user_facing_memory_item(item)][:3]
+        return [item for item in items if _is_user_facing_memory_item(item) and not _is_strategy_memory_item(item)][:3]
 
     def _weekly_report_text(
         self,
@@ -2579,6 +2720,8 @@ def _disambiguate_meal_time(value: datetime, *, meal_slot: str, time_period: str
 
 
 def _memory_domains_for_reminder(reminder_type: str) -> list[str]:
+    if reminder_type == "exercise":
+        return ["life.exercise", "life.copy"]
     if reminder_type in {"sleep", "sleep_record"}:
         return ["life.sleep", "life.copy"]
     if reminder_type == "meal":
@@ -2590,8 +2733,22 @@ def _memory_domains_for_reminder(reminder_type: str) -> list[str]:
     if reminder_type == "long_term_decision_review":
         return ["life.decision", "life.copy"]
     if reminder_type in {"daily_review", "weekly_review"}:
-        return ["life.sleep", "life.meal", "life.water", "life.sedentary", "life.decision", "life.copy"]
+        return ["life.sleep", "life.meal", "life.water", "life.sedentary", "life.exercise", "life.decision", "life.copy"]
     return ["life.copy"]
+
+
+def _strategy_domains_for_reminder(reminder_type: str) -> list[str]:
+    if reminder_type == "exercise":
+        return ["life.exercise"]
+    if reminder_type in {"sleep", "sleep_record"}:
+        return ["life.sleep"]
+    if reminder_type == "meal":
+        return ["life.meal"]
+    if reminder_type == "water":
+        return ["life.water"]
+    if reminder_type == "sedentary":
+        return ["life.sedentary"]
+    return []
 
 
 def _memory_copy_text(memory_pack: list[dict[str, Any]]) -> str:
@@ -2615,5 +2772,22 @@ def _memory_copy_text(memory_pack: list[dict[str, Any]]) -> str:
 
 def _is_user_facing_memory_item(item: dict[str, Any]) -> bool:
     if str(item.get("source") or "") == "reminder_feedback":
+        return False
+    return True
+
+
+def _is_strategy_memory_item(item: dict[str, Any]) -> bool:
+    return str(item.get("memory_type") or "") == "stage_goal" and str(item.get("source") or "") == "weekly_review"
+
+
+def _memory_item_active_at(item: dict[str, Any], current: datetime) -> bool:
+    effective_from = str(item.get("effective_from") or "")
+    expires_at = str(item.get("expires_at") or "")
+    try:
+        if effective_from and _parse_datetime(effective_from) > current:
+            return False
+        if expires_at and _parse_datetime(expires_at) < current:
+            return False
+    except ValueError:
         return False
     return True
