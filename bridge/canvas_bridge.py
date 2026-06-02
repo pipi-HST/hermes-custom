@@ -80,7 +80,33 @@ def _generate_canvas(
 ) -> dict[str, Any]:
     question_capture_ids = _capture_ids_for_question(repo, question_id)
     resolved_capture_ids = _dedupe(capture_ids + question_capture_ids)
-    theme_node = _resolve_theme(vault_path, theme)
+    wants_garden_cluster = _should_build_garden_cluster(theme, garden_card_ids, resolved_capture_ids, question_id)
+    theme_node = None if wants_garden_cluster else _resolve_theme(vault_path, theme)
+    canvas_mode = "theme_canvas"
+    garden_cards: list[dict[str, Any]] = []
+
+    if not theme_node and wants_garden_cluster:
+        canvas_mode = "garden_cluster"
+        garden_cards = _resolve_garden_cards(
+            repo,
+            garden_card_ids=garden_card_ids,
+            capture_ids=[],
+            include_all=not garden_card_ids,
+        )
+        if not garden_cards:
+            return error_envelope(
+                agent="canvas",
+                intent="generate_canvas",
+                error="还没有 Garden 卡可以生成聚类画布。",
+                chat_preview="还没有 Garden 卡可以生成聚类画布。可以先让 Garden Agent 从相关材料里生成几张知识卡片，再生成 Canvas。",
+                meta={"canvas_mode": canvas_mode},
+            )
+        resolved_capture_ids = _dedupe(resolved_capture_ids + _capture_ids_from_cards(garden_cards))
+        theme_node = CanvasTheme(
+            title="Garden Card 聚类",
+            file_path="",
+            summary="这张画布以 Garden 知识卡片为主角，展示卡片之间的聚类关系和底层来源材料。",
+        )
     if not theme_node:
         return error_envelope(
             agent="canvas",
@@ -89,14 +115,15 @@ def _generate_canvas(
             chat_preview="没有找到匹配的 Theme/MOC。可以先扫描主题，或直接说清楚要用哪几篇笔记生成画板。",
             meta={"theme": theme, "question_id": question_id},
         )
-    if not resolved_capture_ids:
+    if not resolved_capture_ids and theme_node.file_path:
         resolved_capture_ids = _capture_ids_from_theme_moc(repo, vault_path, theme_node.file_path)
 
-    garden_cards = _resolve_garden_cards(
-        repo,
-        garden_card_ids=garden_card_ids,
-        capture_ids=resolved_capture_ids,
-    )
+    if not garden_cards:
+        garden_cards = _resolve_garden_cards(
+            repo,
+            garden_card_ids=garden_card_ids,
+            capture_ids=resolved_capture_ids,
+        )
     if not resolved_capture_ids:
         resolved_capture_ids = _capture_ids_from_cards(garden_cards)
     captures, missing_capture_ids = _resolve_captures(repo, vault_path, resolved_capture_ids)
@@ -168,6 +195,7 @@ def _generate_canvas(
         rel_path=rel_path,
         capture_count=len(captures),
         garden_count=len(garden_items),
+        canvas_mode=canvas_mode,
     )
     return success_envelope(
         agent="canvas",
@@ -185,8 +213,23 @@ def _generate_canvas(
             "edge_count": built.edge_count,
             "structure_status": structure_status,
             "export_file": export_file,
+            "canvas_mode": canvas_mode,
         },
     )
+
+
+def _should_build_garden_cluster(
+    theme: str,
+    garden_card_ids: list[str],
+    capture_ids: list[str],
+    question_id: str,
+) -> bool:
+    if garden_card_ids:
+        return True
+    query = _norm(theme)
+    if query and any(keyword in query for keyword in ["garden", "知识卡片", "花园", "卡片聚类"]):
+        return True
+    return not query and not capture_ids and not question_id
 
 
 def _canvas_file_artifact(canvas_path: Path) -> dict[str, Any]:
@@ -294,7 +337,10 @@ def _resolve_garden_cards(
     *,
     garden_card_ids: list[str],
     capture_ids: list[str],
+    include_all: bool = False,
 ) -> list[dict[str, Any]]:
+    if include_all:
+        return [dict(row) for row in repo.conn.execute("SELECT * FROM garden_cards").fetchall()]
     if garden_card_ids:
         return [
             dict(row)
@@ -390,7 +436,17 @@ def _is_hermes_canvas(path: Path) -> bool:
     return isinstance(metadata, dict) and metadata.get("generated_by") == "hermes"
 
 
-def _canvas_preview(*, title: str, rel_path: str, capture_count: int, garden_count: int) -> str:
+def _canvas_preview(*, title: str, rel_path: str, capture_count: int, garden_count: int, canvas_mode: str = "theme_canvas") -> str:
+    if canvas_mode == "garden_cluster":
+        return "\n".join([
+            f"已生成 Garden Card 聚类 Canvas：《{title}》",
+            "",
+            "里面包含：",
+            f"- {garden_count} 张 Garden 卡",
+            f"- {capture_count} 篇来源笔记",
+            "",
+            f"你可以在 Obsidian 的 `{rel_path}` 打开它继续调整。",
+        ])
     return "\n".join([
         f"已生成 Obsidian Canvas：《{title}》",
         "",

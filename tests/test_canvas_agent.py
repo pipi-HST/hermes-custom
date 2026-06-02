@@ -151,10 +151,9 @@ def test_structured_canvas_cards_are_large_readable_and_use_source_badges():
     assert card["height"] >= 250
     assert card["width"] >= 420
     assert card["text"].startswith("**方法卡**")
-    assert "## 工程化方法卡" in card["text"]
+    assert "## [[garden/method|工程化方法卡]]" in card["text"]
     assert "这里继续补充很多文字来模拟真实卡片" in card["text"]
     assert "…" not in card["text"]
-    assert "[[garden/method|工程化方法卡]]" not in card["text"]
     assert "打开：" not in card["text"]
     assert "来源：" not in card["text"]
     assert by_id["group-1-card-1-ref-1"]["text"] == "S1"
@@ -201,6 +200,41 @@ def test_structured_canvas_shows_all_evidence_without_collapsing_sources():
     assert "source-more" not in {node["id"] for node in payload["nodes"]}
     assert not any("来源收起" in node.get("text", "") for node in payload["nodes"])
     assert result.warnings == []
+
+
+def test_structured_canvas_shows_all_source_badges_for_each_garden_card():
+    captures = [
+        CanvasItem(id=f"cap{i}", title=f"来源{i}", file_path=f"captures/{i}.md")
+        for i in range(1, 6)
+    ]
+    result = build_obsidian_canvas(
+        CanvasBuildInput(
+            title="AI Agent工程化",
+            theme=CanvasTheme(title="AI Agent", file_path="themes/ai-agent.md"),
+            captures=captures,
+            garden_cards=[
+                CanvasItem(
+                    id="card1",
+                    title="工程化方法卡",
+                    file_path="garden/method.md",
+                    kind="method",
+                    summary="先优化单次调用，再考虑工作流。",
+                    source_ids=[capture.id for capture in captures],
+                ),
+            ],
+            structure=CanvasStructure(
+                core_claim="AI Agent 的价值来自工程底座。",
+                groups=[CanvasStructureGroup(role="method", title="落地方法", card_ids=["card1"])],
+                evidence_ids=[capture.id for capture in captures],
+            ),
+        )
+    )
+
+    payload = json.loads(result.json_text)
+    by_id = {node["id"]: node for node in payload["nodes"]}
+    for index in range(1, 6):
+        assert by_id[f"group-1-card-1-ref-{index}"]["text"] == f"S{index}"
+    assert "group-1-card-1-ref-6" not in by_id
 
 
 def test_build_obsidian_canvas_structure_ignores_missing_card_ids():

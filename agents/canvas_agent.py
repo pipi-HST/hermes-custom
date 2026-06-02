@@ -216,19 +216,22 @@ def _build_structured_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
                 )
             )
             badge_y = card_y + card_height + 12
-            for ref_index, ref in enumerate(_source_refs(card, captures)[:3]):
+            for ref_index, ref in enumerate(_source_refs(card, captures, limit=None)):
+                badge_col = ref_index % 5
+                badge_row = ref_index // 5
                 nodes.append(
                     _text_node(
                         f"{node_id}-ref-{ref_index + 1}",
                         ref,
-                        x + 24 + ref_index * 60,
-                        badge_y,
-                        64,
+                        x + 24 + badge_col * 76,
+                        badge_y + badge_row * 44,
+                        68,
                         38,
                         SOURCE_BADGE_COLOR,
                     )
                 )
-            max_card_bottom = max(max_card_bottom, badge_y + 38)
+            ref_rows = max(1, (len(_source_refs(card, captures, limit=None)) + 4) // 5)
+            max_card_bottom = max(max_card_bottom, badge_y + (ref_rows - 1) * 44 + 38)
             edges.append(_edge(f"edge-{group_id}-{card_index + 1}", group_id, node_id))
 
     evidence_y = max(380, max_card_bottom + 120)
@@ -346,7 +349,7 @@ def _garden_text(item: CanvasItem, refs: list[str] | None = None) -> str:
 def _readable_garden_text(item: CanvasItem) -> str:
     lines = [
         f"**{_kind_label_zh(item.kind)}**",
-        f"## {item.title or '未命名'}",
+        f"## {_wiki_link(item.file_path, item.title or '未命名')}",
     ]
     if item.summary.strip():
         lines.extend(["", _clip(item.summary, 220)])
@@ -361,11 +364,12 @@ def _source_pill_text(item: CanvasItem, index: int) -> str:
     return _wiki_link(item.file_path, f"S{index} {_clip(item.title, 30)}")
 
 
-def _source_refs(card: CanvasItem, captures: list[CanvasItem]) -> list[str]:
+def _source_refs(card: CanvasItem, captures: list[CanvasItem], *, limit: int | None = MAX_SOURCE_REFS_PER_CARD) -> list[str]:
     index_by_id = {capture.id: index + 1 for index, capture in enumerate(captures)}
+    source_ids = card.source_ids if limit is None else card.source_ids[:limit]
     return [
         f"S{index_by_id[source_id]}"
-        for source_id in card.source_ids[:MAX_SOURCE_REFS_PER_CARD]
+        for source_id in source_ids
         if source_id in index_by_id
     ]
 
@@ -440,6 +444,8 @@ def _ordered_cards(cards: list[CanvasItem]) -> list[CanvasItem]:
 
 def _wiki_link(file_path: str, title: str) -> str:
     target = re.sub(r"\.md$", "", file_path or "")
+    if not target:
+        return title or "未命名"
     return f"[[{target}|{title or target or '未命名'}]]"
 
 

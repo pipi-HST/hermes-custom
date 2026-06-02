@@ -387,3 +387,97 @@ def test_generate_canvas_updates_compacted_hermes_canvas(tmp_path):
     payload = json.loads(original.read_text(encoding="utf-8"))
     assert payload["nodes"]
     assert not (canvas_dir / "AI Agent-关系图-Hermes.canvas").exists()
+
+
+def test_generate_canvas_without_theme_builds_garden_card_cluster(tmp_path):
+    conn, db_path, vault = _setup_db_and_vault(tmp_path)
+    _write_note(vault, "captures/effective.md", "Building Effective AI Agents")
+    _write_note(vault, "captures/risk.md", "Agent 风险")
+    _insert_capture(conn, "cap1", "captures/effective.md")
+    _insert_capture(conn, "cap2", "captures/risk.md")
+    _insert_garden_card(
+        conn,
+        vault,
+        "card1",
+        "AI Agent 工程化方法卡",
+        "garden/AI Agent 工程化方法卡-card1.md",
+        ["cap1"],
+        kind="method",
+    )
+    _insert_garden_card(
+        conn,
+        vault,
+        "card2",
+        "AI Agent 复杂度风险卡",
+        "garden/AI Agent 复杂度风险卡-card2.md",
+        ["cap2"],
+        kind="caution",
+    )
+
+    with patch("bridge.canvas_bridge.GardenStructureAgent") as planner_cls:
+        planner_cls.return_value.plan.return_value = {
+            "status": "structured",
+            "core_claim": "AI Agent 工程化需要方法，也需要复杂度边界。",
+            "groups": [
+                {"role": "method", "title": "落地方法", "card_ids": ["card1"], "reason": "方法卡"},
+                {"role": "risk", "title": "复杂度边界", "card_ids": ["card2"], "reason": "风险卡"},
+            ],
+            "evidence_ids": ["cap1", "cap2"],
+        }
+        envelope = generate_canvas(
+            garden_card_ids=["card1", "card2"],
+            db_path=str(db_path),
+            vault_path=str(vault),
+        )
+
+    canvas_path = vault / "canvas" / "Garden Card 聚类-关系图.canvas"
+    assert envelope["status"] == "success"
+    assert canvas_path.exists()
+    assert envelope["meta"]["canvas_mode"] == "garden_cluster"
+    assert "Garden Card 聚类" in envelope["chat_preview"]
+    payload = json.loads(canvas_path.read_text(encoding="utf-8"))
+    text = "\n".join(node.get("text", "") for node in payload["nodes"])
+    assert "AI Agent 工程化方法卡" in text
+    assert "AI Agent 复杂度风险卡" in text
+    assert "[[garden/AI Agent 工程化方法卡-card1|AI Agent 工程化方法卡]]" in text
+    assert "[[captures/effective|S1 Building Effective AI Agents]]" in text
+    assert "[[captures/risk|S2 Agent 风险]]" in text
+    assert "cap1" not in text
+
+
+def test_generate_canvas_empty_theme_uses_all_garden_cards(tmp_path):
+    conn, db_path, vault = _setup_db_and_vault(tmp_path)
+    _write_note(vault, "themes/agent.md", "agent")
+    _write_note(vault, "captures/effective.md", "Building Effective AI Agents")
+    _insert_capture(conn, "cap1", "captures/effective.md")
+    _insert_garden_card(
+        conn,
+        vault,
+        "card1",
+        "AI Agent 工程化方法卡",
+        "garden/AI Agent 工程化方法卡-card1.md",
+        ["cap1"],
+        kind="method",
+    )
+
+    envelope = generate_canvas(
+        db_path=str(db_path),
+        vault_path=str(vault),
+    )
+
+    assert envelope["status"] == "success"
+    assert envelope["meta"]["canvas_mode"] == "garden_cluster"
+    assert envelope["meta"]["garden_count"] == 1
+    assert (vault / "canvas" / "Garden Card 聚类-关系图.canvas").exists()
+
+
+def test_generate_canvas_without_theme_errors_when_no_garden_cards(tmp_path):
+    _conn, db_path, vault = _setup_db_and_vault(tmp_path)
+
+    envelope = generate_canvas(
+        db_path=str(db_path),
+        vault_path=str(vault),
+    )
+
+    assert envelope["status"] == "error"
+    assert "还没有 Garden 卡" in envelope["chat_preview"]
