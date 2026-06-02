@@ -523,7 +523,9 @@ class LifeAgent:
         if not decision:
             decision = self.repo.latest_pending_long_term_decision()
         if not decision:
-            return _rejected("没有找到待补复盘时间的长期决定。")
+            decision = self.repo.latest_active_long_term_decision(now=received.isoformat())
+        if not decision:
+            return _rejected("没有找到待补或可改期的长期决定。")
         next_review_at = _parse_optional_datetime(intent.payload.get("next_review_at"))
         if not next_review_at:
             return _rejected("这条复盘时间我暂时没读懂，可以直接说具体日期和时间。")

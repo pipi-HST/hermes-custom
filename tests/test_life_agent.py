@@ -2319,6 +2319,26 @@ def test_follow_up_review_time_merges_duplicate_active_decision(agent: LifeAgent
     assert superseded["status"] == "superseded"
 
 
+def test_active_long_term_decision_review_time_can_be_changed_without_pending_context(agent: LifeAgent) -> None:
+    decision = agent.repo.create_long_term_decision(
+        content="未来三个月优先打磨 Life Assistant",
+        created_at="2026-05-31T15:00:00+08:00",
+        next_review_at="2026-06-10T20:00:00+08:00",
+        review_interval_days=10,
+    )
+
+    result = agent.record_life_event(
+        "把长期决定改到7月1日上午9点复盘",
+        received_at="2026-06-02T12:00:00+08:00",
+    )
+
+    updated = agent.repo.get_long_term_decision(decision["id"])
+    assert result["status"] == "decision_recorded"
+    assert result["decision"]["id"] == decision["id"]
+    assert updated["status"] == "active"
+    assert updated["next_review_at"] == "2026-07-01T09:00:00+08:00"
+
+
 def test_life_tick_sends_long_term_decision_review(agent: LifeAgent) -> None:
     decision = agent.repo.create_long_term_decision(
         content="未来三个月优先打磨 Life Assistant",

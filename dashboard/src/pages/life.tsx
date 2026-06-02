@@ -277,6 +277,15 @@ function memoryTypeLabel(value: string): string {
   return value || '记忆'
 }
 
+function decisionOutcomeLabel(value: string): string {
+  if (value === 'kept') return '继续'
+  if (value === 'adjusted') return '调整'
+  if (value === 'completed') return '完成'
+  if (value === 'abandoned') return '放弃'
+  if (value === 'closed') return '关闭'
+  return value || '复盘'
+}
+
 function memoryStatusLabel(value: string): string {
   if (value === 'active') return '生效'
   if (value === 'weak') return '弱推断'
@@ -1496,6 +1505,12 @@ function LongTermDecisionCard({ decision }: { decision: LifeLongTermDecision }) 
   const intervalText = decision.review_interval_days > 0
     ? ` · 间隔 ${decision.review_interval_days} 天`
     : ''
+  const latestReviewText = latest
+    ? `上次复盘：${decisionOutcomeLabel(latest.outcome)} · ${latest.review_note || latest.summary || '未填写结论'}`
+    : ''
+  const latestNextReviewText = latest?.next_review_at
+    ? `复盘后约定下次 ${formatDateTime(latest.next_review_at)}`
+    : ''
   return (
     <div className="rounded-md border border-stone-200 px-3 py-3 dark:border-neutral-800">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -1514,7 +1529,8 @@ function LongTermDecisionCard({ decision }: { decision: LifeLongTermDecision }) 
       <p className="mt-2 break-words text-sm leading-6 text-neutral-700 dark:text-neutral-300">{decision.content}</p>
       <div className="mt-2 space-y-1 text-xs text-neutral-500">
         <p>{nextReviewText}{intervalText}</p>
-        {latest && <p className="break-words">上次复盘：{latest.review_note}</p>}
+        {latestReviewText && <p className="break-words">{latestReviewText}</p>}
+        {latestNextReviewText && <p className="break-words">{latestNextReviewText}</p>}
         {overdue && <p className="break-words text-amber-700 dark:text-amber-300">已经到复盘时间，等待你回复继续、调整、完成或关闭。</p>}
       </div>
     </div>
