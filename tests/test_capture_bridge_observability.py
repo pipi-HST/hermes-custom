@@ -89,3 +89,28 @@ def test_capture_content_records_run_ledger_and_strips_preamble(monkeypatch, tmp
     assert evidence["draft_status"] == "draft_ready"
     assert output["title"].startswith("AI产品评测")
     assert events == ["started", "completed"]
+
+
+def test_draft_preview_uses_body_after_emphasis_heading():
+    from bridge import capture_bridge
+
+    message, _ = capture_bridge._draft_saved_preview(
+        {
+            "title": "冰火两重天",
+            "summary": "市场节奏受世界杯影响。",
+            "draft_text": (
+                "# 冰火两重天：极端割裂下的市场节奏与风险\n\n"
+                "## 二、世界杯魔咒：市场节奏的核心变量\n\n"
+                "世界杯会吸引短线投机资金从股市抽离，导致交投清淡、流动性阶段性收紧。"
+                "在科技板块高度拥挤时，这会放大踩踏风险。\n\n"
+                "## 三、其他内容\n\n"
+                "其他段落。"
+            ),
+            "capture_intent": {"emphasis": ["世界杯期间市场节奏"]},
+        },
+        "生成",
+    )
+
+    key_response = message.split("重点回应：", 1)[1].split("\n\n总结：", 1)[0]
+    assert "世界杯会吸引短线投机资金" in key_response
+    assert "冰火两重天：极端割裂" not in key_response

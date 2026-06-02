@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+import zipfile
 
 import pytest
 
@@ -11,6 +12,7 @@ from agents.extractors.image_extractor import ImageExtractor
 from agents.extractors.voice_extractor import VoiceExtractor
 from agents.extractors.text_extractor import TextExtractor
 from agents.extractors.xiaohongshu_extractor import XiaohongshuExtractor
+from agents.extractors.document_extractor import DocumentExtractor
 
 
 @pytest.fixture
@@ -28,6 +30,155 @@ def agent(tmp_path: Path) -> CaptureAgent:
 
 
 # ── ImageExtractor.can_handle ──
+
+
+def test_document_extractor_handles_local_markdown(tmp_path: Path):
+    """DocumentExtractor should accept local Markdown file paths."""
+    doc = tmp_path / "整理稿.md"
+    doc.write_text("# 世界杯效应\n\n核心内容。", encoding="utf-8")
+
+    ext = DocumentExtractor()
+
+    assert ext.can_handle(str(doc)) is True
+
+
+def test_document_extractor_reads_markdown_text(tmp_path: Path):
+    """Markdown file paths should become raw document text."""
+    doc = tmp_path / "整理稿.md"
+    doc.write_text("# 世界杯效应\n\n核心内容。", encoding="utf-8")
+
+    result = DocumentExtractor().extract(str(doc))
+
+    assert result.source_type == "document"
+    assert result.title == "整理稿"
+    assert "世界杯效应" in result.raw_text
+
+
+def test_document_extractor_reads_docx_text(tmp_path: Path):
+    """DOCX file paths should be extracted without requiring python-docx."""
+    doc = tmp_path / "文档.docx"
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body>"
+        "<w:p><w:r><w:t>第一段内容。</w:t></w:r></w:p>"
+        "<w:p><w:r><w:t>第二段内容。</w:t></w:r></w:p>"
+        "</w:body></w:document>"
+    )
+    with zipfile.ZipFile(doc, "w") as zf:
+        zf.writestr("word/document.xml", xml)
+
+    result = DocumentExtractor().extract(str(doc))
+
+    assert result.source_type == "document"
+    assert "第一段内容" in result.raw_text
+    assert "第二段内容" in result.raw_text
+
+
+def test_document_extractor_reports_malformed_pdf_failure(tmp_path: Path):
+    """Malformed PDF paths should fail clearly instead of becoming draft text."""
+    pdf = tmp_path / "报告.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%%EOF")
+
+    result = DocumentExtractor().extract(str(pdf))
+
+    assert result.extraction_failed is True
+    assert "文档内容提取失败" in result.raw_text
+
+
+def test_document_extractor_reads_pdf_text(tmp_path: Path):
+    """PDF file paths should be extracted when pypdf is installed."""
+    pytest.importorskip("pypdf")
+    pdf = tmp_path / "报告.pdf"
+    pdf.write_bytes(
+        b"""%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 44 >>
+stream
+BT /F1 24 Tf 72 720 Td (World Cup effect) Tj ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000311 00000 n 
+trailer
+<< /Root 1 0 R /Size 6 >>
+startxref
+400
+%%EOF
+"""
+    )
+
+    result = DocumentExtractor().extract(str(pdf))
+
+    assert result.extraction_failed is False
+    assert "World Cup effect" in result.raw_text
+
+
+def test_create_draft_from_markdown_file_path(agent: CaptureAgent, tmp_path: Path):
+    """File path → DocumentExtractor → draft raw_text, not the literal path."""
+    doc = tmp_path / "整理稿.md"
+    doc.write_text(
+        "# 世界杯效应\n\n"
+        "世界杯前后资金容易分流。短线资金可能从股票市场转向竞猜和娱乐消费，"
+        "因此高位科技行情在赛事开幕前后更容易出现情绪波动。文章还强调，"
+        "这种影响不是决定长期趋势的基本面变量，而是短期流动性和风险偏好的扰动。",
+        encoding="utf-8",
+    )
+
+    result = agent.create_draft(str(doc))
+
+    assert result["status"] == "raw_extracted"
+    assert result["source_type"] == "document"
+    assert "世界杯前后资金容易分流" in result["raw_text"]
+    assert str(doc) not in result["raw_text"]
+
+
+def test_create_draft_from_markdown_file_with_instruction(agent: CaptureAgent, tmp_path: Path, monkeypatch):
+    """File path + instruction should summarize the document body, not the path string."""
+    doc = tmp_path / "整理稿.md"
+    doc.write_text(
+        "# 世界杯效应\n\n"
+        "世界杯可能带来短线资金分流。市场在赛事前后容易出现注意力迁移，"
+        "部分活跃资金会转向竞猜和娱乐消费，导致高位题材股的承接力量下降。"
+        "文章同时提醒，这种效应更像短期情绪扰动，并不直接改变产业趋势。",
+        encoding="utf-8",
+    )
+    prompts: list[str] = []
+
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: prompts.append(prompt) or "世界杯效应：短线资金可能分流。")
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {
+            "summary": "世界杯前后资金分流。",
+            "tags": ["market"],
+        },
+    )
+
+    result = agent.create_draft(str(doc), instruction="整理文章核心内容，世界杯效应详细阐述")
+
+    assert result["status"] == "draft_ready"
+    assert "世界杯效应" in prompts[0]
+    assert str(doc) not in prompts[0]
+    assert result["draft_text"] == "世界杯效应：短线资金可能分流。"
 
 
 def test_image_extractor_handles_local_jpg(tmp_path: Path):
@@ -263,6 +414,16 @@ def test_extractor_routing_voice(agent: CaptureAgent, tmp_path: Path):
 
     matched = next(e for e in agent.extractors if e.can_handle(str(audio)))
     assert isinstance(matched, VoiceExtractor)
+
+
+def test_extractor_routing_document_before_text(agent: CaptureAgent, tmp_path: Path):
+    """CaptureAgent should route supported document paths before TextExtractor fallback."""
+    doc = tmp_path / "整理稿.md"
+    doc.write_text("# 正文", encoding="utf-8")
+
+    matched = next(e for e in agent.extractors if e.can_handle(str(doc)))
+
+    assert isinstance(matched, DocumentExtractor)
 
 
 def test_extractor_routing_xiaohongshu_before_generic_link(agent: CaptureAgent):

@@ -71,6 +71,123 @@ def test_create_draft_with_instruction_returns_draft_text(agent: CaptureAgent, t
     assert prompts[0].count(TEST_CONTENT) == 1
 
 
+def test_create_draft_uses_llm_planning_for_unenumerated_user_focus(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    prompts: list[str] = []
+    agent._capture_planning_enabled = True
+
+    monkeypatch.setattr(
+        agent,
+        "_call_capture_planner",
+        lambda **kwargs: {
+            "task_type": "organize",
+            "coverage": "full_article",
+            "focus": ["世界杯效应"],
+            "detail_level": "deep",
+            "compression": "medium",
+            "preserve": ["methodology"],
+            "title": "写在世界杯之前：科技牛市与短期判断",
+            "detail_policy": "全文正常整理，用户点名的世界杯效应部分重点展开。",
+        },
+        raising=False,
+    )
+
+    def fake_llm(prompt: str) -> str:
+        prompts.append(prompt)
+        return "整理稿：世界杯效应是文章的方法论重点。"
+
+    monkeypatch.setattr(agent, "_call_llm", fake_llm)
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {"summary": "世界杯效应。", "tags": ["market"]},
+    )
+
+    draft = agent.create_draft(
+        "整理稿(2)\n\n"
+        + ("文章讨论科技牛市，其中世界杯效应用来解释短期行情判断。" * 8),
+        instruction="整理文章的核心内容，特别是世界杯效应那部分要详细阐述",
+    )
+
+    assert draft["title"] == "写在世界杯之前：科技牛市与短期判断"
+    assert draft["capture_intent"]["emphasis"] == ["世界杯效应"]
+    assert draft["capture_intent"]["detail_level"] == "deep"
+    assert draft["capture_intent"]["detail_policy"] == "全文正常整理，用户点名的世界杯效应部分重点展开。"
+    assert draft["capture_intent"]["plan_source"] == "llm"
+    assert "世界杯效应" in prompts[0]
+    assert "detail_policy" in prompts[0]
+
+
+def test_capture_planning_falls_back_to_rules_when_llm_plan_is_invalid(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        agent,
+        "_call_capture_planner",
+        lambda **kwargs: {"focus": "not-a-list", "detail_level": "extreme"},
+        raising=False,
+    )
+
+    intent = agent._build_capture_intent_with_planning(
+        "总结全文核心内容，方法论那部分详细一些",
+        source_text=TEST_CONTENT,
+        title_hint="",
+    ).to_dict()
+
+    assert intent["plan_source"] == "fallback"
+    assert intent["emphasis"] == ["方法论"]
+    assert intent["detail_level"] == "deep"
+
+
+def test_planner_cannot_turn_special_focus_into_selected_sections(agent: CaptureAgent, monkeypatch):
+    agent._capture_planning_enabled = True
+    monkeypatch.setattr(
+        agent,
+        "_call_capture_planner",
+        lambda **kwargs: {
+            "task_type": "organize",
+            "coverage": "selected_sections",
+            "focus": ["世界杯期间市场节奏"],
+            "detail_level": "medium",
+            "compression": "high",
+            "preserve": ["data"],
+            "title": "冰火两重天",
+            "detail_policy": "全文正常整理，用户点名部分重点展开。",
+        },
+        raising=False,
+    )
+
+    intent = agent._build_capture_intent_with_planning(
+        "总结这篇文章的核心内容，特别是世界杯期间市场节奏那部分",
+        source_text=TEST_CONTENT,
+        title_hint="整理稿(1)",
+    ).to_dict()
+
+    assert intent["plan_source"] == "llm"
+    assert intent["coverage"] == "full_article"
+    assert intent["emphasis"] == ["世界杯期间市场节奏"]
+    assert "source_fidelity" in intent["must_preserve"]
+
+
+def test_planned_detail_policy_becomes_explicit_prompt_rule(agent: CaptureAgent):
+    intent = agent._build_capture_intent("总结全文").to_dict()
+    intent["plan_source"] = "llm"
+    intent["detail_policy"] = "全文正常整理，用户点名的世界杯效应部分重点展开。"
+
+    prompt = agent._build_revision_prompt(
+        instruction="总结全文",
+        capture_intent=intent,
+        current_text=TEST_CONTENT,
+        raw_text=TEST_CONTENT,
+    )
+
+    assert "内部规划给出的详略策略" in prompt
+    assert "全文正常整理，用户点名的世界杯效应部分重点展开。" in prompt
+
+
 def test_create_draft_full_text_save_preserves_source_without_llm(
     agent: CaptureAgent,
     monkeypatch,
@@ -223,6 +340,33 @@ def test_capture_intent_detects_deep_detail_level(agent: CaptureAgent):
     assert intent["detail_level"] == "deep"
 
 
+def test_capture_intent_detects_source_like_detail_and_low_compression(agent: CaptureAgent):
+    intent = agent._build_capture_intent("稍加总结，尽可能地提取原文，保留关键表述和数据").to_dict()
+
+    assert intent["detail_level"] == "source_like"
+    assert intent["compression"] == "low"
+    assert "original_wording" in intent["preserve"]
+    assert "data" in intent["preserve"]
+
+
+def test_capture_intent_detects_user_named_section_as_emphasis_not_selected(agent: CaptureAgent):
+    intent = agent._build_capture_intent("总结全文核心内容，方法论那部分详细一些，案例和数据别删").to_dict()
+
+    assert intent["coverage"] == "full_article"
+    assert intent["detail_level"] == "deep"
+    assert intent["emphasis"] == ["方法论"]
+    assert "examples" in intent["preserve"]
+    assert "data" in intent["preserve"]
+
+
+def test_capture_intent_selected_section_when_user_says_only(agent: CaptureAgent):
+    intent = agent._build_capture_intent("只看商业模式部分，其他不用整理").to_dict()
+
+    assert intent["coverage"] == "selected_sections"
+    assert intent["emphasis"] == ["商业模式"]
+    assert intent["compression"] == "medium"
+
+
 def test_about_two_parts_instruction_extracts_real_emphasis(agent: CaptureAgent):
     intent = agent._build_capture_intent(
         "提取重点内容，而且关于41天发版的另一层是节奏狙击和"
@@ -343,6 +487,42 @@ def test_medium_density_longish_source_uses_chunked_reading(agent: CaptureAgent,
     assert any(return_meta for _prompt, return_meta in calls)
     assert any("MIDDLE_LIFE_MODEL" in prompt for prompt, return_meta in calls if return_meta)
     assert revised["draft_text"] == "中密度整理稿：覆盖4D全细胞模型和虚拟果蝇。"
+
+
+def test_source_like_prompt_asks_model_to_preserve_original_texture(agent: CaptureAgent):
+    intent = agent._build_capture_intent("尽可能地提取原文，案例和数据别删").to_dict()
+
+    prompt = agent._build_revision_prompt(
+        instruction="尽可能地提取原文，案例和数据别删",
+        capture_intent=intent,
+        current_text=TEST_CONTENT,
+        raw_text=TEST_CONTENT,
+    )
+
+    assert "用户要求尽量贴近原文" in prompt
+    assert "少压缩" in prompt
+    assert "原文关键表述" in prompt
+    assert "案例" in prompt
+    assert "数字" in prompt
+    assert "不要逐段搬运原文" in prompt
+
+
+def test_source_like_long_section_notes_preserve_texture_before_final(agent: CaptureAgent):
+    intent = agent._build_capture_intent("尽可能地提取原文，案例和数据别删").to_dict()
+
+    prompt = agent._build_section_note_prompt(
+        instruction="尽可能地提取原文，案例和数据别删",
+        capture_intent=intent,
+        chunk=TEST_CONTENT,
+        index=1,
+        total=3,
+    )
+
+    assert "少压缩" in prompt
+    assert "原文关键表述" in prompt
+    assert "案例" in prompt
+    assert "数字" in prompt
+    assert "不要只抽象成一句结论" in prompt
 
 
 def test_long_source_incomplete_section_note_marks_draft_incomplete(

@@ -186,27 +186,52 @@ def _is_preview_boilerplate(text: str) -> bool:
 
 
 def _find_emphasis_block(blocks: list[str], emphasis: str, used: set[int]) -> tuple[int, str] | None:
+    best: tuple[int, int, str] | None = None
     for idx, block in enumerate(blocks):
         if idx in used:
             continue
-        if not _matches_emphasis(block, emphasis):
+        score = _emphasis_match_score(block, emphasis)
+        if score <= 0:
             continue
         snippet = block
-        if len(block) < 80 and idx + 1 < len(blocks):
-            snippet = f"{block}：{blocks[idx + 1]}"
-        return idx, snippet
-    return None
+        if _is_preview_heading(block):
+            snippet = _body_after_heading(blocks, idx) or block
+        if best is None or score > best[0]:
+            best = (score, idx, snippet)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+def _is_preview_heading(text: str) -> bool:
+    text = (text or "").strip()
+    if len(text) > 80:
+        return False
+    if re.search(r"[。！？!?]", text):
+        return False
+    return True
+
+
+def _body_after_heading(blocks: list[str], heading_index: int) -> str:
+    for block in blocks[heading_index + 1:]:
+        if not _is_preview_heading(block):
+            return block
+    return ""
 
 
 def _matches_emphasis(text: str, emphasis: str) -> bool:
+    return _emphasis_match_score(text, emphasis) > 0
+
+
+def _emphasis_match_score(text: str, emphasis: str) -> int:
     normalized_text = _normalize_match_text(text)
     fragments = _emphasis_fragments(emphasis)
-    return any(fragment in normalized_text for fragment in fragments)
+    return sum(1 for fragment in fragments if fragment in normalized_text)
 
 
 def _emphasis_fragments(emphasis: str) -> list[str]:
     fragments = [_normalize_match_text(emphasis)]
-    for part in re.split(r"(?:的|是|那个|这个|这|部分|一层)", emphasis):
+    for part in re.split(r"(?:的|是|那个|这个|这|部分|一层|期间|时期|阶段|和|以及|、)", emphasis):
         normalized = _normalize_match_text(part)
         if len(normalized) >= 2:
             fragments.append(normalized)

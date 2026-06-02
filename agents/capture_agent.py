@@ -23,6 +23,7 @@ from agents.extractors.text_extractor import TextExtractor
 from agents.extractors.voice_extractor import VoiceExtractor
 from agents.extractors.image_extractor import ImageExtractor
 from agents.extractors.xiaohongshu_extractor import XiaohongshuExtractor
+from agents.extractors.document_extractor import DocumentExtractor
 from agents.library_agent import LibraryAgent
 from agents.outliner import Outliner
 from db.repo import CaptureDraftRepo, CaptureRepo
@@ -61,6 +62,11 @@ class CaptureIntent:
     output_shape: list[str]
     detail_level: str = "medium"
     draft_guidance: str = "let_model_decide"
+    compression: str = "medium"
+    preserve: list[str] | None = None
+    plan_source: str = "fallback"
+    detail_policy: str = ""
+    semantic_title: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -72,6 +78,11 @@ class CaptureIntent:
             "output_shape": self.output_shape,
             "detail_level": self.detail_level,
             "draft_guidance": self.draft_guidance,
+            "compression": self.compression,
+            "preserve": self.preserve or [],
+            "plan_source": self.plan_source,
+            "detail_policy": self.detail_policy,
+            "semantic_title": self.semantic_title,
         }
 
 
@@ -115,6 +126,7 @@ class CaptureAgent:
             LinkExtractor(),
             VoiceExtractor(api_key=config.qwen_api_key),
             ImageExtractor(api_key=config.qwen_api_key),
+            DocumentExtractor(),
             TextExtractor(),  # fallback — always handles
         ]
 
@@ -131,7 +143,13 @@ class CaptureAgent:
             return extracted
 
         title = _derive_title(extracted.title, cleaned)
-        capture_intent = self._build_capture_intent(instruction).to_dict()
+        capture_intent_obj = self._build_capture_intent_with_planning(
+            instruction,
+            source_text=cleaned,
+            title_hint=title,
+        )
+        title = capture_intent_obj.semantic_title or title
+        capture_intent = capture_intent_obj.to_dict()
         draft = self.draft_repo.create(
             raw_text=cleaned,
             source=extracted.source_url or source_url,
@@ -178,7 +196,11 @@ class CaptureAgent:
         if draft.get("status") in ("committed", "abandoned"):
             return {"error": f"草稿已{'入库' if draft['status'] == 'committed' else '废弃'}，无法修改"}
         current_text = draft.get("draft_text") or draft.get("raw_text", "")
-        capture_intent = self._build_capture_intent(instruction).to_dict()
+        capture_intent = self._build_capture_intent_with_planning(
+            instruction,
+            source_text=draft.get("raw_text", "") or current_text,
+            title_hint=draft.get("title", ""),
+        ).to_dict()
         llm_result = self._revise_with_llm(
             instruction=instruction,
             capture_intent=capture_intent,
@@ -220,7 +242,7 @@ class CaptureAgent:
         user_request = (instruction or "").strip()
         coverage = (
             "selected_sections"
-            if re.search(r"(只要|仅保留|只保留|删除其他|不要其他|仅要)", user_request)
+            if re.search(r"(只要|只看|仅看|仅保留|只保留|删除其他|不要其他|仅要|其他不用)", user_request)
             else "full_article"
         )
         if "翻译" in user_request:
@@ -233,6 +255,7 @@ class CaptureAgent:
             task_type = "capture"
 
         emphasis = self._extract_emphasis(user_request)
+        preserve = self._detect_preserve_items(user_request)
         must_preserve = [] if coverage == "selected_sections" else [
             "source_fidelity",
             "main_thread",
@@ -247,6 +270,142 @@ class CaptureAgent:
             must_preserve=must_preserve,
             output_shape=output_shape,
             detail_level=self._detect_detail_level(user_request),
+            compression=self._detect_compression(user_request),
+            preserve=preserve,
+        )
+
+    def _build_capture_intent_with_planning(
+        self,
+        instruction: str,
+        *,
+        source_text: str = "",
+        title_hint: str = "",
+    ) -> CaptureIntent:
+        fallback = self._build_capture_intent(instruction)
+        if (
+            not instruction.strip()
+            or self._is_full_text_save_intent(fallback.to_dict())
+            or not self._capture_planning_available()
+        ):
+            fallback.plan_source = "fallback"
+            return fallback
+
+        try:
+            plan = self._call_capture_planner(
+                instruction=instruction,
+                source_text=source_text,
+                title_hint=title_hint,
+            )
+        except Exception as exc:
+            logger.warning(f"Capture planning failed; using fallback intent: {exc}")
+            fallback.plan_source = "fallback"
+            return fallback
+
+        planned = self._intent_from_capture_plan(fallback, plan)
+        if planned is None:
+            fallback.plan_source = "fallback"
+            return fallback
+        return planned
+
+    def _capture_planning_available(self) -> bool:
+        forced = getattr(self, "_capture_planning_enabled", None)
+        if forced is not None:
+            return bool(forced)
+        return bool(self.config.llm_api_key and not self.config.llm_api_key.startswith("sk-test"))
+
+    def _call_capture_planner(
+        self,
+        *,
+        instruction: str,
+        source_text: str,
+        title_hint: str = "",
+    ) -> dict:
+        prompt = self._build_capture_planning_prompt(
+            instruction=instruction,
+            source_text=source_text,
+            title_hint=title_hint,
+        )
+        raw = self._call_llm(prompt)
+        if isinstance(raw, LLMResult):
+            raw = raw.text
+        parsed = _parse_json_object(str(raw))
+        if not isinstance(parsed, dict):
+            raise ValueError("planner did not return a JSON object")
+        return parsed
+
+    def _build_capture_planning_prompt(
+        self,
+        *,
+        instruction: str,
+        source_text: str,
+        title_hint: str = "",
+    ) -> str:
+        preview = _build_planning_source_preview(source_text)
+        return (
+            "你是 Capture Agent 的内部任务规划器。你的职责是理解用户要如何整理材料，"
+            "不是写最终草稿。\n\n"
+            f"用户要求：{instruction}\n"
+            f"当前标题候选：{title_hint or '无'}\n\n"
+            "请只输出一个 JSON object，不要 Markdown，不要解释。字段：\n"
+            "- task_type: capture | organize | rewrite | translate\n"
+            "- coverage: full_article | selected_sections\n"
+            "- focus: string[]，用户点名关切；没有就 []。不要写“内容/重点/全文”等泛词。\n"
+            "- detail_level: brief | medium | deep | source_like\n"
+            "- compression: high | medium | low\n"
+            "- preserve: string[]，可包含 original_wording/data/examples/methodology\n"
+            "- title: string，优先从正文选一个有真实含义的标题；没有把握就空字符串\n"
+            "- detail_policy: string，用一句话说明最终整理应如何分配详略\n\n"
+            "判断原则：语义由你理解，不要依赖固定关键词；用户说“某部分详细阐述”时，"
+            "focus 是用户问题的重点关切，不等于整篇文章唯一重点。\n\n"
+            f"材料预览：\n{preview}"
+        )
+
+    def _intent_from_capture_plan(
+        self,
+        fallback: CaptureIntent,
+        plan: dict,
+    ) -> CaptureIntent | None:
+        if not isinstance(plan, dict):
+            return None
+        task_type = _enum_value(plan.get("task_type"), {"capture", "organize", "rewrite", "translate"})
+        coverage = _enum_value(plan.get("coverage"), {"full_article", "selected_sections"})
+        detail_level = _enum_value(plan.get("detail_level"), {"brief", "medium", "deep", "source_like"})
+        compression = _enum_value(plan.get("compression"), {"high", "medium", "low"})
+        focus = _string_list(plan.get("focus"))
+        preserve = _string_list(plan.get("preserve"))
+        if (
+            task_type is None
+            or coverage is None
+            or detail_level is None
+            or compression is None
+            or focus is None
+            or preserve is None
+        ):
+            return None
+
+        if coverage == "selected_sections" and fallback.coverage != "selected_sections":
+            coverage = "full_article"
+
+        semantic_title = _clean_semantic_title(str(plan.get("title") or ""))
+        detail_policy = str(plan.get("detail_policy") or "").strip()
+        return CaptureIntent(
+            user_request=fallback.user_request,
+            task_type=task_type,
+            coverage=coverage,
+            emphasis=focus or fallback.emphasis,
+            must_preserve=(
+                []
+                if coverage == "selected_sections"
+                else ["source_fidelity", "main_thread", "user_named_focus"]
+            ),
+            output_shape=fallback.output_shape,
+            detail_level=detail_level,
+            draft_guidance=fallback.draft_guidance,
+            compression=compression,
+            preserve=preserve or fallback.preserve,
+            plan_source="llm",
+            detail_policy=detail_policy,
+            semantic_title=semantic_title,
         )
 
     def _is_full_text_save_intent(self, capture_intent: dict) -> bool:
@@ -261,11 +420,39 @@ class CaptureAgent:
         )
 
     def _detect_detail_level(self, user_request: str) -> str:
+        if re.search(
+            r"(尽可能|尽量|最大程度).{0,8}(提取|保留).{0,8}原文|贴近原文|原文质感|原文关键表述",
+            user_request,
+        ):
+            return "source_like"
         if re.search(r"(一句话|几句话|简短|简要|短摘要|快速概括)", user_request):
             return "brief"
-        if re.search(r"(详细整理|详细总结|深度总结|尽量保留细节|不要漏细节|完整整理成笔记)", user_request):
+        if re.search(r"(详细整理|详细总结|深度总结|尽量保留细节|不要漏细节|完整整理成笔记|详细一些|详细点|展开一些)", user_request):
             return "deep"
         return "medium"
+
+    def _detect_compression(self, user_request: str) -> str:
+        if re.search(
+            r"(尽可能|尽量|最大程度).{0,8}(提取|保留).{0,8}原文|少压缩|稍加总结|贴近原文|原文质感",
+            user_request,
+        ):
+            return "low"
+        if re.search(r"(一句话|几句话|简短|简要|短摘要|快速概括|高度压缩)", user_request):
+            return "high"
+        return "medium"
+
+    def _detect_preserve_items(self, user_request: str) -> list[str]:
+        preserve: list[str] = []
+        checks = [
+            ("original_wording", r"(原文|原句|关键表述|原文质感|贴近原文)"),
+            ("data", r"(数据|数字|比例|金额|时间|日期|指标)"),
+            ("examples", r"(案例|例子|例证|故事)"),
+            ("methodology", r"(方法论|方法|做法|步骤|路径)"),
+        ]
+        for key, pattern in checks:
+            if re.search(pattern, user_request) and key not in preserve:
+                preserve.append(key)
+        return preserve
 
     def _extract_emphasis(self, user_request: str) -> list[str]:
         if not user_request:
@@ -289,7 +476,8 @@ class CaptureAgent:
         patterns = [
             r"(?:特别)?着重(?:阐述|解释)?([^。；;，,\n]+)",
             r"(?:重点|特别关注|聚焦)(?:阐述|解释|提取)?([^。；;，,\n]+)",
-            r"(?:只要|仅保留|只保留)([^。；;，,\n]+)",
+            r"([^。；;，,\n]+?)(?:那|这)?部分(?:详细一些|详细点|展开一些|重点讲|重点整理)",
+            r"(?:只要|只看|仅看|仅保留|只保留)([^。；;，,\n]+)",
         ]
         for pattern in patterns:
             for match in re.finditer(pattern, user_request):
@@ -324,6 +512,11 @@ class CaptureAgent:
         detail_level = capture_intent.get("detail_level", "medium")
         if detail_level == "brief":
             return "- 用户要求偏简短：可以高度压缩，只保留结论和最核心理由。\n"
+        if detail_level == "source_like":
+            return (
+                "- 用户要求尽量贴近原文：少压缩，保留原文关键表述、重要案例和数字，"
+                "但仍要整理成可读文稿，不要逐段搬运原文。\n"
+            )
         if detail_level == "deep":
             return (
                 "- 用户要求偏详细：请保留更多分支、背景、案例、数字和论证细节，"
@@ -336,6 +529,12 @@ class CaptureAgent:
             "论证中的功能。凡是承担推进主线、支撑结论、区分概念或形成关键转折的内容，"
             "应自然保留；重复铺垫和装饰性表达可以压缩。\n"
         )
+
+    def _build_detail_policy_rule(self, capture_intent: dict) -> str:
+        detail_policy = str(capture_intent.get("detail_policy") or "").strip()
+        if not detail_policy:
+            return ""
+        return f"- 内部规划给出的详略策略：{detail_policy}\n"
 
     def _clip_source_text(self, text: str) -> str:
         text = text or ""
@@ -534,6 +733,12 @@ class CaptureAgent:
                 f"- 用户点名关注：{', '.join(emphasis)}。如果本段相关，明确记下依据；"
                 "如果不相关，简单说明无明显相关即可。\n"
             )
+        source_like_rule = ""
+        if capture_intent.get("detail_level") == "source_like":
+            source_like_rule = (
+                "- 用户要求尽量贴近原文：本段笔记要少压缩，保留能支撑判断的原文关键表述、"
+                "案例和数字；不要只抽象成一句结论。\n"
+            )
         return (
             f"用户要求：{instruction}\n\n"
             "任务信息：\n"
@@ -545,7 +750,9 @@ class CaptureAgent:
             "- 不要逐句搬运原文。\n"
             "- 不要写成最终文章。\n"
             "- 控制在约 800 中文字以内。\n"
-            f"{emphasis_rule}\n"
+            f"{self._build_detail_policy_rule(capture_intent)}"
+            f"{emphasis_rule}"
+            f"{source_like_rule}\n"
             f"分段原文：\n{chunk}\n\n"
             "请输出这一段的分段阅读笔记。"
         )
@@ -580,6 +787,7 @@ class CaptureAgent:
             f"{current_context}"
             "工作方式：\n"
             f"{self._build_density_rule(capture_intent)}"
+            f"{self._build_detail_policy_rule(capture_intent)}"
             "- 基于分段笔记直接写最终整理稿，由你决定详略、结构和自然小标题。\n"
             "- 不要机械套模板；不要输出内部计划；不要输出标签、摘要、目录或任务合同。\n"
             "- 不要逐段搬运分段笔记；把它们综合成一篇可读的整理稿。\n"
@@ -620,6 +828,7 @@ class CaptureAgent:
             "工作方式：\n"
             f"{self._build_internal_plan_rule(source_text)}"
             f"{self._build_density_rule(capture_intent)}"
+            f"{self._build_detail_policy_rule(capture_intent)}"
             "- 由你决定最终整理稿的详略和结构：可以精炼，可以保留必要细节，也可以使用少量自然小标题。\n"
             "- 不要逐段搬运原文；不要为了格式而格式化；不要机械套用固定模板。\n"
             "- 不要输出标签、摘要、提纲、目录或任务合同；这些元信息由系统另行处理。\n"
@@ -795,6 +1004,13 @@ class CaptureAgent:
             return {"error": "内容提取失败：无法获取正文"}, ""
 
         # Step 2: Clean
+        if getattr(extracted, "extraction_failed", False):
+            return {
+                "error": "内容提取失败：无法获取正文",
+                "extraction_failed": True,
+                "hint": extracted.raw_text or "可以换成文本文件，或把正文复制粘贴给我重试。",
+            }, ""
+
         cleaned = clean_text(extracted.raw_text)
         if not cleaned.strip():
             return {"error": "内容清洗后为空"}, ""
@@ -893,6 +1109,71 @@ class CaptureAgent:
         if return_meta:
             return LLMResult(text=text, incomplete=incomplete)
         return text
+
+
+def _parse_json_object(raw: str) -> dict | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
+    if fenced:
+        text = fenced.group(1).strip()
+    elif not text.startswith("{"):
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start:end + 1]
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _enum_value(value: object, allowed: set[str]) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized if normalized in allowed else None
+
+
+def _string_list(value: object) -> list[str] | None:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return None
+    result: list[str] = []
+    generic_terms = {"内容", "重点", "重点内容", "全文", "文章", "材料", "核心内容"}
+    for item in value:
+        if not isinstance(item, str):
+            return None
+        cleaned = item.strip(" 「」『』“”\"'")
+        if cleaned and cleaned not in generic_terms and cleaned not in result:
+            result.append(cleaned)
+    return result
+
+
+def _clean_semantic_title(title: str) -> str:
+    title = (title or "").strip().strip("#> -")
+    title = re.sub(r"\s+", " ", title)
+    if not title or title in {"无", "无标题", "未命名"}:
+        return ""
+    if re.fullmatch(r"doc_[\w-]+.*|整理稿(?:\(\d+\))?", title, flags=re.I):
+        return ""
+    return title[:80]
+
+
+def _build_planning_source_preview(text: str, max_chars: int = 6000) -> str:
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    head = int(max_chars * 0.65)
+    tail = max_chars - head
+    return (
+        text[:head].rstrip()
+        + "\n\n[中间内容省略，规划时仍需意识到这可能是长文。]\n\n"
+        + text[-tail:].lstrip()
+    )
 
 
 def _derive_title(extracted_title: str | None, text: str) -> str:

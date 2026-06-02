@@ -1,0 +1,85 @@
+"""Document extractor for local text, Markdown, Word, and PDF files."""
+from __future__ import annotations
+
+import importlib
+import zipfile
+from pathlib import Path
+from xml.etree import ElementTree
+
+from .base import BaseExtractor, ExtractionResult
+
+
+TEXT_SUFFIXES = {
+    ".txt",
+    ".md",
+    ".markdown",
+    ".csv",
+    ".json",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".log",
+    ".html",
+    ".htm",
+}
+DOCUMENT_SUFFIXES = TEXT_SUFFIXES | {".docx", ".pdf"}
+
+
+class DocumentExtractor(BaseExtractor):
+    """Read supported local document paths into raw text for Capture."""
+
+    def can_handle(self, source: str) -> bool:
+        path = Path((source or "").strip())
+        return path.is_file() and path.suffix.lower() in DOCUMENT_SUFFIXES
+
+    def extract(self, source: str, **kwargs) -> ExtractionResult:
+        path = Path(source).expanduser()
+        suffix = path.suffix.lower()
+        try:
+            if suffix in TEXT_SUFFIXES:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            elif suffix == ".docx":
+                text = self._extract_docx(path)
+            elif suffix == ".pdf":
+                text = self._extract_pdf(path)
+            else:
+                text = ""
+        except Exception as exc:
+            return ExtractionResult(
+                raw_text=f"[文档内容提取失败: {exc}]",
+                source_type="document",
+                source_url=str(path),
+                title=path.stem,
+                extraction_failed=True,
+            )
+
+        return ExtractionResult(
+            raw_text=text.strip(),
+            source_type="document",
+            source_url=str(path),
+            title=path.stem,
+            extraction_failed=not bool(text.strip()),
+        )
+
+    def _extract_docx(self, path: Path) -> str:
+        with zipfile.ZipFile(path) as zf:
+            xml = zf.read("word/document.xml")
+        root = ElementTree.fromstring(xml)
+        namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        paragraphs: list[str] = []
+        for paragraph in root.findall(".//w:p", namespace):
+            texts = [
+                node.text or ""
+                for node in paragraph.findall(".//w:t", namespace)
+                if node.text
+            ]
+            line = "".join(texts).strip()
+            if line:
+                paragraphs.append(line)
+        return "\n\n".join(paragraphs)
+
+    def _extract_pdf(self, path: Path) -> str:
+        pypdf = importlib.import_module("pypdf")
+        reader = pypdf.PdfReader(str(path))
+        pages = [page.extract_text() or "" for page in reader.pages]
+        return "\n\n".join(page.strip() for page in pages if page.strip())
