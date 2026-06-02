@@ -41,9 +41,11 @@ const EVENT_LABELS: Record<string, string> = {
 }
 
 const REMINDER_LABELS: Record<string, string> = {
-  sedentary: '久坐提醒',
+  sedentary: '久坐超时提醒',
   exercise: '运动提醒',
   water: '喝水提醒',
+  action_digest: '行动提醒摘要',
+  record_digest: '补记提醒摘要',
   sleep: '早睡提醒',
   daily_review: '日复盘',
   weekly_review: '周复盘',

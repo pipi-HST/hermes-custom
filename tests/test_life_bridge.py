@@ -67,7 +67,7 @@ def test_life_tick_can_notify_when_config_enabled(tmp_path, monkeypatch) -> None
 
     checked = require_envelope(envelope)
     assert checked["meta"]["should_notify"] is True
-    assert checked["meta"]["selected_reminder_type"] == "exercise"
+    assert checked["meta"]["selected_reminder_type"] == "action_digest"
 
 
 def test_recent_mac_sleep_interruption_requires_six_minutes() -> None:

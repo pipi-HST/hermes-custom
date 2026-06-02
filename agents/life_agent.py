@@ -32,10 +32,12 @@ class ActivitySnapshot:
 class LifeConfig:
     sedentary_threshold_minutes: int = 60
     sedentary_repeat_minutes: int = 20
+    sedentary_milestone_minutes: int = 60
     break_threshold_minutes: int = 6
     reminder_due_window_minutes: int = 15
     exercise_first_time: str = "10:30"
     exercise_repeat_hours: int = 2
+    action_digest_times: tuple[str, str] = ("10:30", "16:00")
     sleep_record_check_time: str = "13:00"
     meal_record_check_time: str = "21:30"
     sleep_reminder_time: str = "23:30"
@@ -1040,21 +1042,15 @@ class LifeAgent:
             long_term_decision_review = self._long_term_decision_review_candidate(current)
             if long_term_decision_review:
                 candidates.append(long_term_decision_review)
-            exercise = self._exercise_candidate(current)
-            if exercise:
-                candidates.append(exercise)
             sleep = self._sleep_candidate(current)
             if sleep:
                 candidates.append(sleep)
-            water = self._water_candidate(current)
-            if water:
-                candidates.append(water)
-            sleep_record = self._sleep_record_candidate(current)
-            if sleep_record:
-                candidates.append(sleep_record)
-            meal_record = self._meal_record_candidate(current)
-            if meal_record:
-                candidates.append(meal_record)
+            action_digest = self._action_digest_candidate(current)
+            if action_digest:
+                candidates.append(action_digest)
+            record_digest = self._record_digest_candidate(current)
+            if record_digest:
+                candidates.append(record_digest)
             daily_review = self._daily_review_candidate(current)
             if daily_review:
                 candidates.append(daily_review)
@@ -1591,29 +1587,50 @@ class LifeAgent:
             return None
         if self._is_sedentary_paused(current):
             return None
-        if self._has_recent_reminder_log("sedentary", current, minutes=self.config.sedentary_repeat_minutes):
+        milestone_minutes = (
+            sitting_minutes // self.config.sedentary_milestone_minutes
+        ) * self.config.sedentary_milestone_minutes
+        if milestone_minutes < self.config.sedentary_threshold_minutes:
             return None
-        retry_payload = self._short_retry_payload("sedentary", current)
-        if retry_payload:
-            return {
-                "priority": 1,
-                "reminder_type": "sedentary",
-                "dedupe_key": f"sedentary:{current.strftime('%Y-%m-%dT%H:%M')}",
-                "message": (
-                    f"久坐警报：起来活动一下，离开电脑超过{self.config.break_threshold_minutes}分钟后我会停止提醒。"
-                ),
-                "payload": retry_payload,
-            }
+        dedupe_key = f"sedentary:{active_window['id']}:{milestone_minutes}"
+        if self._has_any_reminder_log(dedupe_key) or self._has_sedentary_milestone_log(
+            active_window,
+            milestone_minutes,
+        ):
+            return None
 
         return {
             "priority": 1,
             "reminder_type": "sedentary",
-            "dedupe_key": f"sedentary:{current.strftime('%Y-%m-%dT%H:%M')}",
+            "dedupe_key": dedupe_key,
             "message": (
-                f"久坐警报：起来活动一下，离开电脑超过{self.config.break_threshold_minutes}分钟后我会停止提醒。"
+                f"久坐超时提醒：已经连续坐了约{_fmt_duration(milestone_minutes)}。"
+                f"起来活动一下，离开电脑超过{self.config.break_threshold_minutes}分钟后我会停止提醒。"
             ),
-            "payload": {"retry_count": 0},
+            "payload": {
+                "milestone_minutes": milestone_minutes,
+                "sitting_window_id": active_window["id"],
+            },
         }
+
+    def _has_sedentary_milestone_log(
+        self,
+        active_window: dict[str, Any],
+        milestone_minutes: int,
+    ) -> bool:
+        started_at = _parse_datetime(active_window["occurred_at"])
+        milestone_start = started_at + timedelta(minutes=milestone_minutes)
+        milestone_end = milestone_start + timedelta(minutes=self.config.sedentary_milestone_minutes)
+        rows = self.repo.conn.execute(
+            """SELECT scheduled_for FROM life_reminder_logs
+               WHERE reminder_type = 'sedentary'
+                 AND status IN ('scheduled', 'sending', 'sent', 'failed')"""
+        ).fetchall()
+        for row in rows:
+            scheduled = _parse_datetime(row["scheduled_for"])
+            if milestone_start <= scheduled < milestone_end:
+                return True
+        return False
 
     def _active_sitting_window(self) -> dict[str, Any] | None:
         row = self.repo.conn.execute(
@@ -1841,6 +1858,148 @@ class LifeAgent:
             "dedupe_key": dedupe_key,
             "message": "喝水提醒：白天补点水。",
         }
+
+    def _action_digest_candidate(self, current: datetime) -> dict[str, Any] | None:
+        due_at = self._action_digest_due_time(current)
+        if not due_at:
+            return None
+        dedupe_key = f"action_digest:{due_at.strftime('%Y-%m-%dT%H:%M')}"
+        if self._has_any_reminder_log(dedupe_key):
+            return None
+
+        components: list[str] = []
+        parts: list[str] = []
+        if self._exercise_digest_component_due(current):
+            components.append("exercise")
+            parts.append("今天还没看到运动记录，可以找个时间动一动")
+        if self._water_digest_component_due(current):
+            components.append("water")
+            parts.append("也记得补点水")
+        if not components:
+            return None
+        return {
+            "priority": 4,
+            "reminder_type": "action_digest",
+            "dedupe_key": dedupe_key,
+            "message": "生活提醒：" + "；".join(parts) + "。",
+            "payload": {"components": components},
+        }
+
+    def _record_digest_candidate(self, current: datetime) -> dict[str, Any] | None:
+        due_at = _due_time_on_day(
+            current,
+            self.config.meal_record_check_time,
+            window_minutes=self.config.reminder_due_window_minutes,
+        )
+        if not due_at:
+            return None
+        record_day = current.date().isoformat()
+        dedupe_key = f"record_digest:{record_day}"
+        if self._has_any_reminder_log(dedupe_key):
+            return None
+
+        components: list[str] = []
+        parts: list[str] = []
+        if not self._has_sleep_duration_for_wake_day(record_day):
+            components.append("sleep_record")
+            if self._has_sleep_end_without_duration_for_wake_day(record_day):
+                parts.append("已看到醒来记录，还缺睡觉时间，昨晚大概几点睡")
+            else:
+                parts.append("昨晚大概几点睡、今天几点醒")
+        if not self._has_meal_on_date(record_day):
+            components.append("meal")
+            parts.append("今天吃了什么，大概几点吃的")
+        if not components:
+            return None
+        return {
+            "priority": 7,
+            "reminder_type": "record_digest",
+            "dedupe_key": dedupe_key,
+            "message": "补记提醒：" + "；".join(parts) + "？",
+            "payload": {"components": components},
+        }
+
+    def _due_time_from_config_list(
+        self,
+        current: datetime,
+        times: tuple[str, ...],
+    ) -> datetime | None:
+        for item in times:
+            due_at = _due_time_on_day(
+                current,
+                item,
+                window_minutes=self.config.reminder_due_window_minutes,
+            )
+            if due_at:
+                return due_at
+        return None
+
+    def _action_digest_due_time(self, current: datetime) -> datetime | None:
+        due_at = self._due_time_from_config_list(current, self.config.action_digest_times)
+        if due_at:
+            return due_at
+        scheduled_log = self._latest_exercise_reminder_log(current)
+        if scheduled_log:
+            payload = scheduled_log.get("payload_json") or {}
+            scheduled = _parse_datetime(scheduled_log["scheduled_for"])
+            if (
+                payload.get("source") == "user_reschedule"
+                and scheduled <= current <= scheduled + timedelta(minutes=self.config.reminder_due_window_minutes)
+            ):
+                return scheduled
+        if current.strftime("%H:%M") >= self.config.meal_record_check_time:
+            return None
+        if self._exercise_digest_component_due(current):
+            latest_digest = self._latest_digest_log_with_component("action_digest", "exercise", current)
+            if not latest_digest:
+                return current
+            latest_scheduled = _parse_datetime(latest_digest["scheduled_for"])
+            next_repeat = latest_scheduled + timedelta(hours=self.config.exercise_repeat_hours)
+            if current >= next_repeat:
+                return current
+        return None
+
+    def _exercise_digest_component_due(self, current: datetime) -> bool:
+        if current.strftime("%H:%M") < self.config.exercise_first_time:
+            return False
+        if self._has_event_on_day("exercise", current):
+            return False
+        if self._has_reminder_log_on_day("exercise", "skipped", current):
+            return False
+        scheduled_log = self._latest_exercise_reminder_log(current)
+        if not scheduled_log:
+            return True
+        payload = scheduled_log.get("payload_json") or {}
+        scheduled = _parse_datetime(scheduled_log["scheduled_for"])
+        if payload.get("source") == "user_reschedule" and current < scheduled:
+            return False
+        return True
+
+    def _water_digest_component_due(self, current: datetime) -> bool:
+        return not self._has_recent_event("water", current, minutes=60)
+
+    def _latest_digest_log_with_component(
+        self,
+        reminder_type: str,
+        component: str,
+        current: datetime,
+    ) -> dict[str, Any] | None:
+        rows = self.repo.conn.execute(
+            """SELECT * FROM life_reminder_logs
+               WHERE reminder_type = ?
+                 AND status IN ('scheduled', 'sending', 'sent', 'failed')
+               ORDER BY scheduled_for DESC, rowid DESC""",
+            (reminder_type,),
+        ).fetchall()
+        for row in rows:
+            item = self.repo._reminder_row_to_dict(row)
+            scheduled = _parse_datetime(item["scheduled_for"])
+            if scheduled.date() != current.date():
+                continue
+            components = (item.get("payload_json") or {}).get("components") or []
+            if component in components:
+                return item
+        return None
 
     def _sleep_record_candidate(self, current: datetime) -> dict[str, Any] | None:
         due_at = _due_time_on_day(
@@ -2540,10 +2699,12 @@ def _default_candidate_reason(reminder_type: str) -> str:
         "sedentary": "连续坐姿达到提醒条件",
         "long_term_decision_review": "长期决定到达复盘时间",
         "exercise": "今日运动提醒到达可触发窗口",
+        "action_digest": "行动提醒摘要到达触发窗口",
         "sleep": "早睡提醒到达设定时间",
         "water": "喝水提醒到达设定时间",
         "sleep_record": "睡眠记录缺失且到达补记时间",
         "meal": "饮食记录缺失且到达补记时间",
+        "record_digest": "睡眠或饮食记录缺失且到达补记摘要时间",
         "daily_review": "每日复盘到达生成时间",
         "weekly_review": "每周复盘到达生成时间",
     }.get(reminder_type, "候选提醒达到触发条件")
@@ -2724,8 +2885,12 @@ def _disambiguate_meal_time(value: datetime, *, meal_slot: str, time_period: str
 def _memory_domains_for_reminder(reminder_type: str) -> list[str]:
     if reminder_type == "exercise":
         return ["life.exercise", "life.copy"]
+    if reminder_type == "action_digest":
+        return ["life.exercise", "life.water", "life.copy"]
     if reminder_type in {"sleep", "sleep_record"}:
         return ["life.sleep", "life.copy"]
+    if reminder_type == "record_digest":
+        return ["life.sleep", "life.meal", "life.copy"]
     if reminder_type == "meal":
         return ["life.meal", "life.copy"]
     if reminder_type == "water":
@@ -2740,9 +2905,9 @@ def _memory_domains_for_reminder(reminder_type: str) -> list[str]:
 
 
 def _strategy_domains_for_reminder(reminder_type: str) -> list[str]:
-    if reminder_type == "exercise":
+    if reminder_type in {"exercise", "action_digest"}:
         return ["life.exercise"]
-    if reminder_type in {"sleep", "sleep_record"}:
+    if reminder_type in {"sleep", "sleep_record", "record_digest"}:
         return ["life.sleep"]
     if reminder_type == "meal":
         return ["life.meal"]

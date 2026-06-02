@@ -170,8 +170,8 @@ def _reminder_scenarios(
         "暂停久坐警报 2 小时",
         received_at="2026-05-31T10:45:00+08:00",
     )
-    offset_water_tick = agent.life_tick(
-        now="2026-05-28T10:09:20+08:00",
+    offset_action_tick = agent.life_tick(
+        now="2026-05-26T10:39:20+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
         dry_run=True,
     )
@@ -206,7 +206,7 @@ def _reminder_scenarios(
     records["manual_query_status"] = query["status"]
     records["health_consultation_status"] = health["status"]
     records["sedentary_pause_until"] = sedentary_pause.get("scheduled_for", "")
-    records["offset_water_reminder"] = (offset_water_tick["selected"] or {}).get("reminder_type", "")
+    records["offset_action_reminder"] = (offset_action_tick["selected"] or {}).get("reminder_type", "")
     records["offset_daily_review"] = (offset_daily_review_tick["selected"] or {}).get("reminder_type", "")
     records["daily_review_rows"] = agent.repo.conn.execute(
         "SELECT count(*) AS cnt FROM life_daily_reviews"
@@ -225,14 +225,14 @@ def _reminder_scenarios(
     _check(checks, "manual query is not recorded", query["status"] == "rejected" and query["event"] is None)
     _check(checks, "health consultation is not recorded", health["status"] == "rejected" and health["event"] is None)
     _check(checks, "sedentary pause stores pause-until time", sedentary_pause.get("scheduled_for") == "2026-05-31T12:45:00+08:00")
-    _check(checks, "water reminder tolerates cron offset", records["offset_water_reminder"] == "water")
+    _check(checks, "action digest tolerates cron offset", records["offset_action_reminder"] == "action_digest")
     _check(checks, "daily review tolerates cron offset", records["offset_daily_review"] == "daily_review")
     _check(checks, "daily review is stored", records["daily_review_rows"] >= 1)
     _check(checks, "weekly review can run", records["weekly_review"] == "weekly_review")
     _check(checks, "weekly review is stored", records["weekly_review_rows"] >= 1)
-    _check(checks, "exercise reminder starts", records["exercise_repeat_first"] == "exercise")
-    _check(checks, "exercise reminder does not repeat too soon", records["exercise_repeat_too_soon"] == "")
-    _check(checks, "exercise reminder repeats after interval", records["exercise_repeat_due"] == "exercise")
+    _check(checks, "action digest starts", records["exercise_repeat_first"] == "action_digest")
+    _check(checks, "action digest does not repeat too soon", records["exercise_repeat_too_soon"] == "")
+    _check(checks, "action digest repeats after interval", records["exercise_repeat_due"] == "action_digest")
 
 
 def _check(checks: list[dict[str, Any]], name: str, passed: bool) -> None:

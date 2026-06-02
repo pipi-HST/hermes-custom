@@ -810,11 +810,11 @@ def _reminder_rules_status(conn: sqlite3.Connection, *, current: datetime) -> li
         _rule_item(
             conn,
             reminder_type="sedentary",
-            label="久坐提醒",
+            label="久坐超时提醒",
             enabled=True,
             schedule_text=(
                 f"连续坐姿 {config.sedentary_threshold_minutes} 分钟后触发；之后每 "
-                f"{config.sedentary_repeat_minutes} 分钟重复，直到离开 {config.break_threshold_minutes} 分钟"
+                f"{config.sedentary_milestone_minutes} 分钟增加一个超时提醒节点，直到离开 {config.break_threshold_minutes} 分钟"
             ),
             planned_times=[],
             next_due_at="",
@@ -823,47 +823,29 @@ def _reminder_rules_status(conn: sqlite3.Connection, *, current: datetime) -> li
         ),
         _rule_item(
             conn,
-            reminder_type="exercise",
-            label="运动提醒",
+            reminder_type="action_digest",
+            label="行动提醒摘要",
             enabled=True,
-            schedule_text=f"每天 {config.exercise_first_time} 起；未回复时每 {config.exercise_repeat_hours} 小时提醒一次",
-            planned_times=[_time_on_day(day, config.exercise_first_time, current).isoformat()],
-            next_due_at=_next_time_on_or_after(current, day, config.exercise_first_time).isoformat(),
+            schedule_text=(
+                "每天 "
+                + "、".join(config.action_digest_times)
+                + f"；合并喝水和运动，运动未完成时每 {config.exercise_repeat_hours} 小时可再次进入摘要"
+            ),
+            planned_times=[_time_on_day(day, item, current).isoformat() for item in config.action_digest_times],
+            next_due_at=_next_time_from_list(current, day, list(config.action_digest_times)),
             current=current,
-            detail="如果你说今天不练，或指定了运动时间，当天会按你的回复调整。",
+            detail="喝水和运动不再单独推送；如果你指定了运动时间，会在对应时间进入行动摘要。",
         ),
         _rule_item(
             conn,
-            reminder_type="water",
-            label="喝水提醒",
+            reminder_type="record_digest",
+            label="补记提醒摘要",
             enabled=True,
-            schedule_text="每天 " + "、".join(config.water_times),
-            planned_times=[_time_on_day(day, item, current).isoformat() for item in config.water_times],
-            next_due_at=_next_time_from_list(current, day, list(config.water_times)),
-            current=current,
-            detail="白天两次轻提醒；如果 1 小时内已有喝水记录会跳过。",
-        ),
-        _rule_item(
-            conn,
-            reminder_type="meal",
-            label="饮食记录",
-            enabled=True,
-            schedule_text=f"每天 {config.meal_record_check_time} 检查；当天无饮食记录时提醒补记",
+            schedule_text=f"每天 {config.meal_record_check_time} 检查；合并睡眠和饮食缺口",
             planned_times=[_time_on_day(day, config.meal_record_check_time, current).isoformat()],
             next_due_at=_next_time_on_or_after(current, day, config.meal_record_check_time).isoformat(),
             current=current,
-            detail="只在当天完全没有饮食记录时提醒；不会假设你必须吃三顿。",
-        ),
-        _rule_item(
-            conn,
-            reminder_type="sleep_record",
-            label="睡眠记录",
-            enabled=True,
-            schedule_text=f"每天 {config.sleep_record_check_time} 检查；缺完整睡眠时长时提醒补记",
-            planned_times=[_time_on_day(day, config.sleep_record_check_time, current).isoformat()],
-            next_due_at=_next_time_on_or_after(current, day, config.sleep_record_check_time).isoformat(),
-            current=current,
-            detail="你说“我睡了”和“我醒了”后，系统会配对并计算睡眠时长；缺记录时会追问。",
+            detail="饮食和睡眠补记不再单独推送；只问当天缺口，不重复问已有信息。",
         ),
         _rule_item(
             conn,

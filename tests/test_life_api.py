@@ -599,7 +599,7 @@ def test_life_runtime_returns_cron_delivery_and_recent_triggers(tmp_path) -> Non
         "\n".join(
             [
                 '{"tick_time":"2026-05-30T10:18:00+08:00","status":"idle","selected_reminder":"","should_notify":false,"warnings":[]}',
-                '{"tick_time":"2026-05-30T10:19:00+08:00","status":"selected","selected_reminder":"water","should_notify":true,"warnings":["notification_rate_limited"],"idle_seconds":12,"activity_available":true,"sedentary_state":"active","due_candidates":["water"]}',
+                '{"tick_time":"2026-05-30T10:19:00+08:00","status":"selected","selected_reminder":"action_digest","should_notify":true,"warnings":["notification_rate_limited"],"idle_seconds":12,"activity_available":true,"sedentary_state":"active","due_candidates":["action_digest"]}',
             ]
         ),
         encoding="utf-8",
@@ -610,10 +610,10 @@ def test_life_runtime_returns_cron_delivery_and_recent_triggers(tmp_path) -> Non
         life_log_path=str(log_path),
     )
     repo.create_reminder_log(
-        reminder_type="water",
+        reminder_type="action_digest",
         scheduled_for="2026-05-30T10:10:00+08:00",
         status="failed",
-        dedupe_key="water:failed",
+        dedupe_key="action_digest:failed",
         error="rate limited",
     )
     repo.create_reminder_log(
@@ -641,26 +641,24 @@ def test_life_runtime_returns_cron_delivery_and_recent_triggers(tmp_path) -> Non
     assert data["delivery"]["rate_limit_failure_count"] == 1
     assert data["delivery"]["recent_failed_count"] == 1
     assert data["delivery"]["recent_sending_count"] == 1
-    assert data["last_tick"]["selected_reminder"] == "water"
+    assert data["last_tick"]["selected_reminder"] == "action_digest"
     assert data["last_tick"]["warnings"] == ["notification_rate_limited"]
     assert data["recent_reminders"][0]["reminder_type"] == "sedentary"
     rules = {item["reminder_type"]: item for item in data["reminder_rules"]}
-    assert rules["exercise"]["schedule_text"] == "每天 10:30 起；未回复时每 2 小时提醒一次"
-    assert rules["exercise"]["next_due_at"] == "2026-05-30T10:30:00+08:00"
-    assert rules["water"]["schedule_text"] == "每天 10:00、16:00"
-    assert rules["water"]["planned_times"] == [
-        "2026-05-30T10:00:00+08:00",
+    assert rules["action_digest"]["schedule_text"] == "每天 10:30、16:00；合并喝水和运动，运动未完成时每 2 小时可再次进入摘要"
+    assert rules["action_digest"]["next_due_at"] == "2026-05-30T10:30:00+08:00"
+    assert rules["action_digest"]["planned_times"] == [
+        "2026-05-30T10:30:00+08:00",
         "2026-05-30T16:00:00+08:00",
     ]
-    assert rules["meal"]["enabled"] is True
-    assert rules["meal"]["schedule_text"] == "每天 21:30 检查；当天无饮食记录时提醒补记"
-    assert rules["sleep_record"]["enabled"] is True
-    assert rules["sleep_record"]["schedule_text"] == "每天 13:00 检查；缺完整睡眠时长时提醒补记"
+    assert rules["record_digest"]["enabled"] is True
+    assert rules["record_digest"]["schedule_text"] == "每天 21:30 检查；合并睡眠和饮食缺口"
     assert rules["daily_review"]["next_due_at"] == "2026-05-31T00:00:00+08:00"
     assert rules["weekly_review"]["next_due_at"] == "2026-05-31T21:30:00+08:00"
-    assert rules["sedentary"]["schedule_text"] == "连续坐姿 60 分钟后触发；之后每 20 分钟重复，直到离开 6 分钟"
-    assert rules["water"]["today_status"] == "failed"
-    assert rules["water"]["latest_log"]["status"] == "failed"
+    assert rules["sedentary"]["label"] == "久坐超时提醒"
+    assert rules["sedentary"]["schedule_text"] == "连续坐姿 60 分钟后触发；之后每 60 分钟增加一个超时提醒节点，直到离开 6 分钟"
+    assert rules["action_digest"]["today_status"] == "failed"
+    assert rules["action_digest"]["latest_log"]["status"] == "failed"
 
 
 def test_life_runtime_extends_rate_limit_cooldown_after_repeated_failures(tmp_path) -> None:

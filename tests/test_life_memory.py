@@ -96,16 +96,16 @@ def test_life_tick_refreshes_memories_and_records_hits_for_selected_reminder(tmp
     )
 
     result = agent.life_tick(
-        now="2026-06-01T10:00:00+08:00",
+        now="2026-06-01T10:30:00+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
         dry_run=True,
     )
 
     log = repo.conn.execute(
-        "SELECT * FROM life_reminder_logs WHERE reminder_type = 'water'"
+        "SELECT * FROM life_reminder_logs WHERE reminder_type = 'action_digest'"
     ).fetchone()
     hits = repo.list_memory_hits(limit=5)
-    assert result["selected"]["reminder_type"] == "water"
+    assert result["selected"]["reminder_type"] == "action_digest"
     assert memory["id"] in log["payload_json"]
     assert hits[0]["memory_id"] == memory["id"]
     assert hits[0]["used_by"] == "life_tick"

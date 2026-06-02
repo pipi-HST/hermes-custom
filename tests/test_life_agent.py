@@ -527,7 +527,8 @@ def test_exercise_reschedule_delays_next_tick_until_scheduled_time(agent: LifeAg
     )
 
     assert early["selected"] is None
-    assert due["selected"]["reminder_type"] == "exercise"
+    assert due["selected"]["reminder_type"] == "action_digest"
+    assert "exercise" in due["selected"]["payload"]["components"]
 
 
 def test_exercise_reminder_repeats_only_after_repeat_interval(agent: LifeAgent) -> None:
@@ -547,9 +548,9 @@ def test_exercise_reminder_repeats_only_after_repeat_interval(agent: LifeAgent) 
         dry_run=True,
     )
 
-    assert first["selected"]["reminder_type"] == "exercise"
+    assert first["selected"]["reminder_type"] == "action_digest"
     assert too_soon["selected"] is None
-    assert due_again["selected"]["reminder_type"] == "exercise"
+    assert due_again["selected"]["reminder_type"] == "action_digest"
 
 
 def test_exercise_reminder_sending_log_throttles_next_tick(agent: LifeAgent) -> None:
@@ -566,7 +567,7 @@ def test_exercise_reminder_sending_log_throttles_next_tick(agent: LifeAgent) -> 
         dry_run=False,
     )
 
-    assert first["selected"]["reminder_type"] == "exercise"
+    assert first["selected"]["reminder_type"] == "action_digest"
     assert first["meta"]["should_notify"] is True
     assert too_soon["selected"] is None
 
@@ -594,10 +595,10 @@ def test_exercise_reminder_throttles_after_sent_delivery(agent: LifeAgent) -> No
         dry_run=False,
     )
 
-    assert first["selected"]["reminder_type"] == "exercise"
+    assert first["selected"]["reminder_type"] == "action_digest"
     assert first["meta"]["should_notify"] is True
-    assert (too_soon_after_sent["selected"] or {}).get("reminder_type") != "exercise"
-    assert due_again["selected"]["reminder_type"] == "exercise"
+    assert (too_soon_after_sent["selected"] or {}).get("reminder_type") != "action_digest"
+    assert due_again["selected"]["reminder_type"] == "action_digest"
 
 
 def test_reconcile_delivery_result_marks_sending_reminder_sent(agent: LifeAgent) -> None:
@@ -774,12 +775,10 @@ def test_exercise_failed_delivery_gets_two_short_retries_then_waits(agent: LifeA
         dry_run=False,
     )
 
-    assert first["selected"]["reminder_type"] == "exercise"
-    assert retry_one["selected"]["reminder_type"] == "exercise"
-    assert retry_one["selected"]["payload"]["retry_count"] == 1
-    assert retry_two["selected"]["reminder_type"] == "exercise"
-    assert retry_two["selected"]["payload"]["retry_count"] == 2
-    assert (after_retries["selected"] or {}).get("reminder_type") != "exercise"
+    assert first["selected"]["reminder_type"] == "action_digest"
+    assert retry_one["selected"] is None
+    assert retry_two["selected"] is None
+    assert (after_retries["selected"] or {}).get("reminder_type") != "action_digest"
 
 
 def test_life_tick_handles_timezone_aware_exercise_reschedule_without_now(agent: LifeAgent) -> None:
@@ -833,35 +832,36 @@ def test_water_reminder_notifies_only_once_per_due_time(agent: LifeAgent) -> Non
     )
 
     first = agent.life_tick(
-        now="2026-05-30T10:00:00+08:00",
+        now="2026-05-30T10:30:00+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
         dry_run=False,
     )
     repeated = agent.life_tick(
-        now="2026-05-30T10:01:00+08:00",
+        now="2026-05-30T10:31:00+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
         dry_run=False,
     )
 
-    assert first["selected"]["reminder_type"] == "water"
-    assert (repeated["selected"] or {}).get("reminder_type") != "water"
+    assert first["selected"]["reminder_type"] == "action_digest"
+    assert first["selected"]["payload"]["components"] == ["water"]
+    assert (repeated["selected"] or {}).get("reminder_type") != "action_digest"
     assert repeated["meta"]["should_notify"] is False
-    assert agent.repo.count_reminder_logs("water") == 1
+    assert agent.repo.count_reminder_logs("action_digest") == 1
 
 
 def test_life_tick_records_decision_trace_without_changing_selection(agent: LifeAgent) -> None:
     result = agent.life_tick(
-        now="2026-05-30T10:00:00+08:00",
+        now="2026-05-30T10:30:00+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
         dry_run=True,
     )
 
     trace = agent.repo.list_decision_traces(limit=1)[0]
-    assert result["selected"]["reminder_type"] == "water"
+    assert result["selected"]["reminder_type"] == "action_digest"
     assert trace["status"] == "selected"
-    assert trace["selected_reminder_type"] == "water"
+    assert trace["selected_reminder_type"] == "action_digest"
     assert trace["decision_reason"]
-    assert any(item["reminder_type"] == "water" for item in trace["candidates_json"])
+    assert any(item["reminder_type"] == "action_digest" for item in trace["candidates_json"])
     assert trace["warnings_json"] == ["mac_activity_unavailable"]
 
 
@@ -884,13 +884,13 @@ def test_life_tick_records_memory_influence_in_decision_trace(agent: LifeAgent) 
     )
 
     agent.life_tick(
-        now="2026-06-01T10:00:00+08:00",
+        now="2026-06-01T10:30:00+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
         dry_run=True,
     )
 
     trace = agent.repo.list_decision_traces(limit=1)[0]
-    assert trace["selected_reminder_type"] == "water"
+    assert trace["selected_reminder_type"] == "action_digest"
     assert trace["memory_influences_json"][0]["memory_id"] == memory["id"]
     assert trace["memory_influences_json"][0]["effect"] == "message_context"
     hit = agent.repo.list_memory_hits(limit=1)[0]
@@ -909,7 +909,7 @@ def test_life_tick_uses_memory_in_reminder_copy_for_multiple_domains(agent: Life
         effective_from="2026-06-01T09:00:00+08:00",
     )
     water = agent.life_tick(
-        now="2026-06-01T10:00:00+08:00",
+        now="2026-06-01T10:30:00+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
         dry_run=True,
     )
@@ -959,11 +959,11 @@ def test_life_tick_uses_memory_in_reminder_copy_for_multiple_domains(agent: Life
     )
     sedentary_trace = agent.repo.list_decision_traces(limit=1)[0]
 
-    assert water["selected"]["reminder_type"] == "water"
+    assert water["selected"]["reminder_type"] == "action_digest"
     assert "最近白天喝水偏少" in water["chat_preview"]
     assert water_trace["memory_influences_json"][0]["memory_id"] == water_memory["id"]
     assert water_trace["memory_influences_json"][0]["effect"] == "message_context"
-    assert meal["selected"]["reminder_type"] == "meal"
+    assert meal["selected"]["reminder_type"] == "record_digest"
     assert "晚饭经常漏记时间" in meal["chat_preview"]
     assert meal_trace["memory_influences_json"][0]["effect"] == "message_context"
     assert sedentary["selected"]["reminder_type"] == "sedentary"
@@ -988,7 +988,7 @@ def test_life_tick_keeps_diagnostic_memory_out_of_user_facing_exercise_copy(agen
         dry_run=True,
     )
 
-    assert result["selected"]["reminder_type"] == "exercise"
+    assert result["selected"]["reminder_type"] == "action_digest"
     assert "参考记忆" not in result["chat_preview"]
     assert "发送失败" not in result["chat_preview"]
 
@@ -1043,12 +1043,12 @@ def test_strategy_memory_adjusts_reminder_priority_and_trace(agent: LifeAgent) -
     )
 
     trace = agent.repo.list_decision_traces(limit=1)[0]
-    exercise_candidate = next(
-        item for item in trace["candidates_json"] if item["reminder_type"] == "exercise"
+    action_candidate = next(
+        item for item in trace["candidates_json"] if item["reminder_type"] == "action_digest"
     )
-    assert result["selected"]["reminder_type"] == "exercise"
-    assert exercise_candidate["priority"] == 1
-    assert exercise_candidate["strategy_memory_id"] == memory["id"]
+    assert result["selected"]["reminder_type"] == "action_digest"
+    assert action_candidate["priority"] == 3
+    assert action_candidate["strategy_memory_id"] == memory["id"]
     assert trace["memory_influences_json"][0]["memory_id"] == memory["id"]
     assert trace["memory_influences_json"][0]["effect"] == "strategy_context"
     assert agent.repo.list_memory_hits(limit=1)[0]["effect_json"]["effect"] == "strategy_context"
@@ -1082,31 +1082,18 @@ def test_strategy_memory_does_not_override_sedentary_alert(agent: LifeAgent) -> 
 
 
 def test_sleep_record_reminder_prompts_when_last_night_sleep_is_missing(agent: LifeAgent) -> None:
-    agent.repo.create_event(
-        event_type="exercise",
-        occurred_at="2026-05-30T10:30:00+08:00",
-        source="wechat",
-        status="completed_unknown",
-    )
-
     result = agent.life_tick(
-        now="2026-05-30T13:00:00+08:00",
+        now="2026-05-30T21:30:00+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
         dry_run=True,
     )
 
-    assert result["selected"]["reminder_type"] == "sleep_record"
+    assert result["selected"]["reminder_type"] == "record_digest"
     assert "昨晚" in result["chat_preview"]
     assert "几点睡" in result["chat_preview"]
 
 
 def test_sleep_record_reminder_only_asks_missing_sleep_start_when_wake_exists(agent: LifeAgent) -> None:
-    agent.repo.create_event(
-        event_type="exercise",
-        occurred_at="2026-05-30T10:30:00+08:00",
-        source="wechat",
-        status="completed_unknown",
-    )
     agent.repo.create_event(
         event_type="sleep_end",
         occurred_at="2026-05-30T13:30:00+08:00",
@@ -1115,12 +1102,12 @@ def test_sleep_record_reminder_only_asks_missing_sleep_start_when_wake_exists(ag
     )
 
     result = agent.life_tick(
-        now="2026-05-30T13:00:00+08:00",
+        now="2026-05-30T21:30:00+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
         dry_run=True,
     )
 
-    assert result["selected"]["reminder_type"] == "sleep_record"
+    assert result["selected"]["reminder_type"] == "record_digest"
     assert "还缺睡觉时间" in result["chat_preview"]
     assert "今天几点醒" not in result["chat_preview"]
 
@@ -1150,21 +1137,40 @@ def test_sleep_record_reminder_skips_when_wake_day_has_duration(agent: LifeAgent
 
 
 def test_meal_record_reminder_prompts_when_day_has_no_meals(agent: LifeAgent) -> None:
-    agent.repo.create_event(
-        event_type="exercise",
-        occurred_at="2026-05-30T10:30:00+08:00",
-        source="wechat",
-        status="completed_unknown",
-    )
-
     result = agent.life_tick(
         now="2026-05-30T21:30:00+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
         dry_run=True,
     )
 
-    assert result["selected"]["reminder_type"] == "meal"
+    assert result["selected"]["reminder_type"] == "record_digest"
     assert "今天吃了什么" in result["chat_preview"]
+
+
+def test_record_digest_combines_missing_sleep_and_meal(agent: LifeAgent) -> None:
+    result = agent.life_tick(
+        now="2026-05-30T21:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert result["selected"]["reminder_type"] == "record_digest"
+    assert result["selected"]["payload"]["components"] == ["sleep_record", "meal"]
+    assert "几点睡" in result["chat_preview"]
+    assert "今天吃了什么" in result["chat_preview"]
+
+
+def test_action_digest_combines_exercise_and_water(agent: LifeAgent) -> None:
+    result = agent.life_tick(
+        now="2026-05-30T10:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert result["selected"]["reminder_type"] == "action_digest"
+    assert result["selected"]["payload"]["components"] == ["exercise", "water"]
+    assert "动一动" in result["chat_preview"]
+    assert "补点水" in result["chat_preview"]
 
 
 def test_meal_record_reminder_skips_when_any_meal_exists(agent: LifeAgent) -> None:
@@ -1380,7 +1386,7 @@ def test_sedentary_pause_suppresses_alert_but_keeps_sitting_window(agent: LifeAg
     ).fetchone()
     assert paused["status"] == "reminder_updated"
     assert first_tick["selected"] is None
-    assert paused_tick["selected"]["reminder_type"] == "exercise"
+    assert paused_tick["selected"]["reminder_type"] == "action_digest"
     assert resumed_tick["selected"]["reminder_type"] == "sedentary"
     assert active_window is not None
     assert active_window["status"] == "active"
@@ -1449,7 +1455,7 @@ def test_life_tick_does_not_let_repeated_sedentary_starve_first_exercise(agent: 
         dry_run=True,
     )
 
-    assert result["selected"]["reminder_type"] == "exercise"
+    assert result["selected"]["reminder_type"] == "action_digest"
 
 
 def test_life_tick_starts_sitting_window_without_alert_before_threshold(agent: LifeAgent) -> None:
@@ -1642,7 +1648,7 @@ def test_life_tick_starts_new_sedentary_window_after_interruption_closed_previou
     assert new_active["ended_at"] is None
 
 
-def test_sedentary_alert_repeats_only_after_repeat_interval(agent: LifeAgent) -> None:
+def test_sedentary_alert_uses_hourly_over_time_milestones(agent: LifeAgent) -> None:
     agent.repo.create_event(
         event_type="sedentary_start",
         occurred_at="2026-05-29T09:00:00+08:00",
@@ -1661,15 +1667,17 @@ def test_sedentary_alert_repeats_only_after_repeat_interval(agent: LifeAgent) ->
         activity=ActivitySnapshot(idle_seconds=20, available=True),
         dry_run=False,
     )
-    repeated = agent.life_tick(
-        now="2026-05-29T10:20:00+08:00",
+    next_hour = agent.life_tick(
+        now="2026-05-29T11:00:00+08:00",
         activity=ActivitySnapshot(idle_seconds=30, available=True),
         dry_run=False,
     )
 
     assert first["selected"]["reminder_type"] == "sedentary"
+    assert first["selected"]["payload"]["milestone_minutes"] == 60
     assert (too_soon["selected"] or {}).get("reminder_type") != "sedentary"
-    assert repeated["selected"]["reminder_type"] == "sedentary"
+    assert next_hour["selected"]["reminder_type"] == "sedentary"
+    assert next_hour["selected"]["payload"]["milestone_minutes"] == 120
 
 
 def test_sedentary_alert_throttles_after_sent_delivery(agent: LifeAgent) -> None:
@@ -1696,15 +1704,16 @@ def test_sedentary_alert_throttles_after_sent_delivery(agent: LifeAgent) -> None
         activity=ActivitySnapshot(idle_seconds=20, available=True),
         dry_run=False,
     )
-    repeated = agent.life_tick(
-        now="2026-05-29T10:20:00+08:00",
+    next_hour = agent.life_tick(
+        now="2026-05-29T11:00:00+08:00",
         activity=ActivitySnapshot(idle_seconds=30, available=True),
         dry_run=False,
     )
 
     assert first["selected"]["reminder_type"] == "sedentary"
     assert (too_soon_after_sent["selected"] or {}).get("reminder_type") != "sedentary"
-    assert repeated["selected"]["reminder_type"] == "sedentary"
+    assert next_hour["selected"]["reminder_type"] == "sedentary"
+    assert next_hour["selected"]["payload"]["milestone_minutes"] == 120
 
 
 def test_sedentary_alert_throttles_after_failed_delivery(agent: LifeAgent) -> None:
@@ -1750,7 +1759,7 @@ def test_sedentary_alert_throttles_after_failed_delivery(agent: LifeAgent) -> No
     assert first["selected"]["reminder_type"] == "sedentary"
     assert (too_soon_after_failed["selected"] or {}).get("reminder_type") != "sedentary"
     assert repeated["selected"] is None
-    assert "notification_rate_limited" in repeated["warnings"]
+    assert "notification_rate_limited" not in repeated["warnings"]
     assert after_old_short_cooldown["selected"] is None
     assert "notification_rate_limited" in after_old_short_cooldown["warnings"]
     assert after_cooldown["selected"]["reminder_type"] == "sedentary"
@@ -1849,31 +1858,31 @@ def test_life_tick_continues_other_reminders_when_activity_unavailable(agent: Li
         dry_run=True,
     )
 
-    assert result["selected"]["reminder_type"] == "exercise"
+    assert result["selected"]["reminder_type"] == "action_digest"
     assert "运动" in result["chat_preview"]
     assert result["warnings"] == ["mac_activity_unavailable"]
 
 
 def test_life_tick_sends_water_reminder(agent: LifeAgent) -> None:
     result = agent.life_tick(
-        now="2026-05-29T10:00:00+08:00",
+        now="2026-05-29T10:30:00+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
         dry_run=True,
     )
 
-    assert result["selected"]["reminder_type"] == "water"
-    assert "喝水" in result["chat_preview"]
+    assert result["selected"]["reminder_type"] == "action_digest"
+    assert "补点水" in result["chat_preview"]
 
 
 def test_life_tick_sends_water_reminder_when_cron_runs_after_due_minute(agent: LifeAgent) -> None:
     result = agent.life_tick(
-        now="2026-05-29T10:09:20+08:00",
+        now="2026-05-29T10:39:20+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
         dry_run=True,
     )
 
-    assert result["selected"]["reminder_type"] == "water"
-    assert result["selected"]["dedupe_key"] == "water:2026-05-29T10:00"
+    assert result["selected"]["reminder_type"] == "action_digest"
+    assert result["selected"]["dedupe_key"] == "action_digest:2026-05-29T10:30"
 
 
 def test_life_tick_sends_sleep_reminder(agent: LifeAgent) -> None:
@@ -2621,14 +2630,14 @@ def test_life_tick_writes_compact_log_line(tmp_path) -> None:
     )
 
     agent.life_tick(
-        now="2026-05-29T10:00:00+08:00",
+        now="2026-05-29T10:30:00+08:00",
         activity=ActivitySnapshot(idle_seconds=None, available=False),
         dry_run=True,
     )
 
     text = log_path.read_text(encoding="utf-8")
-    assert '"tick_time": "2026-05-29T10:00:00+08:00"' in text
-    assert '"selected_reminder": "water"' in text
+    assert '"tick_time": "2026-05-29T10:30:00+08:00"' in text
+    assert '"selected_reminder": "action_digest"' in text
     assert '"mac_activity_unavailable"' in text
 
 
@@ -2643,7 +2652,7 @@ def test_life_tick_marks_sending_only_when_notification_will_send(tmp_path) -> N
     )
 
     row = conn.execute(
-        "SELECT status FROM life_reminder_logs WHERE reminder_type = 'exercise'"
+        "SELECT status FROM life_reminder_logs WHERE reminder_type = 'action_digest'"
     ).fetchone()
     assert result["meta"]["should_notify"] is False
     assert row["status"] == "scheduled"
