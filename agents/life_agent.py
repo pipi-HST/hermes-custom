@@ -42,7 +42,8 @@ class LifeConfig:
     water_times: tuple[str, str] = ("10:00", "16:00")
     notifications_enabled: bool = False
     tick_lock_ttl_seconds: int = 50
-    notification_rate_limit_cooldown_minutes: int = 30
+    notification_rate_limit_cooldown_minutes: int = 120
+    notification_rate_limit_max_cooldown_minutes: int = 360
     log_path: str = ""
 
 
@@ -2012,11 +2013,12 @@ class LifeAgent:
         return ["下周维持当前节律，优先减少连续久坐。"]
 
     def _weekly_memory_items(self) -> list[dict[str, Any]]:
-        return self.repo.list_memory_items(
+        items = self.repo.list_memory_items(
             statuses=["active", "temporary", "weak"],
             domains=["life.sleep", "life.meal", "life.water", "life.sedentary", "life.copy"],
-            limit=3,
+            limit=8,
         )
+        return [item for item in items if _is_user_facing_memory_item(item)][:3]
 
     def _weekly_report_text(
         self,
@@ -2034,10 +2036,28 @@ class LifeAgent:
         evidence: list[dict[str, Any]],
         recommendations: list[str],
     ) -> str:
-        sleep_text = f"记录{sleep_days}天" + (f"，平均{_fmt_duration(avg_sleep)}" if avg_sleep else "，证据不足")
-        meal_text = f"覆盖{meal_days}天" if meal_days else "缺记录，暂时不评价饮食习惯"
-        exercise_text = f"{exercise_days}天，{'偏少' if exercise_days < 3 else '有延续'}"
-        sedentary_text = f"超标{_fmt_duration(total_sedentary)}" if total_sedentary else "未见超过60分钟窗口"
+        sleep_text = (
+            f"记录{sleep_days}天，平均{_fmt_duration(avg_sleep)}，可初步观察作息节律"
+            if sleep_days >= 3 and avg_sleep
+            else f"只记录{sleep_days}天，证据不足，先不判断睡眠习惯"
+        )
+        meal_text = (
+            f"饮食覆盖{meal_days}天，可以开始看时间和内容"
+            if meal_days >= 3
+            else f"饮食只覆盖{meal_days}天，先补齐记录再评价结构"
+        )
+        exercise_text = (
+            f"运动{exercise_days}天，节奏偏少"
+            if exercise_days < 3
+            else f"运动{exercise_days}天，有延续性"
+        )
+        sedentary_text = (
+            f"久坐超标{_fmt_duration(total_sedentary)}，连续坐姿是本周主要压力"
+            if total_sedentary >= 180
+            else f"久坐超标{_fmt_duration(total_sedentary)}，仍需留意连续坐姿"
+            if total_sedentary
+            else "未见超过60分钟窗口"
+        )
         water_text = f"喝水{total_water}次，覆盖{water_days}天" if total_water else "喝水缺记录"
         missing_text = "、".join(
             text for text in [
@@ -2052,15 +2072,15 @@ class LifeAgent:
         evidence_text = "；".join(str(item.get("text") or "") for item in evidence[:2] if item.get("text"))
         suggestion_text = recommendations[0] if recommendations else "下周继续保持记录。"
         text = (
-            f"总体：{headline}。\n"
+            f"本周总判断：{headline}。\n"
             f"睡眠：{sleep_text}。\n"
             f"饮食：{meal_text}；{water_text}。\n"
             f"运动：{exercise_text}。\n"
             f"久坐：{sedentary_text}。\n"
             f"{f'记忆：{memory_text}。' if memory_text else ''}"
             f"{f'证据：{evidence_text}。' if evidence_text else ''}\n"
-            f"待补：{missing_text}。\n"
-            f"建议：{suggestion_text}"
+            f"下周最重要建议：{suggestion_text}\n"
+            f"需补记：{missing_text}。"
         )
         return text[:600]
 
@@ -2299,16 +2319,30 @@ class LifeAgent:
     def _notification_rate_limited(self, current: datetime) -> bool:
         rows = self.repo.conn.execute(
             """SELECT scheduled_for, error FROM life_reminder_logs
-               WHERE status = 'failed' AND error LIKE '%rate limited%'"""
+               WHERE status = 'failed'
+               ORDER BY scheduled_for DESC, rowid DESC"""
         ).fetchall()
+        rate_limit_failures: list[datetime] = []
         for row in rows:
             error = str(row["error"] or "")
             if not _is_rate_limit_error(error):
                 continue
             scheduled = _parse_datetime(row["scheduled_for"])
-            elapsed_seconds = _seconds_between(scheduled, current)
-            if 0 <= elapsed_seconds < self.config.notification_rate_limit_cooldown_minutes * 60:
-                return True
+            if scheduled <= current:
+                rate_limit_failures.append(scheduled)
+        if not rate_limit_failures:
+            return False
+        latest = rate_limit_failures[0]
+        cutoff = latest - timedelta(hours=6)
+        recent_count = sum(1 for scheduled in rate_limit_failures if scheduled >= cutoff)
+        cooldown_minutes = rate_limit_cooldown_minutes(
+            recent_count,
+            base_minutes=self.config.notification_rate_limit_cooldown_minutes,
+            max_minutes=self.config.notification_rate_limit_max_cooldown_minutes,
+        )
+        elapsed_seconds = _seconds_between(latest, current)
+        if 0 <= elapsed_seconds < cooldown_minutes * 60:
+            return True
         return False
 
     def _has_active_reminder_log(self, dedupe_key: str) -> bool:
@@ -2486,7 +2520,18 @@ def _is_aware(value: datetime) -> bool:
 
 def _is_rate_limit_error(error: str) -> bool:
     normalized = error.lower().replace("_", " ").replace("-", " ")
-    return "rate limit" in normalized or "too many requests" in normalized
+    return "rate limit" in normalized or "too many requests" in normalized or "ret= 2" in normalized
+
+
+def rate_limit_cooldown_minutes(
+    failure_count: int,
+    *,
+    base_minutes: int = 120,
+    max_minutes: int = 360,
+) -> int:
+    if failure_count <= 1:
+        return base_minutes
+    return min(max_minutes, base_minutes * (2 ** (failure_count - 1)))
 
 
 def _due_time_on_day(current: datetime, time_text: str, *, window_minutes: int) -> datetime | None:

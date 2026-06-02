@@ -12,12 +12,11 @@ from typing import Any, Iterator
 
 from fastapi import APIRouter, Query
 
-from agents.life_agent import LifeConfig
+from agents.life_agent import LifeConfig, rate_limit_cooldown_minutes
 from scripts.life_repair import apply_repairs, plan_repairs
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CRON_JOBS_PATH = "/Users/pipi/.hermes/cron/jobs.json"
-DEFAULT_RATE_LIMIT_COOLDOWN_MINUTES = 30
 
 
 def create_life_router(
@@ -775,9 +774,17 @@ def _delivery_status(conn: sqlite3.Connection, *, current: datetime) -> dict[str
     latest_rate_limit = _latest_rate_limit_failure(conn, current)
     cooldown_until = ""
     cooling_down = False
+    cooldown_minutes = 0
+    rate_limit_failure_count = 0
     if latest_rate_limit:
         scheduled = _parse_datetime(str(latest_rate_limit["scheduled_for"]))
-        cooldown_dt = scheduled + timedelta(minutes=DEFAULT_RATE_LIMIT_COOLDOWN_MINUTES)
+        rate_limit_failure_count = int(latest_rate_limit.get("recent_count") or 1)
+        cooldown_minutes = rate_limit_cooldown_minutes(
+            rate_limit_failure_count,
+            base_minutes=LifeConfig().notification_rate_limit_cooldown_minutes,
+            max_minutes=LifeConfig().notification_rate_limit_max_cooldown_minutes,
+        )
+        cooldown_dt = scheduled + timedelta(minutes=cooldown_minutes)
         cooling_down = current < cooldown_dt
         cooldown_until = cooldown_dt.isoformat()
     status = "rate_limited" if cooling_down else "warning" if failed or sending or burst_count else "ok"
@@ -785,6 +792,8 @@ def _delivery_status(conn: sqlite3.Connection, *, current: datetime) -> dict[str
         "status": status,
         "cooling_down": cooling_down,
         "cooldown_until": cooldown_until,
+        "cooldown_minutes": cooldown_minutes,
+        "rate_limit_failure_count": rate_limit_failure_count,
         "recent_failed_count": len(failed),
         "recent_sending_count": int(sending),
         "recent_burst_count": burst_count,
@@ -1038,9 +1047,10 @@ def _latest_rate_limit_failure(conn: sqlite3.Connection, current: datetime) -> d
     rows = conn.execute(
         """SELECT reminder_type, scheduled_for, error
            FROM life_reminder_logs
-           WHERE status = 'failed' AND error LIKE '%rate limited%'
+           WHERE status = 'failed'
            ORDER BY scheduled_for DESC, rowid DESC"""
     ).fetchall()
+    failures: list[dict[str, Any]] = []
     for row in rows:
         error = str(row["error"] or "")
         if not _is_rate_limit_error(error):
@@ -1050,12 +1060,21 @@ def _latest_rate_limit_failure(conn: sqlite3.Connection, current: datetime) -> d
         except ValueError:
             continue
         if scheduled <= current:
-            return {
-                "reminder_type": str(row["reminder_type"]),
-                "scheduled_for": str(row["scheduled_for"]),
-                "error": error,
-            }
-    return None
+            failures.append(
+                {
+                    "reminder_type": str(row["reminder_type"]),
+                    "scheduled_for": str(row["scheduled_for"]),
+                    "error": error,
+                    "scheduled": scheduled,
+                }
+            )
+    if not failures:
+        return None
+    latest = failures[0]
+    cutoff = latest["scheduled"] - timedelta(hours=6)
+    latest["recent_count"] = sum(1 for item in failures if item["scheduled"] >= cutoff)
+    latest.pop("scheduled", None)
+    return latest
 
 
 def _reminder_bursts(conn: sqlite3.Connection, *, since: datetime) -> list[dict[str, Any]]:
@@ -1099,7 +1118,7 @@ def _reminder_bursts(conn: sqlite3.Connection, *, since: datetime) -> list[dict[
 
 def _is_rate_limit_error(error: str) -> bool:
     normalized = error.lower().replace("_", " ").replace("-", " ")
-    return "rate limit" in normalized or "too many requests" in normalized
+    return "rate limit" in normalized or "too many requests" in normalized or "ret= 2" in normalized
 
 
 def _load_json(value: Any, default: Any) -> Any:

@@ -636,7 +636,9 @@ def test_life_runtime_returns_cron_delivery_and_recent_triggers(tmp_path) -> Non
     assert data["cron"]["last_run_age_seconds"] == 60
     assert data["delivery"]["status"] == "rate_limited"
     assert data["delivery"]["cooling_down"] is True
-    assert data["delivery"]["cooldown_until"] == "2026-05-30T10:40:00+08:00"
+    assert data["delivery"]["cooldown_until"] == "2026-05-30T12:10:00+08:00"
+    assert data["delivery"]["cooldown_minutes"] == 120
+    assert data["delivery"]["rate_limit_failure_count"] == 1
     assert data["delivery"]["recent_failed_count"] == 1
     assert data["delivery"]["recent_sending_count"] == 1
     assert data["last_tick"]["selected_reminder"] == "water"
@@ -659,6 +661,35 @@ def test_life_runtime_returns_cron_delivery_and_recent_triggers(tmp_path) -> Non
     assert rules["sedentary"]["schedule_text"] == "连续坐姿 60 分钟后触发；之后每 20 分钟重复，直到离开 6 分钟"
     assert rules["water"]["today_status"] == "failed"
     assert rules["water"]["latest_log"]["status"] == "failed"
+
+
+def test_life_runtime_extends_rate_limit_cooldown_after_repeated_failures(tmp_path) -> None:
+    client, repo = _client(tmp_path)
+    for scheduled_for in (
+        "2026-05-30T16:00:00+08:00",
+        "2026-05-30T17:00:00+08:00",
+        "2026-05-30T18:00:00+08:00",
+    ):
+        repo.create_reminder_log(
+            reminder_type="water",
+            scheduled_for=scheduled_for,
+            status="failed",
+            dedupe_key=f"water:{scheduled_for}",
+            error="delivery error: Weixin send failed: iLink sendmessage rate limited: ret=-2",
+        )
+
+    response = client.get(
+        "/api/life/runtime",
+        params={"now": "2026-05-30T23:30:00+08:00"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["delivery"]["status"] == "rate_limited"
+    assert data["delivery"]["cooling_down"] is True
+    assert data["delivery"]["cooldown_until"] == "2026-05-31T00:00:00+08:00"
+    assert data["delivery"]["cooldown_minutes"] == 360
+    assert data["delivery"]["rate_limit_failure_count"] == 3
 
 
 def test_life_runtime_ignores_user_rescheduled_exercise_plan_as_burst(tmp_path) -> None:

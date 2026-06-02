@@ -169,6 +169,8 @@ export interface LifeRuntimeDelivery {
   status: string
   cooling_down: boolean
   cooldown_until: string
+  cooldown_minutes: number
+  rate_limit_failure_count: number
   recent_failed_count: number
   recent_sending_count: number
   recent_burst_count: number

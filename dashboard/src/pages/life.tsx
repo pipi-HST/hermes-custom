@@ -93,6 +93,7 @@ interface ReminderGroup {
   lastTime: string
   count: number
   error: string
+  rateLimited: boolean
 }
 
 function todayKey(): string {
@@ -205,6 +206,7 @@ function percent(value: number, max: number, min = 0): number {
 }
 
 function statusLabel(status: string): string {
+  if (status === 'rate_limited') return '微信限流'
   return STATUS_LABELS[status] || status
 }
 
@@ -307,6 +309,7 @@ function repairKindLabel(value: string): string {
 }
 
 function reminderStatusTone(status: string): string {
+  if (status === 'rate_limited') return 'border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950'
   if (status === 'failed') return 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950'
   if (status === 'sending') return 'border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950'
   if (status === 'sent' || status === 'completed') return 'border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950'
@@ -371,26 +374,35 @@ function payloadString(payload: Record<string, unknown> | undefined, key: string
   return typeof value === 'string' ? value : ''
 }
 
+function isRateLimitError(error: string): boolean {
+  const normalized = error.toLowerCase().replace(/[_-]/g, ' ')
+  return normalized.includes('rate limit') || normalized.includes('too many requests') || normalized.includes('ret= 2')
+}
+
 function groupReminderTriggers(reminders: LifeReminder[]): ReminderGroup[] {
   const groups: ReminderGroup[] = []
   for (const reminder of reminders) {
-    const errorKey = reminder.error ? reminder.error.split(':')[0] : ''
-    const key = `${reminder.reminder_type}:${reminder.status}:${errorKey}`
+    const rateLimited = isRateLimitError(reminder.error || '')
+    const displayStatus = rateLimited ? 'rate_limited' : reminder.status
+    const errorKey = rateLimited ? 'rate_limited' : reminder.error ? reminder.error.split(':')[0] : ''
+    const key = `${reminder.reminder_type}:${displayStatus}:${errorKey}`
     const latest = groups[groups.length - 1]
     if (latest && latest.key === key) {
       latest.count += 1
       latest.firstTime = reminder.scheduled_for
       if (!latest.error && reminder.error) latest.error = reminder.error
+      latest.rateLimited = latest.rateLimited || rateLimited
       continue
     }
     groups.push({
       key,
       reminderType: reminder.reminder_type,
-      status: reminder.status,
+      status: displayStatus,
       firstTime: reminder.scheduled_for,
       lastTime: reminder.scheduled_for,
       count: 1,
       error: reminder.error,
+      rateLimited,
     })
   }
   return groups
@@ -776,7 +788,14 @@ function RuntimeStatusPanel({ runtime }: { runtime: LifeRuntimeStatus | null }) 
           <p className="mt-1 text-lg font-semibold">{deliveryStatusLabel(delivery.status)}</p>
           <div className="mt-2 space-y-1 text-xs opacity-80">
             <p>失败 {delivery.recent_failed_count} · 发送中 {delivery.recent_sending_count} · 疑似风暴 {delivery.recent_burst_count}</p>
-            <p>{delivery.cooling_down ? `冷却到 ${formatDateTime(delivery.cooldown_until)}` : '当前没有限流冷却'}</p>
+            <p>
+              {delivery.cooling_down
+                ? `微信限流，暂停推送到 ${formatDateTime(delivery.cooldown_until)}`
+                : '当前没有限流冷却'}
+            </p>
+            {delivery.cooling_down && (
+              <p>近期限流 {delivery.rate_limit_failure_count} 次 · 本轮冷却 {formatMinutes(delivery.cooldown_minutes)}</p>
+            )}
             {delivery.last_failure && <p className="break-words">最近失败：{REMINDER_LABELS[delivery.last_failure.reminder_type] || delivery.last_failure.reminder_type}</p>}
           </div>
         </div>
@@ -817,10 +836,15 @@ function RuntimeStatusPanel({ runtime }: { runtime: LifeRuntimeStatus | null }) 
                   {group.count > 1 && <span className="rounded bg-white/70 px-1.5 py-0.5 text-xs dark:bg-neutral-900/50">x{group.count}</span>}
                 </div>
                 <p className="mt-1 text-xs text-neutral-500">
-                  {formatDateTime(group.lastTime)}
-                  {group.count > 1 ? ` - ${formatTime(group.firstTime)}` : ''} · {statusLabel(group.status)}
+                  {group.count > 1
+                    ? `${formatDateTime(group.firstTime)} - ${formatTime(group.lastTime)}`
+                    : formatDateTime(group.lastTime)} · {statusLabel(group.status)}
                 </p>
-                {group.error && <p className="mt-1 line-clamp-2 break-words text-xs text-red-600">{group.error}</p>}
+                {group.error && (
+                  <p className={`mt-1 line-clamp-2 break-words text-xs ${group.rateLimited ? 'text-amber-700 dark:text-amber-200' : 'text-red-600'}`}>
+                    {group.rateLimited ? '微信发送通道限流，已进入冷却；不是 Life 记录失败。' : group.error}
+                  </p>
+                )}
               </div>
             ))}
           </div>

@@ -681,27 +681,34 @@ def test_weixin_rate_limit_suppresses_notification_candidates_temporarily(agent:
         error="delivery error: Weixin send failed: iLink sendmessage rate limited",
     )
     agent.repo.create_event(
-        event_type="exercise",
-        occurred_at="2026-05-31T18:00:00+08:00",
-        source="wechat",
-        status="completed_unknown",
+        event_type="sedentary_start",
+        occurred_at="2026-05-31T22:30:00+08:00",
+        source="mac_activity",
+        status="active",
     )
 
     suppressed = agent.life_tick(
         now="2026-06-01T00:00:00+08:00",
-        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        activity=ActivitySnapshot(idle_seconds=0, available=True),
+        dry_run=False,
+    )
+    after_short_wait = agent.life_tick(
+        now="2026-06-01T00:11:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=0, available=True),
         dry_run=False,
     )
     after_cooldown = agent.life_tick(
-        now="2026-06-01T00:11:00+08:00",
-        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        now="2026-06-01T01:41:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=0, available=True),
         dry_run=False,
     )
 
     assert suppressed["selected"] is None
     assert suppressed["meta"]["should_notify"] is False
     assert "notification_rate_limited" in suppressed["warnings"]
-    assert after_cooldown["selected"]["reminder_type"] == "daily_review"
+    assert after_short_wait["selected"] is None
+    assert "notification_rate_limited" in after_short_wait["warnings"]
+    assert after_cooldown["selected"]["reminder_type"] == "sedentary"
 
 
 def test_generic_rate_limited_delivery_suppresses_notification_candidates_temporarily(agent: LifeAgent) -> None:
@@ -1641,8 +1648,13 @@ def test_sedentary_alert_throttles_after_failed_delivery(agent: LifeAgent) -> No
         activity=ActivitySnapshot(idle_seconds=30, available=True),
         dry_run=False,
     )
-    after_cooldown = agent.life_tick(
+    after_old_short_cooldown = agent.life_tick(
         now="2026-05-29T10:31:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=30, available=True),
+        dry_run=False,
+    )
+    after_cooldown = agent.life_tick(
+        now="2026-05-29T12:01:00+08:00",
         activity=ActivitySnapshot(idle_seconds=30, available=True),
         dry_run=False,
     )
@@ -1651,7 +1663,47 @@ def test_sedentary_alert_throttles_after_failed_delivery(agent: LifeAgent) -> No
     assert (too_soon_after_failed["selected"] or {}).get("reminder_type") != "sedentary"
     assert repeated["selected"] is None
     assert "notification_rate_limited" in repeated["warnings"]
+    assert after_old_short_cooldown["selected"] is None
+    assert "notification_rate_limited" in after_old_short_cooldown["warnings"]
     assert after_cooldown["selected"]["reminder_type"] == "sedentary"
+
+
+def test_repeated_rate_limited_deliveries_extend_channel_cooldown(agent: LifeAgent) -> None:
+    agent.config = LifeConfig(notifications_enabled=True)
+    for scheduled_for in (
+        "2026-05-29T16:00:00+08:00",
+        "2026-05-29T17:00:00+08:00",
+        "2026-05-29T18:00:00+08:00",
+    ):
+        agent.repo.create_reminder_log(
+            reminder_type="water",
+            scheduled_for=scheduled_for,
+            status="failed",
+            dedupe_key=f"water:{scheduled_for}",
+            error="delivery error: Weixin send failed: iLink sendmessage rate limited: ret=-2",
+        )
+    agent.repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-05-29T17:00:00+08:00",
+        source="mac_activity",
+        status="active",
+    )
+
+    suppressed = agent.life_tick(
+        now="2026-05-29T23:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=0, available=True),
+        dry_run=False,
+    )
+    after_cooldown = agent.life_tick(
+        now="2026-05-30T00:01:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=0, available=True),
+        dry_run=False,
+    )
+
+    assert suppressed["selected"] is None
+    assert "notification_rate_limited" in suppressed["warnings"]
+    assert after_cooldown["selected"] is not None
+    assert "notification_rate_limited" not in after_cooldown["warnings"]
 
 
 def test_life_tick_handles_existing_naive_sedentary_window_with_aware_now(agent: LifeAgent) -> None:
@@ -1987,8 +2039,9 @@ def test_weekly_review_is_concise_and_evidence_based(agent: LifeAgent) -> None:
     review = result["selected"]["review"]
     row = agent.repo.get_weekly_review(week_start="2026-05-25", week_end="2026-05-31")
     assert len(review["report_text"]) <= 600
-    assert "总体" in review["report_text"]
-    assert "建议" in review["report_text"]
+    assert "本周总判断：" in review["report_text"]
+    assert "下周最重要建议：" in review["report_text"]
+    assert "需补记：" in review["report_text"]
     assert review["evidence"]
     assert row is not None
     assert row["report_text"] == review["report_text"]
@@ -2032,13 +2085,13 @@ def test_weekly_review_analyzes_domains_gaps_and_memory(agent: LifeAgent) -> Non
 
     text = review["report_text"]
     assert len(text) <= 600
-    assert "总体：" in text
+    assert "本周总判断：" in text
     assert "睡眠：" in text
     assert "饮食：" in text
     assert "运动：" in text
     assert "久坐：" in text
-    assert "建议：" in text
-    assert "待补：" in text
+    assert "下周最重要建议：" in text
+    assert "需补记：" in text
     assert "记忆：" in text
     assert "作息偏晚" in text
     assert review["patterns"]["missing"]["exercise_days"] == 7
