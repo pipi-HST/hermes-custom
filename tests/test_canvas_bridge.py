@@ -151,11 +151,10 @@ def test_generate_canvas_uses_structure_planner_for_multiple_garden_cards(tmp_pa
 
     payload = json.loads((vault / "canvas" / "AI Agent-关系图.canvas").read_text(encoding="utf-8"))
     text = "\n".join(node.get("text", "") for node in payload["nodes"])
-    labels = "\n".join(node.get("label", "") for node in payload["nodes"])
     assert envelope["status"] == "success"
     assert "AI Agent 价值来自工程底座" in text
-    assert "落地方法" in labels
-    assert "复杂度边界" in labels
+    assert "落地方法" in text
+    assert "复杂度边界" in text
     assert envelope["meta"]["structure_status"] == "structured"
 
 

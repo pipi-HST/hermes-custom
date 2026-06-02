@@ -65,11 +65,13 @@ def test_build_obsidian_canvas_renders_structured_garden_cluster():
     text = "\n".join(node.get("text", "") for node in payload["nodes"])
     assert "AI Agent 的价值来自工程底座" in by_id["core"]["text"]
     assert by_id["group-1"]["type"] == "group"
-    assert by_id["group-1"]["label"] == "落地方法"
-    assert by_id["group-2"]["label"] == "边界风险"
+    assert by_id["group-1"]["label"] == ""
+    assert by_id["group-2"]["label"] == ""
+    assert by_id["group-1-header"]["text"].startswith("## 落地方法")
+    assert by_id["group-2-header"]["text"].startswith("## 边界风险")
     assert "工程化方法卡" in text
     assert "[[captures/effective|S1 Building Effective AI Agents]]" in text
-    assert result.edge_count == 4
+    assert result.edge_count == 0
 
 
 def test_structured_canvas_renders_evidence_as_compact_pills_not_source_cards():
@@ -104,8 +106,10 @@ def test_structured_canvas_renders_evidence_as_compact_pills_not_source_cards():
     payload = json.loads(result.json_text)
     by_id = {node["id"]: node for node in payload["nodes"]}
     assert by_id["evidence-panel"]["type"] == "group"
-    assert by_id["evidence-panel"]["label"] == "Evidence"
-    assert by_id["evidence-panel"]["y"] < 520
+    assert by_id["evidence-panel"]["label"] == ""
+    assert by_id["evidence-header"]["text"].startswith("## Evidence")
+    assert by_id["evidence-panel"]["x"] > by_id["group-1"]["x"]
+    assert by_id["evidence-panel"]["y"] <= by_id["group-1"]["y"]
     assert by_id["source-1"]["text"].startswith("[[captures/effective|S1 Building Effective")
     assert by_id["source-1"]["height"] >= 52
     assert by_id["source-1"]["width"] >= 320
@@ -161,6 +165,7 @@ def test_structured_canvas_cards_are_large_readable_and_use_source_badges():
     assert by_id["group-1-card-1-ref-1"]["width"] >= 64
     assert by_id["group-1-card-1-ref-1"]["y"] >= card["y"] + card["height"] + 8
     assert by_id["group-1"]["height"] > card["height"]
+    assert card["y"] >= by_id["group-1-header"]["y"] + by_id["group-1-header"]["height"] + 20
 
 
 def test_structured_canvas_shows_all_evidence_without_collapsing_sources():
@@ -235,6 +240,43 @@ def test_structured_canvas_shows_all_source_badges_for_each_garden_card():
     for index in range(1, 6):
         assert by_id[f"group-1-card-1-ref-{index}"]["text"] == f"S{index}"
     assert "group-1-card-1-ref-6" not in by_id
+
+
+def test_structured_canvas_uses_horizontal_knowledge_board_not_vertical_flowchart():
+    cards = [
+        CanvasItem(
+            id=f"card{i}",
+            title=f"卡片{i}",
+            file_path=f"garden/card-{i}.md",
+            kind="viewpoint",
+            summary=f"摘要{i}",
+            source_ids=["cap1"],
+        )
+        for i in range(1, 4)
+    ]
+    result = build_obsidian_canvas(
+        CanvasBuildInput(
+            title="Garden Card 聚类",
+            theme=CanvasTheme(title="Garden Card 聚类", file_path=""),
+            captures=[CanvasItem(id="cap1", title="来源", file_path="captures/source.md")],
+            garden_cards=cards,
+            structure=CanvasStructure(
+                core_claim="核心关系",
+                groups=[CanvasStructureGroup(role="support", title="一个聚类", card_ids=[card.id for card in cards])],
+                evidence_ids=["cap1"],
+            ),
+        )
+    )
+
+    payload = json.loads(result.json_text)
+    by_id = {node["id"]: node for node in payload["nodes"]}
+    card_nodes = [by_id[f"group-1-card-{index}"] for index in range(1, 4)]
+    assert by_id["group-1"]["width"] >= 1000
+    assert by_id["group-1"]["height"] <= 520
+    assert card_nodes[1]["x"] > card_nodes[0]["x"]
+    assert card_nodes[2]["x"] > card_nodes[1]["x"]
+    assert card_nodes[0]["y"] == card_nodes[1]["y"] == card_nodes[2]["y"]
+    assert payload["edges"] == []
 
 
 def test_build_obsidian_canvas_structure_ignores_missing_card_ids():

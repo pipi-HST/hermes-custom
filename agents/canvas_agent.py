@@ -168,13 +168,24 @@ def _build_structured_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
     captures = _ordered_captures_for_structure(data.captures, structure.evidence_ids)
     warnings: list[str] = []
 
+    board_x = -760
+    board_y = -320
+    board_width = 1440
+    card_width = 420
+    card_height = 260
+    card_gap = 34
+    evidence_x = board_x + board_width + 80
+    evidence_y = board_y
+    evidence_width = 520
+    evidence_height = max(260, 92 + len(captures) * 64)
+
     nodes = [
-        _text_node("theme", _theme_text(data.theme), -360, -520, 720, 105, THEME_COLOR),
-        _text_node("core", _core_text(structure.core_claim), -360, -360, 720, 116, CORE_COLOR),
+        _text_node("theme", _theme_text(data.theme), board_x, -560, 470, 88, THEME_COLOR),
+        _text_node("core", _core_text(structure.core_claim), board_x + 510, -560, 870, 112, CORE_COLOR),
     ]
     edges = []
     rendered_card_ids: set[str] = set()
-    max_card_bottom = 0
+    max_group_bottom = board_y
     for group_index, group in enumerate(structure.groups[:5]):
         cards = [
             card_lookup[card_id]
@@ -185,30 +196,39 @@ def _build_structured_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
             continue
         rendered_card_ids.update(card.id for card in cards)
         group_id = f"group-{group_index + 1}"
-        x = -760 + group_index * 500
-        group_height = 480 + max(0, len(cards) - 1) * 350
+        group_y = board_y + group_index * 470
+        group_height = 460
         nodes.append(
             _group_node(
                 group_id,
-                group.title or _role_label(group.role),
-                x - 18,
-                -178,
-                466,
+                "",
+                board_x,
+                group_y,
+                board_width,
                 group_height,
                 GROUP_COLOR,
             )
         )
-        edges.append(_edge(f"edge-core-{group_index + 1}", "core", group_id))
+        nodes.append(
+            _text_node(
+                f"{group_id}-header",
+                _cluster_header_text(group),
+                board_x + 24,
+                group_y + 22,
+                board_width - 48,
+                82,
+                GROUP_COLOR,
+            )
+        )
         for card_index, card in enumerate(cards):
             node_id = f"{group_id}-card-{card_index + 1}"
-            card_y = -28 + card_index * 350
-            card_width = 430
-            card_height = 260
+            card_x = board_x + 24 + card_index * (card_width + card_gap)
+            card_y = group_y + 128
             nodes.append(
                 _text_node(
                     node_id,
                     _readable_garden_text(card),
-                    x,
+                    card_x,
                     card_y,
                     card_width,
                     card_height,
@@ -223,32 +243,37 @@ def _build_structured_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
                     _text_node(
                         f"{node_id}-ref-{ref_index + 1}",
                         ref,
-                        x + 24 + badge_col * 76,
+                        card_x + 18 + badge_col * 72,
                         badge_y + badge_row * 44,
-                        68,
+                        66,
                         38,
                         SOURCE_BADGE_COLOR,
                     )
                 )
             ref_rows = max(1, (len(_source_refs(card, captures, limit=None)) + 4) // 5)
-            max_card_bottom = max(max_card_bottom, badge_y + (ref_rows - 1) * 44 + 38)
-            edges.append(_edge(f"edge-{group_id}-{card_index + 1}", group_id, node_id))
+            max_group_bottom = max(max_group_bottom, badge_y + (ref_rows - 1) * 44 + 38)
 
-    evidence_y = max(380, max_card_bottom + 120)
     if captures:
-        evidence_rows = (len(captures) + 3) // 4
-        evidence_height = 88 + max(1, evidence_rows) * 68
-        nodes.append(_group_node("evidence-panel", "Evidence", -760, evidence_y, 1860, evidence_height, EVIDENCE_PANEL_COLOR))
+        nodes.append(_group_node("evidence-panel", "", evidence_x, evidence_y, evidence_width, evidence_height, EVIDENCE_PANEL_COLOR))
+        nodes.append(
+            _text_node(
+                "evidence-header",
+                "## Evidence\n来源材料索引，S 编号对应每张 Garden Card 下方引用。",
+                evidence_x + 24,
+                evidence_y + 22,
+                evidence_width - 48,
+                66,
+                EVIDENCE_PANEL_COLOR,
+            )
+        )
     for index, capture in enumerate(captures):
-        row = index // 4
-        col = index % 4
         nodes.append(
             _text_node(
                 f"source-{index + 1}",
                 _source_pill_text(capture, index + 1),
-                -650 + col * 365,
-                evidence_y + 50 + row * 68,
-                330,
+                evidence_x + 24,
+                evidence_y + 96 + index * 64,
+                evidence_width - 48,
                 52,
                 SOURCE_COLOR,
             )
@@ -404,6 +429,16 @@ def _group_text(group: CanvasStructureGroup) -> str:
     ]
     if group.reason.strip():
         lines.extend(["", _clip(group.reason, 80)])
+    return "\n".join(lines).strip()
+
+
+def _cluster_header_text(group: CanvasStructureGroup) -> str:
+    lines = [
+        f"## {group.title or _role_label(group.role)}",
+        f"**{_role_label(group.role)}**",
+    ]
+    if group.reason.strip():
+        lines.append(_clip(group.reason, 120))
     return "\n".join(lines).strip()
 
 
