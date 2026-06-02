@@ -226,6 +226,48 @@ def test_life_repair_flags_cross_midnight_sedentary_anomaly_as_high_risk(tmp_pat
     assert planned["actions"][0]["safe_to_apply"] is False
 
 
+def test_life_repair_can_supersede_sleep_like_overnight_split_window(tmp_path) -> None:
+    db_path = str(tmp_path / "life-repair.db")
+    repo = LifeRepo(init_life_db(db_path))
+    previous = repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-06-01T23:40:00+08:00",
+        ended_at="2026-06-02T00:00:00+08:00",
+        duration_minutes=20,
+        source="mac_activity",
+        status="day_split",
+    )
+    window = repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-06-02T00:00:00+08:00",
+        ended_at="2026-06-02T09:29:21+08:00",
+        duration_minutes=569,
+        source="mac_activity",
+        status="auto_resolved",
+        payload={"split_from": previous["id"]},
+    )
+    break_event = repo.create_event(
+        event_type="sedentary_break",
+        occurred_at="2026-06-02T09:29:21+08:00",
+        duration_minutes=569,
+        source="mac_activity",
+        payload={
+            "sitting_window_id": window["id"],
+            "resolution_source": "mac_interrupted:sleep",
+        },
+    )
+
+    planned = plan_repairs(db_path=db_path)
+
+    assert planned["summary"]["safe_apply_count"] == 1
+    assert planned["actions"][0]["kind"] == "sleep_like_overnight_split_window"
+    applied = apply_repairs(db_path=db_path)
+    assert applied["summary"]["applied_count"] == 1
+    assert repo.get_event(window["id"])["status"] == "superseded"
+    assert repo.get_event(window["id"])["payload_json"]["superseded_reason"] == "sleep_like_overnight_split_window"
+    assert repo.get_event(break_event["id"])["status"] == "superseded"
+
+
 def test_life_audit_reports_runtime_warning_without_writing(tmp_path) -> None:
     db_path = str(tmp_path / "life-audit.db")
     repo = LifeRepo(init_life_db(db_path))

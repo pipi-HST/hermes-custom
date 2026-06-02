@@ -964,6 +964,28 @@ def test_life_tick_uses_memory_in_reminder_copy_for_multiple_domains(agent: Life
     assert sedentary_trace["memory_influences_json"][0]["effect"] == "message_context"
 
 
+def test_life_tick_keeps_diagnostic_memory_out_of_user_facing_exercise_copy(agent: LifeAgent) -> None:
+    agent.repo.upsert_memory_item(
+        domain="life.copy",
+        memory_type="response",
+        status="weak",
+        content="最近14天运动提醒有3次发送失败，需要避免短时间重复打扰并优先关注发送状态。",
+        confidence="medium",
+        source="reminder_feedback",
+        effective_from="2026-06-02T09:00:00+08:00",
+    )
+
+    result = agent.life_tick(
+        now="2026-06-02T10:30:00+08:00",
+        activity=ActivitySnapshot(idle_seconds=None, available=False),
+        dry_run=True,
+    )
+
+    assert result["selected"]["reminder_type"] == "exercise"
+    assert "参考记忆" not in result["chat_preview"]
+    assert "发送失败" not in result["chat_preview"]
+
+
 def test_sleep_record_reminder_prompts_when_last_night_sleep_is_missing(agent: LifeAgent) -> None:
     agent.repo.create_event(
         event_type="exercise",
@@ -2353,6 +2375,47 @@ def test_life_tick_splits_cross_midnight_sitting_window(agent: LifeAgent) -> Non
     assert closed["duration_minutes"] == 30
     assert active is not None
     assert active["occurred_at"] == "2026-05-31T00:00:00+08:00"
+
+
+def test_life_tick_supersedes_sleep_like_overnight_split_window(agent: LifeAgent) -> None:
+    previous = agent.repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-06-01T23:40:00+08:00",
+        ended_at="2026-06-02T00:00:00+08:00",
+        duration_minutes=20,
+        source="mac_activity",
+        status="day_split",
+    )
+    active = agent.repo.create_event(
+        event_type="sedentary_start",
+        occurred_at="2026-06-02T00:00:00+08:00",
+        source="mac_activity",
+        status="active",
+        payload={"split_from": previous["id"]},
+    )
+
+    result = agent.life_tick(
+        now="2026-06-02T09:36:15+08:00",
+        activity=ActivitySnapshot(
+            idle_seconds=8,
+            available=True,
+            sleeping=True,
+            interruption_seconds=689,
+            interruption_source="sleep",
+            interruption_started_at="2026-06-02T09:23:21+08:00",
+            interruption_ended_at="2026-06-02T09:34:50+08:00",
+        ),
+        dry_run=True,
+    )
+
+    updated = agent.repo.get_event(active["id"])
+    break_count = agent.repo.conn.execute(
+        "SELECT count(*) AS cnt FROM life_events WHERE event_type = 'sedentary_break'"
+    ).fetchone()["cnt"]
+    assert result["selected"] is None
+    assert updated["status"] == "superseded"
+    assert updated["payload_json"]["superseded_reason"] == "sleep_like_overnight_split_window"
+    assert break_count == 0
 
 
 def test_life_tick_defers_reminder_during_fresh_knowledge_choice(agent: LifeAgent) -> None:

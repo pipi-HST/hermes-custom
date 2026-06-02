@@ -1164,6 +1164,7 @@ class LifeAgent:
                 "status": item["status"],
                 "content": item["content"],
                 "confidence": item["confidence"],
+                "source": item["source"],
             }
             for item in items
         ]
@@ -1458,14 +1459,30 @@ class LifeAgent:
                 break_at = self._mac_interruption_break_time(active_window, current, activity)
                 if break_at:
                     source = activity.interruption_source or "mac"
-                    self._close_sitting_window(active_window, break_at, f"mac_interrupted:{source}")
+                    resolution_source = f"mac_interrupted:{source}"
+                    if self._should_supersede_sleep_like_overnight_split(active_window, resolution_source):
+                        self._supersede_sitting_window(
+                            active_window,
+                            reason="sleep_like_overnight_split_window",
+                            current=current,
+                        )
+                    else:
+                        self._close_sitting_window(active_window, break_at, resolution_source)
             return None
         if activity.sleeping or activity.display_off:
             if active_window:
                 break_at = self._mac_interruption_break_time(active_window, current, activity)
                 if break_at:
                     source = activity.interruption_source or "mac"
-                    self._close_sitting_window(active_window, break_at, f"mac_interrupted:{source}")
+                    resolution_source = f"mac_interrupted:{source}"
+                    if self._should_supersede_sleep_like_overnight_split(active_window, resolution_source):
+                        self._supersede_sitting_window(
+                            active_window,
+                            reason="sleep_like_overnight_split_window",
+                            current=current,
+                        )
+                    else:
+                        self._close_sitting_window(active_window, break_at, resolution_source)
                 return None
         if activity.idle_seconds is None:
             return None
@@ -1584,6 +1601,43 @@ class LifeAgent:
                 "resolution_source": resolution_source,
             },
         )
+
+    def _supersede_sitting_window(
+        self,
+        active_window: dict[str, Any],
+        *,
+        reason: str,
+        current: datetime,
+    ) -> None:
+        payload = dict(active_window.get("payload_json") or {})
+        payload.update(
+            {
+                "superseded_reason": reason,
+                "superseded_at": current.isoformat(),
+            }
+        )
+        self.repo.update_event(
+            active_window["id"],
+            ended_at=current.isoformat(),
+            status="superseded",
+            payload=payload,
+        )
+
+    def _should_supersede_sleep_like_overnight_split(
+        self,
+        active_window: dict[str, Any],
+        resolution_source: str,
+    ) -> bool:
+        payload = active_window.get("payload_json") or {}
+        if not payload.get("split_from"):
+            return False
+        try:
+            started_at = _parse_datetime(str(active_window["occurred_at"]))
+        except ValueError:
+            return False
+        if started_at.hour != 0 or started_at.minute != 0:
+            return False
+        return resolution_source in {"mac_interrupted:sleep", "mac_interrupted:display_off"}
 
     def _idle_break_time(
         self,
@@ -2497,6 +2551,8 @@ def _memory_domains_for_reminder(reminder_type: str) -> list[str]:
 
 def _memory_copy_text(memory_pack: list[dict[str, Any]]) -> str:
     for item in memory_pack:
+        if not _is_user_facing_memory_item(item):
+            continue
         domain = str(item.get("domain") or "")
         if domain == "life.copy":
             continue
@@ -2504,7 +2560,15 @@ def _memory_copy_text(memory_pack: list[dict[str, Any]]) -> str:
         if content:
             return content[:42]
     for item in memory_pack:
+        if not _is_user_facing_memory_item(item):
+            continue
         content = str(item.get("content") or "").strip()
         if content:
             return content[:42]
     return ""
+
+
+def _is_user_facing_memory_item(item: dict[str, Any]) -> bool:
+    if str(item.get("source") or "") == "reminder_feedback":
+        return False
+    return True

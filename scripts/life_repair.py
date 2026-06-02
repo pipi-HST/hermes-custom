@@ -39,6 +39,7 @@ def plan_repairs(
         actions.extend(_superseded_duplicate_reminder_actions(conn))
         actions.extend(_duplicate_sleep_actions(conn))
         actions.extend(_dirty_meal_actions(conn))
+        actions.extend(_sleep_like_overnight_split_window_actions(conn))
         actions.extend(_cross_midnight_sedentary_actions(conn))
     finally:
         conn.close()
@@ -81,6 +82,9 @@ def apply_repairs(
                 applied.append(action)
             elif action["kind"] == "superseded_duplicate_reminder":
                 _apply_superseded_duplicate_reminder(conn, action)
+                applied.append(action)
+            elif action["kind"] == "sleep_like_overnight_split_window":
+                _apply_sleep_like_overnight_split_window(conn, action)
                 applied.append(action)
         conn.commit()
     finally:
@@ -239,6 +243,53 @@ def _cross_midnight_sedentary_actions(conn: sqlite3.Connection) -> list[dict[str
     return actions
 
 
+def _sleep_like_overnight_split_window_actions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT window.id,
+                  window.occurred_at,
+                  window.ended_at,
+                  window.duration_minutes,
+                  window.payload_json,
+                  break.id AS break_id,
+                  break.payload_json AS break_payload_json
+           FROM life_events AS window
+           JOIN life_events AS break
+             ON break.event_type = 'sedentary_break'
+            AND json_extract(break.payload_json, '$.sitting_window_id') = window.id
+           WHERE window.event_type = 'sedentary_start'
+             AND window.status = 'auto_resolved'
+             AND window.ended_at IS NOT NULL
+             AND window.ended_at != ''
+             AND json_extract(window.payload_json, '$.split_from') IS NOT NULL
+             AND window.duration_minutes >= 360
+             AND break.status NOT IN ('undone', 'superseded')
+           ORDER BY window.occurred_at DESC, window.rowid DESC"""
+    ).fetchall()
+    actions: list[dict[str, Any]] = []
+    for row in rows:
+        started = _parse_datetime(str(row["occurred_at"]))
+        if started.hour != 0 or started.minute != 0:
+            continue
+        break_payload = _json_object(str(row["break_payload_json"] or "{}"))
+        resolution_source = str(break_payload.get("resolution_source") or "")
+        if resolution_source not in {"mac_interrupted:sleep", "mac_interrupted:display_off"}:
+            continue
+        actions.append(
+            {
+                "kind": "sleep_like_overnight_split_window",
+                "safe_to_apply": True,
+                "id": str(row["id"]),
+                "break_id": str(row["break_id"]),
+                "started_at": str(row["occurred_at"]),
+                "ended_at": str(row["ended_at"]),
+                "duration_minutes": int(row["duration_minutes"] or 0),
+                "resolution_source": resolution_source,
+                "target_status": "superseded",
+            }
+        )
+    return actions
+
+
 def _apply_stale_sending(conn: sqlite3.Connection, action: dict[str, Any]) -> None:
     conn.execute(
         """UPDATE life_reminder_logs
@@ -269,6 +320,41 @@ def _apply_superseded_duplicate_reminder(conn: sqlite3.Connection, action: dict[
             action["id"],
         ),
     )
+
+
+def _apply_sleep_like_overnight_split_window(conn: sqlite3.Connection, action: dict[str, Any]) -> None:
+    now = datetime.now().astimezone().isoformat()
+    row = conn.execute(
+        "SELECT payload_json FROM life_events WHERE id = ?",
+        (action["id"],),
+    ).fetchone()
+    payload = _json_object(str(row["payload_json"] or "{}")) if row else {}
+    payload.update(
+        {
+            "superseded_reason": "sleep_like_overnight_split_window",
+            "superseded_at": now,
+        }
+    )
+    conn.execute(
+        """UPDATE life_events
+           SET status = 'superseded', payload_json = ?, updated_at = ?
+           WHERE id = ? AND status = 'auto_resolved'""",
+        (json.dumps(payload, ensure_ascii=False), now, action["id"]),
+    )
+    conn.execute(
+        """UPDATE life_events
+           SET status = 'superseded', updated_at = ?
+           WHERE id = ? AND event_type = 'sedentary_break'""",
+        (now, action["break_id"]),
+    )
+
+
+def _json_object(raw: str) -> dict[str, Any]:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _last_cron_run_at(cron_jobs_path: str) -> str:
