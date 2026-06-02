@@ -10,15 +10,19 @@ MAX_GARDEN_CARDS = 6
 MAX_SOURCE_REFS_PER_CARD = 2
 
 THEME_COLOR = "#DDEED4"
-METHOD_COLOR = "#FFE8AA"
-VIEWPOINT_COLOR = "#D7EBFF"
-CAUTION_COLOR = "#FBD2C7"
-QUESTION_COLOR = "#E5DAFF"
-FACT_COLOR = "#F3DA98"
+METHOD_COLOR = "#F5D36B"
+VIEWPOINT_COLOR = "#A9DDF2"
+CAUTION_COLOR = "#F0A99C"
+QUESTION_COLOR = "#C9B0F0"
+FACT_COLOR = "#D9BC62"
 SOURCE_COLOR = "#E8E4DC"
 MORE_COLOR = "#E4D9EE"
 CORE_COLOR = "#E7F0DE"
 GROUP_COLOR = "#D8B66F"
+GROUP_METHOD_COLOR = "#A8B86F"
+GROUP_RISK_COLOR = "#D99286"
+GROUP_QUESTION_COLOR = "#B79AD8"
+GROUP_FACT_COLOR = "#91A9B8"
 EVIDENCE_PANEL_COLOR = "#D2B98E"
 SOURCE_BADGE_COLOR = "#E4CFAB"
 
@@ -198,6 +202,7 @@ def _build_structured_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
         group_id = f"group-{group_index + 1}"
         group_y = board_y + group_index * 540
         group_height = 520
+        group_color = _color_for_role(group.role)
         nodes.append(
             _group_node(
                 group_id,
@@ -206,7 +211,7 @@ def _build_structured_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
                 group_y,
                 board_width,
                 group_height,
-                GROUP_COLOR,
+                group_color,
             )
         )
         nodes.append(
@@ -217,7 +222,7 @@ def _build_structured_canvas(data: CanvasBuildInput) -> CanvasBuildResult:
                 group_y + 22,
                 board_width - 48,
                 124,
-                GROUP_COLOR,
+                group_color,
             )
         )
         for card_index, card in enumerate(cards):
@@ -529,3 +534,13 @@ def _color_for_kind(kind: str) -> str:
         "fact": FACT_COLOR,
         "viewpoint": VIEWPOINT_COLOR,
     }.get(kind or "", VIEWPOINT_COLOR)
+
+
+def _color_for_role(role: str) -> str:
+    return {
+        "support": GROUP_COLOR,
+        "method": GROUP_METHOD_COLOR,
+        "risk": GROUP_RISK_COLOR,
+        "question": GROUP_QUESTION_COLOR,
+        "fact": GROUP_FACT_COLOR,
+    }.get(role or "", GROUP_COLOR)

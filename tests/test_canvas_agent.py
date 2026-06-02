@@ -69,6 +69,10 @@ def test_build_obsidian_canvas_renders_structured_garden_cluster():
     assert by_id["group-2"]["label"] == ""
     assert by_id["group-1-header"]["text"].startswith("## 落地方法")
     assert by_id["group-2-header"]["text"].startswith("## 边界风险")
+    assert by_id["group-1"]["color"] == "#A8B86F"
+    assert by_id["group-1-header"]["color"] == "#A8B86F"
+    assert by_id["group-2"]["color"] == "#D99286"
+    assert by_id["group-2-header"]["color"] == "#D99286"
     assert "工程化方法卡" in text
     assert "[[captures/effective|S1 Building Effective AI Agents]]" in text
     assert result.edge_count == 0
@@ -609,7 +613,7 @@ def test_build_obsidian_canvas_uses_light_custom_colors():
     payload = json.loads(result.json_text)
     colors = {node["color"] for node in payload["nodes"] if "color" in node}
     assert "#DDEED4" in colors
-    assert "#FFE8AA" in colors
+    assert "#F5D36B" in colors
     assert all(color.startswith("#") for color in colors)
 
 
@@ -636,7 +640,7 @@ def test_structured_canvas_uses_warmer_deeper_but_still_soft_colors():
 
     payload = json.loads(result.json_text)
     colors = {node["color"] for node in payload["nodes"] if "color" in node}
-    assert {"#D7EBFF", "#FBD2C7", "#E7F0DE", "#D8B66F", "#D2B98E"} <= colors
+    assert {"#A9DDF2", "#F0A99C", "#E7F0DE", "#D8B66F", "#D99286", "#D2B98E"} <= colors
     assert "#FAFAF8" not in colors
 
 
