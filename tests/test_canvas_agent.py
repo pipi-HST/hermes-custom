@@ -279,6 +279,55 @@ def test_structured_canvas_uses_horizontal_knowledge_board_not_vertical_flowchar
     assert payload["edges"] == []
 
 
+def test_structured_canvas_uses_roomy_nodes_to_avoid_text_clipping():
+    long_summary = (
+        "这是一段会在 Obsidian Canvas 中造成裁切风险的长摘要。"
+        "它应该被主动压短，而不是依赖节点滚动或让文字被挡住。"
+        "这里继续补充一些细节，模拟真实 Garden Card 的较长 summary。"
+    )
+    result = build_obsidian_canvas(
+        CanvasBuildInput(
+            title="Garden Card 聚类",
+            theme=CanvasTheme(title="Garden Card 聚类", file_path="", summary="用于检查顶部说明框不会裁切。"),
+            captures=[
+                CanvasItem(id="cap1", title="很长的来源标题会在右侧索引中更容易被裁切", file_path="captures/source.md"),
+            ],
+            garden_cards=[
+                CanvasItem(
+                    id="card1",
+                    title="长摘要卡片",
+                    file_path="garden/long.md",
+                    kind="viewpoint",
+                    summary=long_summary,
+                    source_ids=["cap1"],
+                ),
+            ],
+            structure=CanvasStructure(
+                core_claim="这是一个较长的结构判断，用来确认核心说明框有足够高度，不会在 Obsidian Canvas 里被底部裁掉。",
+                groups=[
+                    CanvasStructureGroup(
+                        role="support",
+                        title="较长的聚类标题",
+                        card_ids=["card1"],
+                        reason="这是较长的聚类说明，用来确认 header 有足够高度承载标题、角色和一句解释。",
+                    )
+                ],
+                evidence_ids=["cap1"],
+            ),
+        )
+    )
+
+    payload = json.loads(result.json_text)
+    by_id = {node["id"]: node for node in payload["nodes"]}
+    assert by_id["theme"]["height"] >= 130
+    assert by_id["core"]["height"] >= 150
+    assert by_id["group-1-header"]["height"] >= 120
+    assert by_id["group-1-card-1"]["height"] >= 300
+    assert by_id["source-1"]["height"] >= 68
+    assert len(by_id["group-1-card-1"]["text"]) < len(long_summary) + 80
+    assert by_id["group-1-card-1-ref-1"]["height"] <= 30
+
+
 def test_build_obsidian_canvas_structure_ignores_missing_card_ids():
     result = build_obsidian_canvas(
         CanvasBuildInput(
