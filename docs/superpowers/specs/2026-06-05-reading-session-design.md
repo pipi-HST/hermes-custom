@@ -4,11 +4,11 @@
 
 ## 背景
 
-现在 Hermes Knowledge 已经能完成“材料进入知识库”的主链路：用户发链接、文件、文本或图文材料，Capture 生成可审阅草稿，用户确认后入库，Library 补目录、章节、properties 和 embedding，后续 RAG、Theme、Garden、Review 再复用这些材料。
+Hermes Knowledge 已经跑通“材料进入知识库”的主链路：用户发链接、文件、文本或图文材料，Capture 生成可审阅草稿，用户确认后入库，Library 补 properties、目录纲要、章节切分和 embedding，后续 RAG、Theme、Garden、Review 复用这些材料。
 
-但还有一个真实阅读场景没有被很好覆盖：
+但还有一个真实阅读场景没有被完整覆盖：
 
-> 用户正在读一篇公众号或长文章，读到某个概念、段落或论证不理解，想和 AI 多轮讨论。讨论几轮后，用户希望把原文相关内容、自己的问题、AI 的解释，以及最后形成的理解一起整理进知识库。
+> 用户正在读一篇公众号、长文章、PDF、截图或已入库 Capture，某个地方没看懂，想和 AI 多轮讨论。讨论后，用户可能只是理解一下，也可能想把原文和讨论成果整理成笔记。
 
 这个场景既不是普通 Capture，也不是普通 RAG：
 
@@ -17,59 +17,31 @@
 - Review 关注“把已有知识重新讲给用户听”。
 - Garden 关注“把跨材料价值沉淀成可复用知识卡片”。
 
-阅读讨论需要一个新的中间对象：它围绕一篇具体材料，保存多轮理解过程，并最终生成可入库的“阅读讨论笔记”。
+Reading Session 的定位是：围绕一份具体材料保存临时阅读上下文，让 Hermes 能持续回答“这段什么意思”“这里为什么重要”“和我之前看到的内容有什么关系”，但不自动入库。
 
-## Capability
+## 核心原则
 
-新增 **Reading Session / 阅读讨论会话** 能力。
-
-用户可以围绕一篇文章、一个 capture、一个链接、一个截图或一段摘录发起阅读讨论。Hermes 在讨论过程中记录原文定位、用户问题、AI 解释、引用片段和阶段性理解。用户说“把刚才讨论整理进笔记”时，系统生成一篇可审阅的阅读讨论笔记草稿；用户确认后写入 Obsidian，并双链到原 capture。
-
-目标不是保存聊天记录，而是保存“我读懂这篇材料的过程”。
-
-## 非目标
-
-第一版不做这些事：
-
-- 不做专门阅读器 UI。
-- 不自动把每次 RAG 追问都保存成阅读笔记。
-- 不把讨论内容直接追加进原 capture 正文。
-- 不默认生成 Garden card。
-- 不替代 Capture 的入库流程。
-- 不把微信完整聊天记录原样塞进 Obsidian。
-- 不支持多人协同批注。
+1. **讨论不是入库。** 用户只是在问问题时，只建立临时 Reading Session，不自动生成 Capture 草稿、不自动写 Obsidian。
+2. **输出形态由用户意图决定。** 最终可以是原文增强版主 Capture、局部学习笔记、讨论札记；系统不能替用户固定成某一种。
+3. **增强版直接成为主 Capture。** 如果用户选择“原文增强版笔记”，它应生成增强 Capture 草稿，确认后合并写回主 Capture，而不是新建一篇重复主笔记。
+4. **先草稿，后确认。** 所有写入 Obsidian 或覆盖主 Capture 的动作，都必须先生成可审阅草稿。
+5. **Raw 永不改。** Raw 是原始归档材料，增强、改写、合并只影响 Capture 或新笔记。
+6. **来源边界要清楚，但不要模板化。** 回答和笔记应按理解逻辑组织，只在必要处用简洁来源标记说明依据来自原文、知识库或网页。
+7. **意图识别要智能，不做关键词硬编码。** 路由输出结构化意图，代码只校验结构、置信度和安全边界。
 
 ## 推荐方案
 
 采用 **Reading Session 作为一等对象**。
 
-有三种可能方案：
+Reading Session 保存当前材料、讨论 turns、轻量证据、用户当前焦点和后续草稿关系。它本身是临时状态，不等于正式知识库笔记。
 
-### 方案 A：只依赖当前聊天上下文
+方案取舍：
 
-用户讨论几轮后说“整理刚才讨论”，Hermes 从当前会话历史里抽取内容生成笔记。
+- 只依赖当前聊天上下文：实现快，但重启、上下文压缩、跨材料追问时不稳定。
+- Reading Session 状态：稳定、可追溯、可测试，和 Capture/RAG/Library/Garden 边界清楚。
+- 完整阅读器 UI：长期体验好，但第一版成本过高。
 
-优点：实现最快。
-
-缺点：依赖 Hermes 会话上下文，容易被旧消息污染；重启或上下文压缩后不稳定；无法可靠知道讨论对应哪篇文章、哪段原文。
-
-### 方案 B：新增 Reading Session 状态
-
-系统显式创建 reading session，把来源材料、问题、回答、引用片段和状态保存到 SQLite。最后基于 session 生成阅读讨论笔记草稿。
-
-优点：稳定、可追溯、可测试；能和 Capture/RAG/Library/Garden 清晰分工；重启后仍能继续。
-
-缺点：需要新增 DB 表、bridge 工具和 runtime 工具描述。
-
-### 方案 C：做完整阅读器界面
-
-左侧原文，右侧 AI 对话，支持选中文本提问和一键生成笔记。
-
-优点：长期体验最好。
-
-缺点：开发成本高，会把当前重点从知识库 pipeline 转到前端产品化，不适合作为第一版。
-
-**推荐：方案 B。** 它比方案 A 稳，比方案 C 轻，最符合当前 Hermes Knowledge 的工具型架构。
+**第一版采用 Reading Session 状态，不做专门阅读器 UI。**
 
 ## 用户故事
 
@@ -81,13 +53,13 @@
 
 预期：
 
-- 如果文章还没入库，系统先提取原文或创建 raw/capture draft。
-- 系统创建 reading session。
-- 系统定位用户提到的段落或概念。
-- 回答解释，不直接入库。
-- 回复里提示：可以继续追问，或说“整理这次阅读讨论”生成笔记。
+- Hermes 创建 Reading Session。
+- 如果文章已入库，优先基于 Capture 和 section 讨论。
+- 如果文章未入库，提取当前讨论所需原文或创建临时 source，不自动生成 Capture 草稿。
+- 回答用户问题，可按需并行搜索本地知识库和网络。
+- 不写 Obsidian，不提示强制入库。
 
-### 2. 从已入库 capture 开始讨论
+### 2. 从已入库 Capture 开始讨论
 
 用户发：
 
@@ -95,23 +67,23 @@
 
 预期：
 
-- 系统通过 RAG 找到相关 capture 和 section。
-- 创建或恢复该 capture 的 active reading session。
-- 围绕命中的 section 解释。
+- 通过标题、链接、section、embedding 或最近 session 匹配原 Capture。
+- 创建或恢复该 Capture 的 Reading Session。
+- 优先基于 Capture 解释；需要核对作者原意或细节时再回 raw/原网页。
 
-### 3. 从截图或摘录开始讨论
+### 3. 从截图、摘录或文件开始讨论
 
-用户发一张截图，或粘贴一段原文：
+用户发截图、粘贴段落或上传文件：
 
 > 这段话什么意思？
 
 预期：
 
-- 如果能识别对应 capture，则挂到该 capture。
-- 如果无法识别来源，则创建 source_type=`excerpt` 的临时 reading session。
-- 后续用户补链接或说“就是刚才那篇文章”时，可以合并来源。
+- 能匹配已有 Capture 时挂到该 Capture。
+- 无法匹配时创建 `excerpt`、`image` 或 `file` 类型临时 session。
+- 后续用户补链接或标题时，可以把 session source 更新到更准确的材料。
 
-### 4. 多轮讨论后生成笔记
+### 4. 多轮讨论后整理
 
 用户发：
 
@@ -119,10 +91,18 @@
 
 预期：
 
-- 系统生成阅读讨论笔记草稿。
-- 微信只返回短预览。
-- 完整草稿保存在 DB 或文件输出中。
-- 用户确认后写入 Obsidian。
+- 如果输出形态不明确，Hermes 先短问：
+
+```text
+你想整理成哪种？
+1. 原文增强版笔记：保留文章主线，并把刚才讨论补进去
+2. 局部学习笔记：只整理这次卡住的概念/段落
+3. 讨论札记：保留问题、解释和最终理解
+回复 1/2/3 即可。
+```
+
+- 用户回复 1/2/3 后，只对本次整理生效，不写成长期默认。
+- 生成可审阅草稿；用户确认后才写入。
 
 ### 5. 从讨论中提炼 Garden card
 
@@ -133,29 +113,87 @@
 预期：
 
 - Reading Session 不直接写 Garden。
-- 主 Agent 可把当前 session 摘要、来源 capture、关键问答交给 Garden。
-- Garden 仍然走草稿与重复检查流程。
+- 主 Agent 把 session 摘要、来源 Capture、关键解释和轻量证据交给 Garden。
+- Garden 仍然走草稿、重复检查和确认流程。
+
+## 输出形态
+
+### 原文增强版笔记
+
+适用意图：
+
+- “把刚才讨论补进原文”
+- “合并到主笔记”
+- “整理成原文增强版”
+- 用户在模糊选择中回复 `1`
+
+行为：
+
+- 生成 enhanced Capture draft。
+- 尽量保留原 Capture 主结构。
+- 把讨论中有价值的解释自然合并到相关正文段落。
+- 最后可保留 `## 阅读讨论补充`，记录关键卡点、澄清和必要来源。
+- 用户确认后写回主 Capture。
+- 写回前必须备份旧 Capture 文件，并在 DB 记录版本关系。
+- Raw 文件不改。
+
+### 局部学习笔记
+
+适用意图：
+
+- “只把这个概念整理成笔记”
+- “这段单独记一下”
+- 用户在模糊选择中回复 `2`
+
+行为：
+
+- 生成独立 learning note draft。
+- 聚焦一个概念、段落、论证或方法。
+- 默认不合并进主 Capture。
+- 只有用户明确说“补进原文/合并到主笔记”时，才进入 enhanced Capture 流程。
+
+### 讨论札记
+
+适用意图：
+
+- “保留这次问答过程”
+- “整理成讨论札记”
+- 用户在模糊选择中回复 `3`
+
+行为：
+
+- 生成独立 discussion note draft。
+- 默认不保存完整聊天流水。
+- 保留关键问题、解释、最终理解和必要来源。
+- 用户明确要求“保留完整问答”时，才把更完整的 Q&A 放入笔记。
 
 ## 核心对象
 
 ### Reading Session
 
-一次围绕某个材料的阅读讨论。
+一次围绕某份材料的阅读讨论。
 
 建议字段：
 
 - `id`
-- `source_type`: `capture | draft | raw | url | excerpt | image`
+- `source_type`: `capture | draft | raw | url | excerpt | image | file`
 - `source_id`
 - `source_url`
 - `source_title`
 - `status`: `active | summarized | committed | archived`
-- `focus`: 用户当前讨论焦点，例如“Terminal-Bench 段落”“国家能力概念”
+- `focus`
 - `created_at`
 - `updated_at`
 - `last_turn_at`
-- `committed_note_id`
+- `expires_at`
+- `committed_artifact_id`
 - `meta_json`
+
+Retention：
+
+- 默认临时保留 7 天。
+- 到期后可以清理 session、turns 和轻量证据。
+- 只有用户明确整理、保存、入库后，才生成长期 Obsidian artifact。
 
 ### Reading Turn
 
@@ -169,102 +207,77 @@
 - `user_message`
 - `assistant_answer`
 - `focus`
-- `cited_source_json`: 引用的 capture section、raw excerpt 或 URL 片段
 - `confidence`: `high | medium | low`
 - `created_at`
 - `meta_json`
 
-### Reading Note Draft
+### Reading Evidence
 
-把一个 session 整理成可入库笔记前的草稿。
+讨论时用到的轻量证据。
 
 建议字段：
 
 - `id`
 - `session_id`
+- `turn_id`
+- `source_kind`: `original | knowledge_base | web`
+- `source_id`
+- `title`
+- `url`
+- `excerpt`
+- `used_for`
+- `created_at`
+- `meta_json`
+
+规则：
+
+- 保存来源类型、标题/URL/笔记 id、命中的短摘录、用于回答的要点。
+- 不保存整篇网页或全文搜索结果。
+- 最终回答和笔记只列实际使用过的来源。
+
+### Reading Draft
+
+把 session 整理成可写入 artifact 前的草稿。
+
+建议字段：
+
+- `id`
+- `session_id`
+- `output_type`: `enhance_capture | local_learning_note | discussion_note`
+- `target_capture_id`
 - `title`
 - `summary`
 - `draft_text`
 - `status`: `open | committed | discarded`
 - `created_at`
 - `updated_at`
+- `meta_json`
 
-第一版可以复用现有 draft pattern，但不要混进 `capture_drafts`，避免 Capture 草稿和讨论笔记草稿语义混乱。
+第一版可以复用现有 draft 存储模式，但语义上不要混进普通 `capture_drafts`，避免 Capture 草稿和 Reading 草稿混淆。
 
-## Obsidian 笔记形态
+### Capture Version Backup
 
-阅读讨论笔记建议放在：
+增强版写回主 Capture 前的版本记录。
 
-```text
-reading/
-```
+建议字段：
 
-文件名格式：
+- `id`
+- `capture_id`
+- `reading_draft_id`
+- `backup_file_path`
+- `previous_file_hash`
+- `new_file_hash`
+- `created_at`
+- `meta_json`
 
-```text
-阅读讨论-原文标题-YYYY-MM-DD-短id.md
-```
+规则：
 
-笔记结构：
-
-```markdown
----
-type: reading_note
-source_capture_id:
-source_title:
-source_url:
-reading_session_id:
-created:
-status: active
----
-
-# 阅读讨论：原文标题
-
-来源：[[原文 Capture]]
-
-## 我卡住的地方
-
-> 原文摘录或段落摘要
-
-## 讨论记录
-
-### 问题 1：用户原问题
-
-Hermes 解释：
-
-...
-
-依据：
-- [[原文 Capture#章节]]
-
-### 问题 2：用户原问题
-
-Hermes 解释：
-
-...
-
-## 最终理解
-
-这次讨论后，可以把这部分理解为：
-
-...
-
-## 后续可复用点
-
-- 可能沉淀为 Garden card 的观点、方法、事实或风险
-```
-
-原则：
-
-- 不覆盖原 capture。
-- 不把全文聊天记录原样入库。
-- 保留关键问题、解释和最终理解。
-- 原文依据必须可追溯。
-- 如果来源是已入库 capture，必须双链到原文。
+- 文件备份放本地备份目录，不提交 Git。
+- DB 记录版本关系，方便回滚和排查。
 
 ## 工具设计
 
-第一版建议新增 5 个工具。
+第一版建议新增或调整 6 类工具能力。
 
 ### `start_reading_session`
 
@@ -277,6 +290,8 @@ Hermes 解释：
 - `capture_id`
 - `draft_id`
 - `excerpt`
+- `file_ref`
+- `image_ref`
 
 输出：
 
@@ -287,13 +302,13 @@ Hermes 解释：
 
 行为：
 
-- 如果有 URL 且未入库，可以调用现有提取能力获取原文，但不必立刻生成完整 Capture。
-- 如果能匹配已有 capture，优先挂到 capture。
-- 如果只有摘录，创建 excerpt session。
+- 如果能匹配已有 Capture，优先挂到 Capture。
+- 如果有 URL 且未入库，可以提取讨论所需文本，但不默认生成完整 Capture 草稿。
+- 如果只有摘录、截图或文件，创建临时 source session。
 
 ### `discuss_reading`
 
-用途：围绕当前或指定 reading session 继续解释。
+用途：围绕当前或指定 Reading Session 继续解释。
 
 输入：
 
@@ -303,14 +318,17 @@ Hermes 解释：
 
 输出：
 
-- AI 解释
-- 引用片段
-- 当前 session 状态
+- `answer`
+- `evidence`
+- `session_state`
 
 行为：
 
 - 优先使用 session source。
-- 若问题需要背景，可调用 RAG 查相关材料，但回答必须区分“原文依据”和“补充背景”。
+- 如果问题需要背景，AI 可自行判断是否并行搜索本地知识库和网络。
+- 回答目标是解释清楚，不按来源类型机械分区。
+- 对事实、数据、政策、benchmark、模型能力、论文结论等高风险内容，要保守、标来源、标不确定性。
+- 保存本轮实际使用过的轻量证据。
 
 ### `show_reading_session`
 
@@ -320,34 +338,38 @@ Hermes 解释：
 
 - 来源标题
 - 当前焦点
-- 最近几个问题
-- 已引用片段
-- 是否已有阅读笔记草稿
+- 最近关键问题
+- 已引用证据摘要
+- 是否已有草稿
 
 ### `summarize_reading_session`
 
-用途：生成阅读讨论笔记草稿。
+用途：生成 Reading Session 草稿。
 
 输入：
 
 - `session_id`
+- `output_type`: `enhance_capture | local_learning_note | discussion_note`
 - `instruction`
 
 输出：
 
-- `reading_note_draft_id`
-- 微信短预览
-- 完整草稿可展开或文件化
+- `reading_draft_id`
+- `chat_preview`
+- `artifact_kind`
+- `needs_confirmation`
 
 行为：
 
-- 默认生成“讨论笔记”，不是重新总结整篇文章。
-- 必须保留用户问过的问题和最终理解。
-- 必须标明引用来源。
+- 如果 `output_type` 不明确，主 Agent 先问 1/2/3，不直接调用。
+- 生成草稿，不直接写 Obsidian。
+- 笔记按理解逻辑组织，不固定分成“原文依据/知识库补充/外部资料补充/我的理解”四段。
+- 必要处用简洁来源标记，例如 `[原文]`、`[知识库]`、`[网页]`。
+- 没有标来源的解释可以理解为 AI 的推理或表达，不需要额外写“AI 自己说的”。
 
-### `commit_reading_note`
+### `commit_reading_artifact`
 
-用途：确认阅读讨论笔记入库。
+用途：确认 Reading Draft 写入正式 artifact。
 
 输入：
 
@@ -355,81 +377,203 @@ Hermes 解释：
 
 输出：
 
-- Obsidian 文件路径
-- source capture 链接
-- Library 后处理状态
+- `artifact_type`
+- `file_path`
+- `backup_file_path`
+- `library_status`
 
 行为：
 
-- 写入 `reading/`。
-- 如果 source capture 存在，建立双向关系字段或 wiki 链接。
-- 可触发 Library 对新 reading note 补 metadata。
+- `enhance_capture`：备份旧 Capture，合并写回主 Capture，记录版本关系，触发 Library 后处理。
+- `local_learning_note`：写入独立 note，可链接回 source Capture。
+- `discussion_note`：写入独立 note，可链接回 source Capture。
+- Raw 永不改。
+
+### `discard_reading_session`
+
+用途：丢弃临时 session 或草稿。
+
+行为：
+
+- 将 session 或 draft 标记为 archived/discarded。
+- 不删除已提交 artifact。
+
+## 主 Agent 路由原则
+
+入口由用户意图决定：
+
+- “总结/提取重点/保存/入库/全文保存”倾向 Capture。
+- “这段什么意思/我没看懂/解释一下/怎么看/和我讨论一下”倾向 Reading Session。
+- “基于我的知识库回答/查一下我之前有没有相关材料”倾向 RAG。
+- “扫描最近内容整理成主题页/知识卡片”倾向 Theme/Garden。
+- “复习/讲一个点”倾向 Review。
+
+这些不是关键词硬编码规则，而是路由语义的例子。推荐让主 Agent 或 routing tool 输出结构化意图：
+
+```json
+{
+  "primary_intent": "discuss_current_material",
+  "secondary_intents": ["maybe_save_later"],
+  "target_material": "current_link_or_recent_session",
+  "needs_clarification": false,
+  "confidence": 0.82
+}
+```
+
+代码职责：
+
+- 校验结构化意图字段。
+- 对低置信度或高风险写入动作进行确认。
+- 禁止未确认写入 Obsidian 或覆盖 Capture。
+- 记录工具调用状态和 evidence。
+
+低置信度时，短问确认：
+
+```text
+你是想先讨论这篇文章，还是直接整理成笔记？
+```
+
+多材料指代规则：
+
+- 默认用链接、摘录、标题关键词在最近 Reading Sessions 中匹配。
+- 能确定就直接接上。
+- 如果时间间隔较久、多个材料都相似、或置信度低，再问确认。
 
 ## 与现有模块关系
 
 ### Capture
 
-Capture 仍然负责材料提取和整理稿生成。Reading Session 不替代 Capture。
+Capture 仍负责材料提取和正式整理稿生成。Reading Session 不替代 Capture。
 
-如果用户围绕一篇未入库文章讨论，第一版可先创建临时 source；当用户说“把原文也存库”时，再走 Capture 草稿确认流程。
+如果用户只是围绕未入库文章讨论，不生成 Capture 草稿；如果用户明确说“总结/存库/整理成主笔记”，才走 Capture 或 enhanced Capture draft。
 
 ### RAG
 
-RAG 给 Reading Session 提供检索能力。区别是：
-
-- 普通 RAG 回答用户问题。
-- Reading Session 回答并记录“这次围绕某篇材料的理解过程”。
-
-Reading Session 的回答可以调用 RAG，但必须把结果写回 session turns。
+RAG 是 Reading Session 的背景检索能力之一。Reading Session 可以调用 RAG 找相关知识库材料，但回答应围绕当前阅读问题，不变成全库问答。
 
 ### Library
 
-Library 负责 reading note 入库后的结构维护：
+Library 负责 Reading artifact 入库后的维护：
 
 - properties 补齐。
-- source capture 链接校验。
-- 长阅读笔记可补目录。
-- embedding 更新。
+- source Capture 链接校验。
+- 长笔记目录纲要。
+- section/identity embedding 更新。
+- enhanced Capture 写回后的索引刷新。
 
 ### Garden
 
-Reading Session 不直接创建 Garden card。
+Reading Session 不自动创建 Garden card。
 
-如果讨论中出现可复用观点、方法、事实、风险或开放问题，主 Agent 可建议：
-
-> 这次讨论里有一个可复用知识点，要不要做成 Garden card？
-
-确认后交给 Garden 的现有草稿流程。
+只有用户明确要求“做成知识卡片/存入花园”时，主 Agent 才把 session 摘要、来源 Capture、关键解释和证据交给 Garden。Garden 继续执行草稿、重复检查和确认流程。
 
 ### Review
 
-Reading note 可以成为 Review 候选，尤其适合“我曾经卡住、后来理解了”的概念。
+局部学习笔记或讨论札记可以成为 Review 候选，尤其适合“我曾经卡住、后来理解了”的概念。
 
-Review 讲解时应能引用 reading note 和原 capture。
+Review 讲解时可以引用 reading note 和原 Capture。
 
-## 主 Agent 路由原则
+### Memory
 
-应该进入 Reading Session 的用户表达：
+Reading Session 可以帮助 Hermes 识别用户的稳定偏好，但不能把具体文章观点或单次讨论结论写入长期记忆。
 
-- “这段什么意思？”
-- “这个概念我没懂。”
-- “这里作者想表达什么？”
-- “这篇文章里 XX 那段解释一下。”
-- “结合原文帮我理解一下。”
-- “刚才讨论的整理成笔记。”
+允许沉淀的例子：
 
-不应该进入 Reading Session 的表达：
+- 用户喜欢先用人话解释，再给结构化要点。
+- 用户不喜欢过度模板化整理稿。
+- 用户希望不确定时短问确认。
 
-- “总结这篇文章” → Capture。
-- “基于我的知识库回答 XX” → RAG。
-- “扫描最近内容整理成卡片” → Theme/Garden。
-- “复习一个知识点” → Review。
+不允许自动沉淀的例子：
 
-模糊情况：
+- 某篇文章的具体观点。
+- 用户某次临时判断。
+- 未经用户确认的知识结论。
 
-- 如果用户同时发文章链接和“这段没懂”，优先 Reading Session。
-- 如果用户只说“总结”，优先 Capture。
-- 如果用户对已入库材料追问“展开一点”，且最近没有 active reading session，优先 RAG continue。
+## Obsidian 笔记形态
+
+### Enhanced Capture
+
+写回主 Capture，文件路径沿用原 Capture。
+
+建议正文策略：
+
+- 保留原 Capture 主线。
+- 在相关章节自然补入讨论中形成的解释。
+- 最后可加：
+
+```markdown
+## 阅读讨论补充
+
+- 关键卡点：
+- 澄清后的理解：
+- 相关来源：
+```
+
+该 section 不是强制模板，允许按文章内容灵活调整。
+
+### Local Learning Note
+
+建议放在：
+
+```text
+learning/
+```
+
+结构可以轻量：
+
+```markdown
+---
+type: learning_note
+source_capture_id:
+reading_session_id:
+created:
+---
+
+# 标题
+
+## 我卡住的点
+
+## 解释
+
+## 这次形成的理解
+
+## 来源
+```
+
+### Discussion Note
+
+建议放在：
+
+```text
+reading/
+```
+
+结构可以轻量：
+
+```markdown
+---
+type: discussion_note
+source_capture_id:
+reading_session_id:
+created:
+---
+
+# 标题
+
+## 讨论背景
+
+## 关键问题与解释
+
+## 最终理解
+
+## 来源
+```
+
+原则：
+
+- 默认不保存完整聊天记录。
+- 只保留整理后的理解、关键问题和必要来源。
+- 用户明确要求时才保留更完整的 Q&A。
 
 ## 状态流转
 
@@ -450,49 +594,47 @@ summarized
 
 规则：
 
-- 一个用户可以有多个 session，但微信上下文默认只激活最近一个。
-- 如果新问题明显指向另一篇文章，应创建新 session。
-- 如果 active session 超过一定时间未更新，仍保留，但主 Agent 不应盲目沿用；需要在回复里确认来源。
-- 已 committed 的 session 可以继续追问，但新内容应开启新 draft revision。
+- 一个用户可以有多个 session。
+- 微信上下文默认匹配最近且最相关的 session，不盲目只用最新一条。
+- 已 committed 的 session 可以继续追问，但新整理应生成新 draft revision。
+- 临时 session 默认 7 天过期。
 
 ## 微信输出策略
 
-微信短回复只做：
+讨论阶段：
 
-- 当前解释。
-- 引用来源简述。
-- 下一步提示。
+- 直接回答用户问题。
+- 必要时给简洁来源。
+- 不默认提示入库，不默认生成草稿。
 
-不要默认把完整阅读笔记塞进微信。
-
-生成阅读讨论笔记时，默认回复：
+整理阶段：
 
 ```text
-已生成阅读讨论笔记草稿：《...》
+已生成阅读整理草稿：《...》
 
 这次主要整理了：
 1. ...
 2. ...
 3. ...
 
-回复“展开阅读笔记”查看全文；满意回复“存入阅读笔记”。
+回复“展开”查看全文；满意回复“确认”。
 ```
 
-长内容按需文件化，复用已有长输出策略。
+长内容按需文件化，复用长输出协议。只有用户要求输出文件，才生成文件；普通微信回复保持短而可读。
 
 ## 数据与隐私边界
 
 - Reading Session 属于 Knowledge 项目，不属于 Life 项目。
 - 不读写 `life_*` 表。
-- 不写入 Obsidian 原 capture 正文，除非用户明确要求追加链接。
 - 不自动保存所有聊天，只保存进入 Reading Session 的 turns。
-- 用户可以丢弃 session 或 draft。
+- 不自动生成 Obsidian artifact。
+- 不自动写 Garden。
+- 不自动写长期记忆中的具体知识内容。
+- Raw 文件永不修改。
 
 ## 失败处理
 
 ### 找不到来源文章
-
-如果用户问“这段什么意思”但没有上下文：
 
 ```text
 我还不知道你指的是哪篇或哪一段。你可以发原文片段、截图，或者告诉我是哪篇文章。
@@ -500,116 +642,130 @@ summarized
 
 ### 无法定位段落
 
-如果能找到文章但定位不到具体段落：
-
 ```text
 我找到了这篇文章，但没定位到你说的那一段。你可以贴一下原文句子，我再围绕那段解释。
 ```
 
-### 生成笔记时 session 太短
-
-如果只有一问一答且没有明确可沉淀内容：
+### 意图不确定
 
 ```text
-这次讨论内容还比较少。我可以先生成一条简短阅读札记，或者你继续追问几轮后再整理。
+你是想先讨论这篇文章，还是直接整理成笔记？
 ```
 
-### 讨论内容和原文脱节
+### 整理类型不确定
 
-如果用户一路发散，最终整理时要分区：
+```text
+你想整理成哪种？
+1. 原文增强版笔记：保留文章主线，并把刚才讨论补进去
+2. 局部学习笔记：只整理这次卡住的概念/段落
+3. 讨论札记：保留问题、解释和最终理解
+回复 1/2/3 即可。
+```
 
-- 原文依据
-- 讨论延展
-- 我的理解
+### 讨论内容和原文边界可能混淆
 
-不能把所有延展都写成原文观点。
+整理时不机械分区，但必须在容易误解的位置标明：
+
+- 作者原文真正说了什么。
+- 哪些是知识库或网页补充。
+- 哪些是讨论后形成的理解或推论。
 
 ## 测试计划
 
 ### 单元测试
 
-- 创建 reading session：URL、capture_id、excerpt 三种入口。
-- discuss reading：记录 user message、assistant answer、source map。
-- summarize reading：生成阅读笔记草稿，包含原文依据、问题、解释、最终理解。
-- commit reading note：写入 Obsidian `reading/`，链接 source capture。
-- 模糊路由：总结文章走 Capture；这段没懂走 Reading；知识库问题走 RAG。
-- session 状态：active、summarized、committed、archived。
+- 创建 Reading Session：URL、capture_id、excerpt、file、image 五种入口。
+- 已入库材料优先使用 Capture，必要时回 raw。
+- `discuss_reading` 记录 turn 和实际使用过的 evidence。
+- 低置信度意图返回 clarification，不误调用 Capture/RAG。
+- 模糊“整理进笔记”返回 1/2/3 选择。
+- `summarize_reading_session` 支持三种 output type。
+- Enhanced Capture commit 前创建文件备份和 DB 版本记录。
+- Local learning note / discussion note 默认不改主 Capture。
+- Session 默认 7 天过期。
 
 ### 集成测试
 
-- 微信发公众号链接 + “这段没懂”。
-- 多轮追问后生成阅读笔记草稿。
-- 展开草稿，确认入库。
-- Obsidian 中 reading note 链接原 capture。
-- RAG 后续能引用 reading note 和原 capture。
+- 微信发公众号链接 + “这段没懂”，只讨论不入库。
+- 多轮追问后选择 `1`，生成 enhanced Capture draft，确认后写回主 Capture。
+- 多轮追问后选择 `2`，生成独立局部学习笔记。
+- 多轮追问后选择 `3`，生成讨论札记。
+- 已入库 Capture 追问优先命中 Capture section。
+- 需要外部事实时可并行用知识库和联网搜索，最终只展示实际使用来源。
 
 ### 回归测试
 
 - 现有 Capture 草稿流程不受影响。
-- 现有 RAG continue 不误用 reading session。
+- 现有 RAG continue 不误用 Reading Session。
 - Garden 草稿仍需确认和重复检查。
+- Library 的 properties、outline、embedding 流程不受影响。
 - Life repo 不受影响。
 
 ## 验收标准
 
 第一版完成后应满足：
 
-- 用户能围绕一篇文章多轮提问，不丢失讨论对象。
-- 系统能明确区分原文依据、AI 解释和讨论延展。
-- 用户能把讨论整理成独立 Obsidian reading note。
-- reading note 能链接回原 capture。
-- 未确认前不写入正式 Obsidian 笔记。
-- 微信回复不超长，完整内容可按需展开或文件化。
-- 不破坏现有 Capture、RAG、Garden、Review 流程。
+- 用户能围绕一篇材料多轮提问，不丢失讨论对象。
+- 普通讨论不会自动生成 Capture 草稿或 Obsidian 笔记。
+- 用户明确整理时，系统能按意图生成三类草稿。
+- 原文增强版可确认后写回主 Capture，并保留旧版备份。
+- 局部学习笔记和讨论札记可以独立入库，并链接来源。
+- 回答能为了“解释清楚”灵活使用原文、知识库、网页和模型推理。
+- 来源标注简洁、准确，只对应实际使用材料。
+- 微信回复不超长，长内容按需展开或文件化。
 
 ## 建议实施顺序
 
 ### Phase 1：Reading Session 数据模型和基础工具
 
-- 新增 DB 表。
-- 新增 repo。
-- 新增 bridge。
+- 新增 DB 表或 repository。
+- 新增 bridge 工具。
 - 新增 runtime 工具描述。
 - 支持 start/discuss/show。
+- 实现 7 天临时 retention。
 
-### Phase 2：阅读讨论笔记草稿
+### Phase 2：智能路由和证据记录
 
-- 新增 summarize reading session。
-- 新增 show reading note draft。
-- 新增 commit reading note。
-- 写入 Obsidian `reading/`。
+- 设计结构化意图输出合同。
+- 低置信度时短问确认。
+- 支持本地知识库和联网搜索的轻量 evidence 记录。
+- 保证实际来源和尾注一致。
 
-### Phase 3：和 RAG / Capture / Library 打通
+### Phase 3：三类草稿
 
-- 已入库材料优先用 capture section。
-- 未入库材料可临时 source 或引导 Capture。
-- commit 后 Library 补 metadata 和 embedding。
+- `enhance_capture`
+- `local_learning_note`
+- `discussion_note`
+- 模糊整理时先问 1/2/3。
 
-### Phase 4：Garden / Review 后续联动
+### Phase 4：确认写入和 Library 联动
 
-- 从高价值 reading note 建议 Garden card。
-- Review 可以选择 reading note 作为讲解对象。
+- Enhanced Capture 写回前备份旧文件。
+- DB 记录版本关系。
+- 独立 note 写入 `learning/` 或 `reading/`。
+- 触发 Library 后处理。
 
-## 开放问题
+### Phase 5：Garden / Review 后续联动
 
-当前建议先按以下默认值实现：
+- 用户明确要求时，Reading Session 可交给 Garden。
+- Review 可以把 learning note / discussion note 作为讲解对象。
 
-- 阅读讨论笔记作为独立 Obsidian note，而不是追加到原 capture。
-- 目录为 `reading/`。
-- 最近 active session 作为微信默认上下文。
-- 用户确认后才入库。
-- Garden card 不自动生成。
+## 非目标
 
-后续可以再讨论：
+第一版不做：
 
-- reading note 是否需要在原 capture 中自动追加反向链接。
-- active session 多久后需要显式确认。
-- excerpt-only session 是否允许直接入库。
-- 阅读讨论是否需要专门的 Dashboard 页面。
+- 专门阅读器 UI。
+- 自动把每次 RAG 追问保存成阅读笔记。
+- 未确认就覆盖 Capture。
+- 默认生成 Garden card。
+- 把微信完整聊天记录原样塞进 Obsidian。
+- 多人协同批注。
+- 对每次搜索都向用户要权限。
+- 把来源类型强行变成固定笔记章节。
 
 ## Self-Review
 
-- Placeholder scan: 没有保留占位符。
-- Internal consistency: Reading Session 是 Knowledge 项目对象，不读写 Life；它不替代 Capture/RAG/Garden/Review。
-- Scope check: 第一版聚焦微信多轮阅读讨论和 Obsidian reading note，不做阅读器 UI。
-- Ambiguity check: 明确采用独立 reading note，确认后入库，Garden 不自动生成。
+- Placeholder scan: 没有保留 TBD/TODO 或“以后补”占位。
+- Internal consistency: Reading Session 是临时讨论对象；只有用户明确整理和确认后才形成长期 artifact。
+- Scope check: 第一版聚焦微信多轮阅读讨论、三类草稿、增强 Capture 写回和 evidence 记录，不做阅读器 UI。
+- Ambiguity check: 旧版“固定独立 reading note、不覆盖 capture”的假设已删除，改为按用户意图选择输出形态。
