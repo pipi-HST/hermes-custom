@@ -7,7 +7,13 @@ from pathlib import Path
 import yaml
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import load_config
-from agents.markdown_writer import append_links, read_moc, read_note, update_moc, write_moc
+from agents.markdown_writer import (
+    append_links,
+    read_moc,
+    read_note,
+    update_moc,
+    write_theme_page,
+)
 from agents.theme_agent import ThemeAgent, create_pending_question
 from agents.theme_graph import (
     ThemeCluster,
@@ -190,16 +196,19 @@ def _inject_wiki_links(vault_path: Path, cluster: dict) -> int:
 
 
 def _create_moc(vault_path: Path, agent, cluster: dict) -> str | None:
-    """Create a MOC page for a cluster with ≥3 captures.
+    """Create a Theme page for a cluster with ≥3 captures.
 
-    Returns the MOC file path or None if not created.
+    Returns the Theme page file path or None if not created.
     """
     all_captures = [cluster["new_capture"]] + cluster["related_captures"]
     if len(all_captures) < 3:
         return None
 
     theme_name = agent.generate_theme_name(all_captures)
-    body = agent.build_moc(theme_name, all_captures)
+    if callable(getattr(type(agent), "build_theme_page", None)):
+        body = agent.build_theme_page(theme_name, all_captures)
+    else:
+        body = agent.build_moc(theme_name, all_captures)
 
     # Collect tags from all captures.
     all_tags: list[str] = []
@@ -208,12 +217,13 @@ def _create_moc(vault_path: Path, agent, cluster: dict) -> str | None:
             if tag not in all_tags:
                 all_tags.append(tag)
 
-    return write_moc(
+    return write_theme_page(
         vault_path,
         theme_name=theme_name,
         body=body,
+        captures=all_captures,
+        garden_cards=[],
         tags=all_tags,
-        capture_count=len(all_captures),
     )
 
 
@@ -538,6 +548,7 @@ def _run_theme_scan(
         try:
             moc_path = _create_moc(vault_path, agent, cluster)
             if moc_path:
+                cluster["_theme_page_path"] = moc_path
                 mocs_created += 1
                 moc = read_moc(vault_path, moc_path)
                 if moc:
@@ -571,7 +582,11 @@ def _run_theme_scan(
             )
             question = create_pending_question(
                 repo, "theme", q,
-                context_ref=f"theme-{cluster['new_capture']['id'][:8]}",
+                context_ref=(
+                    f"theme:{cluster['_theme_page_path']}"
+                    if cluster.get("_theme_page_path")
+                    else f"theme-{cluster['new_capture']['id'][:8]}"
+                ),
                 related_capture_ids=related_capture_ids,
             )
             results.append(q[:80])

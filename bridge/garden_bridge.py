@@ -1,4 +1,4 @@
-"""Garden Agent bridge — 知识卡片合成入口."""
+"""Knowledge Card bridge — 知识卡片合成入口."""
 from __future__ import annotations
 import json
 import logging
@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import load_config
-from agents.markdown_writer import read_note
+from agents.markdown_writer import append_garden_card_to_theme_page, read_note
 from agents.garden_agent import (
     CARD_KIND_LABELS,
     GardenAgent,
@@ -95,11 +95,11 @@ def _draft_preview(
         if source_lines else ""
     )
     return (
-        f"已生成 Garden {label}草稿：《{title}》\n\n"
+        f"已生成 Knowledge Card {label}草稿：《{title}》\n\n"
         f"一句话：{one_liner}\n\n"
         f"卡片预览：\n{claims_text}\n\n"
         f"草稿编号：{draft_id}\n"
-        "满意回复“确认卡片”或“存入花园”；不满意直接说怎么改。"
+        "满意回复“确认卡片”或“存入知识卡片”；不满意直接说怎么改。"
         f"{source_text}"
     )
 
@@ -123,7 +123,7 @@ def _has_internal_prompt_markers(markdown: str) -> bool:
 def _duplicate_garden_response(duplicate: dict) -> dict:
     match = duplicate.get("match") or {}
     item_type = match.get("type") or "garden_card"
-    item_label = "已有 Garden 卡" if item_type == "garden_card" else "已有待确认 Garden 草稿"
+    item_label = "已有知识卡片" if item_type == "garden_card" else "已有待确认知识卡片草稿"
     title = str(match.get("title") or "未命名").strip()
     item_id = str(match.get("id") or "").strip()
     reasons = duplicate.get("reasons") or []
@@ -143,7 +143,7 @@ def _duplicate_garden_response(duplicate: dict) -> dict:
         agent="garden",
         intent="synthesize_garden",
         chat_preview=(
-            f"没有新建 Garden 草稿：这张卡和{item_label}《{title}》高度重复。\n\n"
+            f"没有新建知识卡片草稿：这张卡和{item_label}《{title}》高度重复。\n\n"
             f"重复原因：{reason_text}\n\n"
             "建议直接沿用已有卡；如果你想保留新角度，可以告诉我“换一个角度生成”。"
         ),
@@ -156,7 +156,7 @@ def _duplicate_garden_response(duplicate: dict) -> dict:
             )
         ],
         next_actions=actions,
-        warnings=["Garden duplicate blocked"],
+        warnings=["Knowledge Card duplicate blocked"],
         meta={
             "duplicate_status": "duplicate",
             "duplicate_match": match,
@@ -172,7 +172,7 @@ def _possible_duplicate_warning(duplicate: dict) -> str:
     title = str(match.get("title") or "未命名").strip()
     reasons = duplicate.get("reasons") or []
     reason_text = "、".join(str(reason) for reason in reasons if reason) or "内容相近"
-    return f"提醒：可能和已有 Garden 卡相近：《{title}》（{reason_text}）。"
+    return f"提醒：可能和已有知识卡片相近：《{title}》（{reason_text}）。"
 
 
 def _garden_card_markdown(
@@ -181,6 +181,7 @@ def _garden_card_markdown(
     *,
     source_links: list[str] | None = None,
     related_links: list[str] | None = None,
+    source_theme: str = "",
 ) -> str:
     now = datetime.now(timezone.utc).isoformat()
     frontmatter = {
@@ -195,6 +196,8 @@ def _garden_card_markdown(
         frontmatter["sources"] = source_links
     if related_links:
         frontmatter["related"] = related_links
+    if source_theme:
+        frontmatter["source_theme"] = source_theme
     body = (draft.get("markdown") or "").strip()
     return (
         "---\n"
@@ -202,6 +205,21 @@ def _garden_card_markdown(
         "---\n\n"
         f"{body}\n"
     )
+
+
+def _theme_path_for_question(conn, question_id: str) -> str:
+    if not question_id:
+        return ""
+    row = conn.execute(
+        "SELECT context_ref FROM pending_questions WHERE id=?",
+        (question_id,),
+    ).fetchone()
+    if not row:
+        return ""
+    context_ref = row["context_ref"] or ""
+    if context_ref.startswith("theme:"):
+        return context_ref.removeprefix("theme:").strip()
+    return ""
 
 
 def _capture_property_links(conn, vault_path: Path, capture_ids: list[str]) -> list[str]:
@@ -252,13 +270,13 @@ def synthesize_garden(capture_ids: list[str] = None,
                       title: str = "",
                       card_kind: str = "",
                       export_file: bool = False) -> dict:
-    """合成知识花园卡片。
+    """合成知识卡片。
 
     Args:
         capture_ids: 要合成的 capture ID 列表（直接指定）
         question_id: pending_questions 表的 ID（从主题聚类问题触发）
         title: 可选标题，不填则由 LLM 生成
-        card_kind: 可选卡片类型，不填则由 GardenAgent 判断
+        card_kind: 可选卡片类型，不填则由 Knowledge Card Agent 判断
 
     Returns:
         Agent Result Envelope.
@@ -346,7 +364,7 @@ def _synthesize_garden(
         dict(r) for r in conn.execute("SELECT * FROM garden_cards").fetchall()
     ]
 
-    # 调用 GardenAgent
+    # 调用 Knowledge Card Agent
     agent = GardenAgent(
         llm_api_key=config.llm_api_key,
         llm_model=config.llm_model,
@@ -448,7 +466,7 @@ def _garden_draft_export_artifact(
     markdown: str,
     export_dir: Path | None = None,
 ) -> dict:
-    title_text = (title or "Garden 草稿").strip()
+    title_text = (title or "Knowledge Card 草稿").strip()
     body = (markdown or "").strip()
     content = f"# {title_text}\n\n{body}" if body else f"# {title_text}\n"
     base_dir = export_dir or (Path(__file__).parent.parent / "data" / "exports" / "garden")
@@ -460,14 +478,14 @@ def _garden_draft_export_artifact(
     return artifact_ref(
         type="garden_draft_report",
         id=draft_id,
-        title="Garden 草稿全文",
+        title="Knowledge Card 草稿全文",
         path=path,
         status="created",
     )
 
 
 def revise_garden_draft(draft_id: str = "", instruction: str = "") -> dict:
-    """修改最近或指定 Garden Draft。"""
+    """修改最近或指定 Knowledge Card Draft。"""
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     repo = CaptureRepo(init_db(config.db_path))
     return run_with_ledger(
@@ -502,13 +520,13 @@ def _revise_garden_draft(
         return error_envelope(
             agent="garden",
             intent="revise_garden_draft",
-            error="没有找到可修改的 Garden 草稿。",
+            error="没有找到可修改的知识卡片草稿。",
         )
     if not instruction.strip():
         return error_envelope(
             agent="garden",
             intent="revise_garden_draft",
-            error="请说明你想怎么修改这个 Garden 草稿。",
+            error="请说明你想怎么修改这个知识卡片草稿。",
         )
 
     capture_ids = _json_list(draft["capture_ids"])
@@ -596,7 +614,7 @@ def _revise_garden_draft(
 
 
 def commit_garden_draft(draft_id: str = "") -> dict:
-    """确认 Garden Draft，写入 garden_cards 和 Obsidian garden 文件。"""
+    """确认 Knowledge Card Draft，写入 garden_cards 和 Obsidian garden 文件。"""
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     repo = CaptureRepo(init_db(config.db_path))
     return run_with_ledger(
@@ -620,13 +638,13 @@ def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
         return error_envelope(
             agent="garden",
             intent="commit_garden_draft",
-            error="没有找到可确认入库的 Garden 草稿。",
+            error="没有找到可确认入库的知识卡片草稿。",
         )
     if _has_internal_prompt_markers(draft["markdown"]):
         return error_envelope(
             agent="garden",
             intent="commit_garden_draft",
-            error="这个 Garden 草稿包含内部模板痕迹，已阻止入库。请先重新生成或修改草稿。",
+            error="这个知识卡片草稿包含内部模板痕迹，已阻止入库。请先重新生成或修改草稿。",
         )
 
     card_id = commit_garden_draft_to_card(repo, draft_id)
@@ -634,7 +652,7 @@ def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
         return error_envelope(
             agent="garden",
             intent="commit_garden_draft",
-            error="这个 Garden 草稿已经入库或无法入库。",
+            error="这个知识卡片草稿已经入库或无法入库。",
         )
 
     garden_dir = vault_path / "garden"
@@ -647,16 +665,34 @@ def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
     related_links = _garden_property_links(
         repo.conn, _json_list(draft["knowledge_links"])
     )
+    source_theme = _theme_path_for_question(repo.conn, draft.get("question_id") or "")
     md_path.write_text(
         _garden_card_markdown(
             draft,
             card_id,
             source_links=source_links,
             related_links=related_links,
+            source_theme=source_theme,
         ),
         encoding="utf-8",
     )
     rel_path = f"garden/{filename}"
+
+    theme_sync_status = "not_applicable"
+    theme_sync_error = ""
+    if source_theme:
+        try:
+            synced = append_garden_card_to_theme_page(
+                vault_path,
+                source_theme,
+                card_title=draft["title"],
+                card_path=rel_path,
+            )
+            theme_sync_status = "synced" if synced else "missing_theme_page"
+        except Exception as exc:
+            logger.warning("Theme page sync failed for %s: %s", source_theme, exc)
+            theme_sync_status = "failed"
+            theme_sync_error = str(exc)
 
     if draft["question_id"]:
         repo.conn.execute(
@@ -668,7 +704,7 @@ def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
     return success_envelope(
         agent="garden",
         intent="commit_garden_draft",
-        chat_preview=f"已存入知识花园：《{draft['title']}》",
+        chat_preview=f"已存入知识卡片：《{draft['title']}》",
         durable_artifacts=[
             artifact_ref(
                 type="garden_card",
@@ -683,5 +719,8 @@ def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
             "card_id": card_id,
             "path": rel_path,
             "knowledge_link_count": len(_json_list(draft["knowledge_links"])),
+            "source_theme": source_theme,
+            "theme_sync_status": theme_sync_status,
+            "theme_sync_error": theme_sync_error,
         },
     )

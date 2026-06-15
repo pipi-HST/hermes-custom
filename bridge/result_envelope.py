@@ -29,6 +29,7 @@ STATE_CHANGING_INTENTS = {
     "archive_garden_card",
     "apply_librarian_repair",
     "mark_review_item_mastered",
+    "commit_reading_artifact",
 }
 
 

@@ -5,7 +5,18 @@ from pathlib import Path
 
 import pytest
 
-from agents.markdown_writer import NoteMeta, _make_slug, append_links, read_moc, read_note, update_moc, write_moc, write_note
+from agents.markdown_writer import (
+    HERMES_THEME_END,
+    HERMES_THEME_START,
+    NoteMeta,
+    _make_slug,
+    append_links,
+    read_moc,
+    read_note,
+    update_moc,
+    write_moc,
+    write_note,
+)
 
 
 @pytest.fixture
@@ -323,7 +334,10 @@ def test_write_moc_creates_file(tmp_path: Path) -> None:
     assert "open_questions:" in content
     assert "AI 会怎样改变学习路径？" in content
     assert "ai-education" in content
-    assert body in content
+    assert HERMES_THEME_START in content
+    assert HERMES_THEME_END in content
+    assert "主题描述..." in content
+    assert "## 我的补充" in content
 
 
 def test_write_moc_slug_filename(tmp_path: Path) -> None:

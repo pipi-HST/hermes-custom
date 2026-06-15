@@ -196,9 +196,9 @@ def test_synthesize_renders_focused_garden_card_instead_of_material_dump(mock_ca
     )
 
     markdown = result["markdown"]
-    assert "## 核心观点" in markdown
-    assert "## 为什么这样看" in markdown
-    assert "## 依据" in markdown
+    assert "## 内容" in markdown
+    assert "## 适用或启发" in markdown
+    assert "## 来源" in markdown
     assert "## 支撑材料" not in markdown
     assert markdown.count("- 支撑判断") <= 4
     assert markdown.count("- 关键材料") <= 4
@@ -294,14 +294,15 @@ def test_synthesize_honors_requested_method_card_kind(mock_call):
     )
 
     assert result["card_kind"] == "method"
-    assert "## 适用场景" in result["markdown"]
-    assert "## 做法" in result["markdown"]
+    assert "## 内容" in result["markdown"]
+    assert "## 适用或启发" in result["markdown"]
+    assert "可复用做法" in result["markdown"]
     assert "## 我的判断" not in result["markdown"]
     assert "如果用户明确指定" in mock_call.call_args.args[0]
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")
-def test_synthesize_renders_caution_card_template(mock_call):
+def test_synthesize_normalizes_legacy_caution_to_risk(mock_call):
     mock_call.return_value = json.dumps({
         "card_kind": "caution",
         "title": "不要把 Garden 当摘要库",
@@ -316,11 +317,32 @@ def test_synthesize_renders_caution_card_template(mock_call):
         [],
     )
 
-    assert result["card_kind"] == "caution"
-    assert "## 风险" in result["markdown"]
-    assert "## 典型表现" in result["markdown"]
+    assert result["card_kind"] == "risk"
+    assert "## 内容" in result["markdown"]
+    assert "## 适用或启发" in result["markdown"]
+    assert "边界和误区" in result["markdown"]
     assert "## 怎么避免" not in result["markdown"]
     assert "（待补充）" not in result["markdown"]
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
+def test_synthesize_normalizes_question_to_viewpoint(mock_call):
+    mock_call.return_value = json.dumps({
+        "card_kind": "question",
+        "title": "问题类回退",
+        "one_liner": "开放问题不再作为独立卡片类型。",
+        "core_arguments": [],
+        "key_materials": [],
+    })
+    agent = GardenAgent(llm_api_key="test")
+
+    result = agent.synthesize(
+        [{"id": "cap1", "title": "材料", "cached_text": "内容"}],
+        [],
+    )
+
+    assert result["card_kind"] == "viewpoint"
+    assert "## 内容" in result["markdown"]
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")
@@ -340,7 +362,7 @@ def test_synthesize_defaults_unknown_card_kind_to_viewpoint(mock_call):
     )
 
     assert result["card_kind"] == "viewpoint"
-    assert "## 核心观点" in result["markdown"]
+    assert "## 内容" in result["markdown"]
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")
@@ -635,7 +657,7 @@ def test_commit_garden_draft_to_card_preserves_card_kind(repo):
         (card_id,),
     ).fetchone()
 
-    assert card["card_kind"] == "caution"
+    assert card["card_kind"] == "risk"
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")

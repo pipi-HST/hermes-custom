@@ -282,38 +282,295 @@ def write_moc(
 
     Returns the relative path (e.g. ``themes/ai-education.md``).
     """
-    themes_dir = vault_path / "themes"
-    themes_dir.mkdir(parents=True, exist_ok=True)
-
-    slug = _make_slug(theme_name)
-    filename = f"{slug}.md"
-    filepath = themes_dir / filename
-
-    now = datetime.now(timezone.utc)
-    today = now.strftime("%Y-%m-%d")
-    frontmatter = {
-        "type": "theme",
-        "status": "active",
-        "theme_name": theme_name,
-        "tags": tags,
-        "created": today,
-        "last_scanned": now.isoformat(),
-        "captures": capture_count,
-        "open_questions": _extract_open_questions(body),
-    }
-
-    content = (
-        f"---\n{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False)}"
-        f"---\n\n{body}"
+    return write_theme_page(
+        vault_path,
+        theme_name=theme_name,
+        body=body,
+        captures=[],
+        garden_cards=[],
+        tags=tags,
+        capture_count=capture_count,
     )
-    filepath.write_text(content, encoding="utf-8")
-
-    return f"themes/{filename}"
 
 
 _HERMES_CHANGELOG_START = "<!-- HERMES-CHANGELOG:START -->"
 _HERMES_CHANGELOG_END = "<!-- HERMES-CHANGELOG:END -->"
+HERMES_THEME_START = "<!-- HERMES-THEME:START -->"
+HERMES_THEME_END = "<!-- HERMES-THEME:END -->"
 _SYSTEM_RECORD_HEADING = "## 系统记录"
+
+
+def _theme_id(theme_name: str) -> str:
+    return f"theme_{_make_slug(theme_name)}"
+
+
+def _theme_capture_paths(captures: list[dict]) -> list[str]:
+    paths: list[str] = []
+    for capture in captures:
+        path = str(capture.get("file_path") or capture.get("path") or "").strip()
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _theme_card_paths(garden_cards: list[dict] | None) -> list[str]:
+    paths: list[str] = []
+    for card in garden_cards or []:
+        path = str(card.get("path") or card.get("file_path") or "").strip()
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _strip_theme_h1(body: str, theme_name: str) -> str:
+    text = (body or "").strip()
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            text = parts[2].strip()
+    if HERMES_THEME_START in text and HERMES_THEME_END in text:
+        start = text.find(HERMES_THEME_START) + len(HERMES_THEME_START)
+        end = text.find(HERMES_THEME_END)
+        text = text[start:end].strip()
+    h1_re = re.compile(rf"^#\s+{re.escape(theme_name)}\s*$\n?", re.MULTILINE)
+    return h1_re.sub("", text, count=1).strip()
+
+
+def _replace_section(body: str, heading: str, replacement: str) -> str:
+    heading_re = re.compile(rf"^##\s+{re.escape(heading)}\s*$", re.MULTILINE)
+    match = heading_re.search(body)
+    if not match:
+        trailing = "\n" if body and not body.endswith("\n") else ""
+        return f"{body}{trailing}{replacement.strip()}\n"
+    next_heading = re.compile(r"^##\s+", re.MULTILINE).search(body, match.end())
+    section_end = next_heading.start() if next_heading else len(body)
+    before = body[:match.start()].rstrip("\n")
+    after = body[section_end:].lstrip("\n")
+    pieces = [piece for piece in (before, replacement.strip(), after) if piece]
+    return "\n\n".join(pieces).strip() + "\n"
+
+
+def _theme_card_section(garden_cards: list[dict] | None) -> str:
+    lines = ["## 已沉淀的知识卡片", ""]
+    seen_keys: set[str] = set()
+    seen_titles: set[str] = set()
+    for card in garden_cards or []:
+        path = str(card.get("path") or card.get("file_path") or "").strip()
+        title = str(card.get("title") or Path(path).stem).strip()
+        key = path or title
+        if not title or key in seen_keys or title in seen_titles:
+            continue
+        seen_keys.add(key)
+        seen_titles.add(title)
+        lines.append(f"- [[{title}]]")
+    if len(lines) == 2:
+        lines.append("- 暂无")
+    return "\n".join(lines)
+
+
+def _ensure_theme_managed_body(
+    theme_name: str,
+    body: str,
+    garden_cards: list[dict] | None = None,
+) -> str:
+    text = _strip_theme_h1(body, theme_name)
+    required_headings = [
+        ("主题判断", "这一组材料的主题判断待补充。"),
+        ("相关材料", "- 暂无"),
+        ("材料之间的关系", "- 暂无"),
+        ("可沉淀的知识卡片方向", "- 暂无"),
+    ]
+    for heading, fallback in required_headings:
+        if not re.search(rf"^##\s+{re.escape(heading)}\s*$", text, re.MULTILINE):
+            trailing = "\n" if text and not text.endswith("\n") else ""
+            text = f"{text}{trailing}\n## {heading}\n\n{fallback}\n".strip()
+    text = _replace_section(text, "已沉淀的知识卡片", _theme_card_section(garden_cards))
+    return text.strip()
+
+
+def _extract_user_theme_notes(body: str) -> str:
+    match = re.search(r"^##\s+我的补充\s*$", body or "", re.MULTILINE)
+    if not match:
+        return "## 我的补充\n\n"
+    return body[match.start():].strip() + "\n"
+
+
+def _theme_content(theme_name: str, managed_body: str, user_notes: str) -> str:
+    return (
+        f"# {theme_name}\n\n"
+        f"{HERMES_THEME_START}\n"
+        f"{managed_body.strip()}\n"
+        f"{HERMES_THEME_END}\n\n"
+        f"{user_notes.strip()}\n"
+    )
+
+
+def write_theme_page(
+    vault_path: Path,
+    theme_name: str,
+    body: str,
+    captures: list[dict],
+    garden_cards: list[dict] | None = None,
+    tags: list[str] | None = None,
+    capture_count: int | None = None,
+) -> str:
+    """Write an Obsidian Theme map page with a managed Hermes block."""
+    themes_dir = vault_path / "themes"
+    themes_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{_make_slug(theme_name)}.md"
+    filepath = themes_dir / filename
+    now = datetime.now(timezone.utc)
+    frontmatter = {
+        "type": "theme",
+        "status": "active",
+        "theme_id": _theme_id(theme_name),
+        "theme_name": theme_name,
+        "updated": now.isoformat(),
+        "last_scanned": now.isoformat(),
+        "captures": len(captures) if capture_count is None else capture_count,
+        "related_captures": _theme_capture_paths(captures),
+        "related_garden_cards": _theme_card_paths(garden_cards),
+    }
+    open_questions = _extract_open_questions(body)
+    if open_questions:
+        frontmatter["open_questions"] = open_questions
+    if tags:
+        frontmatter["tags"] = tags
+
+    managed_body = _ensure_theme_managed_body(theme_name, body, garden_cards)
+    user_notes = _extract_user_theme_notes(body)
+    content = (
+        f"---\n{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False)}"
+        f"---\n\n{_theme_content(theme_name, managed_body, user_notes)}"
+    )
+    filepath.write_text(content, encoding="utf-8")
+    return f"themes/{filename}"
+
+
+def update_theme_page(
+    vault_path: Path,
+    file_path: str,
+    theme_name: str,
+    body: str,
+    captures: list[dict],
+    garden_cards: list[dict] | None = None,
+    tags: list[str] | None = None,
+) -> bool:
+    """Update only the managed section and owned frontmatter of a Theme page."""
+    full_path = vault_path / file_path
+    if not full_path.exists():
+        return False
+
+    text = full_path.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            try:
+                frontmatter = yaml.safe_load(parts[1]) or {}
+            except yaml.YAMLError:
+                return False
+            old_body = parts[2]
+        else:
+            frontmatter = {}
+            old_body = text
+    else:
+        frontmatter = {}
+        old_body = text
+
+    now = datetime.now(timezone.utc).isoformat()
+    frontmatter.update({
+        "type": "theme",
+        "status": frontmatter.get("status") or "active",
+        "theme_id": frontmatter.get("theme_id") or _theme_id(theme_name),
+        "theme_name": theme_name,
+        "updated": now,
+        "last_scanned": now,
+        "captures": len(captures),
+        "related_captures": _theme_capture_paths(captures),
+        "related_garden_cards": _theme_card_paths(garden_cards),
+    })
+    if tags is not None:
+        frontmatter["tags"] = tags
+
+    managed_body = _ensure_theme_managed_body(theme_name, body, garden_cards)
+    user_notes = _extract_user_theme_notes(old_body)
+    content = (
+        f"---\n{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False)}"
+        f"---\n\n{_theme_content(theme_name, managed_body, user_notes)}"
+    )
+    full_path.write_text(content, encoding="utf-8")
+    return True
+
+
+def _theme_managed_body_from_existing(body: str, theme_name: str) -> str:
+    if HERMES_THEME_START in body and HERMES_THEME_END in body:
+        start = body.find(HERMES_THEME_START) + len(HERMES_THEME_START)
+        end = body.find(HERMES_THEME_END)
+        if start < end:
+            return body[start:end].strip()
+    return _strip_theme_h1(body, theme_name)
+
+
+def append_garden_card_to_theme_page(
+    vault_path: Path,
+    file_path: str,
+    *,
+    card_title: str,
+    card_path: str,
+) -> bool:
+    """Append a committed Knowledge Card link to a Theme page."""
+    full_path = vault_path / file_path
+    if not full_path.exists():
+        return False
+
+    text = full_path.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            try:
+                frontmatter = yaml.safe_load(parts[1]) or {}
+            except yaml.YAMLError:
+                return False
+            old_body = parts[2]
+        else:
+            frontmatter = {}
+            old_body = text
+    else:
+        frontmatter = {}
+        old_body = text
+
+    theme_name = str(frontmatter.get("theme_name") or Path(file_path).stem).strip()
+    if not theme_name:
+        return False
+
+    existing_paths = _theme_card_paths([
+        {"path": path} for path in frontmatter.get("related_garden_cards") or []
+    ])
+    if card_path and card_path not in existing_paths:
+        existing_paths.append(card_path)
+    frontmatter["related_garden_cards"] = existing_paths
+    frontmatter["updated"] = datetime.now(timezone.utc).isoformat()
+
+    managed_body = _theme_managed_body_from_existing(old_body, theme_name)
+    existing_titles = [
+        {"title": title, "path": title}
+        for title in _WIKI_LINK_RE.findall(managed_body)
+        if title
+    ]
+    garden_cards = existing_titles + [{"title": card_title, "path": card_path}]
+    managed_body = _replace_section(
+        managed_body,
+        "已沉淀的知识卡片",
+        _theme_card_section(garden_cards),
+    )
+    user_notes = _extract_user_theme_notes(old_body)
+    content = (
+        f"---\n{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False)}"
+        f"---\n\n{_theme_content(theme_name, managed_body, user_notes)}"
+    )
+    full_path.write_text(content, encoding="utf-8")
+    return True
 
 
 def read_moc(

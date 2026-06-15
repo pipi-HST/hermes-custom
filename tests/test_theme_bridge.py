@@ -395,7 +395,11 @@ def test_run_theme_scan_builds_cluster_without_llm_filter(tmp_path: Path) -> Non
     db_path = str(tmp_path / "test.db")
     conn = init_db(db_path)
     embed_repo = CaptureEmbeddingRepo(conn)
-    for capture_id, title in (("a-id", "Agent A"), ("b-id", "Agent B")):
+    for capture_id, title in (
+        ("a-id", "Agent A"),
+        ("b-id", "Agent B"),
+        ("c-id", "Agent C"),
+    ):
         cap_file = _write_note(tmp_path, "captures", f"{capture_id}.md", title, "Agent 工程。")
         conn.execute(
             "INSERT INTO captures (id, file_path, created_at) VALUES (?, ?, datetime('now'))",
@@ -442,8 +446,20 @@ def test_run_theme_scan_builds_cluster_without_llm_filter(tmp_path: Path) -> Non
     assert result["meta"]["cluster_count"] == 1
     assert "发现" in result["chat_preview"]
     assert result["next_actions"][0]["intent"] == "synthesize_garden"
-    assert result["next_actions"][0]["payload"]["question_id"]
-    assert result["next_actions"][0]["payload"]["capture_ids"] == ["b-id", "a-id"]
+    question_id = result["next_actions"][0]["payload"]["question_id"]
+    assert question_id
+    assert set(result["next_actions"][0]["payload"]["capture_ids"]) == {
+        "a-id",
+        "b-id",
+        "c-id",
+    }
+    question = conn.execute(
+        "SELECT context_ref FROM pending_questions WHERE id = ?",
+        (question_id,),
+    ).fetchone()
+    assert question["context_ref"].startswith("theme:themes/")
+    assert result["durable_artifacts"][0]["type"] == "theme_page"
+    assert (tmp_path / result["durable_artifacts"][0]["path"]).exists()
 
 
 def test_theme_scan_preview_does_not_expose_internal_id_lists():

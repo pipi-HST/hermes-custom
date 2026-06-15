@@ -440,27 +440,22 @@ def test_generate_theme_name_falls_back_when_llm_returns_empty(mock_llm):
     assert name == "AI Agent工程化"
 
 
-# ── build_moc ──
+# ── build_theme_page / build_moc compatibility ──
 
 @patch.object(ThemeAgent, "_call_llm")
-def test_build_moc_produces_valid_markdown(mock_llm):
-    """build_moc 应生成可读的主题关系地图，而不是散乱追加列表。"""
+def test_build_theme_page_outputs_new_theme_contract(mock_llm):
+    """build_theme_page 应输出新版 Theme 主题地图结构。"""
     mock_llm.return_value = json.dumps({
-        "description": "AI正在重塑教育的形态。",
-        "relation_groups": [
-            {
-                "title": "方法论底座",
-                "insight": "先理解 AI 对学习方式的改变。",
-                "notes": [
-                    {"title": "芯片又杀疯了", "role": "说明 AI 如何改变教育资源分配。"},
-                    {"title": "多读一点难读的书", "role": "补充深度阅读仍然重要。"},
-                ],
-            }
+        "theme_judgment": "AI正在重塑教育的形态。",
+        "related_materials": [
+            {"title": "芯片又杀疯了", "role": "说明 AI 如何改变教育资源分配。"},
+            {"title": "多读一点难读的书", "role": "补充深度阅读仍然重要。"},
         ],
-        "key_connections": [
+        "relationships": [
             "《芯片又杀疯了》讨论外部技术冲击，《多读一点难读的书》讨论个体如何保持深度。",
         ],
-        "open_questions": ["AI真的能替代深度阅读吗？"],
+        "card_directions": ["观点卡：AI 时代仍需要深度阅读。"],
+        "settled_cards": [],
     })
 
     agent = ThemeAgent(llm_api_key="test")
@@ -468,36 +463,59 @@ def test_build_moc_produces_valid_markdown(mock_llm):
         {"title": "芯片又杀疯了", "summary": "AI将削弱名校优势", "tags": ["ai"]},
         {"title": "多读一点难读的书", "summary": "深度思考", "tags": ["reading"]},
     ]
-    md = agent.build_moc("AI与教育变革", captures)
+    md = agent.build_theme_page("AI与教育变革", captures)
 
-    # Body content (frontmatter is added by write_moc, not build_moc)
     assert "# AI与教育变革" in md
     assert "AI正在重塑教育的形态" in md
-    assert "## 主题脉络" in md
-    assert "### 方法论底座" in md
+    assert "## 主题判断" in md
+    assert "## 相关材料" in md
     assert "说明 AI 如何改变教育资源分配" in md
-    assert "## 关键联系" in md
+    assert "## 材料之间的关系" in md
     assert "外部技术冲击" in md
-    assert "## 相关笔记引用" in md
+    assert "## 可沉淀的知识卡片方向" in md
+    assert "观点卡：AI 时代仍需要深度阅读" in md
+    assert "## 已沉淀的知识卡片" in md
+    assert "## 开放问题" not in md
     assert "[[芯片又杀疯了]]" in md
     assert "[[多读一点难读的书]]" in md
-    assert "AI真的能替代深度阅读吗" in md
-    assert "## 开放问题" in md
 
 
 @patch.object(ThemeAgent, "_call_llm")
-def test_build_moc_handles_llm_failure(mock_llm):
-    """LLM 返回非法 JSON 时仍生成可读的主题脉络和引用列表。"""
+def test_build_moc_uses_theme_page_contract_for_compatibility(mock_llm):
+    mock_llm.return_value = json.dumps({
+        "theme_judgment": "AI 正在重塑教育。",
+        "related_materials": [],
+        "relationships": [],
+        "card_directions": [],
+        "settled_cards": [],
+    })
+
+    agent = ThemeAgent(llm_api_key="test")
+    md = agent.build_moc("AI与教育变革", [
+        {"title": "芯片又杀疯了", "summary": "AI将削弱名校优势", "tags": ["ai"]},
+    ])
+
+    assert "## 主题判断" in md
+    assert "## 相关材料" in md
+    assert "## 已沉淀的知识卡片" in md
+    assert "## 主题脉络" not in md
+
+
+@patch.object(ThemeAgent, "_call_llm")
+def test_build_theme_page_handles_llm_failure(mock_llm):
+    """LLM 返回非法 JSON 时仍生成可读的主题地图。"""
     mock_llm.return_value = "这不是JSON"
     agent = ThemeAgent(llm_api_key="test")
     captures = [{"title": "X", "summary": "Y", "tags": []}]
-    md = agent.build_moc("测试主题", captures)
+    md = agent.build_theme_page("测试主题", captures)
 
     assert "# 测试主题" in md
     assert "[[X]]" in md
-    assert "## 主题脉络" in md
-    assert "## 相关笔记引用" in md
-    # No open_questions section when LLM fails
+    assert "## 主题判断" in md
+    assert "## 相关材料" in md
+    assert "## 材料之间的关系" in md
+    assert "## 可沉淀的知识卡片方向" in md
+    assert "## 已沉淀的知识卡片" in md
     assert "## 开放问题" not in md
 
 

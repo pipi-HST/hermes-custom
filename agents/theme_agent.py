@@ -37,7 +37,7 @@ THEME_NAME_PROMPT = """根据以下笔记的标题和摘要，生成一个简洁
 
 直接输出主题名："""
 
-MOC_CONTENT_PROMPT = """根据主题名和相关笔记，生成主题页内容。
+THEME_PAGE_PROMPT = """根据主题名和相关笔记，生成 Obsidian 主题地图内容。
 
 主题名：{theme_name}
 
@@ -46,18 +46,13 @@ MOC_CONTENT_PROMPT = """根据主题名和相关笔记，生成主题页内容�
 
 输出 JSON（不要其他内容）：
 {{
-  "description": "2-3 句话描述这个主题的核心问题和探讨方向",
-  "relation_groups": [
-    {{
-      "title": "这个分组在主题中的角色，例如 方法论底座/工程实现/产品变化",
-      "insight": "一句话说明这一组材料之间的共同关系",
-      "notes": [
-        {{"title": "必须匹配相关笔记标题", "role": "这篇笔记在该主题里扮演什么角色"}}
-      ]
-    }}
+  "theme_judgment": "2-3 句话说明这一组材料共同讨论什么问题、张力或方向",
+  "related_materials": [
+    {{"title": "必须匹配相关笔记标题", "role": "这篇材料在主题里提供什么"}}
   ],
-  "key_connections": ["2-4 条直接说明文章之间如何互相补充/递进/冲突"],
-  "open_questions": ["2-3 个值得思考的开放性问题"]
+  "relationships": ["2-4 条直接说明材料之间如何互相补充、递进、冲突或构成案例/框架关系"],
+  "card_directions": ["2-4 个可沉淀的知识卡片方向，例如 方法卡：... / 风险卡：... / 观点卡：... / 事实卡：..."],
+  "settled_cards": []
 }}"""
 
 QUESTION_PROMPT = """根据以下聚类信息，生成一条自然的中文提问。
@@ -205,59 +200,86 @@ class ThemeAgent:
             return _fallback_theme_name(captures)
         return name
 
-    def build_moc(self, theme_name: str, captures: list[dict]) -> str:
-        """Build a MOC (Map of Content) markdown page for a theme."""
+    def build_theme_page(
+        self,
+        theme_name: str,
+        captures: list[dict],
+        settled_cards: list[dict] | None = None,
+    ) -> str:
+        """Build a Theme relationship-map markdown body."""
         captures_text = "\n".join(
             f"- 《{c.get('title') or '无标题'}》：{c.get('summary', '')[:80]} tags={json.dumps(c.get('tags', []))}"
             for c in captures
         )
-        prompt = MOC_CONTENT_PROMPT.format(
+        prompt = THEME_PAGE_PROMPT.format(
             theme_name=theme_name, captures_text=captures_text,
         )
         raw = self._call_llm(prompt, max_tokens=1000)
 
-        description = ""
-        relation_groups: list[dict] = []
-        key_connections: list[str] = []
-        open_questions: list[str] = []
+        theme_judgment = ""
+        related_materials: list[dict] = []
+        relationships: list[str] = []
+        card_directions: list[str] = []
+        settled_cards = settled_cards or []
         try:
             parsed = _parse_json_payload(raw)
-            description = parsed.get("description", "")
-            relation_groups = parsed.get("relation_groups", [])
-            key_connections = parsed.get("key_connections", [])
-            open_questions = parsed.get("open_questions", [])
+            theme_judgment = (
+                parsed.get("theme_judgment")
+                or parsed.get("description")
+                or ""
+            )
+            related_materials = (
+                parsed.get("related_materials")
+                or _legacy_relation_groups_to_materials(parsed.get("relation_groups", []))
+            )
+            relationships = parsed.get("relationships") or parsed.get("key_connections", [])
+            card_directions = parsed.get("card_directions") or []
         except (json.JSONDecodeError, AttributeError, ValueError):
-            logger.warning("MOC content LLM returned invalid JSON")
+            logger.warning("Theme page LLM returned invalid JSON")
 
         lines = [
             f"# {theme_name}",
             "",
-            description or _fallback_theme_description(theme_name, captures),
+            "## 主题判断",
             "",
-            "## 主题脉络",
+            theme_judgment or _fallback_theme_description(theme_name, captures),
+            "",
+            "## 相关材料",
+            "",
         ]
-        lines.extend(_render_relation_groups(relation_groups, captures))
+        lines.extend(_render_related_materials(related_materials, captures))
 
-        lines.extend(["", "## 关键联系"])
-        if key_connections:
-            for connection in key_connections:
+        lines.extend(["", "## 材料之间的关系", ""])
+        if relationships:
+            for connection in relationships:
                 lines.append(f"- {connection}")
         else:
             lines.extend(_fallback_key_connections(captures))
 
-        lines.extend(["", "## 相关笔记引用"])
-        for c in captures:
-            title = c.get("title") or "无标题"
-            lines.append(f"- [[{title}]]")
+        lines.extend(["", "## 可沉淀的知识卡片方向", ""])
+        if card_directions:
+            for direction in card_directions:
+                text = str(direction).strip()
+                if text:
+                    lines.append(f"- {text}")
+        else:
+            lines.extend(_fallback_card_directions(captures))
 
-        if open_questions:
-            lines.append("")
-            lines.append("## 开放问题")
-            for q in open_questions:
-                lines.append(f"- {q}")
+        lines.extend(["", "## 已沉淀的知识卡片", ""])
+        if settled_cards:
+            for card in settled_cards:
+                title = str(card.get("title") or "").strip()
+                if title:
+                    lines.append(f"- [[{title}]]")
+        else:
+            lines.append("- 暂无")
 
         lines.append("")
         return "\n".join(lines)
+
+    def build_moc(self, theme_name: str, captures: list[dict]) -> str:
+        """Compatibility wrapper for the old MOC name."""
+        return self.build_theme_page(theme_name, captures)
 
     def graph_report(self, vault_path) -> str:
         """Generate a knowledge graph health report.
@@ -587,6 +609,51 @@ def _render_relation_groups(groups: list[dict], captures: list[dict]) -> list[st
     return rendered or ["", "### 核心材料"]
 
 
+def _legacy_relation_groups_to_materials(groups: list[dict]) -> list[dict]:
+    materials: list[dict] = []
+    for group in groups or []:
+        for note in group.get("notes") or []:
+            title = str(note.get("title") or "").strip()
+            if not title:
+                continue
+            materials.append({
+                "title": title,
+                "role": str(note.get("role") or group.get("insight") or "").strip(),
+            })
+    return materials
+
+
+def _render_related_materials(materials: list[dict], captures: list[dict]) -> list[str]:
+    by_title = {str(c.get("title") or "无标题"): c for c in captures}
+    used: set[str] = set()
+    lines: list[str] = []
+    for material in materials or []:
+        title = str(material.get("title") or "").strip()
+        if not title or title in used:
+            continue
+        role = str(material.get("role") or "").strip()
+        summary = str(by_title.get(title, {}).get("summary") or "")[:80]
+        detail = role or summary
+        line = f"- [[{title}]]"
+        if detail:
+            line += f" — {detail}"
+        lines.append(line)
+        used.add(title)
+
+    for capture in captures:
+        title = str(capture.get("title") or "无标题").strip()
+        if not title or title in used:
+            continue
+        summary = str(capture.get("summary") or "")[:80]
+        line = f"- [[{title}]]"
+        if summary:
+            line += f" — {summary}"
+        lines.append(line)
+        used.add(title)
+
+    return lines or ["- 暂无"]
+
+
 def _fallback_key_connections(captures: list[dict]) -> list[str]:
     if len(captures) < 2:
         return ["- 这篇笔记构成该主题的起点。"]
@@ -595,6 +662,16 @@ def _fallback_key_connections(captures: list[dict]) -> list[str]:
         f"[[{str(c.get('title') or '其他笔记')}]]" for c in captures[1:3]
     )
     return [f"- [[{first}]] 提供主题入口，{rest_links} 补充案例、方法或边界。"]
+
+
+def _fallback_card_directions(captures: list[dict]) -> list[str]:
+    if len(captures) < 2:
+        return ["- 观点卡：这篇材料中值得复用的核心判断。"]
+    return [
+        "- 观点卡：这组材料共同指向的关键判断。",
+        "- 方法卡：这些材料里可复用的做法或流程。",
+        "- 风险卡：这些材料提醒的边界、误区或反例。",
+    ]
 
 
 def create_pending_question(repo, agent_type: str, question_text: str,
