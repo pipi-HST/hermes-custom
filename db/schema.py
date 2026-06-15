@@ -210,6 +210,83 @@ CREATE TABLE IF NOT EXISTS agent_run_events (
 )
 """
 
+CREATE_READING_SESSIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS reading_sessions (
+    id TEXT PRIMARY KEY,
+    source_type TEXT NOT NULL DEFAULT '',
+    source_id TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    source_title TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    focus TEXT NOT NULL DEFAULT '',
+    expires_at TEXT NOT NULL DEFAULT '',
+    committed_artifact_id TEXT NOT NULL DEFAULT '',
+    meta_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_turn_at TEXT
+)
+"""
+
+CREATE_READING_TURNS_TABLE = """
+CREATE TABLE IF NOT EXISTS reading_turns (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    turn_index INTEGER NOT NULL DEFAULT 1,
+    user_message TEXT NOT NULL DEFAULT '',
+    assistant_answer TEXT NOT NULL DEFAULT '',
+    focus TEXT NOT NULL DEFAULT '',
+    confidence TEXT NOT NULL DEFAULT 'medium',
+    meta_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+CREATE_READING_EVIDENCE_TABLE = """
+CREATE TABLE IF NOT EXISTS reading_evidence (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL DEFAULT '',
+    source_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    excerpt TEXT NOT NULL DEFAULT '',
+    used_for TEXT NOT NULL DEFAULT '',
+    meta_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+CREATE_READING_DRAFTS_TABLE = """
+CREATE TABLE IF NOT EXISTS reading_drafts (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    output_type TEXT NOT NULL DEFAULT '',
+    target_capture_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    draft_text TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    meta_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+CREATE_CAPTURE_VERSION_BACKUPS_TABLE = """
+CREATE TABLE IF NOT EXISTS capture_version_backups (
+    id TEXT PRIMARY KEY,
+    capture_id TEXT NOT NULL DEFAULT '',
+    reading_draft_id TEXT NOT NULL DEFAULT '',
+    backup_file_path TEXT NOT NULL DEFAULT '',
+    previous_file_hash TEXT NOT NULL DEFAULT '',
+    new_file_hash TEXT NOT NULL DEFAULT '',
+    meta_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 
 def init_db(db_path: str) -> sqlite3.Connection:
     path = Path(db_path)
@@ -233,6 +310,11 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute(CREATE_CAPTURE_METADATA_TABLE)
     conn.execute(CREATE_REVIEW_ITEMS_TABLE)
     _migrate_review_items_table(conn)
+    conn.execute(CREATE_READING_SESSIONS_TABLE)
+    conn.execute(CREATE_READING_TURNS_TABLE)
+    conn.execute(CREATE_READING_EVIDENCE_TABLE)
+    conn.execute(CREATE_READING_DRAFTS_TABLE)
+    conn.execute(CREATE_CAPTURE_VERSION_BACKUPS_TABLE)
     conn.commit()
     return conn
 

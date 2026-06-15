@@ -177,6 +177,95 @@ def test_garden_cards_table_has_card_kind(tmp_path):
     conn.close()
 
 
+def test_reading_session_tables_exist(tmp_path):
+    from db.schema import init_db
+
+    conn = init_db(str(tmp_path / "test.db"))
+
+    session_cols = [
+        row[1] for row in conn.execute("PRAGMA table_info(reading_sessions)")
+    ]
+    assert session_cols == [
+        "id",
+        "source_type",
+        "source_id",
+        "source_url",
+        "source_title",
+        "status",
+        "focus",
+        "expires_at",
+        "committed_artifact_id",
+        "meta_json",
+        "created_at",
+        "updated_at",
+        "last_turn_at",
+    ]
+
+    turn_cols = [
+        row[1] for row in conn.execute("PRAGMA table_info(reading_turns)")
+    ]
+    assert turn_cols == [
+        "id",
+        "session_id",
+        "turn_index",
+        "user_message",
+        "assistant_answer",
+        "focus",
+        "confidence",
+        "meta_json",
+        "created_at",
+    ]
+
+    evidence_cols = [
+        row[1] for row in conn.execute("PRAGMA table_info(reading_evidence)")
+    ]
+    assert evidence_cols == [
+        "id",
+        "session_id",
+        "turn_id",
+        "source_kind",
+        "source_id",
+        "title",
+        "url",
+        "excerpt",
+        "used_for",
+        "meta_json",
+        "created_at",
+    ]
+
+    draft_cols = [
+        row[1] for row in conn.execute("PRAGMA table_info(reading_drafts)")
+    ]
+    assert draft_cols == [
+        "id",
+        "session_id",
+        "output_type",
+        "target_capture_id",
+        "title",
+        "summary",
+        "draft_text",
+        "status",
+        "meta_json",
+        "created_at",
+        "updated_at",
+    ]
+
+    backup_cols = [
+        row[1] for row in conn.execute("PRAGMA table_info(capture_version_backups)")
+    ]
+    assert backup_cols == [
+        "id",
+        "capture_id",
+        "reading_draft_id",
+        "backup_file_path",
+        "previous_file_hash",
+        "new_file_hash",
+        "meta_json",
+        "created_at",
+    ]
+    conn.close()
+
+
 def test_garden_drafts_table_has_card_kind(tmp_path):
     from db.schema import init_db
 
