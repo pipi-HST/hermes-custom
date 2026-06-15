@@ -61,6 +61,27 @@ def test_section_indexes_return_empty_for_unsectioned_short_note():
     assert build_section_indexes("cap1", "captures/a.md", frontmatter, body) == []
 
 
+def test_section_indexes_can_use_metadata_outline_without_rewriting_body():
+    frontmatter = {"title": "原文长文"}
+    body = "# 原文长文\n\n这是一篇没有 Markdown 二级标题的原文。"
+    outline = [
+        {"title": "第一部分", "summary": "这里是第一部分的结构摘要。"},
+        {"title": "第二部分", "summary": "这里是第二部分的结构摘要。"},
+    ]
+
+    sections = build_section_indexes(
+        "cap1",
+        "captures/a.md",
+        frontmatter,
+        body,
+        outline=outline,
+    )
+
+    assert [section.section_title for section in sections] == ["第一部分", "第二部分"]
+    assert "这里是第一部分的结构摘要" in sections[0].index_text
+    assert "原文长文" in sections[0].index_text
+
+
 def test_section_indexes_skip_managed_sections():
     frontmatter = {"title": "AI Agent 工程化"}
     body = """# AI Agent 工程化

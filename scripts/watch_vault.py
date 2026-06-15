@@ -29,7 +29,7 @@ def run_repair(db_path: str | Path, vault_path: str | Path) -> dict:
 def snapshot_vault(vault_path: Path) -> dict[str, float]:
     """Return a small snapshot of capture/raw markdown files."""
     files: dict[str, float] = {}
-    for subdir in ("captures", "raw", "_archive/raw"):
+    for subdir in ("captures", "_archive/raw"):
         root = vault_path / subdir
         if not root.exists():
             continue

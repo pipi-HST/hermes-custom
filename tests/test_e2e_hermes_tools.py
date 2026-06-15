@@ -63,8 +63,6 @@ def _get_hermes_tools():
     import tools.synthesize_garden_tool  # noqa
     import tools.revise_garden_draft_tool  # noqa
     import tools.commit_garden_draft_tool  # noqa
-    import tools.record_life_event_tool  # noqa
-    import tools.life_tick_tool  # noqa
     from tools.registry import registry
     return registry._tools
 
@@ -97,8 +95,13 @@ def test_hermes_capture_schema_preserves_full_text_save_instruction():
 
     assert "全文保存" in description
     assert "全文存进数据库" in description
+    assert "全文原文入库" in description
+    assert "精炼整理稿" in description
+    assert "重点定向整理" in description
+    assert "原文增强版笔记" in description
     assert "不要只传 URL" in description
     assert "全文存储" in instruction_description
+    assert "一字不改" in instruction_description
     assert "instruction" in instruction_description
 
 
@@ -132,24 +135,15 @@ def test_hermes_theme_scan_schema():
     assert "可沉淀方向" in tools["theme_scan"].schema.get("description", "")
 
 
-def test_hermes_life_tools_registered():
+def test_hermes_life_tools_not_exposed_to_personal_assistant():
     _skip_if_no_hermes()
     tools = _get_hermes_tools()
 
-    assert "record_life_event" in tools
-    assert "life_tick" in tools
-    assert tools["record_life_event"].toolset == "personal-assistant"
-    assert tools["life_tick"].toolset == "personal-assistant"
-    record_description = tools["record_life_event"].schema.get("description", "")
-    assert "生活" in record_description
-    assert "长期决定" in record_description
-    assert "补充下次复盘时间" in record_description
-    assert "不要用于知识笔记" in record_description
-    assert "手动状态查询" in record_description
-    assert "dry_run" in tools["life_tick"].schema.get("parameters", {}).get("properties", {})
+    assert "record_life_event" not in tools
+    assert "life_tick" not in tools
 
 
-def test_runtime_prompt_prioritizes_life_voice_records_over_capture():
+def test_runtime_prompt_does_not_route_life_records():
     config_path = os.path.expanduser("~/.hermes/config.yaml")
     if not os.path.exists(config_path):
         pytest.skip("Hermes runtime config not found")
@@ -159,11 +153,9 @@ def test_runtime_prompt_prioritizes_life_voice_records_over_capture():
         config = yaml.safe_load(handle)
     prompt = config.get("agent", {}).get("system_prompt", "")
 
-    assert "Life routing has priority over capture_content" in prompt
-    assert "long-term decisions" in prompt
-    assert "review time follow-ups" in prompt
-    assert "Clear life/health records" in prompt
-    assert prompt.index("Life routing has priority over capture_content") < prompt.index("Clear life/health records")
+    assert "Life routing has priority over capture_content" not in prompt
+    assert "record_life_event" not in prompt
+    assert "life_tick" not in prompt
 
 
 def test_hermes_tools_have_name_description_parameters():
@@ -586,21 +578,26 @@ def test_hermes_commit_garden_draft_handler_preserves_artifact(monkeypatch):
     assert envelope["durable_artifacts"][0]["type"] == "garden_card"
 
 
-def test_hermes_toolset_has_6_tools():
+def test_hermes_toolset_has_tools():
     _skip_if_no_hermes()
     sys.path.insert(0, HERMES_DIR)
     from toolsets import TOOLSETS
     tools = TOOLSETS["personal-assistant"]["tools"]
     assert len(tools) >= 16, f"Expected draft and life tools, got {len(tools)}: {tools}"
-    expected = {"capture_content", "refine_capture", "search_my_notes", "log_decision",
-                "wellness_check", "theme_scan", "graph_report", "send_message",
+    expected = {"capture_content", "refine_capture", "search_my_notes",
+                "graph_report", "send_message",
                 "revise_capture_draft", "commit_capture_draft", "synthesize_garden",
                 "revise_garden_draft", "commit_garden_draft", "daily_review",
                 "show_capture_draft", "audit_library",
-                "record_life_event", "life_tick", "review_feedback", "review_followup",
-                "theme_candidates", "agent_run_status", "continue_rag_answer",
-                "generate_canvas"}
+                    "review_feedback", "review_followup",
+                    "agent_run_status", "continue_rag_answer",
+                    "start_reading_session", "discuss_reading",
+                    "show_reading_session", "summarize_reading_session",
+                    "commit_reading_artifact", "save_answer_to_knowledge"}
     assert set(tools) == expected, f"Mismatch: {set(tools) ^ expected}"
+    assert {"theme_scan", "theme_candidates", "generate_canvas"}.issubset(
+        set(TOOLSETS["knowledge-advanced"]["tools"])
+    )
 
 
 # ═══════ Layer 2: Bridge → Agent Pipeline ═══════

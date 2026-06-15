@@ -55,6 +55,7 @@ class CaptureConfig:
 @dataclass
 class CaptureIntent:
     user_request: str
+    material_intent: str
     task_type: str
     coverage: str
     emphasis: list[str]
@@ -71,6 +72,7 @@ class CaptureIntent:
     def to_dict(self) -> dict:
         return {
             "user_request": self.user_request,
+            "material_intent": self.material_intent,
             "task_type": self.task_type,
             "coverage": self.coverage,
             "emphasis": self.emphasis,
@@ -142,7 +144,8 @@ class CaptureAgent:
         if isinstance(extracted, dict):
             return extracted
 
-        title = _derive_title(extracted.title, cleaned)
+        title = _derive_capture_title(extracted.title, cleaned, extracted.source_type)
+        source_body = extracted.raw_text
         capture_intent_obj = self._build_capture_intent_with_planning(
             instruction,
             source_text=cleaned,
@@ -150,12 +153,13 @@ class CaptureAgent:
         )
         title = capture_intent_obj.semantic_title or title
         capture_intent = capture_intent_obj.to_dict()
+        stored_raw_text = source_body if self._is_full_text_save_intent(capture_intent) else cleaned
         draft = self.draft_repo.create(
-            raw_text=cleaned,
+            raw_text=stored_raw_text,
             source=extracted.source_url or source_url,
             source_type=extracted.source_type or source_type or "note",
             title=title,
-            word_count=len(cleaned),
+            word_count=len(stored_raw_text),
             instruction=instruction,
             capture_intent=capture_intent,
         )
@@ -165,7 +169,7 @@ class CaptureAgent:
                 tag_result = self.summarizer.summarize(cleaned, existing_tags)
                 return self.draft_repo.update(
                     draft["id"],
-                    draft_text=cleaned,
+                    draft_text=stored_raw_text,
                     instruction=instruction,
                     capture_intent=capture_intent,
                     summary=tag_result.get("summary", ""),
@@ -201,6 +205,20 @@ class CaptureAgent:
             source_text=draft.get("raw_text", "") or current_text,
             title_hint=draft.get("title", ""),
         ).to_dict()
+        if self._is_full_text_save_intent(capture_intent):
+            source_text = draft.get("raw_text", "") or current_text
+            existing_tags = self._get_existing_tags(Path(self.config.vault_path).expanduser())
+            summary_source = clean_text(source_text) or source_text
+            tag_result = self.summarizer.summarize(summary_source, existing_tags)
+            return self.draft_repo.update(
+                draft_id,
+                draft_text=source_text,
+                instruction=instruction,
+                capture_intent=capture_intent,
+                summary=tag_result.get("summary", ""),
+                tags=tag_result.get("tags", []),
+                status="draft_ready",
+            )
         llm_result = self._revise_with_llm(
             instruction=instruction,
             capture_intent=capture_intent,
@@ -256,14 +274,18 @@ class CaptureAgent:
 
         emphasis = self._extract_emphasis(user_request)
         preserve = self._detect_preserve_items(user_request)
+        material_intent = self._detect_material_intent(user_request, emphasis)
         must_preserve = [] if coverage == "selected_sections" else [
             "source_fidelity",
             "main_thread",
             "user_named_focus",
         ]
-        output_shape = ["full_text"] if self._is_full_text_save_request(user_request) else ["natural_draft"]
+        if material_intent == "enhanced_note" and "source_layering" not in must_preserve:
+            must_preserve.append("source_layering")
+        output_shape = ["full_text"] if material_intent == "verbatim_full_text" else ["natural_draft"]
         return CaptureIntent(
             user_request=user_request,
+            material_intent=material_intent,
             task_type=task_type,
             coverage=coverage,
             emphasis=emphasis,
@@ -390,13 +412,23 @@ class CaptureAgent:
         detail_policy = str(plan.get("detail_policy") or "").strip()
         return CaptureIntent(
             user_request=fallback.user_request,
+            material_intent=fallback.material_intent,
             task_type=task_type,
             coverage=coverage,
             emphasis=focus or fallback.emphasis,
             must_preserve=(
                 []
                 if coverage == "selected_sections"
-                else ["source_fidelity", "main_thread", "user_named_focus"]
+                else [
+                    item
+                    for item in [
+                        "source_fidelity",
+                        "main_thread",
+                        "user_named_focus",
+                        "source_layering" if fallback.material_intent == "enhanced_note" else "",
+                    ]
+                    if item
+                ]
             ),
             output_shape=fallback.output_shape,
             detail_level=detail_level,
@@ -414,10 +446,20 @@ class CaptureAgent:
     def _is_full_text_save_request(self, user_request: str) -> bool:
         return bool(
             re.search(
-                r"(全文|原文).{0,8}(保存|入库|存库|归档|存进数据库|存到数据库|进数据库)",
+                r"(全文|原文).{0,12}(保存|入库|存库|归档|存进数据库|存到数据库|进数据库)|"
+                r"(一字不改|原封不动|原样).{0,12}(保存|入库|存库|归档)",
                 user_request or "",
             )
         )
+
+    def _detect_material_intent(self, user_request: str, emphasis: list[str]) -> str:
+        if self._is_full_text_save_request(user_request):
+            return "verbatim_full_text"
+        if re.search(r"(原文增强版|增强版笔记|结合.{0,8}讨论|讨论.{0,8}整理进|学习讨论.{0,8}笔记)", user_request):
+            return "enhanced_note"
+        if emphasis:
+            return "focused_note"
+        return "refined_note"
 
     def _detect_detail_level(self, user_request: str) -> str:
         if re.search(
@@ -535,6 +577,24 @@ class CaptureAgent:
         if not detail_policy:
             return ""
         return f"- 内部规划给出的详略策略：{detail_policy}\n"
+
+    def _build_material_intent_rule(self, capture_intent: dict) -> str:
+        material_intent = capture_intent.get("material_intent", "refined_note")
+        if material_intent == "enhanced_note":
+            return (
+                "- 这是原文增强版笔记：可以把原文、讨论形成的理解、知识库补充或外部资料补充组织成一篇笔记，"
+                "但必须清楚区分来源层级。\n"
+                "- 写作时可自然融合，不必机械分栏；涉及作者原意时标成原文依据，涉及本次对话推导时标成讨论形成的理解，"
+                "不要把 AI 解释伪装成作者原意。\n"
+            )
+        if material_intent == "focused_note":
+            return (
+                "- 这是重点定向整理：全文主线要保留，用户点名关切要明显展开，"
+                "不要因为重点展开而丢掉其他必要脉络。\n"
+            )
+        if material_intent == "refined_note":
+            return "- 这是精炼整理稿：目标是形成可读、可信、便于入库的整理笔记。\n"
+        return ""
 
     def _clip_source_text(self, text: str) -> str:
         text = text or ""
@@ -788,6 +848,7 @@ class CaptureAgent:
             "工作方式：\n"
             f"{self._build_density_rule(capture_intent)}"
             f"{self._build_detail_policy_rule(capture_intent)}"
+            f"{self._build_material_intent_rule(capture_intent)}"
             "- 基于分段笔记直接写最终整理稿，由你决定详略、结构和自然小标题。\n"
             "- 不要机械套模板；不要输出内部计划；不要输出标签、摘要、目录或任务合同。\n"
             "- 不要逐段搬运分段笔记；把它们综合成一篇可读的整理稿。\n"
@@ -829,6 +890,7 @@ class CaptureAgent:
             f"{self._build_internal_plan_rule(source_text)}"
             f"{self._build_density_rule(capture_intent)}"
             f"{self._build_detail_policy_rule(capture_intent)}"
+            f"{self._build_material_intent_rule(capture_intent)}"
             "- 由你决定最终整理稿的详略和结构：可以精炼，可以保留必要细节，也可以使用少量自然小标题。\n"
             "- 不要逐段搬运原文；不要为了格式而格式化；不要机械套用固定模板。\n"
             "- 不要输出标签、摘要、提纲、目录或任务合同；这些元信息由系统另行处理。\n"
@@ -876,7 +938,7 @@ class CaptureAgent:
         )
 
     def commit_draft(self, draft_id: str) -> Optional[dict]:
-        """确认草稿入库：写 raw/ 与 captures/，再登记正式 captures 表。"""
+        """确认草稿入库：写 _archive/raw/ 与 captures/，再登记正式 captures 表。"""
         draft = self.draft_repo.get_by_id(draft_id)
         if not draft:
             return None
@@ -921,7 +983,10 @@ class CaptureAgent:
         file_path = write_note(vault_path, capture_meta, body, stage="captures")
         self.repo.update(capture["id"], raw_path=raw_path, file_path=file_path)
         self._index_committed_identity(capture["id"], file_path)
-        library_postprocess = self._postprocess_committed_library(capture["id"])
+        library_postprocess = self._postprocess_committed_library(
+            capture["id"],
+            render_outline=True,
+        )
         self.draft_repo.update(
             draft_id,
             status="committed",
@@ -969,7 +1034,7 @@ class CaptureAgent:
         except Exception as exc:
             logger.warning(f"Identity embedding failed for {capture_id}: {exc}")
 
-    def _postprocess_committed_library(self, capture_id: str) -> dict:
+    def _postprocess_committed_library(self, capture_id: str, *, render_outline: bool = True) -> dict:
         """Run one-capture Library maintenance after a successful commit."""
         try:
             outliner = Outliner(
@@ -988,7 +1053,7 @@ class CaptureAgent:
                 ),
                 min_outline_chars=2000,
             )
-            return agent.maintain_capture(capture_id, apply=True)
+            return agent.maintain_capture(capture_id, apply=True, render_outline=render_outline)
         except Exception as exc:
             logger.warning(f"Library postprocess failed for {capture_id}: {exc}")
             return {"error": str(exc)}
@@ -1186,6 +1251,22 @@ def _derive_title(extracted_title: str | None, text: str) -> str:
             candidate = re.split(r"[。！？!?；;\n]", candidate, maxsplit=1)[0].strip()
             return candidate[:40] or "未命名"
     return "未命名"
+
+
+def _derive_capture_title(extracted_title: str | None, text: str, source_type: str = "") -> str:
+    if source_type == "document":
+        markdown_title = _first_markdown_h1(text)
+        if markdown_title:
+            return markdown_title
+    return _derive_title(extracted_title, text)
+
+
+def _first_markdown_h1(text: str) -> str:
+    for line in (text or "").splitlines():
+        match = re.match(r"^#\s+(.+?)\s*$", line.strip())
+        if match:
+            return match.group(1).strip()[:80]
+    return ""
 
 
 def _strip_draft_preamble(text: str) -> str:

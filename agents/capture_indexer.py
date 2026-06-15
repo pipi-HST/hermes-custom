@@ -67,8 +67,12 @@ def build_section_indexes(
     file_path: str,
     frontmatter: dict[str, Any],
     body: str,
+    *,
+    outline: list[dict] | None = None,
 ) -> list[IndexItem]:
     sections = _markdown_sections(body)
+    if not sections and outline:
+        sections = _outline_sections(outline)
     title = _single_line(str(frontmatter.get("title") or "未命名"))
     items: list[IndexItem] = []
     for idx, (section_title, section_body) in enumerate(sections, 1):
@@ -95,6 +99,16 @@ def build_section_indexes(
             )
         )
     return items
+
+
+def _outline_sections(outline: list[dict]) -> list[tuple[str, str]]:
+    sections: list[tuple[str, str]] = []
+    for item in outline:
+        section_title = _single_line(str(item.get("title") or ""))
+        summary = _single_line(str(item.get("summary") or ""))
+        if section_title and summary:
+            sections.append((section_title, summary))
+    return sections
 
 
 def _outline_text(outline: list[dict]) -> str:

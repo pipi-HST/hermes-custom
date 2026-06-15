@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from agents.capture_agent import CaptureAgent, CaptureConfig, LLMResult
+from agents.extractors.base import ExtractionResult
 from agents.extractors.text_extractor import TextExtractor
 from agents.markdown_writer import read_note
 
@@ -214,6 +215,110 @@ def test_create_draft_full_text_save_preserves_source_without_llm(
     assert draft["tags"] == ["source-archive"]
     assert draft["capture_intent"]["task_type"] == "capture"
     assert draft["capture_intent"]["output_shape"] == ["full_text"]
+    assert draft["capture_intent"]["material_intent"] == "verbatim_full_text"
+
+
+def test_full_text_save_uses_original_extracted_text_not_cleaned_text(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    class FakeExtractor:
+        def can_handle(self, _source: str) -> bool:
+            return True
+
+        def extract(self, _source: str, **_kwargs) -> ExtractionResult:
+            return ExtractionResult(
+                raw_text=(
+                    "  # 原文标题  \n\n"
+                    "第一段原文保留  行内空格。这里继续补充足够长的正文，"
+                    "确保质量检测认为它是一篇真实材料。\n\n\n"
+                    "关注我们，获取更多精彩内容\n\n"
+                    "第二段原文也要保留。它包含作者的完整表达、例子和结论，"
+                    "全文入库时都不能被清洗器改写。  "
+                ),
+                source_type="note",
+                source_url="",
+                title="原文标题",
+            )
+
+    agent.extractors = [FakeExtractor()]
+    monkeypatch.setattr(
+        agent,
+        "_call_llm",
+        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
+    )
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
+    )
+
+    draft = agent.create_draft("ignored", instruction="这篇原文一字不改全文入库")
+
+    assert draft["raw_text"] == (
+        "  # 原文标题  \n\n"
+        "第一段原文保留  行内空格。这里继续补充足够长的正文，"
+        "确保质量检测认为它是一篇真实材料。\n\n\n"
+        "关注我们，获取更多精彩内容\n\n"
+        "第二段原文也要保留。它包含作者的完整表达、例子和结论，"
+        "全文入库时都不能被清洗器改写。  "
+    )
+    assert draft["draft_text"] == draft["raw_text"]
+
+
+def test_revise_draft_full_text_save_uses_existing_raw_without_llm(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    raw = TEST_CONTENT + "这是后续补充原文，也应该一起保留。"
+    draft = agent.create_draft(raw)
+    monkeypatch.setattr(
+        agent,
+        "_call_llm",
+        lambda prompt, *args, **kwargs: pytest.fail("full text save revision should not call LLM"),
+    )
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
+    )
+
+    revised = agent.revise_draft(draft["id"], "全文原文入库，一字不改")
+
+    assert revised["status"] == "draft_ready"
+    assert revised["draft_text"] == draft["raw_text"]
+    assert revised["capture_intent"]["material_intent"] == "verbatim_full_text"
+    assert revised["capture_intent"]["output_shape"] == ["full_text"]
+
+
+def test_capture_intent_classifies_four_material_contracts(agent: CaptureAgent):
+    full_text = agent._build_capture_intent("这篇文章全文入库，一字不改保存").to_dict()
+    refined = agent._build_capture_intent("稍加总结，整理成一篇精炼笔记").to_dict()
+    focused = agent._build_capture_intent("总结全文核心内容，方法论那部分详细一些").to_dict()
+    enhanced = agent._build_capture_intent("结合刚才讨论，整理成原文增强版笔记").to_dict()
+
+    assert full_text["material_intent"] == "verbatim_full_text"
+    assert full_text["output_shape"] == ["full_text"]
+    assert refined["material_intent"] == "refined_note"
+    assert focused["material_intent"] == "focused_note"
+    assert focused["emphasis"] == ["方法论"]
+    assert enhanced["material_intent"] == "enhanced_note"
+    assert "source_layering" in enhanced["must_preserve"]
+
+
+def test_enhanced_note_prompt_requires_source_layering(agent: CaptureAgent):
+    intent = agent._build_capture_intent("结合刚才讨论，整理成原文增强版笔记").to_dict()
+
+    prompt = agent._build_revision_prompt(
+        instruction="结合刚才讨论，整理成原文增强版笔记",
+        capture_intent=intent,
+        current_text=TEST_CONTENT,
+        raw_text=TEST_CONTENT,
+    )
+
+    assert "原文依据" in prompt
+    assert "讨论形成的理解" in prompt
+    assert "不要把 AI 解释伪装成作者原意" in prompt
 
 
 def test_prompt_allows_model_to_choose_draft_strategy(agent: CaptureAgent, monkeypatch):
@@ -886,6 +991,80 @@ def test_commit_full_text_save_writes_full_capture_without_outline(
     assert body == TEST_CONTENT
     assert "outline" not in frontmatter
     assert "## 目录纲要" not in body
+
+
+def test_commit_long_full_text_save_renders_directory_without_rewriting_source(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+):
+    class FakeOutliner:
+        def __init__(self, **_kwargs):
+            pass
+
+        def generate(self, _body: str, _length: int):
+            return [
+                {"level": 1, "title": "第一部分", "summary": "LLM 生成的目录摘要。"},
+                {"level": 1, "title": "第二部分", "summary": "LLM 生成的目录摘要。"},
+            ]
+
+    class FakeEmbedder:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+
+        def embed(self, text: str) -> bytes:
+            if "章节：" in text:
+                return b"section"
+            return b"identity"
+
+    long_body = (
+        "# 长文标题\n\n"
+        + ("第一部分原文内容，不应该被目录纲要或总结改写。" * 120)
+        + "\n\n"
+        + ("第二部分原文内容，也必须原样留在 capture 正文里。" * 120)
+    )
+    agent.config.qwen_api_key = "sk-test-qwen"
+    monkeypatch.setattr("agents.capture_agent.Outliner", FakeOutliner, raising=False)
+    monkeypatch.setattr("agents.capture_agent.Embedder", FakeEmbedder, raising=False)
+    monkeypatch.setattr(
+        agent,
+        "_call_llm",
+        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call revision LLM"),
+    )
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
+    )
+
+    draft = agent.create_draft(long_body, instruction="全文入库")
+    committed = agent.commit_draft(draft["id"])
+    result = read_note(tmp_path, committed["file_path"])
+    raw_result = read_note(tmp_path, committed["raw_path"])
+
+    assert result is not None
+    assert raw_result is not None
+    _frontmatter, body = result
+    _raw_frontmatter, raw_body = raw_result
+    assert raw_body == long_body
+    assert "## 目录纲要" in body
+    assert "LLM 生成的目录摘要" in body
+    assert "第一部分原文内容，不应该被目录纲要或总结改写。" in body
+    assert "第二部分原文内容，也必须原样留在 capture 正文里。" in body
+
+    metadata = agent.repo.conn.execute(
+        "SELECT outline_json, directory_rendered_at FROM capture_metadata WHERE capture_id = ?",
+        (committed["capture_id"],),
+    ).fetchone()
+    assert metadata is not None
+    assert "第一部分" in metadata["outline_json"]
+    assert metadata["directory_rendered_at"]
+
+    section_count = agent.repo.conn.execute(
+        "SELECT COUNT(*) AS count FROM capture_embeddings WHERE capture_id = ? AND kind = 'section'",
+        (committed["capture_id"],),
+    ).fetchone()["count"]
+    assert section_count >= 1
 
 
 def test_revise_committed_capture_id_creates_revision_draft(

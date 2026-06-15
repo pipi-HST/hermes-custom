@@ -156,6 +156,39 @@ def extract_run_evidence(
                 "file_path": str(meta.get("file_path") or capture_artifact.get("path") or ""),
             }
         )
+    elif intent in {"save_answer_to_knowledge", "revise_answer_draft", "commit_reading_artifact"}:
+        draft_artifact = _first_artifact(artifacts, "reading_draft")
+        reading_artifact = (
+            _first_artifact(artifacts, "learning_note")
+            or _first_artifact(artifacts, "discussion_note")
+            or _first_artifact(artifacts, "knowledge_card")
+            or _first_artifact(artifacts, "capture_note")
+        )
+        draft_id = str(meta.get("reading_draft_id") or draft_artifact.get("id") or "")
+        artifact_id = str(
+            meta.get("capture_id")
+            or meta.get("garden_card_id")
+            or reading_artifact.get("id")
+            or ""
+        )
+        path = str(meta.get("file_path") or reading_artifact.get("path") or "")
+        evidence.update(
+            {
+                "draft_id": draft_id,
+                "artifact_id": artifact_id,
+                "artifact_type": str(meta.get("artifact_type") or reading_artifact.get("type") or ""),
+                "path": path,
+                "answer_source": str(meta.get("answer_source") or ""),
+            }
+        )
+        output_ref.update(
+            {
+                "draft_id": draft_id,
+                "artifact_id": artifact_id,
+                "artifact_type": evidence["artifact_type"],
+                "path": path,
+            }
+        )
 
     status = _completion_status(result, intent, evidence)
     return {

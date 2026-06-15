@@ -161,7 +161,13 @@ class LibraryAgent:
 
         return actions
 
-    def maintain_capture(self, capture_id: str, *, apply: bool = False) -> dict[str, Any]:
+    def maintain_capture(
+        self,
+        capture_id: str,
+        *,
+        apply: bool = False,
+        render_outline: bool = True,
+    ) -> dict[str, Any]:
         """Run Library maintenance only for one newly committed capture."""
         report = {
             "dry_run": not apply,
@@ -229,7 +235,13 @@ class LibraryAgent:
             if note_path.exists():
                 report["outlines"]["scanned"] += 1
                 try:
-                    self._maintain_one(note_path, file_path, apply, report["outlines"])
+                    self._maintain_one(
+                        note_path,
+                        file_path,
+                        apply,
+                        report["outlines"],
+                        render_outline=render_outline,
+                    )
                 except Exception as exc:  # pragma: no cover - defensive per-note isolation
                     report["outlines"]["errors"] += 1
                     report["outlines"]["items"].append(
@@ -357,7 +369,13 @@ class LibraryAgent:
                     body,
                     outline=metadata_outline,
                 ),
-                *build_section_indexes(capture_id, file_path, frontmatter, body),
+                *build_section_indexes(
+                    capture_id,
+                    file_path,
+                    frontmatter,
+                    body,
+                    outline=metadata_outline,
+                ),
             ]
             stale_items = [
                 item for item in index_items
@@ -456,6 +474,8 @@ class LibraryAgent:
         rel_path: str,
         apply: bool,
         report: dict[str, Any],
+        *,
+        render_outline: bool = True,
     ) -> None:
         parsed = _read_markdown_parts(note_path)
         if parsed is None:
@@ -524,10 +544,23 @@ class LibraryAgent:
                 source_hash=hashlib.sha256(body.encode("utf-8")).hexdigest(),
                 directory_rendered_at=(
                     datetime.now(timezone.utc).isoformat()
-                    if has_directory or len(body) >= self.min_outline_chars
+                    if render_outline and (has_directory or len(body) >= self.min_outline_chars)
                     else None
                 ),
             )
+        if not render_outline:
+            if legacy_outline:
+                frontmatter.pop("outline", None)
+                _write_markdown_parts(note_path, frontmatter, body)
+            report["updated"] += 1
+            report["items"].append(
+                {
+                    "file_path": rel_path,
+                    "action": "updated_outline_metadata",
+                    "outline_items": len(outline),
+                }
+            )
+            return
         frontmatter.pop("outline", None)
         updated_body = body if has_directory or is_short else _insert_directory(body, outline)
         if not is_short and not _has_real_markdown_sections(updated_body):

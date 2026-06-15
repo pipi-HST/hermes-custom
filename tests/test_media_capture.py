@@ -54,6 +54,17 @@ def test_document_extractor_reads_markdown_text(tmp_path: Path):
     assert "世界杯效应" in result.raw_text
 
 
+def test_document_extractor_preserves_markdown_file_text_exactly(tmp_path: Path):
+    """Full-text capture depends on document extraction not trimming the file."""
+    doc = tmp_path / "整理稿.md"
+    original = "# 世界杯效应\n\n核心内容。\n"
+    doc.write_text(original, encoding="utf-8")
+
+    result = DocumentExtractor().extract(str(doc))
+
+    assert result.raw_text == original
+
+
 def test_document_extractor_reads_docx_text(tmp_path: Path):
     """DOCX file paths should be extracted without requiring python-docx."""
     doc = tmp_path / "文档.docx"
@@ -149,6 +160,33 @@ def test_create_draft_from_markdown_file_path(agent: CaptureAgent, tmp_path: Pat
     assert result["source_type"] == "document"
     assert "世界杯前后资金容易分流" in result["raw_text"]
     assert str(doc) not in result["raw_text"]
+
+
+def test_full_text_draft_from_markdown_file_uses_h1_title_and_exact_body(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Uploaded temp filenames should not become the capture title for Markdown documents."""
+    doc = tmp_path / "20260614172926-1bdcf2b0-智能问数项目的成功关键_文字稿(3).md"
+    original = (
+        "# 智能问数项目的成功关键\n\n"
+        "智能问数不是单纯的 AI 项目，本质上是数据治理项目。"
+        "这段文字足够长，用来通过正文质量检测，并且最后保留一个换行。\n"
+    )
+    doc.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["data"]},
+    )
+
+    result = agent.create_draft(str(doc), instruction="全文入库，一字不改全文原文入库")
+
+    assert result["status"] == "draft_ready"
+    assert result["title"] == "智能问数项目的成功关键"
+    assert result["draft_text"] == original
+    assert result["raw_text"] == original
 
 
 def test_create_draft_from_markdown_file_with_instruction(agent: CaptureAgent, tmp_path: Path, monkeypatch):

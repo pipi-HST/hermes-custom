@@ -183,6 +183,18 @@ RAG 是复用能力。
 - 长答案支持文件或前端；
 - 多轮追问沿当前检索上下文继续。
 
+#### Theme
+
+定位：Obsidian 原生结构层，用 `themes/*.md` 维护跨材料的主题关系地图。
+
+重点改法：
+
+- Theme Agent 自动生成/更新 `themes/*.md`；
+- Theme 页是 MOC 风格的关系地图，帮助人阅读多篇材料之间的联系；
+- Theme 可提出可沉淀为 Knowledge Cards 的方向；
+- Theme 不成为 Garden Card 容器，也不单独做前端管理页；
+- Theme 页只更新 Hermes 托管区，保留用户手写的 `## 我的补充`。
+
 #### Knowledge Cards
 
 定位：可复用知识对象，不是文章摘要。
@@ -190,18 +202,6 @@ RAG 是复用能力。
 Garden 目录可以保留，但用户文案中应逐步改叫 Knowledge Cards。
 
 ### 4.2 弱化或隐藏
-
-#### Theme Agent
-
-Theme 不再作为显性主功能讲。
-
-保留方向：
-
-- 作为内部关联发现能力；
-- 为 Knowledge Cards 候选生成提供线索；
-- 不要求用户管理 MOC、开放问题或主题页。
-
-第一版可以保留已有 `themes/` 文件，但不主动推荐用户去生成主题页。
 
 #### Canvas / 画板
 
@@ -304,42 +304,24 @@ Knowledge Card 是从材料、阅读讨论或多篇笔记中提炼出的可复�
 
 第一版只做 3 个核心页面。
 
-### 6.1 Knowledge Chat
+### 6.1 Knowledge Workbench
 
 用途：
 
-- 满血聊天；
-- 上传文件；
-- 长回答；
-- RAG；
-- Reading Session；
-- 查看完整引用。
+- Chat Mode：满血聊天、文件上传、RAG、Reading Session、长回答；
+- Draft Review Mode：查看整理稿、原文、元信息，继续修改并确认入库；
+- Source Mode：查看完整原文、OCR 或文档提取文本；
+- Result Mode：查看长答案、导出报告和完整引用。
 
 关键体验：
 
 - 和微信入口共用后端工具；
 - 不受微信字数限制；
 - 能显示当前绑定材料；
-- 能显示来源和长报告文件。
+- 能显示来源、工具调用和材料状态；
+- 草稿审阅不再是单独主页面，而是 Workbench 里的 Draft Review Mode。
 
-### 6.2 Capture Review
-
-用途：
-
-- 查看草稿；
-- 修改草稿；
-- 确认入库；
-- 查看原文和整理稿差异；
-- 从阅读讨论生成主 Capture 或局部学习笔记。
-
-关键体验：
-
-- 明确显示当前用户意图；
-- 显示草稿状态；
-- 支持“确认入库”“继续修改”“转知识卡片”；
-- 不把用户推回微信里翻长消息。
-
-### 6.3 Knowledge Cards Board
+### 6.2 Knowledge Cards Board
 
 用途：
 
@@ -362,27 +344,28 @@ Knowledge Card 是从材料、阅读讨论或多篇笔记中提炼出的可复�
 - `Capture`：材料提取、意图整理、草稿生成；
 - `Reading`：围绕单份材料的多轮讨论；
 - `Library`：结构维护、索引、一致性；
+- `Theme`：跨材料关系发现，自动维护 Obsidian `themes/*.md`；
 - `RAG`：知识库问答和引用；
 - `Cards`：Knowledge Cards 草稿、去重、入库。
 
-Theme 作为 Cards/RAG 的内部关联发现能力。Canvas 暂时退出主线。
+Theme 是可见的 Obsidian 结构层，但不单独占用前端页面。Canvas 暂时退出主线。
 
 ## 8. 实施阶段
 
 ### P0：收口主线
 
-目标：停止功能扩散，让主 Agent 不再主动把用户带向 Theme/Canvas。
+目标：停止功能扩散，让主 Agent 不再主动把用户带向 Canvas，同时让 Theme 回到 Obsidian 主题地图的位置。
 
 任务：
 
 - 更新工具描述和系统提示；
 - 隐藏 Canvas 主入口；
-- Theme 降级为内部能力；
+- Theme 自动维护 `themes/*.md`，但不新增独立前端 Theme 页面；
 - 明确用户可见主能力：读材料、讨论、入库、问答、卡片沉淀。
 
 验收：
 
-- 用户问“整理知识库/扫描关联”时，不再优先推荐 Canvas；
+- 用户问“整理知识库/扫描关联”时，优先生成或更新 Theme 主题页，而不是推荐 Canvas；
 - 用户普通问答不会暴露 Theme/Garden 等内部术语；
 - 主 Agent 回复更像产品功能，而不是工具清单。
 
@@ -430,8 +413,9 @@ Theme 作为 Cards/RAG 的内部关联发现能力。Canvas 暂时退出主线�
 
 任务：
 
-- Knowledge Chat 支持文件上传和长回答；
-- Capture Review 展示草稿和确认动作；
+- Knowledge Chat 重命名或定位为 Knowledge Workbench；
+- Draft Review 合并进 Workbench，不再作为主导航里的独立页面；
+- Workbench 支持文件上传、长回答、草稿审阅、原文查看、引用和工具状态；
 - Knowledge Cards Board 支持分类浏览和详情页；
 - 前端调用已有后端能力，不新造一套逻辑。
 
@@ -439,6 +423,7 @@ Theme 作为 Cards/RAG 的内部关联发现能力。Canvas 暂时退出主线�
 
 - 一篇长 PDF 可以在前端上传、讨论、整理；
 - 草稿可以在前端完整审阅；
+- 主导航不再把 Capture Review 作为独立知识工作流；
 - 卡片能按类型浏览并追到来源。
 
 ### P4：稳定性与可观测性
@@ -467,7 +452,7 @@ Theme 作为 Cards/RAG 的内部关联发现能力。Canvas 暂时退出主线�
 - 自动为所有文章生成卡片；
 - 自动生成 Canvas；
 - 复杂知识图谱编辑器；
-- 让用户手动维护 Theme/MOC；
+- 新增单独的 Theme 前端管理页；
 - 完整 Review 系统重做；
 - 为面试单独做假数据或假流程。
 
@@ -482,4 +467,3 @@ Theme 作为 Cards/RAG 的内部关联发现能力。Canvas 暂时退出主线�
 5. 在前端查看长回答、完整草稿和卡片来源。
 
 如果这 5 件事顺畅，Hermes Knowledge 就从“工具合集”变成了一个可用产品。
-

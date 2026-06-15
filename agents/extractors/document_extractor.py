@@ -54,7 +54,7 @@ class DocumentExtractor(BaseExtractor):
             )
 
         return ExtractionResult(
-            raw_text=text.strip(),
+            raw_text=text,
             source_type="document",
             source_url=str(path),
             title=path.stem,
