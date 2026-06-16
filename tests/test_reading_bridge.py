@@ -256,7 +256,7 @@ def test_commit_knowledge_card_writes_garden_file(reading_config):
     assert "type: garden_card" in text
     assert f"garden_card_id: {artifact['id']}" in text
     assert "card_kind: viewpoint" in text
-    assert "这个方法以后怎么复用" in text
+    assert "它可以作为长文整理前先判断结构的工作流" in text
 
     conn = init_db(reading_config.db_path)
     row = conn.execute(

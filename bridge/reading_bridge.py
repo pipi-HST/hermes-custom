@@ -575,7 +575,7 @@ def _postprocess_committed_learning_note(config, repo: ReadingRepo, capture_id: 
 
 
 def _commit_knowledge_card(config, vault_path: Path, repo: ReadingRepo, draft: dict) -> dict:
-    garden_data = _garden_data_from_reading_draft(config, repo, draft)
+    garden_data, card_body = _garden_data_from_reading_draft(config, repo, draft)
     card_id = create_garden_card(repo, garden_data)
     rel_path = _write_note_file(
         vault_path=vault_path,
@@ -591,7 +591,7 @@ def _commit_knowledge_card(config, vault_path: Path, repo: ReadingRepo, draft: d
             "reading_session_id": draft["session_id"],
             "created": _now(),
         },
-        body=draft.get("draft_text", ""),
+        body=card_body,
     )
     repo.update_draft(draft["id"], status="committed")
     repo.update_session(draft["session_id"], status="committed", committed_artifact_id=rel_path)
@@ -617,42 +617,71 @@ def _commit_knowledge_card(config, vault_path: Path, repo: ReadingRepo, draft: d
     )
 
 
-def _classify_card_kind(
+_CARD_KIND_HINTS: dict[str, str] = {
+    "viewpoint": "以后遇到类似话题时，可以用它作为一种解读角度或立场参考。",
+    "fact": "以后做判断或引用时，可以直接使用这些经验和数据。",
+    "method": "以后遇到类似问题时，可以按照这个思路或流程来处理。",
+    "risk": "以后做判断或行动前，可以用它提醒自己注意边界和误区。",
+}
+
+
+def _synthesize_reading_card(
     config,
     *,
     title: str,
-    summary: str = "",
-    body: str = "",
-) -> str:
-    """Use LLM to classify the best card_kind from draft content.
+    draft_text: str,
+    summary: str,
+    session: dict,
+    evidence: list[dict],
+) -> tuple[dict, str]:
+    """Use LLM to synthesize a Q&A conversation into a structured knowledge card.
 
-    Falls back to "viewpoint" if the LLM call fails or returns an
-    unrecognised value.
+    Returns (garden_data_dict, synthesized_markdown_body).
+    On any LLM failure, falls back to the manual assembly approach.
     """
-    valid_kinds = {"viewpoint", "fact", "method", "risk"}
+    capture_ids = _reading_card_capture_ids(session, evidence)
+    source_materials = _reading_card_key_materials(session, evidence)
+
+    # --- LLM synthesis -------------------------------------------------
     api_key = getattr(config, "llm_api_key", "")
     base_url = getattr(config, "llm_base_url", "") or "https://api.deepseek.com"
 
-    # Truncate body to keep the prompt small
-    body_excerpt = (body or "").strip()
-    if len(body_excerpt) > 1200:
-        body_excerpt = body_excerpt[:1200] + "…"
+    body_excerpt = draft_text.strip()
+    if len(body_excerpt) > 8000:
+        body_excerpt = body_excerpt[:8000] + "…"
+
+    evidence_summary = "\n".join(
+        f"- {item.get('title') or item.get('source_id') or '未知来源'}"
+        for item in evidence[:6]
+    ) or "无外部来源"
 
     prompt = (
-        "你是一个知识分类助手。根据以下知识卡片草稿的内容，判断它属于哪种类型。\n\n"
-        "类型定义：\n"
-        "- viewpoint：表达一种观点、解读或立场\n"
-        "- fact：陈述客观事实、数据或经验发现\n"
-        "- method：描述一种方法、流程、实践或框架\n"
-        "- risk：指出风险、陷阱、注意事项或常见问题\n\n"
-        f"标题：{title}\n"
-        f"摘要：{summary}\n"
-        f"内容：\n{body_excerpt}\n\n"
-        "只回复一个词：viewpoint、fact、method 或 risk。不要解释。"
+        "你是一个知识整理助手。以下是一段用户与 AI 的问答对话，请将它蒸馏为一张"
+        "可复用的 Knowledge Card。\n\n"
+        f"对话标题：{title}\n\n"
+        f"参考来源：\n{evidence_summary}\n\n"
+        f"对话内容：\n{body_excerpt}\n\n"
+        "输出 JSON（不要用 markdown 代码块包裹）：\n"
+        '{\n'
+        '  "card_kind": "viewpoint|fact|method|risk",\n'
+        '  "one_liner": "一句话概括这张卡片的核心知识（完整判断句）",\n'
+        '  "core_arguments": [\n'
+        '    {"claim": "支撑这张卡的关键要点，不要逐段复制对话"}\n'
+        '  ],\n'
+        '  "key_materials": [\n'
+        '    {"type": "quote|data|case", "content": "最能支撑判断的原文片段或案例"}\n'
+        '  ]\n'
+        '}\n\n'
+        "要求：\n"
+        "- card_kind 只能是 viewpoint、fact、method、risk 之一。\n"
+        "- one_liner 是完整判断句，不是标题的复读。\n"
+        "- core_arguments 保留 3-5 条，从对话中提炼核心知识点，不要逐条复制问答。\n"
+        "- key_materials 保留 2-4 条，选最能支撑判断的原文片段。\n"
     )
 
+    extracted: dict | None = None
     try:
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=60) as client:
             resp = client.post(
                 f"{base_url}/chat/completions",
                 headers={
@@ -662,54 +691,125 @@ def _classify_card_kind(
                 json={
                     "model": "deepseek-v4-flash",
                     "messages": [
+                        {"role": "system", "content": "你是专业的中文知识整理助手。"},
                         {"role": "user", "content": prompt},
                     ],
-                    "temperature": 0.1,
-                    "max_tokens": 8,
+                    "temperature": 0.3,
+                    "max_tokens": 4000,
                 },
             )
             resp.raise_for_status()
-            answer = resp.json()["choices"][0]["message"]["content"].strip().lower()
-        if answer in valid_kinds:
-            return answer
+            raw = resp.json()["choices"][0]["message"]["content"].strip()
+            extracted = _parse_card_json(raw)
     except Exception:
         pass
 
-    return "viewpoint"
+    # --- Build result ---------------------------------------------------
+    if extracted is not None:
+        card_kind = str(extracted.get("card_kind", "viewpoint")).strip()
+        if card_kind not in {"viewpoint", "fact", "method", "risk"}:
+            card_kind = "viewpoint"
+        one_liner = str(extracted.get("one_liner", "")).strip() or summary or title
+        core_args = extracted.get("core_arguments") or []
+        key_mats = extracted.get("key_materials") or []
+    else:
+        # Fallback: manual assembly
+        card_kind = "viewpoint"
+        one_liner = _clip(summary or draft_text, 180) or "从阅读讨论中沉淀出来的可复用知识。"
+        core_args = [
+            {"claim": _clip(summary or session.get("focus") or title, 180)}
+        ]
+        key_mats = []
 
-
-def _garden_data_from_reading_draft(config, repo: ReadingRepo, draft: dict) -> dict:
-    session = repo.get_session(draft["session_id"]) or {}
-    evidence = repo.list_evidence(draft["session_id"])
-    capture_ids = _reading_card_capture_ids(session, evidence)
-    source_materials = _reading_card_key_materials(session, evidence)
-    title = draft.get("title") or "知识卡片"
-    one_liner = _clip(draft.get("summary") or draft.get("draft_text", ""), 180)
-    if not one_liner:
-        one_liner = "从阅读讨论中沉淀出来的可复用知识。"
-    draft_text = draft.get("draft_text", "")
-    card_kind = _classify_card_kind(
-        config,
-        title=title,
-        summary=draft.get("summary") or "",
-        body=draft_text,
-    )
-    return {
+    garden_data = {
         "title": title,
         "one_liner": one_liner,
         "card_kind": card_kind,
         "core_arguments": [
-            {
-                "claim": _clip(draft.get("summary") or session.get("focus") or title, 180),
-                "why_it_matters": "来自一次围绕材料的阅读讨论，适合后续作为理解线索复用。",
-            }
-        ],
+            {"claim": str(a.get("claim", "")).strip()}
+            for a in core_args[:5]
+            if str(a.get("claim", "")).strip()
+        ] or [{"claim": one_liner}],
         "knowledge_links": [],
-        "key_materials": source_materials,
+        "key_materials": source_materials if not key_mats else [
+            {
+                "type": str(m.get("type", "quote")).strip(),
+                "content": _clip(str(m.get("content", "")).strip(), 240),
+            }
+            for m in key_mats[:4]
+            if str(m.get("content", "")).strip()
+        ],
         "my_view": "",
         "status": "seed",
         "capture_ids": capture_ids,
     }
+
+    # Build synthesized markdown body
+    md = _build_card_markdown(title, one_liner, card_kind, core_args, key_mats, evidence)
+    return garden_data, md
+
+
+def _parse_card_json(raw: str) -> dict:
+    """Parse JSON from LLM output, tolerating markdown code fences."""
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return json.loads(text)
+
+
+def _build_card_markdown(
+    title: str,
+    one_liner: str,
+    card_kind: str,
+    core_args: list[dict],
+    key_mats: list[dict],
+    evidence: list[dict],
+) -> str:
+    lines = [f"# {title}", "", one_liner, "", "## 内容"]
+
+    for arg in core_args[:4]:
+        claim = str(arg.get("claim", "")).strip()
+        if claim:
+            lines.append(f"- {claim}")
+
+    for mat in key_mats[:4]:
+        content = str(mat.get("content", "")).strip()
+        mat_type = str(mat.get("type", "quote")).strip()
+        if content:
+            lines.append(f"- [{mat_type}] {_clip(content, 240)}")
+
+    if not core_args and not key_mats:
+        lines.append("- （待补充）")
+
+    lines.extend(["", "## 适用或启发"])
+    lines.append(_CARD_KIND_HINTS.get(card_kind, _CARD_KIND_HINTS["viewpoint"]))
+
+    if evidence:
+        lines.extend(["", "## 来源"])
+        for item in evidence[:6]:
+            label = str(item.get("title") or item.get("source_id") or "未命名来源").strip()
+            kind = str(item.get("source_kind") or item.get("type") or "").strip()
+            prefix = f"[{kind}] " if kind else ""
+            lines.append(f"- {prefix}{label}")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def _garden_data_from_reading_draft(config, repo: ReadingRepo, draft: dict) -> tuple[dict, str]:
+    session = repo.get_session(draft["session_id"]) or {}
+    evidence = repo.list_evidence(draft["session_id"])
+    title = draft.get("title") or "知识卡片"
+    draft_text = draft.get("draft_text", "")
+    summary = draft.get("summary") or ""
+    return _synthesize_reading_card(
+        config,
+        title=title,
+        draft_text=draft_text,
+        summary=summary,
+        session=session,
+        evidence=evidence,
+    )
 
 
 def _reading_card_capture_ids(session: dict, evidence: list[dict]) -> list[str]:
