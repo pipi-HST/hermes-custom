@@ -7,11 +7,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from db.schema import init_db
-from db.repo import CaptureRepo
+from db.repo import CaptureRepo, CaptureDraftRepo
 from db.reading_repo import ReadingRepo
 from api.routes.captures import create_capture_router
 from api.routes.reading import create_reading_router
 from api.routes.knowledge import create_knowledge_router
+from api.routes.capture_drafts import create_capture_draft_router
 from agents.capture_agent import load_config
 
 DB_PATH = str(Path(__file__).parent.parent / "data" / "captures.db")
@@ -36,9 +37,11 @@ def create_app() -> FastAPI:
     db_path = config.db_path or DB_PATH
     conn = init_db(db_path)
     repo = CaptureRepo(conn)
+    draft_repo = CaptureDraftRepo(conn)
     reading_repo = ReadingRepo(conn)
 
     app.include_router(create_capture_router(repo, config.vault_path), prefix="/api")
+    app.include_router(create_capture_draft_router(draft_repo), prefix="/api")
     app.include_router(
         create_reading_router(reading_repo, {"vault_path": config.vault_path}),
         prefix="/api",

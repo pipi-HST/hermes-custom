@@ -8,10 +8,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from db.schema import init_db
-from db.repo import CaptureRepo
+from db.repo import CaptureRepo, CaptureDraftRepo
 from db.reading_repo import ReadingRepo
 from api.routes.reading import create_reading_router
 from api.routes.knowledge import create_knowledge_router
+from api.routes.capture_drafts import create_capture_draft_router
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +38,12 @@ def capture_repo(db):
 
 
 @pytest.fixture
-def client(tmp_path, reading_repo, capture_repo):
+def draft_repo(db):
+    return CaptureDraftRepo(db)
+
+
+@pytest.fixture
+def client(tmp_path, reading_repo, capture_repo, draft_repo):
     app = FastAPI()
     app.include_router(
         create_reading_router(reading_repo, {"vault_path": str(tmp_path)}),
@@ -45,6 +51,10 @@ def client(tmp_path, reading_repo, capture_repo):
     )
     app.include_router(
         create_knowledge_router(reading_repo, capture_repo, str(tmp_path)),
+        prefix="/api",
+    )
+    app.include_router(
+        create_capture_draft_router(draft_repo),
         prefix="/api",
     )
     return TestClient(app)
@@ -270,3 +280,125 @@ def test_save_answer_draft_calls_bridge(client):
         sources=[],
         target_capture_id="",
     )
+
+
+# ---------------------------------------------------------------------------
+# Capture draft tests
+# ---------------------------------------------------------------------------
+
+def test_list_capture_drafts_empty(client):
+    """GET /api/capture-drafts returns empty when no open drafts exist."""
+    resp = client.get("/api/capture-drafts")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["items"] == []
+    assert body["total"] == 0
+
+
+def test_list_capture_drafts_with_data(client, draft_repo):
+    """GET /api/capture-drafts returns open drafts created via repo."""
+    draft_repo.create(
+        raw_text="Some raw content about AI.",
+        source="https://example.com/ai-article",
+        source_type="url",
+        title="AI Article",
+        draft_text="Drafted summary about AI.",
+        status="draft_ready",
+    )
+    draft_repo.create(
+        raw_text="Another raw text.",
+        source="wechat",
+        source_type="text",
+        title="WeChat Note",
+        draft_text="Drafted note.",
+        status="raw_extracted",
+    )
+
+    resp = client.get("/api/capture-drafts")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["items"]) == 2
+    assert body["total"] == 2
+
+
+def test_get_capture_draft_detail(client, draft_repo):
+    """GET /api/capture-drafts/{id} returns the draft."""
+    draft = draft_repo.create(
+        raw_text="Test content.",
+        title="Test Draft",
+        draft_text="Full draft text.",
+        status="draft_ready",
+    )
+
+    resp = client.get(f"/api/capture-drafts/{draft['id']}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == draft["id"]
+    assert body["title"] == "Test Draft"
+    assert body["draft_text"] == "Full draft text."
+
+
+def test_get_capture_draft_not_found(client):
+    """GET /api/capture-drafts/{id} returns 404 for nonexistent draft."""
+    resp = client.get("/api/capture-drafts/nonexistent")
+    assert resp.status_code == 404
+
+
+def test_revise_capture_draft_calls_bridge(client, draft_repo):
+    """POST /api/capture-drafts/{id}/revise delegates to capture_bridge."""
+    draft = draft_repo.create(
+        raw_text="Content.",
+        title="To Revise",
+        draft_text="Original draft.",
+        status="draft_ready",
+    )
+
+    mock_result = {
+        "status": "ok",
+        "intent": "revise_capture_draft",
+        "chat_preview": "Revised successfully.",
+    }
+
+    with patch(
+        "bridge.capture_bridge.revise_capture_draft",
+        return_value=mock_result,
+    ) as mock_revise:
+        resp = client.post(
+            f"/api/capture-drafts/{draft['id']}/revise",
+            json={"instruction": "Make it shorter."},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    mock_revise.assert_called_once_with(
+        draft_id=draft["id"],
+        instruction="Make it shorter.",
+    )
+
+
+def test_commit_capture_draft_calls_bridge(client, draft_repo):
+    """POST /api/capture-drafts/{id}/commit delegates to capture_bridge."""
+    draft = draft_repo.create(
+        raw_text="Content to commit.",
+        title="To Commit",
+        draft_text="Final draft.",
+        status="draft_ready",
+    )
+
+    mock_result = {
+        "status": "ok",
+        "intent": "commit_capture_draft",
+        "chat_preview": "Committed to vault.",
+    }
+
+    with patch(
+        "bridge.capture_bridge.commit_capture_draft",
+        return_value=mock_result,
+    ) as mock_commit:
+        resp = client.post(f"/api/capture-drafts/{draft['id']}/commit")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    mock_commit.assert_called_once_with(draft_id=draft["id"])

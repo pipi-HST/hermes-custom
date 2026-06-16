@@ -173,6 +173,17 @@ class CaptureDraftRepo:
         self.conn.commit()
         return self.get_by_id(draft_id)
 
+    def list_open(self, limit: int = 50) -> list[dict]:
+        rows = self.conn.execute(
+            """SELECT * FROM capture_drafts
+               WHERE status IN ('raw_extracted', 'draft_ready', 'revision_requested', 'draft_incomplete')
+               ORDER BY datetime(replace(substr(created_at, 1, 19), 'T', ' ')) DESC,
+                        rowid DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
     def _row_to_dict(self, row: sqlite3.Row) -> dict:
         result = dict(row)
         try:
