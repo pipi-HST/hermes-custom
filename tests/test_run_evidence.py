@@ -148,3 +148,175 @@ def test_rag_evidence_extracts_graph_trace():
     assert result["evidence"]["graph_seed_count"] == 3
     assert result["evidence"]["graph_final_count"] == 4
     assert result["evidence"]["graph_stopped_reason"] == "enough_evidence"
+
+
+# ---------------------------------------------------------------------------
+# Reading session evidence
+# ---------------------------------------------------------------------------
+
+
+def test_start_reading_session_success():
+    envelope = success_envelope(
+        agent="reading",
+        intent="start_reading_session",
+        chat_preview="已开启阅读会话。",
+        durable_artifacts=[
+            artifact_ref(
+                type="reading_session",
+                id="sess1",
+                title="Test Article",
+            )
+        ],
+        meta={
+            "reading_session_id": "sess1",
+            "source_type": "url",
+            "output_type": "enhance_capture",
+            "turn_index": 0,
+            "turn_count": 1,
+            "evidence_count": 2,
+            "source_title": "Test Article",
+        },
+    )
+
+    result = extract_run_evidence("reading", "start_reading_session", envelope)
+
+    assert result["status"] == "success"
+    assert result["evidence"]["reading_session_id"] == "sess1"
+    assert result["evidence"]["source_type"] == "url"
+    assert result["evidence"]["output_type"] == "enhance_capture"
+    assert result["evidence"]["turn_count"] == 1
+    assert result["evidence"]["evidence_count"] == 2
+    assert result["output_ref"]["reading_session_id"] == "sess1"
+    assert result["output_ref"]["source_title"] == "Test Article"
+
+
+def test_start_reading_session_incomplete_no_session_id():
+    envelope = success_envelope(
+        agent="reading",
+        intent="start_reading_session",
+        chat_preview="尝试开启阅读会话但失败。",
+        meta={},
+    )
+
+    result = extract_run_evidence("reading", "start_reading_session", envelope)
+
+    assert result["status"] == "incomplete"
+    assert result["evidence"]["reading_session_id"] == ""
+
+
+def test_discuss_reading_extracts_turn_info():
+    envelope = success_envelope(
+        agent="reading",
+        intent="discuss_reading",
+        chat_preview="回答了第三个问题。",
+        meta={
+            "reading_session_id": "sess1",
+            "turn_index": 3,
+            "turn_count": 3,
+            "evidence_count": 5,
+            "needs_clarification": False,
+        },
+    )
+
+    result = extract_run_evidence("reading", "discuss_reading", envelope)
+
+    assert result["status"] == "success"
+    assert result["evidence"]["reading_session_id"] == "sess1"
+    assert result["evidence"]["turn_index"] == 3
+    assert result["evidence"]["turn_count"] == 3
+    assert result["evidence"]["evidence_count"] == 5
+    assert result["evidence"]["needs_clarification"] is False
+
+
+def test_show_reading_session_from_meta():
+    envelope = success_envelope(
+        agent="reading",
+        intent="show_reading_session",
+        chat_preview="当前阅读会话概览。",
+        meta={
+            "reading_session_id": "sess2",
+            "source_type": "capture",
+            "turn_count": 5,
+            "evidence_count": 8,
+        },
+    )
+
+    result = extract_run_evidence("reading", "show_reading_session", envelope)
+
+    assert result["status"] == "success"
+    assert result["evidence"]["reading_session_id"] == "sess2"
+    assert result["evidence"]["source_type"] == "capture"
+    assert result["evidence"]["turn_count"] == 5
+
+
+def test_summarize_reading_session_with_draft():
+    envelope = success_envelope(
+        agent="reading",
+        intent="summarize_reading_session",
+        chat_preview="已生成阅读总结草稿。",
+        durable_artifacts=[
+            artifact_ref(
+                type="reading_draft",
+                id="rdraft1",
+                title="阅读总结",
+            )
+        ],
+        meta={
+            "reading_session_id": "sess1",
+            "reading_draft_id": "rdraft1",
+            "output_type": "local_learning_note",
+        },
+    )
+
+    result = extract_run_evidence("reading", "summarize_reading_session", envelope)
+
+    assert result["status"] == "success"
+    assert result["evidence"]["reading_draft_id"] == "rdraft1"
+    assert result["evidence"]["output_type"] == "local_learning_note"
+    assert result["output_ref"]["reading_draft_id"] == "rdraft1"
+
+
+def test_summarize_reading_session_incomplete_no_draft_no_clarification():
+    envelope = success_envelope(
+        agent="reading",
+        intent="summarize_reading_session",
+        chat_preview="无法生成总结。",
+        meta={"reading_session_id": "sess1"},
+    )
+
+    result = extract_run_evidence("reading", "summarize_reading_session", envelope)
+
+    assert result["status"] == "incomplete"
+    assert result["evidence"]["reading_draft_id"] == ""
+
+
+def test_summarize_reading_session_success_with_clarification():
+    """needs_clarification=True is a valid completion — agent asked user for more info."""
+    envelope = success_envelope(
+        agent="reading",
+        intent="summarize_reading_session",
+        chat_preview="需要更多信息才能总结。",
+        meta={
+            "reading_session_id": "sess1",
+            "needs_clarification": True,
+        },
+    )
+
+    result = extract_run_evidence("reading", "summarize_reading_session", envelope)
+
+    assert result["status"] == "success"
+    assert result["evidence"]["needs_clarification"] is True
+
+
+def test_reading_session_error_status():
+    envelope = success_envelope(
+        agent="reading",
+        intent="start_reading_session",
+        chat_preview="出错了。",
+        meta={},
+    )
+    envelope["status"] = "error"
+
+    result = extract_run_evidence("reading", "start_reading_session", envelope)
+
+    assert result["status"] == "error"

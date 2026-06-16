@@ -156,6 +156,41 @@ def extract_run_evidence(
                 "file_path": str(meta.get("file_path") or capture_artifact.get("path") or ""),
             }
         )
+    elif intent in {
+        "start_reading_session",
+        "discuss_reading",
+        "show_reading_session",
+        "summarize_reading_session",
+    }:
+        session_artifact = _first_artifact(artifacts, "reading_session")
+        draft_artifact = _first_artifact(artifacts, "reading_draft")
+        session_id = str(
+            meta.get("reading_session_id") or session_artifact.get("id") or ""
+        )
+        draft_id = str(
+            meta.get("reading_draft_id") or draft_artifact.get("id") or ""
+        )
+        evidence.update(
+            {
+                "reading_session_id": session_id,
+                "reading_draft_id": draft_id,
+                "source_type": str(meta.get("source_type") or ""),
+                "output_type": str(meta.get("output_type") or ""),
+                "turn_index": int(meta.get("turn_index") or 0),
+                "turn_count": int(meta.get("turn_count") or 0),
+                "evidence_count": int(meta.get("evidence_count") or 0),
+                "needs_clarification": bool(meta.get("needs_clarification")),
+            }
+        )
+        output_ref.update(
+            {
+                "reading_session_id": session_id,
+                "reading_draft_id": draft_id,
+                "source_title": str(
+                    meta.get("source_title") or session_artifact.get("title") or ""
+                ),
+            }
+        )
     elif intent in {"save_answer_to_knowledge", "revise_answer_draft", "commit_reading_artifact"}:
         draft_artifact = _first_artifact(artifacts, "reading_draft")
         reading_artifact = (
@@ -212,6 +247,14 @@ def _completion_status(
     if intent == "revise_garden_draft" and not evidence.get("draft_updated"):
         return "incomplete"
     if intent == "commit_garden_draft" and not evidence.get("card_created"):
+        return "incomplete"
+    if intent == "start_reading_session" and not evidence.get("reading_session_id"):
+        return "incomplete"
+    if (
+        intent == "summarize_reading_session"
+        and not evidence.get("reading_draft_id")
+        and not evidence.get("needs_clarification")
+    ):
         return "incomplete"
     return "success"
 
