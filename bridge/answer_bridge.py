@@ -482,6 +482,21 @@ def _answer_draft_title(*, user_message: str, assistant_answer: str) -> str:
     return (base[:36].strip(" ，。；：") or "对话沉淀笔记")
 
 
+def _topic_phrase(user_message: str, assistant_answer: str = "") -> str:
+    """Extract a short topic phrase for section headings (improves RAG retrieval)."""
+    text = re.sub(r"\s+", " ", user_message or assistant_answer or "").strip()
+    text = re.sub(r"[#*_`>\[\]()]+", "", text)
+    # Strip common question prefixes
+    text = re.sub(
+        r"^(请问|请解释|请帮我|帮我|我想了解|怎么|如何|什么是|什么是|"
+        r"能不能|可以|为什么|能否)\s*",
+        "",
+        text,
+    )
+    text = text.strip(" ，。；：？?")
+    return text[:24].strip() or "对话笔记"
+
+
 def _build_answer_draft_text(
     *,
     title: str,
@@ -514,11 +529,12 @@ def _build_answer_draft_text(
             + "\n".join(source_lines)
             + "\n"
         )
+    topic = _topic_phrase(user_message, assistant_answer)
     return (
         f"# {title}\n\n"
-        "## 我当时的问题\n\n"
+        f"## 问题：{topic}\n\n"
         f"{user_message.strip() or '这轮对话中有一段值得保存的解释。'}\n\n"
-        "## Hermes 的解释\n\n"
+        f"## 解释：{topic}\n\n"
         f"{assistant_answer.strip()}\n\n"
         "## 参考来源\n\n"
         + "\n".join(source_lines)

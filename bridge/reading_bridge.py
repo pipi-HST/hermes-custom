@@ -497,20 +497,29 @@ def _commit_independent_note(
     folder = "learning" if note_type == "learning_note" else "reading"
     capture = capture_repo.insert(file_path="", raw_path="")
     capture_id = capture["id"]
+    draft_title = draft.get("title") or "阅读整理"
+    draft_summary = draft.get("summary") or ""
+    frontmatter = {
+        "id": capture_id,
+        "type": note_type,
+        "status": "processed",
+        "title": draft_title,
+        "reading_session_id": draft["session_id"],
+        "reading_draft_id": draft["id"],
+        "created": _now(),
+    }
+    # Enrich frontmatter for better RAG identity embedding
+    if draft_summary:
+        frontmatter["story"] = draft_summary
+    tags = _extract_tags(draft_title, draft.get("draft_text", ""))
+    if tags:
+        frontmatter["tags"] = tags
     rel_path = _write_note_file(
         vault_path=vault_path,
         folder=folder,
-        title=draft.get("title") or "阅读整理",
+        title=draft_title,
         draft_id=capture_id,
-        frontmatter={
-            "id": capture_id,
-            "type": note_type,
-            "status": "processed",
-            "title": draft.get("title") or "阅读整理",
-            "reading_session_id": draft["session_id"],
-            "reading_draft_id": draft["id"],
-            "created": _now(),
-        },
+        frontmatter=frontmatter,
         body=draft.get("draft_text", ""),
     )
     capture_repo.update(capture_id, file_path=rel_path, raw_path="")
@@ -861,7 +870,12 @@ def _build_draft_text(
             f"{discussion}\n"
         ).strip()
     title = _draft_title(session, output_type)
-    lead = "## 可复用知识" if output_type == "knowledge_card" else "## 我卡住的点"
+    source_title = (session.get("source_title") or "").strip()
+    topic = _clip(source_title, 20) if source_title else (session.get("focus") or "阅读讨论")
+    if output_type == "knowledge_card":
+        lead = f"## {topic} 的可复用知识"
+    else:
+        lead = f"## {topic} 的要点"
     return (
         f"# {title}\n\n"
         f"{lead}\n\n"
@@ -989,6 +1003,44 @@ def _strip_frontmatter(text: str) -> str:
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _extract_tags(title: str, body: str = "") -> list[str]:
+    """Extract 1-3 short tags from title/body for identity embedding enrichment."""
+    import re as _re
+
+    tags: list[str] = []
+    seen: set[str] = set()
+
+    def _add(text: str) -> None:
+        clean = _re.sub(r"[#*_`>\[\]()（）\-—]+", "", text).strip()
+        clean = _re.sub(r"\s+", " ", clean)
+        if 2 <= len(clean) <= 12 and clean not in seen:
+            seen.add(clean)
+            tags.append(clean)
+
+    # From title: extract the core topic (skip generic suffixes)
+    core = _re.sub(
+        r"[-\s]*(学习笔记|知识卡片|阅读整理|讨论笔记|整理)$", "", title or ""
+    ).strip()
+    if core:
+        _add(core)
+
+    # From body: find the first meaningful ## heading
+    for line in (body or "").splitlines():
+        m = _re.match(r"^#{2,3}\s+(.+)", line.strip())
+        if m:
+            heading = m.group(1).strip()
+            # Skip managed/generic headings
+            if heading in ("参考来源", "来源", "目录纲要", "系统记录"):
+                continue
+            # Skip headings that contain the topic prefix markers
+            prefix_stripped = _re.sub(r"^(问题|解释|讨论)[：:]\s*", "", heading)
+            _add(prefix_stripped or heading)
+            if len(tags) >= 3:
+                break
+
+    return tags[:3]
 
 
 def _clip(text: str, limit: int) -> str:
