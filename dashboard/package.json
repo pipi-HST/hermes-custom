@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3010",
-    "build": "next build",
-    "start": "next start"
+    "dev": "echo '⚠️  DEPRECATED: 自定义 Dashboard 已废弃，请使用 hermes dashboard (端口 9119)。' && exit 1",
+    "build": "echo '⚠️  DEPRECATED: 自定义 Dashboard 已废弃，请使用 hermes dashboard (端口 9119)。' && exit 1",
+    "start": "echo '⚠️  DEPRECATED: 自定义 Dashboard 已废弃，请使用 hermes dashboard (端口 9119)。' && exit 1"
   },
   "dependencies": {
     "next": "^14.2.0",
