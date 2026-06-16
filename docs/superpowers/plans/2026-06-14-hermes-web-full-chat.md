@@ -33,7 +33,7 @@
 **Files:**
 - Create: `/Users/pipi/Downloads/hermes-agent-main/web/src/lib/knowledgeChatState.ts`
 
-- [ ] **Step 1: Define state types**
+- [x] **Step 1: Define state types**
 
 Create `KnowledgeMessage`, `KnowledgeSourceHint`, `KnowledgeChatState`, and `KnowledgeChatAction` types. Include:
 - user and assistant messages
@@ -42,7 +42,7 @@ Create `KnowledgeMessage`, `KnowledgeSourceHint`, `KnowledgeChatState`, and `Kno
 - tool entries compatible with existing `ToolCall`
 - source hints extracted from assistant text and tool summaries
 
-- [ ] **Step 2: Implement reducer behavior**
+- [x] **Step 2: Implement reducer behavior**
 
 Add actions for:
 - `connection`
@@ -64,7 +64,7 @@ Expected behavior:
 - Tool starts/progress/completes update one entry per `tool_id`.
 - Errors are visible and mark running false.
 
-- [ ] **Step 3: Keep extraction deterministic and small**
+- [x] **Step 3: Keep extraction deterministic and small**
 
 Implement `extractSourceHints(text, toolSummaries)` with simple stable rules:
 - capture lines under `参考来源` / `来源` headings
@@ -80,7 +80,7 @@ Do not add LLM calls or business rules here.
 **Files:**
 - Create: `/Users/pipi/Downloads/hermes-agent-main/web/src/pages/KnowledgeChatPage.tsx`
 
-- [ ] **Step 1: Connect to Hermes gateway**
+- [x] **Step 1: Connect to Hermes gateway**
 
 Use `GatewayClient` directly:
 - create client with `useMemo`
@@ -89,7 +89,7 @@ Use `GatewayClient` directly:
 - subscribe to `message.start`, `message.delta`, `message.complete`, `tool.start`, `tool.progress`, `tool.complete`, and `error`
 - close client on unmount
 
-- [ ] **Step 2: Build the transcript**
+- [x] **Step 2: Build the transcript**
 
 Render:
 - user messages as compact right-aligned bubbles
@@ -100,7 +100,7 @@ Render:
   - “展开最近的 Capture 草稿”
   - “扫描最近保存的内容，看看有没有可整理的关联”
 
-- [ ] **Step 3: Build the composer**
+- [x] **Step 3: Build the composer**
 
 Render a textarea and send button:
 - Enter sends
@@ -122,15 +122,15 @@ The page should be readable for long Markdown, not terminal-like.
 **Files:**
 - Modify: `/Users/pipi/Downloads/hermes-agent-main/web/src/App.tsx`
 
-- [ ] **Step 1: Import the page**
+- [x] **Step 1: Import the page**
 
 Import `KnowledgeChatPage` and a suitable lucide icon.
 
-- [ ] **Step 2: Add route**
+- [x] **Step 2: Add route**
 
 Add `"/knowledge-chat": KnowledgeChatPage` to built-in routes.
 
-- [ ] **Step 3: Add nav item**
+- [x] **Step 3: Add nav item**
 
 Add a sidebar item labelled `Knowledge Chat` near `/chat`. Preserve the existing `/chat` terminal route and its persistent host logic.
 
@@ -139,7 +139,7 @@ Add a sidebar item labelled `Knowledge Chat` near `/chat`. Preserve the existing
 **Files:**
 - Verify only unless build exposes a defect.
 
-- [ ] **Step 1: Build the web app**
+- [x] **Step 1: Build the web app**
 
 Run:
 

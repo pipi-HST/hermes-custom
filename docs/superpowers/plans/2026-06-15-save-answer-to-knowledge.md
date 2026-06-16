@@ -129,7 +129,7 @@ For `knowledge_card`, use the existing Garden Card structure and commit path. Fo
 - Create: `/Users/pipi/hermes-custom/bridge/answer_bridge.py`
 - Test: `/Users/pipi/hermes-custom/tests/test_answer_bridge.py`
 
-- [ ] **Step 1: Write failing tests for output routing**
+- [x] **Step 1: Write failing tests for output routing**
 
 Create `/Users/pipi/hermes-custom/tests/test_answer_bridge.py`:
 
@@ -209,7 +209,7 @@ def test_source_capture_candidates_dedupes_and_ignores_empty_ids():
     assert source_capture_candidates(sources) == [{"id": "cap_a", "title": "A"}]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -219,7 +219,7 @@ Run:
 
 Expected: FAIL because `bridge.answer_bridge` does not exist.
 
-- [ ] **Step 3: Implement routing helpers**
+- [x] **Step 3: Implement routing helpers**
 
 Create `/Users/pipi/hermes-custom/bridge/answer_bridge.py`:
 
@@ -317,7 +317,7 @@ def choose_answer_output_type(
     }
 ```
 
-- [ ] **Step 4: Run routing tests**
+- [x] **Step 4: Run routing tests**
 
 Run:
 
@@ -327,7 +327,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 5: Add failing test for draft creation**
+- [x] **Step 5: Add failing test for draft creation**
 
 Append to `/Users/pipi/hermes-custom/tests/test_answer_bridge.py`:
 
@@ -377,7 +377,7 @@ def test_save_answer_creates_learning_note_draft(tmp_path, monkeypatch):
     assert "它重要，因为" in row["draft_text"]
 ```
 
-- [ ] **Step 6: Implement `save_answer_to_knowledge`**
+- [x] **Step 6: Implement `save_answer_to_knowledge`**
 
 Add to `/Users/pipi/hermes-custom/bridge/answer_bridge.py`:
 
@@ -620,7 +620,7 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: max(0, limit - 1)].rstrip() + "…"
 ```
 
-- [ ] **Step 7: Run answer bridge tests**
+- [x] **Step 7: Run answer bridge tests**
 
 Run:
 
@@ -640,7 +640,7 @@ Expected: PASS.
 - Modify: `/Users/pipi/Downloads/hermes-agent-main/skills/personal-assistant/SKILL.md`
 - Test: `/Users/pipi/Downloads/hermes-agent-main/tests/tools/test_save_answer_to_knowledge_tool.py`
 
-- [ ] **Step 1: Write failing tool test**
+- [x] **Step 1: Write failing tool test**
 
 Create `/Users/pipi/Downloads/hermes-agent-main/tests/tools/test_save_answer_to_knowledge_tool.py`:
 
@@ -689,7 +689,7 @@ def test_save_answer_tool_handler_returns_envelope(monkeypatch):
     assert "已生成学习笔记草稿" in payload["USER_VISIBLE_REPLY"]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -699,7 +699,7 @@ Run:
 
 Expected: FAIL because the tool file does not exist.
 
-- [ ] **Step 3: Create tool wrapper**
+- [x] **Step 3: Create tool wrapper**
 
 Create `/Users/pipi/Downloads/hermes-agent-main/tools/save_answer_to_knowledge_tool.py`:
 
@@ -781,7 +781,7 @@ registry.register(
 )
 ```
 
-- [ ] **Step 4: Register/import the tool**
+- [x] **Step 4: Register/import the tool**
 
 Update `/Users/pipi/Downloads/hermes-agent-main/toolsets.py` to include the module wherever `personal-assistant` tools are imported. Add:
 
@@ -791,7 +791,7 @@ Update `/Users/pipi/Downloads/hermes-agent-main/toolsets.py` to include the modu
 
 near the existing `tools.reading_session_tool` entry.
 
-- [ ] **Step 5: Update skill prompt**
+- [x] **Step 5: Update skill prompt**
 
 Append to `/Users/pipi/Downloads/hermes-agent-main/skills/personal-assistant/SKILL.md`:
 
@@ -809,7 +809,7 @@ Append to `/Users/pipi/Downloads/hermes-agent-main/skills/personal-assistant/SKI
 - 生成草稿后，把 `USER_VISIBLE_REPLY` 原样告诉用户，等待用户审阅和确认。
 ```
 
-- [ ] **Step 6: Run tool tests**
+- [x] **Step 6: Run tool tests**
 
 Run:
 
@@ -827,7 +827,7 @@ Expected: PASS.
 - Modify: `/Users/pipi/Downloads/hermes-agent-main/hermes_cli/web_server.py`
 - Test: `/Users/pipi/Downloads/hermes-agent-main/tests/hermes_cli/test_web_server.py`
 
-- [ ] **Step 1: Write failing API tests**
+- [x] **Step 1: Write failing API tests**
 
 Append to `/Users/pipi/Downloads/hermes-agent-main/tests/hermes_cli/test_web_server.py`:
 
@@ -891,7 +891,7 @@ def test_get_knowledge_reading_draft_returns_full_text(monkeypatch, tmp_path, cl
     assert response.json()["draft"]["draft_text"] == "# 标题\n正文"
 ```
 
-- [ ] **Step 2: Run API tests to verify failure**
+- [x] **Step 2: Run API tests to verify failure**
 
 Run:
 
@@ -901,7 +901,7 @@ Run:
 
 Expected: FAIL because routes do not exist or fixtures need local adjustment. If the project uses a different TestClient fixture name, update only the fixture name to match existing tests.
 
-- [ ] **Step 3: Add request bodies and row mapper**
+- [x] **Step 3: Add request bodies and row mapper**
 
 In `/Users/pipi/Downloads/hermes-agent-main/hermes_cli/web_server.py`, near the Knowledge API models, add:
 
@@ -937,7 +937,7 @@ def _reading_draft_row(row: sqlite3.Row, *, full: bool = False) -> dict:
     return result
 ```
 
-- [ ] **Step 4: Add API routes**
+- [x] **Step 4: Add API routes**
 
 Add below the capture draft routes in `/Users/pipi/Downloads/hermes-agent-main/hermes_cli/web_server.py`:
 
@@ -990,7 +990,7 @@ async def post_knowledge_reading_draft_commit(request: Request, draft_id: str):
     return commit_reading_artifact(draft_id=draft_id)
 ```
 
-- [ ] **Step 5: Run API tests**
+- [x] **Step 5: Run API tests**
 
 Run:
 
@@ -1009,7 +1009,7 @@ Expected: PASS for the new tests and no regression in existing web server tests.
 - Modify: `/Users/pipi/Downloads/hermes-agent-main/web/src/lib/knowledgeChatState.ts`
 - Modify: `/Users/pipi/Downloads/hermes-agent-main/web/src/pages/KnowledgeChatPage.tsx`
 
-- [ ] **Step 1: Extend API client types**
+- [x] **Step 1: Extend API client types**
 
 Add to `/Users/pipi/Downloads/hermes-agent-main/web/src/lib/api.ts`:
 
@@ -1078,11 +1078,11 @@ commitKnowledgeReadingDraft: (draftId: string) =>
   ),
 ```
 
-- [ ] **Step 2: Preserve message ids**
+- [x] **Step 2: Preserve message ids**
 
 In `/Users/pipi/Downloads/hermes-agent-main/web/src/lib/knowledgeChatState.ts`, keep the current `KnowledgeMessage.id` as the UI message id. Do not regenerate ids inside the "save answer" handler. No schema migration is needed.
 
-- [ ] **Step 3: Add local state for answer drafts**
+- [x] **Step 3: Add local state for answer drafts**
 
 In `/Users/pipi/Downloads/hermes-agent-main/web/src/pages/KnowledgeChatPage.tsx`, add:
 
@@ -1095,7 +1095,7 @@ const [answerDraftLoading, setAnswerDraftLoading] = useState(false);
 const [answerDraftActionLoading, setAnswerDraftActionLoading] = useState<"create" | "commit" | null>(null);
 ```
 
-- [ ] **Step 4: Add save handler**
+- [x] **Step 4: Add save handler**
 
 Add to `/Users/pipi/Downloads/hermes-agent-main/web/src/pages/KnowledgeChatPage.tsx`:
 
@@ -1145,7 +1145,7 @@ const createAnswerDraft = useCallback(async (
 }, [state.sessionId, state.messages, state.sourceHints]);
 ```
 
-- [ ] **Step 5: Add message action UI**
+- [x] **Step 5: Add message action UI**
 
 Update `TranscriptMessage` props in `/Users/pipi/Downloads/hermes-agent-main/web/src/pages/KnowledgeChatPage.tsx`:
 
@@ -1196,7 +1196,7 @@ Pass the handler where messages render:
 ))}
 ```
 
-- [ ] **Step 6: Add answer draft review panel**
+- [x] **Step 6: Add answer draft review panel**
 
 Add a simple panel component in `/Users/pipi/Downloads/hermes-agent-main/web/src/pages/KnowledgeChatPage.tsx`:
 
@@ -1263,7 +1263,7 @@ Render it in the center workspace:
 )}
 ```
 
-- [ ] **Step 7: Add commit handler**
+- [x] **Step 7: Add commit handler**
 
 Add to `/Users/pipi/Downloads/hermes-agent-main/web/src/pages/KnowledgeChatPage.tsx`:
 
@@ -1286,7 +1286,7 @@ const commitAnswerDraft = useCallback(async () => {
 }, [answerDraftDetail]);
 ```
 
-- [ ] **Step 8: Build frontend**
+- [x] **Step 8: Build frontend**
 
 Run:
 
@@ -1304,7 +1304,7 @@ Expected: TypeScript and Vite build pass.
 **Files:**
 - No code files unless verification exposes failures.
 
-- [ ] **Step 1: Run backend tests**
+- [x] **Step 1: Run backend tests**
 
 Run:
 
@@ -1318,7 +1318,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 2: Run frontend build**
+- [x] **Step 2: Run frontend build**
 
 Run:
 

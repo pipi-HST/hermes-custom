@@ -257,7 +257,7 @@ These are useful Obsidian affordances, but they are file mutations outside `them
 - Modify: `/Users/pipi/hermes-custom/agents/markdown_writer.py`
 - Create or modify: `/Users/pipi/hermes-custom/tests/test_theme_page_writer.py`
 
-- [ ] **Step 1: Write failing test for new Theme page creation**
+- [x] **Step 1: Write failing test for new Theme page creation**
 
 Add a test that calls `write_theme_page` with three captures and one card link.
 
@@ -276,7 +276,7 @@ Run:
 
 Expected: FAIL because `write_theme_page` does not exist yet.
 
-- [ ] **Step 2: Write failing test for preserving user section**
+- [x] **Step 2: Write failing test for preserving user section**
 
 Create a Theme page with existing manual text under `## 我的补充`, then call `update_theme_page`.
 
@@ -294,7 +294,7 @@ Run:
 
 Expected: FAIL because `update_theme_page` does not exist yet.
 
-- [ ] **Step 3: Implement `write_theme_page` and `update_theme_page`**
+- [x] **Step 3: Implement `write_theme_page` and `update_theme_page`**
 
 Implementation shape:
 
@@ -307,7 +307,7 @@ Implementation shape:
 - If `## 我的补充` is missing, append it after the managed block.
 - Keep `write_moc` and `update_moc` as wrappers that call the new functions.
 
-- [ ] **Step 4: Run focused writer tests**
+- [x] **Step 4: Run focused writer tests**
 
 ```bash
 /Users/pipi/hermes-custom/.venv/bin/python -m pytest /Users/pipi/hermes-custom/tests/test_theme_page_writer.py -q
@@ -323,7 +323,7 @@ Expected: PASS.
 - Modify: `/Users/pipi/hermes-custom/agents/theme_agent.py`
 - Modify: `/Users/pipi/hermes-custom/tests/test_theme_agent.py`
 
-- [ ] **Step 1: Add failing test for Theme page content shape**
+- [x] **Step 1: Add failing test for Theme page content shape**
 
 Test `ThemeAgent.build_theme_page(theme_name, captures)` with `_call_llm` patched to return JSON.
 
@@ -345,7 +345,7 @@ Run:
 
 Expected: FAIL because `build_theme_page` does not exist yet.
 
-- [ ] **Step 2: Update prompt naming and output contract**
+- [x] **Step 2: Update prompt naming and output contract**
 
 Change the MOC content prompt from a generic "主题页内容" to the new contract:
 
@@ -357,7 +357,7 @@ Change the MOC content prompt from a generic "主题页内容" to the new contra
 
 Keep the LLM role simple: explain relationships and candidate directions. Do not ask it to manage user notes.
 
-- [ ] **Step 3: Implement `build_theme_page` and compatibility wrapper**
+- [x] **Step 3: Implement `build_theme_page` and compatibility wrapper**
 
 Implementation requirements:
 
@@ -366,7 +366,7 @@ Implementation requirements:
 - Fallback content must be useful when the LLM returns malformed JSON.
 - No naked internal capture IDs should appear in the body.
 
-- [ ] **Step 4: Run focused ThemeAgent tests**
+- [x] **Step 4: Run focused ThemeAgent tests**
 
 ```bash
 /Users/pipi/hermes-custom/.venv/bin/python -m pytest /Users/pipi/hermes-custom/tests/test_theme_agent.py -q
@@ -382,7 +382,7 @@ Expected: PASS.
 - Modify: `/Users/pipi/hermes-custom/bridge/theme_bridge.py`
 - Modify: `/Users/pipi/hermes-custom/tests/test_theme_bridge.py`
 
-- [ ] **Step 1: Add failing test for Theme scan writing a Theme page**
+- [x] **Step 1: Add failing test for Theme scan writing a Theme page**
 
 Patch graph clustering and LLM calls so a cluster of three captures is produced.
 
@@ -401,7 +401,7 @@ Run:
 
 Expected: FAIL until the bridge uses the new writer.
 
-- [ ] **Step 2: Replace `_create_moc` internals with Theme page writer**
+- [x] **Step 2: Replace `_create_moc` internals with Theme page writer**
 
 Keep `_create_moc` as a compatibility function name for now, but make it call:
 
@@ -411,7 +411,7 @@ Keep `_create_moc` as a compatibility function name for now, but make it call:
 
 The function should still skip clusters smaller than 3 captures.
 
-- [ ] **Step 3: Store Theme page path in pending question context**
+- [x] **Step 3: Store Theme page path in pending question context**
 
 When creating pending questions, set:
 
@@ -427,7 +427,7 @@ theme:themes/ai-agent-engineering.md
 
 This allows Garden commit to find the source Theme page without a schema migration.
 
-- [ ] **Step 4: Keep existing Obsidian affordances safe**
+- [x] **Step 4: Keep existing Obsidian affordances safe**
 
 Do not remove `_inject_wiki_links` or `_tag_captures_with_theme` in this task.
 
@@ -437,7 +437,7 @@ Add or keep tests that prove:
 - repeated `linked_themes` frontmatter values are deduplicated;
 - missing files are skipped without crashing.
 
-- [ ] **Step 5: Run focused bridge tests**
+- [x] **Step 5: Run focused bridge tests**
 
 ```bash
 /Users/pipi/hermes-custom/.venv/bin/python -m pytest /Users/pipi/hermes-custom/tests/test_theme_bridge.py -q
@@ -454,7 +454,7 @@ Expected: PASS.
 - Modify: `/Users/pipi/hermes-custom/agents/markdown_writer.py`
 - Modify: `/Users/pipi/hermes-custom/tests/test_garden_bridge.py`
 
-- [ ] **Step 1: Add failing test for Theme-origin Garden commit**
+- [x] **Step 1: Add failing test for Theme-origin Garden commit**
 
 Create:
 
@@ -480,7 +480,7 @@ Run:
 
 Expected: FAIL until the Garden commit path updates Theme pages.
 
-- [ ] **Step 2: Add helper to resolve Theme path from `question_id`**
+- [x] **Step 2: Add helper to resolve Theme path from `question_id`**
 
 In `garden_bridge.py`, add a small helper:
 
@@ -495,7 +495,7 @@ def _theme_path_for_question(conn, question_id: str) -> str:
     return ""
 ```
 
-- [ ] **Step 3: Add `append_garden_card_to_theme_page`**
+- [x] **Step 3: Add `append_garden_card_to_theme_page`**
 
 In `markdown_writer.py`, add a focused helper that:
 
@@ -505,7 +505,7 @@ In `markdown_writer.py`, add a focused helper that:
 - deduplicates by path and title;
 - preserves `## 我的补充`.
 
-- [ ] **Step 4: Call helper after Garden markdown is written**
+- [x] **Step 4: Call helper after Garden markdown is written**
 
 In `commit_garden_draft`, after `rel_path = f"garden/{filename}"`, resolve the Theme path and update it if present.
 
@@ -515,7 +515,7 @@ Do not fail the Garden commit if Theme page sync fails. Instead:
 - include `meta.theme_sync_status = "failed"` and `meta.theme_sync_error`;
 - keep card creation successful.
 
-- [ ] **Step 5: Run focused Garden tests**
+- [x] **Step 5: Run focused Garden tests**
 
 ```bash
 /Users/pipi/hermes-custom/.venv/bin/python -m pytest /Users/pipi/hermes-custom/tests/test_garden_bridge.py -q
@@ -532,7 +532,7 @@ Expected: PASS.
 - Modify: `/Users/pipi/Downloads/hermes-agent-main/tools/theme_candidates_tool.py`
 - Modify only if needed: `/Users/pipi/Downloads/hermes-agent-main/toolsets.py`
 
-- [ ] **Step 1: Update `theme_scan` description**
+- [x] **Step 1: Update `theme_scan` description**
 
 The description must say:
 
@@ -542,7 +542,7 @@ The description must say:
 - If `next_actions` returns a `question_id`, the main Agent should call `synthesize_garden(question_id=...)` when the user chooses a direction.
 - Do not tell the user Theme is deprecated or only internal.
 
-- [ ] **Step 2: Update `theme_candidates` description**
+- [x] **Step 2: Update `theme_candidates` description**
 
 The description must say:
 
@@ -550,7 +550,7 @@ The description must say:
 - It should be used after "没有待扫描的新内容" when the user asks what candidates exist.
 - It must preserve `question_id` routing.
 
-- [ ] **Step 3: Run runtime tool tests**
+- [x] **Step 3: Run runtime tool tests**
 
 ```bash
 /Users/pipi/Downloads/hermes-agent-main/.venv/bin/python -m pytest -o addopts='' /Users/pipi/Downloads/hermes-agent-main/tests/tools /Users/pipi/Downloads/hermes-agent-main/tests/agent -q
@@ -569,7 +569,7 @@ Expected: PASS or only unrelated pre-existing failures. If failures appear, capt
 - Modify docs if route names differ after inspection.
 - Test: existing frontend route/API tests if present; otherwise add focused tests around route rendering and data adapters.
 
-- [ ] **Step 1: Locate the current frontend route files**
+- [x] **Step 1: Locate the current frontend route files**
 
 Run:
 
@@ -584,7 +584,7 @@ Expected:
 - Identify the sidebar/navigation config.
 - Identify API calls used by both pages.
 
-- [ ] **Step 2: Write a route/navigation expectation test**
+- [x] **Step 2: Write a route/navigation expectation test**
 
 Add or update a frontend test so primary knowledge navigation exposes:
 
@@ -599,7 +599,7 @@ Expected assertions:
 
 Run the relevant frontend test command found in the repo. If no test harness exists, document the absence and use the Playwright/browser smoke test in Step 8 as the verification path.
 
-- [ ] **Step 3: Define a shared Workbench state model**
+- [x] **Step 3: Define a shared Workbench state model**
 
 The Workbench must represent these states without separate pages:
 
@@ -619,7 +619,7 @@ type WorkbenchSelection =
 
 If the frontend is not TypeScript, use the same state names in plain JavaScript.
 
-- [ ] **Step 4: Move Capture Review list into the Workbench left rail**
+- [x] **Step 4: Move Capture Review list into the Workbench left rail**
 
 The left rail should contain:
 
@@ -641,7 +641,7 @@ Each pending draft item should show:
 
 Do not show naked draft IDs in user-facing labels.
 
-- [ ] **Step 5: Move Capture Review detail into Workbench center**
+- [x] **Step 5: Move Capture Review detail into Workbench center**
 
 Selecting a draft should switch `WorkbenchMode` to `draft_review` and show:
 
@@ -652,7 +652,7 @@ Selecting a draft should switch `WorkbenchMode` to `draft_review` and show:
 
 Reuse existing `show_capture_draft`, `revise_capture_draft`, and `commit_capture_draft` flows. Do not create a second draft mutation path.
 
-- [ ] **Step 6: Keep Chat Mode as the default Workbench mode**
+- [x] **Step 6: Keep Chat Mode as the default Workbench mode**
 
 The default empty state should explain that the user can:
 
@@ -720,7 +720,7 @@ Verify:
 7. `确认入库 / 继续修改 / 转知识卡片` actions remain visible.
 8. Right inspector shows sources/tools/status placeholders or real data without raw internal IDs.
 
-- [ ] **Step 9: Verify no duplicate backend logic was created**
+- [x] **Step 9: Verify no duplicate backend logic was created**
 
 Run:
 
@@ -740,7 +740,7 @@ Expected:
 **Files:**
 - Modify: `/Users/pipi/hermes-custom/docs/superpowers/specs/2026-06-14-hermes-knowledge-product-redesign.md`
 
-- [ ] **Step 1: Replace the old Theme section**
+- [x] **Step 1: Replace the old Theme section**
 
 Change the old "Theme Agent weak/internal" wording to:
 
@@ -750,7 +750,7 @@ Change the old "Theme Agent weak/internal" wording to:
 - Theme can suggest Garden Card directions.
 - Garden Cards may come from Theme directions but Theme does not become a Garden Card container.
 
-- [ ] **Step 2: Update implementation phase wording**
+- [x] **Step 2: Update implementation phase wording**
 
 In P0/P2/P3, ensure the plan says:
 
@@ -762,7 +762,7 @@ In P0/P2/P3, ensure the plan says:
 - Knowledge Chat should be renamed or repositioned as Knowledge Workbench;
 - Capture Review should be described as Draft Review Mode inside Workbench.
 
-- [ ] **Step 3: Run a doc consistency check**
+- [x] **Step 3: Run a doc consistency check**
 
 ```bash
 rg -n "Theme 降级|不主动推荐用户去生成主题页|Theme/MOC|Canvas" /Users/pipi/hermes-custom/docs/superpowers/specs/2026-06-14-hermes-knowledge-product-redesign.md
@@ -781,7 +781,7 @@ Expected:
 - No new source file required unless a migration helper already exists and should be reused.
 - Possible script if needed: `/Users/pipi/hermes-custom/scripts/repair_data.py`
 
-- [ ] **Step 1: Back up DB and vault theme files**
+- [x] **Step 1: Back up DB and vault theme files**
 
 Run:
 
@@ -812,7 +812,7 @@ For existing Theme pages:
 - convert old generated MOC content into the new managed block when possible;
 - do not delete existing Theme files automatically.
 
-- [ ] **Step 4: Run full hermes-custom tests**
+- [x] **Step 4: Run full hermes-custom tests**
 
 ```bash
 /Users/pipi/hermes-custom/.venv/bin/python -m pytest /Users/pipi/hermes-custom/tests/ -q
@@ -820,7 +820,7 @@ For existing Theme pages:
 
 Expected: PASS.
 
-- [ ] **Step 5: Restart Hermes with session hygiene**
+- [x] **Step 5: Restart Hermes with session hygiene**
 
 Use the existing Hermes restart hygiene workflow:
 

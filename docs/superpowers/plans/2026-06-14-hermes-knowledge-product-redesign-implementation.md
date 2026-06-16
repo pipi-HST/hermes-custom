@@ -42,7 +42,7 @@ Updated: 2026-06-14
 - Modify: `/Users/pipi/hermes-custom/bridge/reading_bridge.py`
 - Test: `/Users/pipi/hermes-custom/tests/test_reading_bridge.py`
 
-- [ ] **Step 1: Write failing tests for the new clarification choices**
+- [x] **Step 1: Write failing tests for the new clarification choices**
 
 Add tests asserting `summarize_reading_session(..., output_type="")` offers exactly:
 
@@ -54,7 +54,7 @@ Add tests asserting `summarize_reading_session(..., output_type="")` offers exac
 
 and does not offer `讨论札记`.
 
-- [ ] **Step 2: Run the focused test**
+- [x] **Step 2: Run the focused test**
 
 Run:
 
@@ -64,7 +64,7 @@ Run:
 
 Expected: the new test fails because the bridge still offers `讨论札记`.
 
-- [ ] **Step 3: Implement the minimal contract change**
+- [x] **Step 3: Implement the minimal contract change**
 
 Change `CLARIFY_OUTPUT_TYPE` and `OUTPUT_TYPES` in `bridge/reading_bridge.py`:
 
@@ -86,7 +86,7 @@ OUTPUT_TYPES = {
 
 Update `_normalize_output_type()` so `3`, `卡片`, `知识卡片`, `做成卡片`, and `knowledge_card` normalize to `knowledge_card`; keep legacy `discussion_note` accepted only as `local_learning_note` for backward compatibility.
 
-- [ ] **Step 4: Run the focused test**
+- [x] **Step 4: Run the focused test**
 
 Run the same pytest command. Expected: PASS.
 
@@ -96,7 +96,7 @@ Run the same pytest command. Expected: PASS.
 - Modify: `/Users/pipi/hermes-custom/bridge/reading_bridge.py`
 - Test: `/Users/pipi/hermes-custom/tests/test_reading_bridge.py`
 
-- [ ] **Step 1: Write failing tests for `knowledge_card` draft creation**
+- [x] **Step 1: Write failing tests for `knowledge_card` draft creation**
 
 Add a test that creates a Reading Session, records a discussion turn, calls `summarize_reading_session(output_type="knowledge_card")`, and asserts:
 
@@ -106,7 +106,7 @@ Add a test that creates a Reading Session, records a discussion turn, calls `sum
 - `draft_text` contains the user question, assistant answer, and source evidence;
 - chat preview says `知识卡片草稿`.
 
-- [ ] **Step 2: Implement draft text builder support**
+- [x] **Step 2: Implement draft text builder support**
 
 Update `_draft_title()`, `_build_draft_text()`, `_commit_reading_artifact()`, and `_commit_independent_note()`:
 
@@ -123,7 +123,7 @@ if output_type == "knowledge_card":
 
 The first version can write a Markdown card from the reading draft body, with frontmatter `type: garden_card`, `card_kind: viewpoint`, `status: seed`, and `reading_session_id`.
 
-- [ ] **Step 3: Run Reading tests**
+- [x] **Step 3: Run Reading tests**
 
 Run:
 
@@ -141,7 +141,7 @@ Expected: PASS.
 - Test: `/Users/pipi/hermes-custom/tests/test_garden_agent.py`
 - Test: `/Users/pipi/hermes-custom/tests/test_garden_bridge.py`
 
-- [ ] **Step 1: Write failing tests for product-facing card kinds**
+- [x] **Step 1: Write failing tests for product-facing card kinds**
 
 Add tests asserting:
 
@@ -150,7 +150,7 @@ Add tests asserting:
 - legacy `caution` still works but normalizes/stores as `risk`;
 - chat previews say `Knowledge Card` or `知识卡片`, not `Garden 草稿` or `知识花园`.
 
-- [ ] **Step 2: Update card constants**
+- [x] **Step 2: Update card constants**
 
 Change:
 
@@ -178,7 +178,7 @@ CARD_KIND_LABELS = {
 }
 ```
 
-- [ ] **Step 3: Simplify card markdown**
+- [x] **Step 3: Simplify card markdown**
 
 Replace type-specific rigid templates with the shared structure:
 
@@ -202,7 +202,7 @@ Replace type-specific rigid templates with the shared structure:
 
 Use existing `core_arguments` and `key_materials` to fill `内容`; use source links already produced by `_format_capture_source()`.
 
-- [ ] **Step 4: Run Garden tests**
+- [x] **Step 4: Run Garden tests**
 
 Run:
 
@@ -222,7 +222,7 @@ Expected: PASS after updating old assertions that expected `caution`/Garden word
 - Modify: `/Users/pipi/Downloads/hermes-agent-main/toolset_distributions.py`
 - Test: `/Users/pipi/Downloads/hermes-agent-main/tests/test_toolsets.py`
 
-- [ ] **Step 1: Inspect current toolset membership**
+- [x] **Step 1: Inspect current toolset membership**
 
 Run:
 
@@ -231,15 +231,15 @@ cd /Users/pipi/Downloads/hermes-agent-main
 rg -n "theme_scan|theme_candidates|generate_canvas|synthesize_garden|reading_session" toolsets.py toolset_distributions.py tests/test_toolsets.py
 ```
 
-- [ ] **Step 2: Remove Canvas from default personal assistant toolset**
+- [x] **Step 2: Remove Canvas from default personal assistant toolset**
 
 If `generate_canvas` is in the default personal-assistant or knowledge path, remove it from that default list. Keep the tool file importable for manual/debug use.
 
-- [ ] **Step 3: Soften Theme tool descriptions**
+- [x] **Step 3: Soften Theme tool descriptions**
 
 Update Theme descriptions to say it is an internal/advanced association discovery tool and should not be suggested as the default next step for ordinary reading, capture, or RAG tasks.
 
-- [ ] **Step 4: Run toolset tests**
+- [x] **Step 4: Run toolset tests**
 
 Run:
 
@@ -259,7 +259,7 @@ Expected: PASS or only unrelated pre-existing failures, which must be recorded.
 - Modify: `/Users/pipi/Downloads/hermes-agent-main/tools/commit_garden_draft_tool.py`
 - Test: `/Users/pipi/Downloads/hermes-agent-main/tests/tools/`
 
-- [ ] **Step 1: Update tool descriptions**
+- [x] **Step 1: Update tool descriptions**
 
 Descriptions should tell the main Agent:
 
@@ -268,7 +268,7 @@ Descriptions should tell the main Agent:
 - when user asks to organize the discussion, call reading summarization and clarify output type if needed;
 - Knowledge Cards are reusable viewpoint/method/fact/risk objects, not summaries.
 
-- [ ] **Step 2: Add/adjust tests for schema text**
+- [x] **Step 2: Add/adjust tests for schema text**
 
 Add lightweight tests that inspect tool definitions and assert:
 
@@ -276,7 +276,7 @@ Add lightweight tests that inspect tool definitions and assert:
 - Knowledge Card tool descriptions do not say `Garden` as the primary user-facing term;
 - Canvas is not included in default toolset.
 
-- [ ] **Step 3: Run focused Hermes-main tests**
+- [x] **Step 3: Run focused Hermes-main tests**
 
 Run:
 
@@ -295,7 +295,7 @@ Expected: PASS.
 - Test: `/Users/pipi/hermes-custom/tests/test_reading_bridge.py`
 - Test: `/Users/pipi/hermes-custom/tests/test_library_agent.py`
 
-- [ ] **Step 1: Verify run ledger coverage**
+- [x] **Step 1: Verify run ledger coverage**
 
 Run a local Reading Session flow and inspect `agent_run_events` rows for `reading`.
 
@@ -303,11 +303,11 @@ Run a local Reading Session flow and inspect `agent_run_events` rows for `readin
 /Users/pipi/hermes-custom/.venv/bin/python -m pytest /Users/pipi/hermes-custom/tests/test_agent_run_bridge.py /Users/pipi/hermes-custom/tests/test_reading_bridge.py -q
 ```
 
-- [ ] **Step 2: Add tests only if a gap is found**
+- [x] **Step 2: Add tests only if a gap is found**
 
 If Reading or Knowledge Card commit does not produce ledger entries or durable artifacts, add a failing test around the missing envelope metadata.
 
-- [ ] **Step 3: Run consistency checks**
+- [x] **Step 3: Run consistency checks**
 
 Run:
 
@@ -322,7 +322,7 @@ Expected: PASS.
 **Files:**
 - No code changes unless verification fails.
 
-- [ ] **Step 1: Run hermes-custom focused suite**
+- [x] **Step 1: Run hermes-custom focused suite**
 
 Run:
 
@@ -336,7 +336,7 @@ Run:
   -q
 ```
 
-- [ ] **Step 2: Run broader hermes-custom suite if focused suite passes**
+- [x] **Step 2: Run broader hermes-custom suite if focused suite passes**
 
 Run:
 
@@ -344,7 +344,7 @@ Run:
 /Users/pipi/hermes-custom/.venv/bin/python -m pytest /Users/pipi/hermes-custom/tests/ -q
 ```
 
-- [ ] **Step 3: Run Hermes-main focused tests**
+- [x] **Step 3: Run Hermes-main focused tests**
 
 Run:
 
@@ -353,7 +353,7 @@ cd /Users/pipi/Downloads/hermes-agent-main
 .venv/bin/python -m pytest tests/test_toolsets.py tests/tools/test_registry.py -q
 ```
 
-- [ ] **Step 4: Restart Hermes with clean sessions**
+- [x] **Step 4: Restart Hermes with clean sessions**
 
 Use the existing Hermes restart hygiene workflow:
 
