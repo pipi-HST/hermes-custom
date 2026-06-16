@@ -235,3 +235,136 @@ export async function fetchGardenCards(limit = 50): Promise<GardenCard[]> {
   const data = await res.json()
   return Array.isArray(data.items) ? data.items : []
 }
+
+// ─── Capture Drafts ───────────────────────────────────────────────────────
+
+export interface CaptureDraft {
+  id: string
+  raw_text: string
+  source: string
+  source_type: string
+  title: string
+  word_count: number
+  draft_text: string
+  instruction: string
+  capture_intent: Record<string, unknown>
+  summary: string
+  tags: string[]
+  status: string
+  committed_capture_id: string
+  created_at: string
+  updated_at: string
+}
+
+export async function fetchCaptureDrafts(limit = 50): Promise<CaptureDraft[]> {
+  const qs = new URLSearchParams({ limit: String(limit) })
+  const res = await fetch(`${API_BASE}/capture-drafts?${qs}`)
+  if (!res.ok) return []
+  const data = await res.json()
+  return Array.isArray(data.items) ? data.items : []
+}
+
+export async function fetchCaptureDraft(draftId: string): Promise<CaptureDraft | null> {
+  const res = await fetch(`${API_BASE}/capture-drafts/${draftId}`)
+  if (!res.ok) return null
+  return res.json()
+}
+
+export async function reviseCaptureDraft(draftId: string, instruction: string): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API_BASE}/capture-drafts/${draftId}/revise`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ instruction }),
+  })
+  if (!res.ok) throw new Error(`Failed to revise: ${res.statusText}`)
+  return res.json()
+}
+
+export async function commitCaptureDraft(draftId: string): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API_BASE}/capture-drafts/${draftId}/commit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  if (!res.ok) throw new Error(`Failed to commit: ${res.statusText}`)
+  return res.json()
+}
+
+// ─── Hermes Gateway Chat (SSE) ────────────────────────────────────────────
+
+const GATEWAY_URL = 'http://127.0.0.1:8642/v1/chat/completions'
+
+export interface ChatStreamCallbacks {
+  onDelta: (text: string) => void
+  onComplete: (fullText: string) => void
+  onError: (error: string) => void
+  onToolProgress?: (toolName: string, preview: string) => void
+}
+
+export async function sendMessageToGateway(
+  messages: Array<{ role: string; content: string }>,
+  callbacks: ChatStreamCallbacks,
+  sessionId?: string,
+): Promise<void> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  }
+  if (sessionId) {
+    headers['X-Hermes-Session-Id'] = sessionId
+  }
+
+  const res = await fetch(GATEWAY_URL, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: 'hermes-agent',
+      messages,
+      stream: true,
+    }),
+  })
+
+  if (!res.ok) {
+    callbacks.onError(`Gateway error: ${res.status} ${res.statusText}`)
+    return
+  }
+
+  const reader = res.body?.getReader()
+  if (!reader) {
+    callbacks.onError('No response body')
+    return
+  }
+
+  const decoder = new TextDecoder()
+  let fullText = ''
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        const data = line.slice(6).trim()
+        if (data === '[DONE]') {
+          callbacks.onComplete(fullText)
+          return
+        }
+        try {
+          const parsed = JSON.parse(data)
+          const delta = parsed.choices?.[0]?.delta?.content
+          if (delta) {
+            fullText += delta
+            callbacks.onDelta(delta)
+          }
+        } catch {
+          // Skip non-JSON lines (e.g., hermes.tool.progress events)
+        }
+      }
+    }
+  }
+
+  callbacks.onComplete(fullText)
+}

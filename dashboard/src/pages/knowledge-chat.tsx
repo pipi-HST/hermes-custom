@@ -1,11 +1,15 @@
-import { useEffect, useState, useRef } from 'react'
-import type { ReadingDraft, ReadingSessionDetail } from '../lib/api'
+import { useEffect, useState, useRef, useCallback } from 'react'
+import type { ReadingDraft, ReadingSessionDetail, CaptureDraft } from '../lib/api'
 import {
   fetchReadingDrafts,
   fetchReadingSession,
   commitReadingDraft,
   reviseReadingDraft,
   fetchKnowledgeDrafts,
+  fetchCaptureDrafts,
+  reviseCaptureDraft,
+  commitCaptureDraft,
+  sendMessageToGateway,
 } from '../lib/api'
 import { DraftReviewPanel } from '../components/DraftReviewPanel'
 
@@ -27,6 +31,16 @@ export default function KnowledgeChatPage() {
   const [isLoading, setIsLoading] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)
 
+  // Gateway session ID for conversation continuity
+  const [sessionId] = useState(() => crypto.randomUUID())
+
+  // Capture-review state
+  const [captureDrafts, setCaptureDrafts] = useState<CaptureDraft[]>([])
+  const [selectedCapture, setSelectedCapture] = useState<CaptureDraft | null>(null)
+  const [captureReviseInput, setCaptureReviseInput] = useState('')
+  const [captureActionLoading, setCaptureActionLoading] = useState(false)
+  const [captureLoading, setCaptureLoading] = useState(false)
+
   useEffect(() => {
     loadDrafts()
   }, [])
@@ -34,6 +48,13 @@ export default function KnowledgeChatPage() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatMessages])
+
+  // Load capture drafts when entering capture-review mode
+  useEffect(() => {
+    if (mode === 'capture-review') {
+      loadCaptureDrafts()
+    }
+  }, [mode])
 
   const loadDrafts = async () => {
     const [readingDrafts, knowledgeDrafts] = await Promise.all([
@@ -50,6 +71,16 @@ export default function KnowledgeChatPage() {
     setDrafts(merged)
   }
 
+  const loadCaptureDrafts = async () => {
+    setCaptureLoading(true)
+    try {
+      const items = await fetchCaptureDrafts(50)
+      setCaptureDrafts(items)
+    } finally {
+      setCaptureLoading(false)
+    }
+  }
+
   const handleDraftSelect = (draft: ReadingDraft) => {
     setSelectedDraft(draft)
     setMode('draft-review')
@@ -61,8 +92,8 @@ export default function KnowledgeChatPage() {
     loadDrafts()
   }
 
-  const handleSendMessage = () => {
-    if (!inputValue.trim()) return
+  const handleSendMessage = useCallback(async () => {
+    if (!inputValue.trim() || isLoading) return
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -70,22 +101,56 @@ export default function KnowledgeChatPage() {
       content: inputValue.trim(),
       timestamp: new Date().toISOString(),
     }
-    setChatMessages(prev => [...prev, userMsg])
+    const updatedMessages = [...chatMessages, userMsg]
+    setChatMessages(updatedMessages)
     setInputValue('')
-
-    // Simulate assistant response (in real usage this connects to Hermes gateway)
     setIsLoading(true)
-    setTimeout(() => {
-      const assistantMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: '这是知识工作台的聊天界面。后续将连接到 Hermes Gateway，支持阅读讨论、RAG 问答和知识沉淀。\n\n当前可用功能：\n- 左侧草稿列表：查看和审阅待提交的知识草稿\n- 草稿审阅：确认提交或修改草稿内容\n- 保存回答：将高质量回答存为知识草稿',
-        timestamp: new Date().toISOString(),
-      }
-      setChatMessages(prev => [...prev, assistantMsg])
-      setIsLoading(false)
-    }, 500)
-  }
+
+    // Create an empty assistant message that we'll stream into
+    const assistantMsgId = crypto.randomUUID()
+    const assistantMsg: ChatMessage = {
+      id: assistantMsgId,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date().toISOString(),
+    }
+    setChatMessages(prev => [...prev, assistantMsg])
+
+    // Build the messages array for the Gateway (role + content)
+    const gatewayMessages = updatedMessages.map(m => ({
+      role: m.role,
+      content: m.content,
+    }))
+
+    await sendMessageToGateway(
+      gatewayMessages,
+      {
+        onDelta: (delta: string) => {
+          setChatMessages(prev =>
+            prev.map(m =>
+              m.id === assistantMsgId
+                ? { ...m, content: m.content + delta }
+                : m,
+            ),
+          )
+        },
+        onComplete: (_fullText: string) => {
+          setIsLoading(false)
+        },
+        onError: (error: string) => {
+          setChatMessages(prev =>
+            prev.map(m =>
+              m.id === assistantMsgId
+                ? { ...m, content: `[Error] ${error}` }
+                : m,
+            ),
+          )
+          setIsLoading(false)
+        },
+      },
+      sessionId,
+    )
+  }, [inputValue, isLoading, chatMessages, sessionId])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -94,38 +159,110 @@ export default function KnowledgeChatPage() {
     }
   }
 
+  // ─── Capture-review actions ──────────────────────────────────────────────
+
+  const handleCaptureSelect = (draft: CaptureDraft) => {
+    setSelectedCapture(draft)
+    setCaptureReviseInput('')
+  }
+
+  const handleCaptureRevise = async () => {
+    if (!selectedCapture || !captureReviseInput.trim()) return
+    setCaptureActionLoading(true)
+    try {
+      const result = await reviseCaptureDraft(selectedCapture.id, captureReviseInput.trim())
+      // Update selected capture with revised draft_text if returned
+      if (result.draft_text) {
+        setSelectedCapture(prev => prev ? { ...prev, draft_text: result.draft_text as string } : null)
+      }
+      setCaptureReviseInput('')
+      // Refresh the list
+      await loadCaptureDrafts()
+    } catch (err) {
+      console.error('Failed to revise capture draft:', err)
+    } finally {
+      setCaptureActionLoading(false)
+    }
+  }
+
+  const handleCaptureCommit = async () => {
+    if (!selectedCapture) return
+    setCaptureActionLoading(true)
+    try {
+      await commitCaptureDraft(selectedCapture.id)
+      setSelectedCapture(null)
+      await loadCaptureDrafts()
+    } catch (err) {
+      console.error('Failed to commit capture draft:', err)
+    } finally {
+      setCaptureActionLoading(false)
+    }
+  }
+
   return (
     <div className="flex h-screen">
-      {/* Left panel: Draft list */}
+      {/* Left panel: Draft list or Capture list depending on mode */}
       <aside className="w-64 shrink-0 border-r border-neutral-200 dark:border-neutral-800
         flex flex-col overflow-hidden">
         <div className="px-4 py-3 border-b border-neutral-200 dark:border-neutral-800">
           <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-            草稿列表
+            {mode === 'capture-review' ? '捕获草稿' : '草稿列表'}
           </h3>
         </div>
         <div className="flex-1 overflow-y-auto px-2 py-2">
-          {drafts.length === 0 ? (
-            <p className="text-xs text-neutral-400 px-2 py-4">暂无待审阅草稿</p>
+          {mode === 'capture-review' ? (
+            /* Capture drafts list */
+            captureLoading ? (
+              <p className="text-xs text-neutral-400 px-2 py-4">加载中...</p>
+            ) : captureDrafts.length === 0 ? (
+              <p className="text-xs text-neutral-400 px-2 py-4">暂无捕获草稿</p>
+            ) : (
+              captureDrafts.map(draft => (
+                <button
+                  key={draft.id}
+                  onClick={() => handleCaptureSelect(draft)}
+                  className={`w-full text-left px-3 py-2 rounded-md mb-1 text-sm transition-colors
+                    ${selectedCapture?.id === draft.id
+                      ? 'bg-neutral-200 dark:bg-neutral-800'
+                      : 'hover:bg-neutral-100 dark:hover:bg-neutral-900'
+                    }`}
+                >
+                  <div className="font-medium text-neutral-800 dark:text-neutral-200 truncate">
+                    {draft.title || '(无标题)'}
+                  </div>
+                  <div className="text-xs text-neutral-400 mt-0.5">
+                    {draft.source_type} · {draft.status}
+                  </div>
+                  <div className="text-xs text-neutral-400 truncate">
+                    {draft.summary || `${draft.word_count} 字`}
+                  </div>
+                </button>
+              ))
+            )
           ) : (
-            drafts.map(draft => (
-              <button
-                key={draft.id}
-                onClick={() => handleDraftSelect(draft)}
-                className={`w-full text-left px-3 py-2 rounded-md mb-1 text-sm transition-colors
-                  ${selectedDraft?.id === draft.id
-                    ? 'bg-neutral-200 dark:bg-neutral-800'
-                    : 'hover:bg-neutral-100 dark:hover:bg-neutral-900'
-                  }`}
-              >
-                <div className="font-medium text-neutral-800 dark:text-neutral-200 truncate">
-                  {draft.title || '(无标题)'}
-                </div>
-                <div className="text-xs text-neutral-400 mt-0.5">
-                  {outputTypeLabel(draft.output_type)} · {draft.status}
-                </div>
-              </button>
-            ))
+            /* Reading / knowledge drafts list */
+            drafts.length === 0 ? (
+              <p className="text-xs text-neutral-400 px-2 py-4">暂无待审阅草稿</p>
+            ) : (
+              drafts.map(draft => (
+                <button
+                  key={draft.id}
+                  onClick={() => handleDraftSelect(draft)}
+                  className={`w-full text-left px-3 py-2 rounded-md mb-1 text-sm transition-colors
+                    ${selectedDraft?.id === draft.id
+                      ? 'bg-neutral-200 dark:bg-neutral-800'
+                      : 'hover:bg-neutral-100 dark:hover:bg-neutral-900'
+                    }`}
+                >
+                  <div className="font-medium text-neutral-800 dark:text-neutral-200 truncate">
+                    {draft.title || '(无标题)'}
+                  </div>
+                  <div className="text-xs text-neutral-400 mt-0.5">
+                    {outputTypeLabel(draft.output_type)} · {draft.status}
+                  </div>
+                </button>
+              ))
+            )
           )}
         </div>
       </aside>
@@ -167,7 +304,7 @@ export default function KnowledgeChatPage() {
                   <ChatBubble key={msg.id} message={msg} />
                 ))
               )}
-              {isLoading && (
+              {isLoading && chatMessages[chatMessages.length - 1]?.content === '' && (
                 <div className="flex gap-2 items-start mb-4">
                   <div className="w-6 h-6 rounded-full bg-neutral-200 dark:bg-neutral-700 shrink-0" />
                   <div className="bg-neutral-100 dark:bg-neutral-800 rounded-lg px-4 py-2 text-sm">
@@ -213,22 +350,181 @@ export default function KnowledgeChatPage() {
         )}
 
         {mode === 'capture-review' && (
-          <div className="flex-1 flex items-center justify-center text-neutral-400 text-sm">
-            <div className="text-center">
-              <p className="mb-2">捕获审阅模式</p>
-              <p className="text-xs">从左侧草稿列表选择待审阅的捕获草稿</p>
-            </div>
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {selectedCapture ? (
+              /* Capture draft detail + actions */
+              <div className="flex-1 flex flex-col overflow-hidden">
+                {/* Header */}
+                <div className="px-6 py-4 border-b border-neutral-200 dark:border-neutral-800">
+                  <h2 className="text-lg font-medium text-neutral-800 dark:text-neutral-200">
+                    {selectedCapture.title || '(无标题)'}
+                  </h2>
+                  <div className="flex gap-3 mt-1 text-xs text-neutral-400">
+                    <span>来源: {selectedCapture.source}</span>
+                    <span>类型: {selectedCapture.source_type}</span>
+                    <span>{selectedCapture.word_count} 字</span>
+                    <span>状态: {selectedCapture.status}</span>
+                  </div>
+                  {selectedCapture.tags.length > 0 && (
+                    <div className="flex gap-1 mt-2 flex-wrap">
+                      {selectedCapture.tags.map(tag => (
+                        <span
+                          key={tag}
+                          className="px-2 py-0.5 text-xs rounded-full bg-neutral-100 dark:bg-neutral-800
+                            text-neutral-600 dark:text-neutral-400"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Draft text */}
+                <div className="flex-1 overflow-y-auto px-6 py-4">
+                  {selectedCapture.summary && (
+                    <div className="mb-4">
+                      <h3 className="text-xs font-medium uppercase tracking-wider text-neutral-400 mb-1">
+                        摘要
+                      </h3>
+                      <p className="text-sm text-neutral-600 dark:text-neutral-400">
+                        {selectedCapture.summary}
+                      </p>
+                    </div>
+                  )}
+                  <div>
+                    <h3 className="text-xs font-medium uppercase tracking-wider text-neutral-400 mb-1">
+                      草稿内容
+                    </h3>
+                    <div className="text-sm text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap leading-relaxed">
+                      {selectedCapture.draft_text}
+                    </div>
+                  </div>
+                  {selectedCapture.raw_text && (
+                    <details className="mt-6">
+                      <summary className="text-xs text-neutral-400 cursor-pointer hover:text-neutral-600">
+                        查看原文
+                      </summary>
+                      <div className="mt-2 text-xs text-neutral-500 whitespace-pre-wrap bg-neutral-50 dark:bg-neutral-900 p-3 rounded-md max-h-64 overflow-y-auto">
+                        {selectedCapture.raw_text}
+                      </div>
+                    </details>
+                  )}
+                </div>
+
+                {/* Actions bar */}
+                <div className="border-t border-neutral-200 dark:border-neutral-800 px-6 py-3 space-y-2">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={captureReviseInput}
+                      onChange={e => setCaptureReviseInput(e.target.value)}
+                      placeholder="修改指令 (例如: 精简摘要、添加关键词...)"
+                      className="flex-1 px-3 py-2 text-sm rounded-md border border-neutral-200
+                        dark:border-neutral-700 bg-transparent
+                        focus:outline-none focus:ring-1 focus:ring-neutral-400"
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') handleCaptureRevise()
+                      }}
+                    />
+                    <button
+                      onClick={handleCaptureRevise}
+                      disabled={!captureReviseInput.trim() || captureActionLoading}
+                      className="px-4 py-2 text-sm rounded-md border border-neutral-300 dark:border-neutral-600
+                        text-neutral-700 dark:text-neutral-300 disabled:opacity-40 transition-opacity
+                        hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                    >
+                      修改
+                    </button>
+                    <button
+                      onClick={handleCaptureCommit}
+                      disabled={captureActionLoading}
+                      className="px-4 py-2 text-sm rounded-md bg-neutral-900 dark:bg-neutral-100
+                        text-white dark:text-neutral-900 disabled:opacity-40 transition-opacity"
+                    >
+                      提交
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => setSelectedCapture(null)}
+                    className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+                  >
+                    &larr; 返回列表
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* Empty state for capture-review */
+              <div className="flex-1 flex items-center justify-center text-neutral-400 text-sm">
+                <div className="text-center">
+                  <p className="mb-2">捕获审阅模式</p>
+                  <p className="text-xs">从左侧列表选择待审阅的捕获草稿</p>
+                  {captureDrafts.length === 0 && !captureLoading && (
+                    <button
+                      onClick={loadCaptureDrafts}
+                      className="mt-4 px-3 py-1 text-xs rounded-md border border-neutral-300
+                        dark:border-neutral-600 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                    >
+                      刷新列表
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* Right panel: Sources & tools (placeholder) */}
+      {/* Right panel: Sources & tools */}
       <aside className="w-56 shrink-0 border-l border-neutral-200 dark:border-neutral-800
         overflow-y-auto px-4 py-3">
         <h3 className="text-xs font-medium uppercase tracking-wider text-neutral-400 mb-3">
           来源与工具
         </h3>
-        {selectedDraft ? (
+        {mode === 'capture-review' && selectedCapture ? (
+          <div className="text-sm space-y-3">
+            <div>
+              <p className="text-xs text-neutral-500">草稿 ID</p>
+              <p className="text-xs text-neutral-600 dark:text-neutral-400 font-mono truncate">
+                {selectedCapture.id}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-neutral-500">来源</p>
+              <p className="text-neutral-700 dark:text-neutral-300">
+                {selectedCapture.source}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-neutral-500">来源类型</p>
+              <p className="text-neutral-700 dark:text-neutral-300">
+                {selectedCapture.source_type}
+              </p>
+            </div>
+            {selectedCapture.instruction && (
+              <div>
+                <p className="text-xs text-neutral-500">捕获指令</p>
+                <p className="text-xs text-neutral-600 dark:text-neutral-400">
+                  {selectedCapture.instruction}
+                </p>
+              </div>
+            )}
+            {selectedCapture.committed_capture_id && (
+              <div>
+                <p className="text-xs text-neutral-500">已提交捕获</p>
+                <p className="text-xs text-neutral-600 dark:text-neutral-400 font-mono">
+                  {selectedCapture.committed_capture_id}
+                </p>
+              </div>
+            )}
+            <div>
+              <p className="text-xs text-neutral-500">创建时间</p>
+              <p className="text-xs text-neutral-600 dark:text-neutral-400">
+                {new Date(selectedCapture.created_at).toLocaleString()}
+              </p>
+            </div>
+          </div>
+        ) : selectedDraft ? (
           <div className="text-sm space-y-3">
             <div>
               <p className="text-xs text-neutral-500">草稿类型</p>
@@ -281,7 +577,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
             : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100'
           }`}
       >
-        {message.content}
+        {message.content || (message.role === 'assistant' ? '...' : '')}
       </div>
     </div>
   )
