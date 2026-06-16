@@ -615,6 +615,63 @@ def _commit_knowledge_card(vault_path: Path, repo: ReadingRepo, draft: dict) -> 
     )
 
 
+def _classify_card_kind(
+    *, title: str, summary: str = "", body: str = ""
+) -> str:
+    """Heuristic card_kind classification from draft content.
+
+    Priority: risk > method > fact > viewpoint (default).
+    Uses weighted keyword scoring across title + summary + body.
+    """
+    text = f"{title}\n{summary}\n{body}".lower()
+
+    scores: dict[str, float] = {
+        "method": 0.0,
+        "risk": 0.0,
+        "fact": 0.0,
+    }
+
+    # Title matches are worth more (stronger signal)
+    title_lower = title.lower()
+
+    method_kw = [
+        "步骤", "流程", "方法", "做法", "实践", "框架", "模式",
+        "workflows", "pipeline", "how to", "实现", "搭建", "构建",
+        "配置", "setup", "tutorial",
+    ]
+    risk_kw = [
+        "风险", "注意", "陷阱", "坑", "问题", "失败", "缺陷",
+        "pitfall", "gotcha", "caveat", "warning", "danger",
+        "踩坑", "容易出错", "容易忽略",
+    ]
+    fact_kw = [
+        "数据", "统计", "事实", "结论", "发现", "基准", "benchmark",
+        "指标", "metric", "比例", "规模", "增长",
+    ]
+
+    for kw in method_kw:
+        if kw in title_lower:
+            scores["method"] += 3.0
+        elif kw in text:
+            scores["method"] += 1.0
+    for kw in risk_kw:
+        if kw in title_lower:
+            scores["risk"] += 3.0
+        elif kw in text:
+            scores["risk"] += 1.0
+    for kw in fact_kw:
+        if kw in title_lower:
+            scores["fact"] += 3.0
+        elif kw in text:
+            scores["fact"] += 1.0
+
+    # Pick the highest-scoring non-viewpoint kind; need at least 2 points
+    best = max(scores, key=scores.get)  # type: ignore[arg-type]
+    if scores[best] >= 2.0:
+        return best
+    return "viewpoint"
+
+
 def _garden_data_from_reading_draft(repo: ReadingRepo, draft: dict) -> dict:
     session = repo.get_session(draft["session_id"]) or {}
     evidence = repo.list_evidence(draft["session_id"])
@@ -624,10 +681,16 @@ def _garden_data_from_reading_draft(repo: ReadingRepo, draft: dict) -> dict:
     one_liner = _clip(draft.get("summary") or draft.get("draft_text", ""), 180)
     if not one_liner:
         one_liner = "从阅读讨论中沉淀出来的可复用知识。"
+    draft_text = draft.get("draft_text", "")
+    card_kind = _classify_card_kind(
+        title=title,
+        summary=draft.get("summary") or "",
+        body=draft_text,
+    )
     return {
         "title": title,
         "one_liner": one_liner,
-        "card_kind": "viewpoint",
+        "card_kind": card_kind,
         "core_arguments": [
             {
                 "claim": _clip(draft.get("summary") or session.get("focus") or title, 180),
