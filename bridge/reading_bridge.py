@@ -6,6 +6,8 @@ import json
 import re
 import shutil
 import sys
+
+import httpx
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -476,7 +478,7 @@ def _commit_reading_artifact(draft_id: str = "") -> dict:
     if output_type == "enhance_capture":
         return _commit_enhanced_capture(vault_path, repo, capture_repo, draft)
     if output_type == "knowledge_card":
-        return _commit_knowledge_card(vault_path, repo, draft)
+        return _commit_knowledge_card(config, vault_path, repo, draft)
     if output_type in {"local_learning_note", "discussion_note"}:
         return _commit_independent_note(config, vault_path, repo, capture_repo, draft)
     return error_envelope(
@@ -572,8 +574,8 @@ def _postprocess_committed_learning_note(config, repo: ReadingRepo, capture_id: 
         return {"error": str(exc)}
 
 
-def _commit_knowledge_card(vault_path: Path, repo: ReadingRepo, draft: dict) -> dict:
-    garden_data = _garden_data_from_reading_draft(repo, draft)
+def _commit_knowledge_card(config, vault_path: Path, repo: ReadingRepo, draft: dict) -> dict:
+    garden_data = _garden_data_from_reading_draft(config, repo, draft)
     card_id = create_garden_card(repo, garden_data)
     rel_path = _write_note_file(
         vault_path=vault_path,
@@ -616,63 +618,67 @@ def _commit_knowledge_card(vault_path: Path, repo: ReadingRepo, draft: dict) -> 
 
 
 def _classify_card_kind(
-    *, title: str, summary: str = "", body: str = ""
+    config,
+    *,
+    title: str,
+    summary: str = "",
+    body: str = "",
 ) -> str:
-    """Heuristic card_kind classification from draft content.
+    """Use LLM to classify the best card_kind from draft content.
 
-    Priority: risk > method > fact > viewpoint (default).
-    Uses weighted keyword scoring across title + summary + body.
+    Falls back to "viewpoint" if the LLM call fails or returns an
+    unrecognised value.
     """
-    text = f"{title}\n{summary}\n{body}".lower()
+    valid_kinds = {"viewpoint", "fact", "method", "risk"}
+    api_key = getattr(config, "llm_api_key", "")
+    base_url = getattr(config, "llm_base_url", "") or "https://api.deepseek.com"
 
-    scores: dict[str, float] = {
-        "method": 0.0,
-        "risk": 0.0,
-        "fact": 0.0,
-    }
+    # Truncate body to keep the prompt small
+    body_excerpt = (body or "").strip()
+    if len(body_excerpt) > 1200:
+        body_excerpt = body_excerpt[:1200] + "…"
 
-    # Title matches are worth more (stronger signal)
-    title_lower = title.lower()
+    prompt = (
+        "你是一个知识分类助手。根据以下知识卡片草稿的内容，判断它属于哪种类型。\n\n"
+        "类型定义：\n"
+        "- viewpoint：表达一种观点、解读或立场\n"
+        "- fact：陈述客观事实、数据或经验发现\n"
+        "- method：描述一种方法、流程、实践或框架\n"
+        "- risk：指出风险、陷阱、注意事项或常见问题\n\n"
+        f"标题：{title}\n"
+        f"摘要：{summary}\n"
+        f"内容：\n{body_excerpt}\n\n"
+        "只回复一个词：viewpoint、fact、method 或 risk。不要解释。"
+    )
 
-    method_kw = [
-        "步骤", "流程", "方法", "做法", "实践", "框架", "模式",
-        "workflows", "pipeline", "how to", "实现", "搭建", "构建",
-        "配置", "setup", "tutorial",
-    ]
-    risk_kw = [
-        "风险", "注意", "陷阱", "坑", "问题", "失败", "缺陷",
-        "pitfall", "gotcha", "caveat", "warning", "danger",
-        "踩坑", "容易出错", "容易忽略",
-    ]
-    fact_kw = [
-        "数据", "统计", "事实", "结论", "发现", "基准", "benchmark",
-        "指标", "metric", "比例", "规模", "增长",
-    ]
+    try:
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(
+                f"{base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "deepseek-v4-flash",
+                    "messages": [
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 8,
+                },
+            )
+            resp.raise_for_status()
+            answer = resp.json()["choices"][0]["message"]["content"].strip().lower()
+        if answer in valid_kinds:
+            return answer
+    except Exception:
+        pass
 
-    for kw in method_kw:
-        if kw in title_lower:
-            scores["method"] += 3.0
-        elif kw in text:
-            scores["method"] += 1.0
-    for kw in risk_kw:
-        if kw in title_lower:
-            scores["risk"] += 3.0
-        elif kw in text:
-            scores["risk"] += 1.0
-    for kw in fact_kw:
-        if kw in title_lower:
-            scores["fact"] += 3.0
-        elif kw in text:
-            scores["fact"] += 1.0
-
-    # Pick the highest-scoring non-viewpoint kind; need at least 2 points
-    best = max(scores, key=scores.get)  # type: ignore[arg-type]
-    if scores[best] >= 2.0:
-        return best
     return "viewpoint"
 
 
-def _garden_data_from_reading_draft(repo: ReadingRepo, draft: dict) -> dict:
+def _garden_data_from_reading_draft(config, repo: ReadingRepo, draft: dict) -> dict:
     session = repo.get_session(draft["session_id"]) or {}
     evidence = repo.list_evidence(draft["session_id"])
     capture_ids = _reading_card_capture_ids(session, evidence)
@@ -683,6 +689,7 @@ def _garden_data_from_reading_draft(repo: ReadingRepo, draft: dict) -> dict:
         one_liner = "从阅读讨论中沉淀出来的可复用知识。"
     draft_text = draft.get("draft_text", "")
     card_kind = _classify_card_kind(
+        config,
         title=title,
         summary=draft.get("summary") or "",
         body=draft_text,
