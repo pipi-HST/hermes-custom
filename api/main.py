@@ -21,6 +21,12 @@ LOCAL_DASHBOARD_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://localhost:3010",
     "http://127.0.0.1:3010",
+    "http://localhost:3011",
+    "http://127.0.0.1:3011",
+    "http://localhost:3012",
+    "http://127.0.0.1:3012",
+    "http://localhost:3013",
+    "http://127.0.0.1:3013",
 ]
 
 

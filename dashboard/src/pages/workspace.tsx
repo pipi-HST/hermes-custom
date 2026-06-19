@@ -51,7 +51,7 @@ export default function WorkspacePage() {
       fetchCaptureDrafts(40),
     ])
 
-    const liveCaptures = captureItems as WorkspaceCapture[]
+    const liveCaptures = (captureItems as WorkspaceCapture[]).filter(item => Boolean(item.file_path))
     const initialCapture = liveCaptures.find(item => (item.folder_path || 'Inbox') === activeFolder) || liveCaptures[0]
     setCaptures(liveCaptures)
     setGardenCards(gardenItems)
