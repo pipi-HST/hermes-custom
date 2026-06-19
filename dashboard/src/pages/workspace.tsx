@@ -3,6 +3,7 @@ import type { Capture, CaptureDraft, GardenCard } from '../lib/api'
 import { fetchCaptureDrafts, fetchCaptures, fetchGardenCards, updateCapture } from '../lib/api'
 import GardenBoard from '../features/garden/GardenBoard'
 import KnowledgeWorkbench from '../features/workbench/KnowledgeWorkbench'
+import type { WorkbenchSideContext } from '../features/workbench/KnowledgeWorkbench'
 
 type WorkspaceTab = 'library' | 'workbench' | 'garden'
 type WorkspaceCapture = Capture
@@ -28,6 +29,7 @@ export default function WorkspacePage() {
   const [leftCollapsed, setLeftCollapsed] = useState(false)
   const [rightCollapsed, setRightCollapsed] = useState(false)
   const [workbenchInitialMode, setWorkbenchInitialMode] = useState<'chat' | 'editable-capture'>('chat')
+  const [workbenchSideContext, setWorkbenchSideContext] = useState<WorkbenchSideContext | null>(null)
   const [captures, setCaptures] = useState<WorkspaceCapture[]>([])
   const [gardenCards, setGardenCards] = useState<GardenCard[]>([])
   const [drafts, setDrafts] = useState<CaptureDraft[]>([])
@@ -153,6 +155,8 @@ export default function WorkspacePage() {
                   initialMode={workbenchInitialMode}
                   defaultFolderPath={activeFolder}
                   onCaptureCommitted={loadWorkspace}
+                  onSideContextChange={setWorkbenchSideContext}
+                  hideSidePanel
                 />
               </section>
             ) : (
@@ -164,10 +168,12 @@ export default function WorkspacePage() {
         </main>
 
         <AISidebar
+          activeTab={activeTab}
           collapsed={rightCollapsed}
           drafts={drafts}
           gardenCount={gardenCards.length}
           selectedCapture={selectedCapture}
+          workbenchContext={workbenchSideContext}
           onToggleCollapsed={() => setRightCollapsed(value => !value)}
         />
       </div>
@@ -525,16 +531,20 @@ function LibraryView({
 }
 
 function AISidebar({
+  activeTab,
   collapsed,
   drafts,
   gardenCount,
   selectedCapture,
+  workbenchContext,
   onToggleCollapsed,
 }: {
+  activeTab: WorkspaceTab
   collapsed: boolean
   drafts: CaptureDraft[]
   gardenCount: number
   selectedCapture?: WorkspaceCapture
+  workbenchContext?: WorkbenchSideContext | null
   onToggleCollapsed: () => void
 }) {
   if (collapsed) {
@@ -555,9 +565,11 @@ function AISidebar({
     <aside className="border-t border-neutral-200 bg-white/70 px-5 py-5 dark:border-neutral-800 dark:bg-neutral-950/35 lg:border-l lg:border-t-0">
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold">AI 建议</h2>
+          <h2 className="text-sm font-semibold">
+            {activeTab === 'workbench' ? '来源与工具' : 'AI 建议'}
+          </h2>
           <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-            只做辅助，不阻塞保存
+            {activeTab === 'workbench' ? '工作台上下文' : '只做辅助，不阻塞保存'}
           </p>
         </div>
         <button
@@ -574,7 +586,11 @@ function AISidebar({
         <Metric label="建议" value={drafts.length} />
       </div>
 
-      {selectedCapture && (
+      {activeTab === 'workbench' && (
+        <WorkbenchContextPanel context={workbenchContext} />
+      )}
+
+      {activeTab !== 'workbench' && selectedCapture && (
         <section className="mt-4 rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
           <h3 className="text-sm font-semibold">当前文件</h3>
           <p className="mt-2 text-sm font-medium">{selectedCapture.title || '(无标题)'}</p>
@@ -584,6 +600,7 @@ function AISidebar({
         </section>
       )}
 
+      {activeTab !== 'workbench' && (
       <section className="mt-4 space-y-3">
         {drafts.length === 0 ? (
           <p className="rounded-lg border border-dashed border-neutral-300 p-4 text-sm text-neutral-400 dark:border-neutral-700">
@@ -604,7 +621,52 @@ function AISidebar({
           </article>
         ))}
       </section>
+      )}
     </aside>
+  )
+}
+
+function WorkbenchContextPanel({ context }: { context?: WorkbenchSideContext | null }) {
+  if (!context || (context.sections.length === 0 && context.emptyText)) {
+    return (
+      <p className="mt-4 rounded-lg border border-dashed border-neutral-300 p-4 text-sm text-neutral-400 dark:border-neutral-700">
+        {context?.emptyText || '选择草稿或对话以查看相关信息'}
+      </p>
+    )
+  }
+
+  return (
+    <section className="mt-4 space-y-3">
+      {context.sections.map(section => (
+        <div
+          key={section.label}
+          className="rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900"
+        >
+          <p className="text-xs text-neutral-500">{section.label}</p>
+          {section.tags ? (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {section.tags.map(tag => (
+                <span
+                  key={tag}
+                  className="rounded-md bg-neutral-100 px-2 py-1 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className={`mt-1 text-sm text-neutral-700 dark:text-neutral-300 ${section.mono ? 'font-mono text-xs' : ''}`}>
+              {section.value || '-'}
+            </p>
+          )}
+        </div>
+      ))}
+      {context.emptyText && (
+        <p className="rounded-lg border border-dashed border-neutral-300 p-4 text-sm text-neutral-400 dark:border-neutral-700">
+          {context.emptyText}
+        </p>
+      )}
+    </section>
   )
 }
 

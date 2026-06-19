@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useMemo, useState, useRef, useCallback } from 'react'
 import type { ReadingDraft, ReadingSessionDetail, CaptureDraft } from '../../lib/api'
 import {
   fetchReadingDrafts,
@@ -26,16 +26,79 @@ interface ChatMessage {
   timestamp: string
 }
 
+export interface WorkbenchSideContext {
+  title: string
+  emptyText?: string
+  sections: Array<{
+    label: string
+    value?: string
+    mono?: boolean
+    tags?: string[]
+  }>
+}
+
+function WorkbenchChatBubble({ message }: { message: ChatMessage }) {
+  const isUser = message.role === 'user'
+  return (
+    <div className={`flex gap-2 items-start mb-4 ${isUser ? 'flex-row-reverse' : ''}`}>
+      <div
+        className={`w-6 h-6 rounded-full shrink-0 flex items-center justify-center text-xs
+          ${isUser
+            ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300'
+            : 'bg-neutral-200 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300'
+          }`}
+      >
+        {isUser ? 'U' : 'H'}
+      </div>
+      <div
+        className={`max-w-[70%] rounded-lg px-4 py-2 text-sm whitespace-pre-wrap
+          ${isUser
+            ? 'bg-blue-50 dark:bg-blue-950 text-neutral-900 dark:text-neutral-100'
+            : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100'
+          }`}
+      >
+        {message.content || (message.role === 'assistant' ? '...' : '')}
+      </div>
+    </div>
+  )
+}
+
+function outputTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    enhance_capture: '增强原文',
+    local_learning_note: '学习笔记',
+    knowledge_card: '知识卡片',
+  }
+  return labels[type] || type
+}
+
+function editableStatusLabel(status: EditableStatus): string {
+  const labels: Record<EditableStatus, string> = {
+    empty: '等待粘贴内容',
+    editing: '正在编辑',
+    saving_draft: '正在生成标题、摘要和标签',
+    ready_to_commit: '草稿已保存，可确认入库',
+    committing: '正在写入知识库并建立检索索引',
+    committed: '已入库，可被知识库问答检索',
+    error: '需要处理错误后重试',
+  }
+  return labels[status]
+}
+
 export default function KnowledgeWorkbench({
   embedded = false,
   initialMode = 'chat',
   defaultFolderPath = '',
   onCaptureCommitted,
+  onSideContextChange,
+  hideSidePanel = false,
 }: {
   embedded?: boolean
   initialMode?: WorkbenchMode
   defaultFolderPath?: string
   onCaptureCommitted?: () => void | Promise<void>
+  onSideContextChange?: (context: WorkbenchSideContext) => void
+  hideSidePanel?: boolean
 }) {
   const [mode, setMode] = useState<WorkbenchMode>(initialMode)
   const [drafts, setDrafts] = useState<ReadingDraft[]>([])
@@ -293,6 +356,82 @@ export default function KnowledgeWorkbench({
     setEditableError(null)
   }
 
+  const sideContext = useMemo<WorkbenchSideContext>(() => {
+    if (mode === 'editable-capture') {
+      const sections: WorkbenchSideContext['sections'] = [
+        { label: '状态', value: editableStatusLabel(editableStatus) },
+      ]
+      if (defaultFolderPath) {
+        sections.push({ label: '目标文件夹', value: defaultFolderPath })
+      }
+      if (editableDraft) {
+        sections.push(
+          { label: '草稿 ID', value: editableDraft.id, mono: true },
+          { label: '标题', value: editableDraft.title || '生成中' },
+        )
+        if (editableDraft.summary) {
+          sections.push({ label: '摘要', value: editableDraft.summary })
+        }
+        if (editableDraft.tags.length > 0) {
+          sections.push({ label: '标签', tags: editableDraft.tags })
+        }
+        sections.push({
+          label: '检索链路',
+          value: '确认入库后会复用现有 Library Agent 和 RAG 索引。',
+        })
+      }
+      return {
+        title: '来源与工具',
+        emptyText: editableDraft ? undefined : '保存后这里会显示 Hermes 自动生成的标题、摘要和标签。',
+        sections,
+      }
+    }
+
+    if (mode === 'capture-review' && selectedCapture) {
+      const sections: WorkbenchSideContext['sections'] = [
+        { label: '草稿 ID', value: selectedCapture.id, mono: true },
+        { label: '来源', value: selectedCapture.source },
+        { label: '来源类型', value: selectedCapture.source_type },
+      ]
+      if (selectedCapture.instruction) {
+        sections.push({ label: '捕获指令', value: selectedCapture.instruction })
+      }
+      if (selectedCapture.committed_capture_id) {
+        sections.push({ label: '已提交捕获', value: selectedCapture.committed_capture_id, mono: true })
+      }
+      sections.push({ label: '创建时间', value: new Date(selectedCapture.created_at).toLocaleString() })
+      return { title: '来源与工具', sections }
+    }
+
+    if (selectedDraft) {
+      const sections: WorkbenchSideContext['sections'] = [
+        { label: '草稿类型', value: outputTypeLabel(selectedDraft.output_type) },
+        { label: '会话 ID', value: selectedDraft.session_id, mono: true },
+      ]
+      if (selectedDraft.target_capture_id) {
+        sections.push({ label: '目标捕获', value: selectedDraft.target_capture_id, mono: true })
+      }
+      return { title: '来源与工具', sections }
+    }
+
+    return {
+      title: '来源与工具',
+      emptyText: '选择草稿或对话以查看相关信息',
+      sections: [],
+    }
+  }, [
+    defaultFolderPath,
+    editableDraft,
+    editableStatus,
+    mode,
+    selectedCapture,
+    selectedDraft,
+  ])
+
+  useEffect(() => {
+    onSideContextChange?.(sideContext)
+  }, [onSideContextChange, sideContext])
+
   return (
     <div className={`flex ${embedded ? 'h-full min-h-[640px]' : 'h-screen'}`}>
       {/* Left panel: Draft list or Capture list depending on mode */}
@@ -396,7 +535,7 @@ export default function KnowledgeWorkbench({
                 </div>
               ) : (
                 chatMessages.map(msg => (
-                  <ChatBubble key={msg.id} message={msg} />
+                  <WorkbenchChatBubble key={msg.id} message={msg} />
                 ))
               )}
               {isLoading && chatMessages[chatMessages.length - 1]?.content === '' && (
@@ -675,8 +814,8 @@ export default function KnowledgeWorkbench({
       </div>
 
       {/* Right panel: Sources & tools */}
-      <aside className="w-56 shrink-0 border-l border-neutral-200 dark:border-neutral-800
-        overflow-y-auto px-4 py-3">
+      <aside className={`${hideSidePanel ? 'hidden' : ''} w-56 shrink-0 border-l border-neutral-200 dark:border-neutral-800
+        overflow-y-auto px-4 py-3`}>
         <h3 className="text-xs font-medium uppercase tracking-wider text-neutral-400 mb-3">
           来源与工具
         </h3>
@@ -813,52 +952,4 @@ export default function KnowledgeWorkbench({
       </aside>
     </div>
   )
-}
-
-function ChatBubble({ message }: { message: ChatMessage }) {
-  const isUser = message.role === 'user'
-  return (
-    <div className={`flex gap-2 items-start mb-4 ${isUser ? 'flex-row-reverse' : ''}`}>
-      <div
-        className={`w-6 h-6 rounded-full shrink-0 flex items-center justify-center text-xs
-          ${isUser
-            ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300'
-            : 'bg-neutral-200 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300'
-          }`}
-      >
-        {isUser ? 'U' : 'H'}
-      </div>
-      <div
-        className={`max-w-[70%] rounded-lg px-4 py-2 text-sm whitespace-pre-wrap
-          ${isUser
-            ? 'bg-blue-50 dark:bg-blue-950 text-neutral-900 dark:text-neutral-100'
-            : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100'
-          }`}
-      >
-        {message.content || (message.role === 'assistant' ? '...' : '')}
-      </div>
-    </div>
-  )
-}
-
-function outputTypeLabel(type: string): string {
-  const labels: Record<string, string> = {
-    enhance_capture: '增强原文',
-    local_learning_note: '学习笔记',
-    knowledge_card: '知识卡片',
-  }
-  return labels[type] || type
-}
-
-function editableStatusLabel(status: EditableStatus): string {
-  const labels: Record<EditableStatus, string> = {
-    empty: '等待粘贴内容',
-    editing: '正在编辑',
-    saving_draft: '正在生成标题、摘要和标签',
-    ready_to_commit: '草稿已保存，可确认入库',
-    committing: '正在写入知识库并建立检索索引',
-    committed: '已入库，可被知识库问答检索',
-    error: '需要处理错误后重试',
-  }
-  return labels[status]
 }
