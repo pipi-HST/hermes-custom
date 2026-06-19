@@ -78,7 +78,12 @@ export default function WorkspacePage() {
     if (nextTab) setActiveTab(nextTab)
     const nextMode = parseWorkbenchMode(router.query.mode)
     if (nextMode) setWorkbenchInitialMode(nextMode)
-  }, [router.isReady, router.query.mode, router.query.tab])
+    const nextFolder = parseQueryValue(router.query.folder)
+    if (nextFolder) {
+      setActiveFolder(nextFolder)
+      setExpandedFolders(prev => prev.includes(nextFolder) ? prev : [...prev, nextFolder])
+    }
+  }, [router.isReady, router.query.folder, router.query.mode, router.query.tab])
 
   const folderNames = useMemo(() => {
     const dynamicFolders = captures
@@ -109,9 +114,51 @@ export default function WorkspacePage() {
       ? 'lg:grid-cols-[320px_minmax(0,1fr)_56px]'
       : 'lg:grid-cols-[320px_minmax(0,1fr)_320px]'
 
+  const updateWorkspaceUrl = useCallback((
+    tab: WorkspaceTab,
+    folder = activeFolder,
+    mode = workbenchInitialMode,
+  ) => {
+    if (!router.isReady) return
+    const nextQuery = buildWorkspaceQuery(tab, mode, folder)
+    const currentTab = parseWorkspaceTab(router.query.tab) || 'library'
+    const currentMode = parseWorkbenchMode(router.query.mode) || 'chat'
+    const currentFolder = parseQueryValue(router.query.folder)
+    const nextMode = nextQuery.mode || 'chat'
+    const nextFolder = nextQuery.folder || ''
+    if (
+      currentTab === tab &&
+      currentMode === nextMode &&
+      currentFolder === nextFolder
+    ) {
+      return
+    }
+    void router.replace(
+      {
+        pathname: '/workspace',
+        query: nextQuery,
+      },
+      undefined,
+      { shallow: true },
+    )
+  }, [activeFolder, router, router.query.folder, router.query.mode, router.query.tab, workbenchInitialMode])
+
+  const selectTab = useCallback((tab: WorkspaceTab) => {
+    setActiveTab(tab)
+    updateWorkspaceUrl(tab)
+  }, [updateWorkspaceUrl])
+
+  const handleWorkbenchModeChange = useCallback((mode: WorkbenchMode) => {
+    setWorkbenchInitialMode(mode)
+    if (activeTab === 'workbench') {
+      updateWorkspaceUrl('workbench', activeFolder, mode)
+    }
+  }, [activeFolder, activeTab, updateWorkspaceUrl])
+
   const toggleFolder = (folder: string) => {
     setActiveFolder(folder)
     setActiveTab('library')
+    updateWorkspaceUrl('library', folder)
     const firstFile = (capturesByFolder[folder] || [])[0]
     setSelectedCaptureId(firstFile?.id || '')
     setExpandedFolders(prev =>
@@ -125,6 +172,7 @@ export default function WorkspacePage() {
     setCreatingFolder(activeFolder)
     setSelectedCaptureId('')
     setActiveTab('library')
+    updateWorkspaceUrl('library')
     setExpandedFolders(prev => prev.includes(activeFolder) ? prev : [...prev, activeFolder])
   }
 
@@ -183,8 +231,9 @@ export default function WorkspacePage() {
             setSelectedCaptureId(capture.id)
             setActiveFolder(capture.folder_path || 'Inbox')
             setActiveTab('library')
+            updateWorkspaceUrl('library', capture.folder_path || 'Inbox')
           }}
-          onSelectTab={setActiveTab}
+          onSelectTab={selectTab}
           onToggleCollapsed={() => setLeftCollapsed(value => !value)}
           onToggleFolder={toggleFolder}
         />
@@ -217,6 +266,7 @@ export default function WorkspacePage() {
                   onCaptureCommitted={async () => {
                     await loadWorkspace()
                   }}
+                  onModeChange={handleWorkbenchModeChange}
                   onSideContextChange={setWorkbenchSideContext}
                   hideSidePanel
                 />
@@ -809,6 +859,10 @@ function parseWorkspaceTab(value: string | string[] | undefined): WorkspaceTab |
   return tab === 'library' || tab === 'workbench' || tab === 'garden' ? tab : null
 }
 
+function parseQueryValue(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? value[0] || '' : value || ''
+}
+
 function parseWorkbenchMode(value: string | string[] | undefined): WorkbenchMode | null {
   const mode = Array.isArray(value) ? value[0] : value
   return (
@@ -817,6 +871,21 @@ function parseWorkbenchMode(value: string | string[] | undefined): WorkbenchMode
     mode === 'draft-review' ||
     mode === 'capture-review'
   ) ? mode : null
+}
+
+function buildWorkspaceQuery(
+  tab: WorkspaceTab,
+  mode: WorkbenchMode,
+  folder: string,
+): Record<string, string> {
+  const query: Record<string, string> = { tab }
+  if (tab === 'workbench' && mode !== 'chat') {
+    query.mode = mode
+  }
+  if (tab === 'library' && folder) {
+    query.folder = folder
+  }
+  return query
 }
 
 function sourceLabel(sourceType: string) {

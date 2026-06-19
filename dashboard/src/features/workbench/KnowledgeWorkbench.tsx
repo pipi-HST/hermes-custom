@@ -100,6 +100,7 @@ export default function KnowledgeWorkbench({
   initialMode = 'chat',
   defaultFolderPath = '',
   onCaptureCommitted,
+  onModeChange,
   onSideContextChange,
   hideSidePanel = false,
 }: {
@@ -107,6 +108,7 @@ export default function KnowledgeWorkbench({
   initialMode?: WorkbenchMode
   defaultFolderPath?: string
   onCaptureCommitted?: () => void | Promise<void>
+  onModeChange?: (mode: WorkbenchMode) => void
   onSideContextChange?: (context: WorkbenchSideContext) => void
   hideSidePanel?: boolean
 }) {
@@ -118,6 +120,7 @@ export default function KnowledgeWorkbench({
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)
+  const onModeChangeRef = useRef(onModeChange)
 
   // Gateway session ID for conversation continuity. Generate it after mount so
   // SSR markup does not hydrate with a different random UUID.
@@ -145,6 +148,14 @@ export default function KnowledgeWorkbench({
   useEffect(() => {
     setMode(initialMode)
   }, [initialMode])
+
+  useEffect(() => {
+    onModeChangeRef.current = onModeChange
+  }, [onModeChange])
+
+  useEffect(() => {
+    onModeChangeRef.current?.(mode)
+  }, [mode])
 
   useEffect(() => {
     setSessionId(crypto.randomUUID())
