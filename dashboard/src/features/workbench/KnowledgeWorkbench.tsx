@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState, useRef, useCallback } from 'react'
-import type { ReadingDraft, ReadingSessionDetail, CaptureDraft } from '../../lib/api'
+import type { ReadingDraft, CaptureDraft } from '../../lib/api'
 import {
   fetchReadingDrafts,
-  fetchReadingSession,
   commitReadingDraft,
   reviseReadingDraft,
   fetchKnowledgeDrafts,
@@ -12,6 +11,7 @@ import {
   updateEditableCaptureDraft,
   reviseCaptureDraft,
   commitCaptureDraft,
+  saveAnswerDraft,
   sendMessageToGateway,
 } from '../../lib/api'
 import { DraftReviewPanel } from '../../components/DraftReviewPanel'
@@ -119,6 +119,10 @@ export default function KnowledgeWorkbench({
   const [toolEvents, setToolEvents] = useState<ToolEvent[]>([])
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [answerDraftInstruction, setAnswerDraftInstruction] = useState('')
+  const [answerDraftSaving, setAnswerDraftSaving] = useState(false)
+  const [answerDraftNotice, setAnswerDraftNotice] = useState<string | null>(null)
+  const [answerDraftError, setAnswerDraftError] = useState<string | null>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
   const onModeChangeRef = useRef(onModeChange)
 
@@ -291,6 +295,42 @@ export default function KnowledgeWorkbench({
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSendMessage()
+    }
+  }
+
+  const lastAssistantMessage = useMemo(
+    () => [...chatMessages].reverse().find(message => message.role === 'assistant' && message.content.trim()),
+    [chatMessages],
+  )
+
+  const lastUserMessage = useMemo(() => {
+    if (!lastAssistantMessage) return null
+    const assistantIndex = chatMessages.findIndex(message => message.id === lastAssistantMessage.id)
+    return [...chatMessages.slice(0, assistantIndex)]
+      .reverse()
+      .find(message => message.role === 'user' && message.content.trim()) || null
+  }, [chatMessages, lastAssistantMessage])
+
+  const handleSaveAnswerDraft = async () => {
+    if (!lastAssistantMessage || answerDraftSaving) return
+    setAnswerDraftSaving(true)
+    setAnswerDraftError(null)
+    setAnswerDraftNotice(null)
+    try {
+      const result = await saveAnswerDraft({
+        hermes_session_id: sessionId,
+        user_message: lastUserMessage?.content || '',
+        assistant_answer: lastAssistantMessage.content,
+        instruction: answerDraftInstruction || '保存为学习笔记',
+        output_type: 'auto',
+      })
+      setAnswerDraftInstruction('')
+      setAnswerDraftNotice(String(result.chat_preview || '已生成草稿，可在草稿审阅中确认。'))
+      await loadDrafts()
+    } catch (err) {
+      setAnswerDraftError(err instanceof Error ? err.message : '保存回答失败')
+    } finally {
+      setAnswerDraftSaving(false)
     }
   }
 
@@ -478,6 +518,12 @@ export default function KnowledgeWorkbench({
             .join('\n'),
         })
       }
+      if (lastAssistantMessage) {
+        sections.push({ label: '最近回答', value: lastAssistantMessage.content.slice(0, 220) })
+      }
+      if (answerDraftNotice || answerDraftError) {
+        sections.push({ label: '草稿保存', value: answerDraftNotice || answerDraftError || '' })
+      }
       return {
         title: '来源与工具',
         emptyText: toolEvents.length === 0 ? '对话中调用工具时，这里会显示工具进度。' : undefined,
@@ -511,6 +557,9 @@ export default function KnowledgeWorkbench({
     selectedDraft,
     sessionId,
     toolEvents,
+    lastAssistantMessage,
+    answerDraftNotice,
+    answerDraftError,
   ])
 
   useEffect(() => {
@@ -582,6 +631,16 @@ export default function KnowledgeWorkbench({
 
             {/* Input */}
             <div className="border-t border-neutral-200 dark:border-neutral-800 px-6 py-3">
+              {answerDraftError && (
+                <div className="mb-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+                  {answerDraftError}
+                </div>
+              )}
+              {answerDraftNotice && (
+                <div className="mb-2 rounded-md bg-[#ecf4ef] px-3 py-2 text-sm text-[#315f49] dark:bg-[#203229] dark:text-[#9cc7ae]">
+                  {answerDraftNotice}
+                </div>
+              )}
               <div className="flex gap-2">
                 <textarea
                   value={inputValue}
@@ -602,6 +661,29 @@ export default function KnowledgeWorkbench({
                   发送
                 </button>
               </div>
+              {lastAssistantMessage && (
+                <div className="mt-2 flex gap-2">
+                  <input
+                    value={answerDraftInstruction}
+                    onChange={event => {
+                      setAnswerDraftInstruction(event.target.value)
+                      setAnswerDraftNotice(null)
+                    }}
+                    placeholder="保存指令，可选：保存为学习笔记、知识卡片..."
+                    className="flex-1 rounded-md border border-neutral-200 bg-transparent px-3 py-2 text-xs
+                      dark:border-neutral-700 focus:outline-none focus:ring-1 focus:ring-neutral-400"
+                  />
+                  <button
+                    onClick={handleSaveAnswerDraft}
+                    disabled={answerDraftSaving || isLoading}
+                    className="rounded-md border border-neutral-300 px-3 py-2 text-xs text-neutral-700
+                      transition hover:bg-neutral-100 active:translate-y-px disabled:opacity-40
+                      dark:border-neutral-600 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                  >
+                    {answerDraftSaving ? '保存中...' : '保存最近回答'}
+                  </button>
+                </div>
+              )}
             </div>
           </>
         )}
