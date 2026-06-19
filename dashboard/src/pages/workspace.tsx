@@ -35,6 +35,7 @@ export default function WorkspacePage() {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('library')
   const [activeFolder, setActiveFolder] = useState('Inbox')
   const [expandedFolders, setExpandedFolders] = useState<string[]>(['Inbox'])
+  const [routeReady, setRouteReady] = useState(false)
   const [selectedCaptureId, setSelectedCaptureId] = useState<string>('')
   const [leftCollapsed, setLeftCollapsed] = useState(false)
   const [rightCollapsed, setRightCollapsed] = useState(false)
@@ -69,20 +70,22 @@ export default function WorkspacePage() {
   }, [activeFolder])
 
   useEffect(() => {
+    if (!routeReady) return
     void loadWorkspace()
-  }, [loadWorkspace])
+  }, [loadWorkspace, routeReady])
 
   useEffect(() => {
     if (!router.isReady) return
-    const nextTab = parseWorkspaceTab(router.query.tab)
-    if (nextTab) setActiveTab(nextTab)
-    const nextMode = parseWorkbenchMode(router.query.mode)
-    if (nextMode) setWorkbenchInitialMode(nextMode)
+    const nextTab = parseWorkspaceTab(router.query.tab) || 'library'
+    const nextMode = parseWorkbenchMode(router.query.mode) || 'chat'
     const nextFolder = parseQueryValue(router.query.folder)
+    setActiveTab(nextTab)
+    setWorkbenchInitialMode(nextMode)
     if (nextFolder) {
       setActiveFolder(nextFolder)
       setExpandedFolders(prev => prev.includes(nextFolder) ? prev : [...prev, nextFolder])
     }
+    setRouteReady(true)
   }, [router.isReady, router.query.folder, router.query.mode, router.query.tab])
 
   const folderNames = useMemo(() => {
@@ -241,9 +244,9 @@ export default function WorkspacePage() {
         />
 
         <main className="min-w-0 overflow-hidden">
-          <WorkspaceHeader activeTab={activeTab} activeFolder={activeFolder} loading={loading} />
+          <WorkspaceHeader activeTab={activeTab} activeFolder={activeFolder} loading={!routeReady || loading} />
           <div className="h-[calc(100dvh-73px)] overflow-auto px-4 pb-4 md:px-5">
-            {loading ? (
+            {!routeReady || loading ? (
               <LoadingState />
             ) : activeTab === 'library' ? (
               <LibraryView
