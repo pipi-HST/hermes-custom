@@ -794,7 +794,7 @@ export default function KnowledgeWorkbench({
           <DraftReviewPanel
             draft={selectedDraft}
             onCommitted={handleDraftCommitted}
-            onBack={() => setMode('chat')}
+            onBack={() => setSelectedDraft(null)}
             onRevised={loadDrafts}
           />
         )}
