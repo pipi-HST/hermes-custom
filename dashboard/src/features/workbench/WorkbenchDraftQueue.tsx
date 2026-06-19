@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react'
 import type { CaptureDraft, ReadingDraft } from '../../lib/api'
 
 interface WorkbenchDraftQueueProps {
@@ -24,6 +25,11 @@ export function WorkbenchDraftQueue({
   outputTypeLabel,
 }: WorkbenchDraftQueueProps) {
   const isCaptureReview = mode === 'capture-review'
+  const [draftFilter, setDraftFilter] = useState<'open' | 'all'>('open')
+  const filteredDrafts = useMemo(
+    () => draftFilter === 'all' ? drafts : drafts.filter(draft => draft.status === 'open'),
+    [draftFilter, drafts],
+  )
 
   return (
     <aside className="w-64 shrink-0 border-r border-neutral-200 dark:border-neutral-800
@@ -32,6 +38,23 @@ export function WorkbenchDraftQueue({
         <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
           {isCaptureReview ? '捕获草稿' : '草稿列表'}
         </h3>
+        {!isCaptureReview && (
+          <div className="mt-3 flex gap-2">
+            {(['open', 'all'] as const).map(filter => (
+              <button
+                key={filter}
+                onClick={() => setDraftFilter(filter)}
+                className={`px-2.5 py-1 text-xs rounded-md border transition-colors ${
+                  draftFilter === filter
+                    ? 'border-neutral-400 bg-neutral-100 dark:border-neutral-600 dark:bg-neutral-800'
+                    : 'border-neutral-200 text-neutral-500 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900'
+                }`}
+              >
+                {filter === 'open' ? '待审阅' : '全部'}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       <div className="flex-1 overflow-y-auto px-2 py-2">
         {isCaptureReview ? (
@@ -63,10 +86,12 @@ export function WorkbenchDraftQueue({
             ))
           )
         ) : (
-          drafts.length === 0 ? (
-            <p className="text-xs text-neutral-400 px-2 py-4">暂无待审阅草稿</p>
+          filteredDrafts.length === 0 ? (
+            <p className="text-xs text-neutral-400 px-2 py-4">
+              {draftFilter === 'open' ? '暂无待审阅草稿' : '暂无草稿'}
+            </p>
           ) : (
-            drafts.map(draft => (
+            filteredDrafts.map(draft => (
               <button
                 key={draft.id}
                 onClick={() => onDraftSelect(draft)}
@@ -82,6 +107,11 @@ export function WorkbenchDraftQueue({
                 <div className="text-xs text-neutral-400 mt-0.5">
                   {outputTypeLabel(draft.output_type)} · {draft.status}
                 </div>
+                {draft.summary && (
+                  <div className="text-xs text-neutral-500 mt-1 line-clamp-2">
+                    {draft.summary}
+                  </div>
+                )}
               </button>
             ))
           )

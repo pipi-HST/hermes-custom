@@ -163,8 +163,8 @@ export default function KnowledgeWorkbench({
 
   const loadDrafts = async () => {
     const [readingDrafts, knowledgeDrafts] = await Promise.all([
-      fetchReadingDrafts(20),
-      fetchKnowledgeDrafts(20),
+      fetchReadingDrafts(50),
+      fetchKnowledgeDrafts(50),
     ])
     // Deduplicate by id, merge both sources
     const seen = new Set<string>()
