@@ -21,6 +21,7 @@ export function useGardenCards(limit = 100) {
   const [cards, setCards] = useState<GardenCard[]>([])
   const [loading, setLoading] = useState(true)
   const [filterKind, setFilterKind] = useState('')
+  const [filterStatus, setFilterStatus] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -42,19 +43,24 @@ export function useGardenCards(limit = 100) {
   }, [limit])
 
   const filteredCards = useMemo(() => {
-    return filterKind
-      ? cards.filter(card => card.card_kind === filterKind)
-      : cards
-  }, [cards, filterKind])
+    return cards.filter(card => {
+      if (filterKind && card.card_kind !== filterKind) return false
+      if (filterStatus && card.status !== filterStatus) return false
+      return true
+    })
+  }, [cards, filterKind, filterStatus])
 
   return {
     cards,
     filteredCards,
     filterKind,
+    filterStatus,
     kindLabels: gardenKindLabels,
     kinds: gardenKinds,
     loading,
     setFilterKind,
+    setFilterStatus,
     statusLabels: gardenStatusLabels,
+    statuses: Object.keys(gardenStatusLabels),
   }
 }

@@ -2,15 +2,26 @@ import type { GardenCard } from '../../lib/api'
 
 export default function GardenCardItem({
   card,
+  isSelected = false,
   kindLabels,
+  onSelect,
   statusLabels,
 }: {
   card: GardenCard
+  isSelected?: boolean
   kindLabels: Record<string, string>
+  onSelect?: (card: GardenCard) => void
   statusLabels: Record<string, string>
 }) {
   return (
-    <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-700">
+    <button
+      onClick={() => onSelect?.(card)}
+      className={`w-full rounded-lg border p-4 text-left transition active:translate-y-px
+        ${isSelected
+          ? 'border-[#8db79d] bg-[#eef6f1] dark:border-[#446b55] dark:bg-[#16241c]'
+          : 'border-neutral-200 hover:border-[#8db79d] dark:border-neutral-700'
+        }`}
+    >
       <div className="mb-2 flex items-start justify-between gap-2">
         <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">
           {card.title}
@@ -40,6 +51,6 @@ export default function GardenCardItem({
           {card.file_path}
         </p>
       )}
-    </div>
+    </button>
   )
 }
