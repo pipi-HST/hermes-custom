@@ -132,6 +132,8 @@ export default function KnowledgeWorkbench({
   const [captureReviseInput, setCaptureReviseInput] = useState('')
   const [captureActionLoading, setCaptureActionLoading] = useState(false)
   const [captureLoading, setCaptureLoading] = useState(false)
+  const [captureError, setCaptureError] = useState<string | null>(null)
+  const [captureNotice, setCaptureNotice] = useState<string | null>(null)
 
   // Free editable capture state
   const [editableContent, setEditableContent] = useState('')
@@ -297,22 +299,28 @@ export default function KnowledgeWorkbench({
   const handleCaptureSelect = (draft: CaptureDraft) => {
     setSelectedCapture(draft)
     setCaptureReviseInput('')
+    setCaptureError(null)
+    setCaptureNotice(null)
   }
 
   const handleCaptureRevise = async () => {
     if (!selectedCapture || !captureReviseInput.trim()) return
     setCaptureActionLoading(true)
+    setCaptureError(null)
+    setCaptureNotice(null)
     try {
       const result = await reviseCaptureDraft(selectedCapture.id, captureReviseInput.trim())
-      // Update selected capture with revised draft_text if returned
-      if (result.draft_text) {
+      const refreshed = await fetchCaptureDraft(selectedCapture.id)
+      if (refreshed) {
+        setSelectedCapture(refreshed)
+      } else if (result.draft_text) {
         setSelectedCapture(prev => prev ? { ...prev, draft_text: result.draft_text as string } : null)
       }
       setCaptureReviseInput('')
-      // Refresh the list
       await loadCaptureDrafts()
+      setCaptureNotice('草稿已按修改指令更新。')
     } catch (err) {
-      console.error('Failed to revise capture draft:', err)
+      setCaptureError(err instanceof Error ? err.message : '修改失败')
     } finally {
       setCaptureActionLoading(false)
     }
@@ -321,12 +329,16 @@ export default function KnowledgeWorkbench({
   const handleCaptureCommit = async () => {
     if (!selectedCapture) return
     setCaptureActionLoading(true)
+    setCaptureError(null)
+    setCaptureNotice(null)
     try {
       await commitCaptureDraft(selectedCapture.id)
       setSelectedCapture(null)
       await loadCaptureDrafts()
+      await onCaptureCommitted?.()
+      setCaptureNotice('捕获草稿已提交入库。')
     } catch (err) {
-      console.error('Failed to commit capture draft:', err)
+      setCaptureError(err instanceof Error ? err.message : '提交失败')
     } finally {
       setCaptureActionLoading(false)
     }
@@ -772,11 +784,24 @@ export default function KnowledgeWorkbench({
 
                 {/* Actions bar */}
                 <div className="border-t border-neutral-200 dark:border-neutral-800 px-6 py-3 space-y-2">
+                  {captureError && (
+                    <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+                      {captureError}
+                    </div>
+                  )}
+                  {captureNotice && (
+                    <div className="rounded-md bg-[#ecf4ef] px-3 py-2 text-sm text-[#315f49] dark:bg-[#203229] dark:text-[#9cc7ae]">
+                      {captureNotice}
+                    </div>
+                  )}
                   <div className="flex gap-2">
                     <input
                       type="text"
                       value={captureReviseInput}
-                      onChange={e => setCaptureReviseInput(e.target.value)}
+                      onChange={e => {
+                        setCaptureReviseInput(e.target.value)
+                        setCaptureNotice(null)
+                      }}
                       placeholder="修改指令 (例如: 精简摘要、添加关键词...)"
                       className="flex-1 px-3 py-2 text-sm rounded-md border border-neutral-200
                         dark:border-neutral-700 bg-transparent
@@ -792,7 +817,7 @@ export default function KnowledgeWorkbench({
                         text-neutral-700 dark:text-neutral-300 disabled:opacity-40 transition-opacity
                         hover:bg-neutral-100 dark:hover:bg-neutral-800"
                     >
-                      修改
+                      {captureActionLoading ? '处理中...' : '修改'}
                     </button>
                     <button
                       onClick={handleCaptureCommit}
@@ -800,7 +825,7 @@ export default function KnowledgeWorkbench({
                       className="px-4 py-2 text-sm rounded-md bg-neutral-900 dark:bg-neutral-100
                         text-white dark:text-neutral-900 disabled:opacity-40 transition-opacity"
                     >
-                      提交
+                      {captureActionLoading ? '处理中...' : '提交'}
                     </button>
                   </div>
                   <button
@@ -815,6 +840,16 @@ export default function KnowledgeWorkbench({
               /* Empty state for capture-review */
               <div className="flex-1 flex items-center justify-center text-neutral-400 text-sm">
                 <div className="text-center">
+                  {captureError && (
+                    <p className="mb-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+                      {captureError}
+                    </p>
+                  )}
+                  {captureNotice && (
+                    <p className="mb-3 rounded-md bg-[#ecf4ef] px-3 py-2 text-sm text-[#315f49] dark:bg-[#203229] dark:text-[#9cc7ae]">
+                      {captureNotice}
+                    </p>
+                  )}
                   <p className="mb-2">捕获审阅模式</p>
                   <p className="text-xs">从左侧列表选择待审阅的捕获草稿</p>
                   {captureDrafts.length === 0 && !captureLoading && (
