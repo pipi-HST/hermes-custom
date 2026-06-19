@@ -200,7 +200,6 @@ export default function WorkspacePage() {
             ) : activeTab === 'workbench' ? (
               <section className="h-full overflow-hidden rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950">
                 <KnowledgeWorkbench
-                  key={`${workbenchInitialMode}-${activeFolder}`}
                   embedded
                   initialMode={workbenchInitialMode}
                   defaultFolderPath={activeFolder}
