@@ -183,6 +183,7 @@ export default function WorkspacePage() {
     setCaptures(prev => prev.map(capture => capture.id === captureId ? item : capture))
     setSelectedCaptureId(item.id)
     setActiveFolder(item.folder_path || 'Inbox')
+    updateWorkspaceUrl('library', item.folder_path || 'Inbox')
     setExpandedFolders(prev => prev.includes(item.folder_path || 'Inbox') ? prev : [...prev, item.folder_path || 'Inbox'])
   }
 
@@ -211,6 +212,7 @@ export default function WorkspacePage() {
     setCreatingFolder(null)
     setActiveFolder(created?.folder_path || folderPath)
     setSelectedCaptureId(created?.id || captureId)
+    updateWorkspaceUrl('library', created?.folder_path || folderPath)
     setExpandedFolders(prev => prev.includes(folderPath) ? prev : [...prev, folderPath])
   }
 
@@ -473,6 +475,7 @@ function LibraryView({
   const [folderPath, setFolderPath] = useState(activeFolder)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [saveNotice, setSaveNotice] = useState<string | null>(null)
   const isCreating = Boolean(creatingFolder)
 
   useEffect(() => {
@@ -481,12 +484,14 @@ function LibraryView({
       setBody('')
       setFolderPath(creatingFolder)
       setSaveError(null)
+      setSaveNotice(null)
       return
     }
     setTitle(selectedCapture?.title || '')
     setBody(selectedCapture?.body || selectedCapture?.summary || '')
     setFolderPath(selectedCapture?.folder_path || activeFolder)
     setSaveError(null)
+    setSaveNotice(null)
   }, [creatingFolder, selectedCapture?.id, activeFolder])
 
   const folderOptions = useMemo(() => {
@@ -509,6 +514,7 @@ function LibraryView({
     if (!body.trim()) return
     setSaving(true)
     setSaveError(null)
+    setSaveNotice(null)
     try {
       if (isCreating) {
         await onCreateCaptureFile({
@@ -516,12 +522,14 @@ function LibraryView({
           body,
           folder_path: folderPath || activeFolder || 'Inbox',
         })
+        setSaveNotice('已保存并入库，检索链路会复用现有 LibraryAgent / RAG。')
       } else if (selectedCapture) {
         await onSaveCapture(selectedCapture.id, {
           title,
           body,
           folder_path: folderPath || 'Inbox',
         })
+        setSaveNotice('已保存，Markdown 和检索链路已更新。')
       }
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : '保存失败')
@@ -600,13 +608,21 @@ function LibraryView({
                 {saveError}
               </div>
             )}
+            {saveNotice && (
+              <div className="mt-4 rounded-md bg-[#ecf4ef] px-3 py-2 text-sm text-[#315f49] dark:bg-[#203229] dark:text-[#9cc7ae]">
+                {saveNotice}
+              </div>
+            )}
 
             <div className="mt-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_180px]">
               <label className="block">
                 <span className="text-xs font-medium text-neutral-500">标题</span>
                 <input
                   value={title}
-                  onChange={event => setTitle(event.target.value)}
+                  onChange={event => {
+                    setTitle(event.target.value)
+                    setSaveNotice(null)
+                  }}
                   className="mt-1 w-full rounded-md border border-neutral-200 bg-transparent px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#8db79d] dark:border-neutral-700"
                   placeholder={isCreating ? '可选：不填则由 Hermes 生成标题' : '未命名文件'}
                 />
@@ -615,7 +631,10 @@ function LibraryView({
                 <span className="text-xs font-medium text-neutral-500">文件夹</span>
                 <select
                   value={folderPath || 'Inbox'}
-                  onChange={event => setFolderPath(event.target.value)}
+                  onChange={event => {
+                    setFolderPath(event.target.value)
+                    setSaveNotice(null)
+                  }}
                   className="mt-1 w-full rounded-md border border-neutral-200 bg-transparent px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#8db79d] dark:border-neutral-700"
                 >
                   {folderOptions.map(folder => (
@@ -629,7 +648,10 @@ function LibraryView({
               <span className="text-xs font-medium text-neutral-500">正文</span>
               <textarea
                 value={body}
-                onChange={event => setBody(event.target.value)}
+                onChange={event => {
+                  setBody(event.target.value)
+                  setSaveNotice(null)
+                }}
                 rows={16}
                 className="mt-1 w-full rounded-md border border-neutral-200 bg-transparent px-3 py-3 text-sm leading-7 focus:outline-none focus:ring-1 focus:ring-[#8db79d] dark:border-neutral-700"
                 placeholder="暂无正文"
