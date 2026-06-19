@@ -354,7 +354,7 @@ export async function commitCaptureDraft(draftId: string): Promise<Record<string
 
 // ─── Hermes Gateway Chat (SSE) ────────────────────────────────────────────
 
-const GATEWAY_URL = 'http://127.0.0.1:8642/v1/chat/completions'
+const GATEWAY_URL = '/api/hermes-chat'
 
 export interface ChatStreamCallbacks {
   onDelta: (text: string) => void
@@ -371,10 +371,6 @@ export async function sendMessageToGateway(
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   }
-  if (sessionId) {
-    headers['X-Hermes-Session-Id'] = sessionId
-  }
-
   const res = await fetch(GATEWAY_URL, {
     method: 'POST',
     headers,
@@ -382,6 +378,7 @@ export async function sendMessageToGateway(
       model: 'hermes-agent',
       messages,
       stream: true,
+      session_id: sessionId,
     }),
   })
 
