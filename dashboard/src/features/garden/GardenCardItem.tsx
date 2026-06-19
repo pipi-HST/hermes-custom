@@ -41,9 +41,9 @@ export default function GardenCardItem({
           {kindLabels[card.card_kind] || card.card_kind}
         </span>
       </div>
-      {card.claim && (
+      {(card.claim || card.one_liner) && (
         <p className="line-clamp-3 text-xs text-neutral-600 dark:text-neutral-400">
-          {card.claim}
+          {card.claim || card.one_liner}
         </p>
       )}
       {card.file_path && (

@@ -98,6 +98,11 @@ function GardenCardDetail({
     )
   }
 
+  const claim = card.claim || card.one_liner || ''
+  const coreArguments = parseJsonArray<{ claim?: string; consensus?: boolean; source_ids?: string[] }>(card.core_arguments)
+  const keyMaterials = parseJsonArray<{ content?: string; capture_id?: string }>(card.key_materials)
+  const captureIds = parseJsonArray<string>(card.capture_ids)
+
   return (
     <aside className="rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
       <div className="flex items-start justify-between gap-3">
@@ -119,13 +124,90 @@ function GardenCardDetail({
       </div>
 
       <section className="mt-4">
-        <h3 className="text-xs font-medium text-neutral-500">完整内容</h3>
+        <h3 className="text-xs font-medium text-neutral-500">一句话判断</h3>
         <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-neutral-700 dark:text-neutral-300">
-          {card.claim || '暂无内容'}
+          {claim || '暂无内容'}
         </p>
       </section>
 
+      {coreArguments.length > 0 && (
+        <section className="mt-5">
+          <h3 className="text-xs font-medium text-neutral-500">核心论点</h3>
+          <div className="mt-2 space-y-3">
+            {coreArguments.map((item, index) => (
+              <article
+                key={`${item.claim || ''}-${index}`}
+                className="rounded-md bg-neutral-50 p-3 dark:bg-neutral-950"
+              >
+                <p className="text-sm leading-6 text-neutral-700 dark:text-neutral-300">
+                  {item.claim || '-'}
+                </p>
+                {item.source_ids && item.source_ids.length > 0 && (
+                  <p className="mt-2 font-mono text-[11px] text-neutral-400">
+                    source: {item.source_ids.join(', ')}
+                  </p>
+                )}
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {keyMaterials.length > 0 && (
+        <section className="mt-5">
+          <h3 className="text-xs font-medium text-neutral-500">关键材料</h3>
+          <div className="mt-2 space-y-2">
+            {keyMaterials.slice(0, 5).map((item, index) => (
+              <p
+                key={`${item.capture_id || ''}-${index}`}
+                className="rounded-md border border-neutral-200 px-3 py-2 text-xs leading-5 text-neutral-600 dark:border-neutral-800 dark:text-neutral-400"
+              >
+                {item.content || '-'}
+                {item.capture_id && (
+                  <span className="mt-1 block font-mono text-[11px] text-neutral-400">
+                    {item.capture_id}
+                  </span>
+                )}
+              </p>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {card.my_view && (
+        <section className="mt-5">
+          <h3 className="text-xs font-medium text-neutral-500">我的观点</h3>
+          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-neutral-700 dark:text-neutral-300">
+            {card.my_view}
+          </p>
+        </section>
+      )}
+
       <dl className="mt-5 space-y-3 text-xs">
+        {captureIds.length > 0 && (
+          <div>
+            <dt className="text-neutral-500">关联 Capture</dt>
+            <dd className="mt-1 break-all font-mono text-neutral-600 dark:text-neutral-400">
+              {captureIds.join(', ')}
+            </dd>
+          </div>
+        )}
+        {card.schema_version && (
+          <div>
+            <dt className="text-neutral-500">Schema</dt>
+            <dd className="mt-1 font-mono text-neutral-600 dark:text-neutral-400">
+              {card.schema_version}
+            </dd>
+          </div>
+        )}
+        {card.review_interval && (
+          <div>
+            <dt className="text-neutral-500">复习间隔</dt>
+            <dd className="mt-1 text-neutral-600 dark:text-neutral-400">
+              {card.review_interval}
+            </dd>
+          </div>
+        )}
         <div>
           <dt className="text-neutral-500">文件路径</dt>
           <dd className="mt-1 break-all font-mono text-neutral-600 dark:text-neutral-400">
@@ -154,4 +236,14 @@ function formatDateTime(value: string) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString()
+}
+
+function parseJsonArray<T>(value?: string): T[] {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed as T[] : []
+  } catch {
+    return []
+  }
 }

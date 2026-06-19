@@ -255,6 +255,13 @@ export interface GardenCard {
   status: string
   file_path: string
   claim: string
+  one_liner?: string
+  core_arguments?: string
+  key_materials?: string
+  my_view?: string
+  capture_ids?: string
+  schema_version?: string
+  review_interval?: string
   created_at: string
   updated_at: string
 }
