@@ -24,6 +24,7 @@ class CreateEditableCaptureDraftRequest(BaseModel):
     source: str = ""
     source_type: str = "manual"
     title: str = ""
+    folder_path: str = ""
 
 
 class UpdateEditableCaptureDraftRequest(BaseModel):
@@ -76,6 +77,7 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
             source=body.source,
             source_type=body.source_type,
             title=body.title,
+            folder_path=body.folder_path,
         )
         return result
 

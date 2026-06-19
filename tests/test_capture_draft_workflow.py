@@ -100,6 +100,34 @@ def test_create_editable_draft_accepts_user_title(
     assert draft["capture_intent"]["title_source"] == "user"
 
 
+def test_editable_draft_commits_folder_path_to_capture_note(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {
+            "title": "文件夹笔记",
+            "summary": "新建文件保留用户选择的文件夹。",
+            "tags": ["workspace"],
+        },
+    )
+
+    draft = agent.create_editable_draft(
+        "从 AI 产品文件夹中新建的正文。",
+        folder_path="AI 产品",
+    )
+    committed = agent.commit_draft(draft["id"])
+    note = read_note(Path(agent.config.vault_path).expanduser(), committed["file_path"])
+
+    assert draft["capture_intent"]["folder_path"] == "AI 产品"
+    assert note is not None
+    frontmatter, note_body = note
+    assert frontmatter["folder_path"] == "AI 产品"
+    assert note_body == "从 AI 产品文件夹中新建的正文。"
+
+
 def test_update_editable_draft_preserves_user_title_override(
     agent: CaptureAgent,
     monkeypatch,

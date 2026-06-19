@@ -303,6 +303,7 @@ def create_editable_capture_draft(
     source: str = "",
     source_type: str = "manual",
     title: str = "",
+    folder_path: str = "",
     context: KnowledgeContext | None = None,
 ) -> dict:
     """Create a free-editing Capture draft that still commits through Capture."""
@@ -317,6 +318,7 @@ def create_editable_capture_draft(
             "source": source,
             "source_type": source_type,
             "title_provided": bool(title.strip()),
+            "folder_path": folder_path,
         },
         lambda: _create_editable_capture_draft(
             agent,
@@ -325,6 +327,7 @@ def create_editable_capture_draft(
             source=source,
             source_type=source_type,
             title=title,
+            folder_path=folder_path,
         ),
     )
 
@@ -337,6 +340,7 @@ def _create_editable_capture_draft(
     source: str = "",
     source_type: str = "manual",
     title: str = "",
+    folder_path: str = "",
 ) -> dict:
     result = agent.create_editable_draft(
         content,
@@ -344,6 +348,7 @@ def _create_editable_capture_draft(
         source_type=source_type,
         instruction=instruction,
         title=title,
+        folder_path=folder_path,
     )
     if "error" in result:
         return error_envelope(

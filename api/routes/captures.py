@@ -18,8 +18,9 @@ from db.repo import CaptureRepo
 
 
 class UpdateCaptureRequest(BaseModel):
-    body: str
+    body: str = ""
     title: str = ""
+    folder_path: str | None = None
 
 
 def create_capture_router(
@@ -67,13 +68,15 @@ def create_capture_router(
         if note is None:
             raise HTTPException(status_code=404, detail="capture note file not found")
 
-        frontmatter, _current_body = note
-        updated_body = (body.body or "").strip()
+        frontmatter, current_body = note
+        updated_body = (body.body or current_body or "").strip()
         if not updated_body:
             raise HTTPException(status_code=400, detail="body cannot be empty")
         if body.title.strip():
             frontmatter["title"] = body.title.strip()
             frontmatter["title_source"] = "user"
+        if body.folder_path is not None:
+            frontmatter["folder_path"] = body.folder_path.strip() or "Inbox"
         frontmatter["word_count"] = len(updated_body)
 
         write_result = KnowledgeWriteService(vault).write_markdown_artifact(
@@ -138,6 +141,7 @@ def _hydrate_capture(vault_path: Path, row: dict) -> dict:
         "source_url": frontmatter.get("source", ""),
         "source_type": frontmatter.get("source_type", ""),
         "status": frontmatter.get("status", "captured" if row.get("file_path") else "raw"),
+        "folder_path": frontmatter.get("folder_path") or frontmatter.get("folder") or "Inbox",
         "word_count": frontmatter.get("word_count", len(body)),
         "body": body,
     }
@@ -147,7 +151,7 @@ def _hydrate_capture(vault_path: Path, row: dict) -> dict:
 def _matches_filters(item: dict, *, tag: str, search: str, folder: str) -> bool:
     if tag and tag not in item.get("tags", []):
         return False
-    if folder and item.get("folder", "") != folder:
+    if folder and (item.get("folder_path") or item.get("folder", "")) != folder:
         return False
     if search:
         haystack = " ".join(

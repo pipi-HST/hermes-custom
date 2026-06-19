@@ -274,6 +274,82 @@ def test_update_capture_note_backs_up_and_runs_library(
     assert note_body == "New edited body for RAG"
 
 
+def test_capture_list_hydrates_and_filters_folder_path(client, tmp_path, capture_repo):
+    """GET /api/captures returns logical folder metadata from frontmatter."""
+    capture_repo.insert(file_path="captures/inbox.md")
+    product_capture = capture_repo.insert(file_path="captures/product.md")
+    (tmp_path / "captures").mkdir(parents=True)
+    (tmp_path / "captures" / "inbox.md").write_text(
+        "---\n"
+        "title: Inbox Note\n"
+        "folder_path: Inbox\n"
+        "tags: []\n"
+        "---\n\n"
+        "Inbox body",
+        encoding="utf-8",
+    )
+    (tmp_path / "captures" / "product.md").write_text(
+        "---\n"
+        "title: Product Note\n"
+        "folder_path: AI 产品\n"
+        "tags: []\n"
+        "---\n\n"
+        "Product body",
+        encoding="utf-8",
+    )
+
+    resp = client.get("/api/captures", params={"folder": "AI 产品"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["id"] == product_capture["id"]
+    assert body["items"][0]["folder_path"] == "AI 产品"
+    assert body["items"][0]["body"] == "Product body"
+
+
+def test_update_capture_can_change_folder_path_without_replacing_body(
+    client,
+    tmp_path,
+    capture_repo,
+    monkeypatch,
+):
+    """PATCH /api/captures/{id} can update logical folder metadata."""
+    capture = capture_repo.insert(file_path="captures/movable.md")
+    note_path = tmp_path / "captures" / "movable.md"
+    note_path.parent.mkdir(parents=True)
+    note_path.write_text(
+        "---\n"
+        "title: Movable\n"
+        "folder_path: Inbox\n"
+        "tags: []\n"
+        "---\n\n"
+        "Keep this body",
+        encoding="utf-8",
+    )
+
+    class FakeLibraryAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def maintain_capture(self, capture_id: str, *, apply: bool = False):
+            return {"embedding_index": {"updated": 0}}
+
+    monkeypatch.setattr("api.routes.captures.LibraryAgent", FakeLibraryAgent)
+
+    resp = client.patch(
+        f"/api/captures/{capture['id']}",
+        json={"folder_path": "数据 Agent"},
+    )
+
+    assert resp.status_code == 200
+    updated_note = read_note(tmp_path, "captures/movable.md")
+    assert updated_note is not None
+    frontmatter, note_body = updated_note
+    assert frontmatter["folder_path"] == "数据 Agent"
+    assert note_body == "Keep this body"
+
+
 # ---------------------------------------------------------------------------
 # Bridge-dependent tests (mocked)
 # ---------------------------------------------------------------------------
@@ -429,6 +505,7 @@ def test_create_editable_capture_draft_calls_bridge(client):
                 "source": "manual",
                 "source_type": "manual",
                 "title": "用户标题",
+                "folder_path": "AI 产品",
             },
         )
 
@@ -441,6 +518,7 @@ def test_create_editable_capture_draft_calls_bridge(client):
         source="manual",
         source_type="manual",
         title="用户标题",
+        folder_path="AI 产品",
     )
 
 

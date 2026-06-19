@@ -223,6 +223,7 @@ class CaptureAgent:
         source_type: str = "manual",
         instruction: str = "",
         title: str = "",
+        folder_path: str = "",
     ) -> dict:
         """Create a user-editable draft without rewriting the pasted body."""
         body = (content or "").strip()
@@ -235,6 +236,7 @@ class CaptureAgent:
         capture_intent = self._editable_capture_intent(
             instruction=instruction,
             title_source="user" if user_title else "ai",
+            folder_path=folder_path,
         )
         return self.draft_repo.create(
             raw_text=body,
@@ -558,7 +560,13 @@ class CaptureAgent:
     def _is_full_text_save_intent(self, capture_intent: dict) -> bool:
         return capture_intent.get("output_shape") == ["full_text"]
 
-    def _editable_capture_intent(self, *, instruction: str = "", title_source: str = "ai") -> dict:
+    def _editable_capture_intent(
+        self,
+        *,
+        instruction: str = "",
+        title_source: str = "ai",
+        folder_path: str = "",
+    ) -> dict:
         intent = self._build_capture_intent(instruction or "自由编辑后入库").to_dict()
         intent.update(
             {
@@ -568,6 +576,8 @@ class CaptureAgent:
                 "pipeline_policy": "reuse_capture_library_rag",
             }
         )
+        if folder_path.strip():
+            intent["folder_path"] = folder_path.strip()
         return intent
 
     def _summarize_editable_body(self, body: str) -> dict:
@@ -1538,6 +1548,7 @@ def _capture_note_intent_frontmatter(capture_intent: dict) -> dict:
     return {
         "entry_mode": "editable_capture",
         "title_source": capture_intent.get("title_source") or "ai",
+        "folder_path": capture_intent.get("folder_path") or "Inbox",
     }
 
 

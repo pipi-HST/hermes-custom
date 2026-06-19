@@ -38,6 +38,8 @@ export interface Capture {
   created_at: string
   updated_at: string
   review_count: number
+  body: string
+  folder_path: string
 }
 
 export async function fetchCaptures(params?: {
@@ -58,16 +60,18 @@ export async function fetchCaptures(params?: {
 export async function updateCapture(
   captureId: string,
   params: {
-    body: string
+    body?: string
     title?: string
+    folder_path?: string
   },
 ): Promise<Record<string, unknown>> {
   const res = await fetch(`${API_BASE}/captures/${captureId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      body: params.body,
+      body: params.body || '',
       title: params.title || '',
+      folder_path: params.folder_path,
     }),
   })
   if (!res.ok) throw new Error(`Failed to update capture: ${res.statusText}`)
@@ -291,6 +295,8 @@ export async function createEditableCaptureDraft(params: {
   instruction?: string
   source?: string
   source_type?: string
+  title?: string
+  folder_path?: string
 }): Promise<Record<string, unknown>> {
   const res = await fetch(`${API_BASE}/capture-drafts/editable`, {
     method: 'POST',
@@ -300,6 +306,8 @@ export async function createEditableCaptureDraft(params: {
       instruction: params.instruction || '',
       source: params.source || '',
       source_type: params.source_type || 'manual',
+      title: params.title || '',
+      folder_path: params.folder_path || '',
     }),
   })
   if (!res.ok) throw new Error(`Failed to create editable draft: ${res.statusText}`)
