@@ -24,6 +24,10 @@ export default function DraftsPage() {
       return true
     })
     setDrafts(merged)
+    setSelectedDraft(prev => {
+      if (!prev) return prev
+      return merged.find(draft => draft.id === prev.id) || prev
+    })
   }
 
   const handleCommitted = () => {
@@ -97,6 +101,7 @@ export default function DraftsPage() {
               draft={selectedDraft}
               onCommitted={handleCommitted}
               onBack={() => setSelectedDraft(null)}
+              onRevised={loadDrafts}
             />
           ) : (
             <div className="text-center text-neutral-400 text-sm py-20">

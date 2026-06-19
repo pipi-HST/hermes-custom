@@ -137,6 +137,7 @@ export interface ReadingDraft {
   id: string
   session_id: string
   output_type: string
+  draft_source?: 'reading' | 'knowledge'
   target_capture_id: string
   title: string
   summary: string
@@ -149,7 +150,8 @@ export interface ReadingDraft {
 
 export async function fetchReadingDrafts(limit = 20): Promise<ReadingDraft[]> {
   const qs = new URLSearchParams({ limit: String(limit) })
-  return fetchItems<ReadingDraft>(`${API_BASE}/reading/drafts?${qs}`)
+  const items = await fetchItems<ReadingDraft>(`${API_BASE}/reading/drafts?${qs}`)
+  return items.map(item => ({ ...item, draft_source: 'reading' }))
 }
 
 export async function fetchReadingDraft(draftId: string): Promise<ReadingDraft | null> {
@@ -200,7 +202,8 @@ export async function commitReadingDraft(draftId: string): Promise<Record<string
 
 export async function fetchKnowledgeDrafts(limit = 50): Promise<ReadingDraft[]> {
   const qs = new URLSearchParams({ limit: String(limit) })
-  return fetchItems<ReadingDraft>(`${API_BASE}/knowledge/drafts?${qs}`)
+  const items = await fetchItems<ReadingDraft>(`${API_BASE}/knowledge/drafts?${qs}`)
+  return items.map(item => ({ ...item, draft_source: 'knowledge' }))
 }
 
 export async function saveAnswerDraft(params: {
@@ -360,7 +363,7 @@ export interface ChatStreamCallbacks {
   onDelta: (text: string) => void
   onComplete: (fullText: string) => void
   onError: (error: string) => void
-  onToolProgress?: (toolName: string, preview: string) => void
+  onToolProgress?: (toolName: string, preview: string, status?: string) => void
 }
 
 export async function sendMessageToGateway(
@@ -396,6 +399,7 @@ export async function sendMessageToGateway(
   const decoder = new TextDecoder()
   let fullText = ''
   let buffer = ''
+  let currentEvent = 'message'
 
   while (true) {
     const { done, value } = await reader.read()
@@ -406,6 +410,14 @@ export async function sendMessageToGateway(
     buffer = lines.pop() || ''
 
     for (const line of lines) {
+      if (!line.trim()) {
+        currentEvent = 'message'
+        continue
+      }
+      if (line.startsWith('event: ')) {
+        currentEvent = line.slice(7).trim() || 'message'
+        continue
+      }
       if (line.startsWith('data: ')) {
         const data = line.slice(6).trim()
         if (data === '[DONE]') {
@@ -414,13 +426,24 @@ export async function sendMessageToGateway(
         }
         try {
           const parsed = JSON.parse(data)
-          const delta = parsed.choices?.[0]?.delta?.content
-          if (delta) {
-            fullText += delta
-            callbacks.onDelta(delta)
+          if (currentEvent === 'hermes.tool.progress') {
+            const toolName = String(parsed.tool || '')
+            if (toolName) {
+              callbacks.onToolProgress?.(
+                toolName,
+                String(parsed.label || parsed.preview || parsed.tool || ''),
+                typeof parsed.status === 'string' ? parsed.status : undefined,
+              )
+            }
+          } else {
+            const delta = parsed.choices?.[0]?.delta?.content
+            if (delta) {
+              fullText += delta
+              callbacks.onDelta(delta)
+            }
           }
         } catch {
-          // Skip non-JSON lines (e.g., hermes.tool.progress events)
+          // Skip malformed SSE data lines.
         }
       }
     }

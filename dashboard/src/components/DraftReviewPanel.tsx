@@ -11,9 +11,10 @@ interface DraftReviewPanelProps {
   draft: ReadingDraft | null
   onCommitted: () => void
   onBack: () => void
+  onRevised?: () => void | Promise<void>
 }
 
-export function DraftReviewPanel({ draft, onCommitted, onBack }: DraftReviewPanelProps) {
+export function DraftReviewPanel({ draft, onCommitted, onBack, onRevised }: DraftReviewPanelProps) {
   const [revisionInstruction, setRevisionInstruction] = useState('')
   const [isRevising, setIsRevising] = useState(false)
   const [isCommitting, setIsCommitting] = useState(false)
@@ -33,11 +34,13 @@ export function DraftReviewPanel({ draft, onCommitted, onBack }: DraftReviewPane
     setIsRevising(true)
     setError(null)
     try {
-      // Use the appropriate revise endpoint based on context
-      await reviseReadingDraft(draft.id, revisionInstruction)
+      if (draft.draft_source === 'knowledge') {
+        await reviseKnowledgeDraft(draft.id, revisionInstruction)
+      } else {
+        await reviseReadingDraft(draft.id, revisionInstruction)
+      }
       setRevisionInstruction('')
-      // Refresh the draft to get updated content
-      window.location.reload()
+      await onRevised?.()
     } catch (e) {
       setError(e instanceof Error ? e.message : '修改失败')
     } finally {
@@ -50,7 +53,11 @@ export function DraftReviewPanel({ draft, onCommitted, onBack }: DraftReviewPane
     setError(null)
     setSuccessMessage(null)
     try {
-      const result = await commitReadingDraft(draft.id)
+      if (draft.draft_source === 'knowledge') {
+        await commitKnowledgeDraft(draft.id)
+      } else {
+        await commitReadingDraft(draft.id)
+      }
       setSuccessMessage('草稿已提交到知识库')
       setTimeout(onCommitted, 1500)
     } catch (e) {

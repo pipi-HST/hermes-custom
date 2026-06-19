@@ -26,6 +26,14 @@ interface ChatMessage {
   timestamp: string
 }
 
+interface ToolEvent {
+  id: string
+  toolName: string
+  preview: string
+  status: string
+  timestamp: string
+}
+
 export interface WorkbenchSideContext {
   title: string
   emptyText?: string
@@ -104,6 +112,7 @@ export default function KnowledgeWorkbench({
   const [drafts, setDrafts] = useState<ReadingDraft[]>([])
   const [selectedDraft, setSelectedDraft] = useState<ReadingDraft | null>(null)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
+  const [toolEvents, setToolEvents] = useState<ToolEvent[]>([])
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)
@@ -154,6 +163,10 @@ export default function KnowledgeWorkbench({
       return true
     })
     setDrafts(merged)
+    setSelectedDraft(prev => {
+      if (!prev) return prev
+      return merged.find(draft => draft.id === prev.id) || prev
+    })
   }
 
   const loadCaptureDrafts = async () => {
@@ -188,6 +201,7 @@ export default function KnowledgeWorkbench({
     }
     const updatedMessages = [...chatMessages, userMsg]
     setChatMessages(updatedMessages)
+    setToolEvents([])
     setInputValue('')
     setIsLoading(true)
 
@@ -231,6 +245,18 @@ export default function KnowledgeWorkbench({
             ),
           )
           setIsLoading(false)
+        },
+        onToolProgress: (toolName: string, preview: string, status = 'running') => {
+          setToolEvents(prev => [
+            {
+              id: crypto.randomUUID(),
+              toolName,
+              preview,
+              status,
+              timestamp: new Date().toISOString(),
+            },
+            ...prev,
+          ].slice(0, 6))
         },
       },
       sessionId,
@@ -403,6 +429,26 @@ export default function KnowledgeWorkbench({
       return { title: '来源与工具', sections }
     }
 
+    if (mode === 'chat') {
+      const sections: WorkbenchSideContext['sections'] = [
+        { label: '会话 ID', value: sessionId, mono: true },
+        { label: '消息数', value: String(chatMessages.length) },
+      ]
+      if (toolEvents.length > 0) {
+        sections.push({
+          label: '工具进度',
+          value: toolEvents
+            .map(event => `${event.status}: ${event.preview || event.toolName}`)
+            .join('\n'),
+        })
+      }
+      return {
+        title: '来源与工具',
+        emptyText: toolEvents.length === 0 ? '对话中调用工具时，这里会显示工具进度。' : undefined,
+        sections,
+      }
+    }
+
     if (selectedDraft) {
       const sections: WorkbenchSideContext['sections'] = [
         { label: '草稿类型', value: outputTypeLabel(selectedDraft.output_type) },
@@ -423,9 +469,12 @@ export default function KnowledgeWorkbench({
     defaultFolderPath,
     editableDraft,
     editableStatus,
+    chatMessages.length,
     mode,
     selectedCapture,
     selectedDraft,
+    sessionId,
+    toolEvents,
   ])
 
   useEffect(() => {
@@ -684,6 +733,7 @@ export default function KnowledgeWorkbench({
             draft={selectedDraft}
             onCommitted={handleDraftCommitted}
             onBack={() => setMode('chat')}
+            onRevised={loadDrafts}
           />
         )}
 

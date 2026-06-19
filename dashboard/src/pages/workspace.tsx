@@ -762,7 +762,7 @@ function WorkbenchContextPanel({ context }: { context?: WorkbenchSideContext | n
               ))}
             </div>
           ) : (
-            <p className={`mt-1 text-sm text-neutral-700 dark:text-neutral-300 ${section.mono ? 'font-mono text-xs' : ''}`}>
+            <p className={`mt-1 whitespace-pre-wrap text-sm text-neutral-700 dark:text-neutral-300 ${section.mono ? 'font-mono text-xs' : ''}`}>
               {section.value || '-'}
             </p>
           )}
