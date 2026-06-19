@@ -649,7 +649,7 @@ def _commit_independent_note(
     rel_path = write_result.file_path
     capture_repo.update(capture_id, file_path=rel_path, raw_path="")
     library_report = _postprocess_committed_learning_note(config, repo, capture_id)
-    repo.update_draft(draft["id"], status="committed")
+    repo.update_draft(draft["id"], status="committed", target_capture_id=capture_id)
     repo.update_session(draft["session_id"], status="committed", committed_artifact_id=rel_path)
     warnings = []
     if library_report.get("error"):

@@ -166,6 +166,14 @@ def test_saved_answer_commit_uses_reading_write_service(answer_config, monkeypat
     artifact = committed["durable_artifacts"][0]
     assert artifact["type"] == "learning_note"
     assert (Path(answer_config.vault_path) / artifact["path"]).exists()
+    conn = sqlite3.connect(answer_config.db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT target_capture_id, status FROM reading_drafts WHERE id = ?",
+        (draft["meta"]["reading_draft_id"],),
+    ).fetchone()
+    assert row["status"] == "committed"
+    assert row["target_capture_id"] == committed["meta"]["capture_id"]
 
 
 def test_save_answer_prefers_latest_full_rag_answer_for_recent_answer(answer_config, monkeypatch):
