@@ -16,6 +16,7 @@ import {
 } from '../../lib/api'
 import { DraftReviewPanel } from '../../components/DraftReviewPanel'
 import { WorkbenchDraftQueue } from './WorkbenchDraftQueue'
+import { WorkbenchSidePanel } from './WorkbenchSidePanel'
 
 type WorkbenchMode = 'chat' | 'editable-capture' | 'draft-review' | 'capture-review'
 type EditableStatus = 'empty' | 'editing' | 'saving_draft' | 'ready_to_commit' | 'committing' | 'committed' | 'error'
@@ -118,8 +119,9 @@ export default function KnowledgeWorkbench({
   const [isLoading, setIsLoading] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)
 
-  // Gateway session ID for conversation continuity
-  const [sessionId] = useState(() => crypto.randomUUID())
+  // Gateway session ID for conversation continuity. Generate it after mount so
+  // SSR markup does not hydrate with a different random UUID.
+  const [sessionId, setSessionId] = useState('')
 
   // Capture-review state
   const [captureDrafts, setCaptureDrafts] = useState<CaptureDraft[]>([])
@@ -138,6 +140,10 @@ export default function KnowledgeWorkbench({
 
   useEffect(() => {
     loadDrafts()
+  }, [])
+
+  useEffect(() => {
+    setSessionId(crypto.randomUUID())
   }, [])
 
   useEffect(() => {
@@ -260,7 +266,7 @@ export default function KnowledgeWorkbench({
           ].slice(0, 6))
         },
       },
-      sessionId,
+      sessionId || crypto.randomUUID(),
     )
   }, [inputValue, isLoading, chatMessages, sessionId])
 
@@ -432,9 +438,11 @@ export default function KnowledgeWorkbench({
 
     if (mode === 'chat') {
       const sections: WorkbenchSideContext['sections'] = [
-        { label: '会话 ID', value: sessionId, mono: true },
         { label: '消息数', value: String(chatMessages.length) },
       ]
+      if (sessionId) {
+        sections.unshift({ label: '会话 ID', value: sessionId, mono: true })
+      }
       if (toolEvents.length > 0) {
         sections.push({
           label: '工具进度',
@@ -810,143 +818,7 @@ export default function KnowledgeWorkbench({
         )}
       </div>
 
-      {/* Right panel: Sources & tools */}
-      <aside className={`${hideSidePanel ? 'hidden' : ''} w-56 shrink-0 border-l border-neutral-200 dark:border-neutral-800
-        overflow-y-auto px-4 py-3`}>
-        <h3 className="text-xs font-medium uppercase tracking-wider text-neutral-400 mb-3">
-          来源与工具
-        </h3>
-        {mode === 'editable-capture' ? (
-          <div className="text-sm space-y-4">
-            <div>
-              <p className="text-xs text-neutral-500">状态</p>
-              <p className="text-neutral-700 dark:text-neutral-300">
-                {editableStatusLabel(editableStatus)}
-              </p>
-            </div>
-            {editableDraft ? (
-              <>
-                <div>
-                  <p className="text-xs text-neutral-500">草稿 ID</p>
-                  <p className="text-xs text-neutral-600 dark:text-neutral-400 font-mono truncate">
-                    {editableDraft.id}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs text-neutral-500">标题</p>
-                  <p className="text-neutral-700 dark:text-neutral-300">
-                    {editableDraft.title || '生成中'}
-                  </p>
-                </div>
-                {editableDraft.summary && (
-                  <div>
-                    <p className="text-xs text-neutral-500">摘要</p>
-                    <p className="text-xs text-neutral-600 dark:text-neutral-400">
-                      {editableDraft.summary}
-                    </p>
-                  </div>
-                )}
-                {editableDraft.tags.length > 0 && (
-                  <div>
-                    <p className="text-xs text-neutral-500 mb-1">标签</p>
-                    <div className="flex flex-wrap gap-1">
-                      {editableDraft.tags.map(tag => (
-                        <span
-                          key={tag}
-                          className="px-2 py-0.5 text-xs rounded-full bg-neutral-100 dark:bg-neutral-800
-                            text-neutral-600 dark:text-neutral-400"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <div>
-                  <p className="text-xs text-neutral-500">检索链路</p>
-                  <p className="text-xs text-neutral-600 dark:text-neutral-400">
-                    确认入库后会复用现有 Library Agent 和 RAG 索引。
-                  </p>
-                </div>
-              </>
-            ) : (
-              <p className="text-xs text-neutral-400">
-                保存后这里会显示 Hermes 自动生成的标题、摘要和标签。
-              </p>
-            )}
-          </div>
-        ) : mode === 'capture-review' && selectedCapture ? (
-          <div className="text-sm space-y-3">
-            <div>
-              <p className="text-xs text-neutral-500">草稿 ID</p>
-              <p className="text-xs text-neutral-600 dark:text-neutral-400 font-mono truncate">
-                {selectedCapture.id}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-neutral-500">来源</p>
-              <p className="text-neutral-700 dark:text-neutral-300">
-                {selectedCapture.source}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-neutral-500">来源类型</p>
-              <p className="text-neutral-700 dark:text-neutral-300">
-                {selectedCapture.source_type}
-              </p>
-            </div>
-            {selectedCapture.instruction && (
-              <div>
-                <p className="text-xs text-neutral-500">捕获指令</p>
-                <p className="text-xs text-neutral-600 dark:text-neutral-400">
-                  {selectedCapture.instruction}
-                </p>
-              </div>
-            )}
-            {selectedCapture.committed_capture_id && (
-              <div>
-                <p className="text-xs text-neutral-500">已提交捕获</p>
-                <p className="text-xs text-neutral-600 dark:text-neutral-400 font-mono">
-                  {selectedCapture.committed_capture_id}
-                </p>
-              </div>
-            )}
-            <div>
-              <p className="text-xs text-neutral-500">创建时间</p>
-              <p className="text-xs text-neutral-600 dark:text-neutral-400">
-                {new Date(selectedCapture.created_at).toLocaleString()}
-              </p>
-            </div>
-          </div>
-        ) : selectedDraft ? (
-          <div className="text-sm space-y-3">
-            <div>
-              <p className="text-xs text-neutral-500">草稿类型</p>
-              <p className="text-neutral-700 dark:text-neutral-300">
-                {outputTypeLabel(selectedDraft.output_type)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-neutral-500">会话 ID</p>
-              <p className="text-xs text-neutral-600 dark:text-neutral-400 font-mono">
-                {selectedDraft.session_id}
-              </p>
-            </div>
-            {selectedDraft.target_capture_id && (
-              <div>
-                <p className="text-xs text-neutral-500">目标捕获</p>
-                <p className="text-xs text-neutral-600 dark:text-neutral-400 font-mono">
-                  {selectedDraft.target_capture_id}
-                </p>
-              </div>
-            )}
-          </div>
-        ) : (
-          <p className="text-xs text-neutral-400">
-            选择草稿或对话以查看相关信息
-          </p>
-        )}
-      </aside>
+      <WorkbenchSidePanel context={sideContext} hidden={hideSidePanel} />
     </div>
   )
 }
