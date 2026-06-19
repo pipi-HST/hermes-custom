@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Capture, CaptureDraft, GardenCard } from '../lib/api'
-import { fetchCaptureDrafts, fetchCaptures, fetchGardenCards, updateCapture } from '../lib/api'
+import {
+  commitCaptureDraft,
+  createEditableCaptureDraft,
+  fetchCaptureDrafts,
+  fetchCaptures,
+  fetchGardenCards,
+  updateCapture,
+} from '../lib/api'
 import GardenBoard from '../features/garden/GardenBoard'
 import KnowledgeWorkbench from '../features/workbench/KnowledgeWorkbench'
 import type { WorkbenchSideContext } from '../features/workbench/KnowledgeWorkbench'
@@ -28,8 +35,9 @@ export default function WorkspacePage() {
   const [selectedCaptureId, setSelectedCaptureId] = useState<string>('')
   const [leftCollapsed, setLeftCollapsed] = useState(false)
   const [rightCollapsed, setRightCollapsed] = useState(false)
-  const [workbenchInitialMode, setWorkbenchInitialMode] = useState<'chat' | 'editable-capture'>('chat')
+  const workbenchInitialMode: 'chat' | 'editable-capture' = 'chat'
   const [workbenchSideContext, setWorkbenchSideContext] = useState<WorkbenchSideContext | null>(null)
+  const [creatingFolder, setCreatingFolder] = useState<string | null>(null)
   const [captures, setCaptures] = useState<WorkspaceCapture[]>([])
   const [gardenCards, setGardenCards] = useState<GardenCard[]>([])
   const [drafts, setDrafts] = useState<CaptureDraft[]>([])
@@ -54,6 +62,7 @@ export default function WorkspacePage() {
         : initialCapture?.id || '',
     )
     setLoading(false)
+    return liveCaptures
   }, [activeFolder])
 
   useEffect(() => {
@@ -97,8 +106,10 @@ export default function WorkspacePage() {
   }
 
   const createFile = () => {
-    setWorkbenchInitialMode('editable-capture')
-    setActiveTab('workbench')
+    setCreatingFolder(activeFolder)
+    setSelectedCaptureId('')
+    setActiveTab('library')
+    setExpandedFolders(prev => prev.includes(activeFolder) ? prev : [...prev, activeFolder])
   }
 
   const saveCapture = async (captureId: string, params: { title: string; body: string; folder_path: string }) => {
@@ -111,6 +122,34 @@ export default function WorkspacePage() {
     setExpandedFolders(prev => prev.includes(item.folder_path || 'Inbox') ? prev : [...prev, item.folder_path || 'Inbox'])
   }
 
+  const createCaptureFile = async (params: { title: string; body: string; folder_path: string }) => {
+    const folderPath = params.folder_path || 'Inbox'
+    const draftResult = await createEditableCaptureDraft({
+      content: params.body,
+      source: 'Hermes Workspace',
+      source_type: 'manual',
+      title: params.title,
+      folder_path: folderPath,
+    })
+    const draftMeta = (draftResult.meta || {}) as Record<string, unknown>
+    const draftId = String(draftMeta.draft_id || '')
+    if (!draftId) throw new Error('新建文件失败：没有返回草稿 ID')
+
+    const commitResult = await commitCaptureDraft(draftId)
+    if (commitResult.status === 'error') {
+      throw new Error(String(commitResult.chat_preview || '确认入库失败'))
+    }
+
+    const commitMeta = (commitResult.meta || {}) as Record<string, unknown>
+    const captureId = String(commitMeta.capture_id || '')
+    const liveCaptures = await loadWorkspace()
+    const created = liveCaptures.find(item => item.id === captureId)
+    setCreatingFolder(null)
+    setActiveFolder(created?.folder_path || folderPath)
+    setSelectedCaptureId(created?.id || captureId)
+    setExpandedFolders(prev => prev.includes(folderPath) ? prev : [...prev, folderPath])
+  }
+
   return (
     <div className="min-h-[100dvh] bg-[#f6f7f4] text-neutral-950 dark:bg-[#101412] dark:text-neutral-100">
       <div className={`grid min-h-[100dvh] grid-cols-1 ${gridClass}`}>
@@ -121,9 +160,10 @@ export default function WorkspacePage() {
           collapsed={leftCollapsed}
           expandedFolders={expandedFolders}
           folderNames={folderNames}
-          selectedCaptureId={selectedCapture?.id || ''}
+          selectedCaptureId={creatingFolder ? '' : selectedCapture?.id || ''}
           onCreateFile={createFile}
           onSelectCapture={(capture) => {
+            setCreatingFolder(null)
             setSelectedCaptureId(capture.id)
             setActiveFolder(capture.folder_path || 'Inbox')
             setActiveTab('library')
@@ -142,10 +182,15 @@ export default function WorkspacePage() {
               <LibraryView
                 activeFolder={activeFolder}
                 captures={visibleCaptures}
-                selectedCapture={selectedCapture}
+                creatingFolder={creatingFolder}
+                selectedCapture={creatingFolder ? undefined : selectedCapture}
                 onCreateFile={createFile}
+                onCreateCaptureFile={createCaptureFile}
                 onSaveCapture={saveCapture}
-                onSelectCapture={(capture) => setSelectedCaptureId(capture.id)}
+                onSelectCapture={(capture) => {
+                  setCreatingFolder(null)
+                  setSelectedCaptureId(capture.id)
+                }}
               />
             ) : activeTab === 'workbench' ? (
               <section className="h-full overflow-hidden rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950">
@@ -154,7 +199,9 @@ export default function WorkspacePage() {
                   embedded
                   initialMode={workbenchInitialMode}
                   defaultFolderPath={activeFolder}
-                  onCaptureCommitted={loadWorkspace}
+                  onCaptureCommitted={async () => {
+                    await loadWorkspace()
+                  }}
                   onSideContextChange={setWorkbenchSideContext}
                   hideSidePanel
                 />
@@ -340,15 +387,19 @@ function WorkspaceHeader({
 function LibraryView({
   activeFolder,
   captures,
+  creatingFolder,
   selectedCapture,
   onCreateFile,
+  onCreateCaptureFile,
   onSaveCapture,
   onSelectCapture,
 }: {
   activeFolder: string
   captures: WorkspaceCapture[]
+  creatingFolder?: string | null
   selectedCapture?: WorkspaceCapture
   onCreateFile: () => void
+  onCreateCaptureFile: (params: { title: string; body: string; folder_path: string }) => Promise<void>
   onSaveCapture: (captureId: string, params: { title: string; body: string; folder_path: string }) => Promise<void>
   onSelectCapture: (capture: WorkspaceCapture) => void
 }) {
@@ -357,39 +408,56 @@ function LibraryView({
   const [folderPath, setFolderPath] = useState(activeFolder)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const isCreating = Boolean(creatingFolder)
 
   useEffect(() => {
+    if (creatingFolder) {
+      setTitle('')
+      setBody('')
+      setFolderPath(creatingFolder)
+      setSaveError(null)
+      return
+    }
     setTitle(selectedCapture?.title || '')
     setBody(selectedCapture?.body || selectedCapture?.summary || '')
     setFolderPath(selectedCapture?.folder_path || activeFolder)
     setSaveError(null)
-  }, [selectedCapture?.id, activeFolder])
+  }, [creatingFolder, selectedCapture?.id, activeFolder])
 
   const folderOptions = useMemo(() => {
     const options = new Set([...baseFolderNames, folderPath || activeFolder])
     return Array.from(options)
   }, [activeFolder, folderPath])
 
-  const hasSelection = Boolean(selectedCapture)
+  const hasSelection = Boolean(selectedCapture) && !isCreating
   const hasChanges = Boolean(
-    selectedCapture &&
+    isCreating ||
+    (selectedCapture &&
       (
         title !== (selectedCapture.title || '') ||
         body !== (selectedCapture.body || selectedCapture.summary || '') ||
         folderPath !== (selectedCapture.folder_path || activeFolder)
-      ),
+      )),
   )
 
   const handleSave = async () => {
-    if (!selectedCapture || !body.trim()) return
+    if (!body.trim()) return
     setSaving(true)
     setSaveError(null)
     try {
-      await onSaveCapture(selectedCapture.id, {
-        title,
-        body,
-        folder_path: folderPath || 'Inbox',
-      })
+      if (isCreating) {
+        await onCreateCaptureFile({
+          title,
+          body,
+          folder_path: folderPath || activeFolder || 'Inbox',
+        })
+      } else if (selectedCapture) {
+        await onSaveCapture(selectedCapture.id, {
+          title,
+          body,
+          folder_path: folderPath || 'Inbox',
+        })
+      }
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : '保存失败')
     } finally {
@@ -397,19 +465,19 @@ function LibraryView({
     }
   }
 
-  if (captures.length === 0) {
+  if (captures.length === 0 && !isCreating) {
     return (
       <section className="flex min-h-full items-center justify-center rounded-lg border border-dashed border-neutral-300 bg-white/70 p-8 text-center dark:border-neutral-700 dark:bg-neutral-900/60">
         <div>
           <h3 className="text-lg font-semibold">{activeFolder} 还没有文件</h3>
           <p className="mx-auto mt-2 max-w-[52ch] text-sm leading-6 text-neutral-500 dark:text-neutral-400">
-            从粘贴整理创建内容后，文件会按 frontmatter 的 folder_path 出现在这里。
+            从这里新建文件后，内容会按 frontmatter 的 folder_path 出现在当前文件夹。
           </p>
           <button
             onClick={onCreateFile}
             className="mt-4 rounded-lg bg-[#2f6f55] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#285f49] active:translate-y-px"
           >
-            去粘贴整理
+            新建文件
           </button>
         </div>
       </section>
@@ -428,7 +496,7 @@ function LibraryView({
             key={item.id}
             onClick={() => onSelectCapture(item)}
             className={`rounded-lg border p-3 ${
-              selectedCapture?.id === item.id
+              !isCreating && selectedCapture?.id === item.id
                 ? 'border-[#8db79d] bg-[#eef6f1] dark:border-[#446b55] dark:bg-[#16241c]'
                 : 'border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900'
             } text-left transition hover:border-[#8db79d] active:translate-y-px`}
@@ -442,7 +510,7 @@ function LibraryView({
       </div>
 
       <article className="rounded-lg border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-950">
-        {!hasSelection ? (
+        {!hasSelection && !isCreating ? (
           <div className="flex min-h-[360px] items-center justify-center text-sm text-neutral-400">
             选择一个文件查看和编辑
           </div>
@@ -450,13 +518,15 @@ function LibraryView({
           <>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h3 className="text-xl font-semibold">文件详情</h3>
+                <h3 className="text-xl font-semibold">{isCreating ? '新建文件' : '文件详情'}</h3>
                 <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
-                  {folderPath || activeFolder} / {sourceLabel(selectedCapture?.source_type || '')} / {statusLabel(selectedCapture?.status || '')}
+                  {isCreating
+                    ? `${folderPath || activeFolder} / 手动 / 待入库`
+                    : `${folderPath || activeFolder} / ${sourceLabel(selectedCapture?.source_type || '')} / ${statusLabel(selectedCapture?.status || '')}`}
                 </p>
               </div>
               <span className="rounded-md bg-[#ecf4ef] px-2 py-1 text-xs text-[#315f49] dark:bg-[#203229] dark:text-[#9cc7ae]">
-                {selectedCapture?.word_count || 0} 字
+                {isCreating ? body.trim().length : selectedCapture?.word_count || 0} 字
               </span>
             </div>
 
@@ -473,7 +543,7 @@ function LibraryView({
                   value={title}
                   onChange={event => setTitle(event.target.value)}
                   className="mt-1 w-full rounded-md border border-neutral-200 bg-transparent px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#8db79d] dark:border-neutral-700"
-                  placeholder="未命名文件"
+                  placeholder={isCreating ? '可选：不填则由 Hermes 生成标题' : '未命名文件'}
                 />
               </label>
               <label className="block">
@@ -503,14 +573,16 @@ function LibraryView({
 
             <div className="mt-4 flex items-center justify-between gap-3">
               <p className="text-xs text-neutral-500">
-                保存会写回 Markdown frontmatter/body，并复用 LibraryAgent 更新检索链路。
+                {isCreating
+                  ? '保存会先生成 Capture 草稿，再确认入库并复用 LibraryAgent / RAG 链路。'
+                  : '保存会写回 Markdown frontmatter/body，并复用 LibraryAgent 更新检索链路。'}
               </p>
               <button
                 onClick={handleSave}
                 disabled={!body.trim() || !hasChanges || saving}
                 className="rounded-lg bg-[#2f6f55] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#285f49] active:translate-y-px disabled:opacity-40"
               >
-                {saving ? '保存中...' : '保存'}
+                {saving ? '保存中...' : isCreating ? '保存并入库' : '保存'}
               </button>
             </div>
           </>

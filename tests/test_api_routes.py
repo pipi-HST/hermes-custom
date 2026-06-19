@@ -613,4 +613,7 @@ def test_commit_capture_draft_calls_bridge(client, draft_repo):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
-    mock_commit.assert_called_once_with(draft_id=draft["id"])
+    mock_commit.assert_called_once_with(
+        draft_id=draft["id"],
+        confirmation_source="dashboard",
+    )

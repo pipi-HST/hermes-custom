@@ -109,7 +109,10 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
     def commit_capture_draft(draft_id: str):
         from bridge import capture_bridge
 
-        result = capture_bridge.commit_capture_draft(draft_id=draft_id)
+        result = capture_bridge.commit_capture_draft(
+            draft_id=draft_id,
+            confirmation_source="dashboard",
+        )
         return result
 
     return router
