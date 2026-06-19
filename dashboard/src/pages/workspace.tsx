@@ -250,6 +250,7 @@ export default function WorkspacePage() {
                 activeFolder={activeFolder}
                 captures={visibleCaptures}
                 creatingFolder={creatingFolder}
+                folderNames={folderNames}
                 selectedCapture={creatingFolder ? undefined : selectedCapture}
                 onCreateFile={createFile}
                 onCreateCaptureFile={createCaptureFile}
@@ -455,6 +456,7 @@ function LibraryView({
   activeFolder,
   captures,
   creatingFolder,
+  folderNames,
   selectedCapture,
   onCreateFile,
   onCreateCaptureFile,
@@ -464,6 +466,7 @@ function LibraryView({
   activeFolder: string
   captures: WorkspaceCapture[]
   creatingFolder?: string | null
+  folderNames: string[]
   selectedCapture?: WorkspaceCapture
   onCreateFile: () => void
   onCreateCaptureFile: (params: { title: string; body: string; folder_path: string }) => Promise<void>
@@ -495,9 +498,9 @@ function LibraryView({
   }, [creatingFolder, selectedCapture?.id, activeFolder])
 
   const folderOptions = useMemo(() => {
-    const options = new Set([...baseFolderNames, folderPath || activeFolder])
+    const options = new Set([...baseFolderNames, ...folderNames, folderPath || activeFolder])
     return Array.from(options)
-  }, [activeFolder, folderPath])
+  }, [activeFolder, folderNames, folderPath])
 
   const hasSelection = Boolean(selectedCapture) && !isCreating
   const hasChanges = Boolean(
@@ -574,10 +577,27 @@ function LibraryView({
                 : 'border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900'
             } text-left transition hover:border-[#8db79d] active:translate-y-px`}
           >
-            <h4 className="text-sm font-semibold">{item.title || '(无标题)'}</h4>
+            <div className="flex items-start justify-between gap-3">
+              <h4 className="min-w-0 flex-1 truncate text-sm font-semibold">{item.title || '(无标题)'}</h4>
+              <span className="shrink-0 rounded-md bg-neutral-100 px-2 py-0.5 text-[11px] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+                {statusLabel(item.status)}
+              </span>
+            </div>
             <p className="mt-1 line-clamp-2 text-xs leading-5 text-neutral-500 dark:text-neutral-400">
               {item.summary || '暂无摘要'}
             </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-neutral-400">
+              <span>{sourceLabel(item.source_type)}</span>
+              <span>{formatDate(item.updated_at || item.created_at)}</span>
+              {item.tags.slice(0, 3).map(tag => (
+                <span
+                  key={tag}
+                  className="rounded bg-neutral-100 px-1.5 py-0.5 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
           </button>
         ))}
       </div>
@@ -629,18 +649,21 @@ function LibraryView({
               </label>
               <label className="block">
                 <span className="text-xs font-medium text-neutral-500">文件夹</span>
-                <select
+                <input
+                  list="workspace-folder-options"
                   value={folderPath || 'Inbox'}
                   onChange={event => {
                     setFolderPath(event.target.value)
                     setSaveNotice(null)
                   }}
                   className="mt-1 w-full rounded-md border border-neutral-200 bg-transparent px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#8db79d] dark:border-neutral-700"
-                >
+                  placeholder="Inbox"
+                />
+                <datalist id="workspace-folder-options">
                   {folderOptions.map(folder => (
                     <option key={folder} value={folder}>{folder}</option>
                   ))}
-                </select>
+                </datalist>
               </label>
             </div>
 
@@ -659,11 +682,18 @@ function LibraryView({
             </label>
 
             <div className="mt-4 flex items-center justify-between gap-3">
-              <p className="text-xs text-neutral-500">
-                {isCreating
-                  ? '保存会先生成 Capture 草稿，再确认入库并复用 LibraryAgent / RAG 链路。'
-                  : '保存会写回 Markdown frontmatter/body，并复用 LibraryAgent 更新检索链路。'}
-              </p>
+              <div className="min-w-0 text-xs text-neutral-500">
+                <p>
+                  {isCreating
+                    ? '保存会先生成 Capture 草稿，再确认入库并复用 LibraryAgent / RAG 链路。'
+                    : '保存会写回 Markdown frontmatter/body，并复用 LibraryAgent 更新检索链路。'}
+                </p>
+                {!isCreating && selectedCapture?.file_path && (
+                  <p className="mt-1 truncate font-mono text-[11px] text-neutral-400">
+                    {selectedCapture.file_path} · {formatDateTime(selectedCapture.updated_at || selectedCapture.created_at)}
+                  </p>
+                )}
+              </div>
               <button
                 onClick={handleSave}
                 disabled={!body.trim() || !hasChanges || saving}
@@ -780,7 +810,7 @@ function AISidebar({
           <p className="rounded-lg border border-dashed border-neutral-300 p-4 text-sm text-neutral-400 dark:border-neutral-700">
             暂无 AI 建议
           </p>
-        ) : drafts.map(draft => (
+        ) : drafts.slice(0, 5).map(draft => (
           <article
             key={draft.id}
             className="rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900"
@@ -794,6 +824,11 @@ function AISidebar({
             </p>
           </article>
         ))}
+        {drafts.length > 5 && (
+          <p className="rounded-lg border border-dashed border-neutral-300 p-3 text-xs text-neutral-400 dark:border-neutral-700">
+            还有 {drafts.length - 5} 条建议，可进入工作台的草稿审阅集中处理。
+          </p>
+        )}
       </section>
       )}
     </aside>
@@ -928,4 +963,18 @@ function statusLabel(status: string) {
     committed: '已入库',
   }
   return labels[status] || status || '未知状态'
+}
+
+function formatDate(value: string) {
+  if (!value) return '未知时间'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleDateString()
+}
+
+function formatDateTime(value: string) {
+  if (!value) return '未知时间'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString()
 }
