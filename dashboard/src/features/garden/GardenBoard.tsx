@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { GardenCard } from '../../lib/api'
 import { fetchGardenCards } from '../../lib/api'
 
-export default function GardenBoard() {
+export default function GardenBoard({ embedded = false }: { embedded?: boolean }) {
   const [cards, setCards] = useState<GardenCard[]>([])
   const [loading, setLoading] = useState(true)
   const [filterKind, setFilterKind] = useState<string>('')
@@ -33,10 +33,12 @@ export default function GardenBoard() {
     : cards
 
   return (
-    <div className="max-w-4xl mx-auto px-6 py-8">
-      <h1 className="text-lg font-medium mb-6 text-neutral-900 dark:text-neutral-100">
-        知识卡片
-      </h1>
+    <div className={embedded ? 'px-5 py-5' : 'max-w-4xl mx-auto px-6 py-8'}>
+      {!embedded && (
+        <h1 className="text-lg font-medium mb-6 text-neutral-900 dark:text-neutral-100">
+          知识卡片
+        </h1>
+      )}
 
       {/* Kind filter */}
       <div className="flex gap-2 mb-6">

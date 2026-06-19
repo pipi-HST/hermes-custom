@@ -84,7 +84,12 @@ export default function WorkspacePage() {
   }, [captures, folderNames])
 
   const visibleCaptures = capturesByFolder[activeFolder] || []
-  const selectedCapture = captures.find(item => item.id === selectedCaptureId) || visibleCaptures[0] || captures[0]
+  const selectedCapture = (
+    captures.find(item =>
+      item.id === selectedCaptureId &&
+      (item.folder_path || 'Inbox') === activeFolder,
+    ) || visibleCaptures[0]
+  )
   const gridClass = leftCollapsed
     ? rightCollapsed
       ? 'lg:grid-cols-[64px_minmax(0,1fr)_56px]'
@@ -97,7 +102,7 @@ export default function WorkspacePage() {
     setActiveFolder(folder)
     setActiveTab('library')
     const firstFile = (capturesByFolder[folder] || [])[0]
-    if (firstFile) setSelectedCaptureId(firstFile.id)
+    setSelectedCaptureId(firstFile?.id || '')
     setExpandedFolders(prev =>
       prev.includes(folder)
         ? prev.filter(item => item !== folder)
@@ -208,7 +213,7 @@ export default function WorkspacePage() {
               </section>
             ) : (
               <section className="min-h-full rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950">
-                <GardenBoard />
+                <GardenBoard embedded />
               </section>
             )}
           </div>
