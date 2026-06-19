@@ -2,8 +2,6 @@ import { useEffect, useMemo, useState, useRef, useCallback } from 'react'
 import type { ReadingDraft, CaptureDraft } from '../../lib/api'
 import {
   fetchReadingDrafts,
-  commitReadingDraft,
-  reviseReadingDraft,
   fetchKnowledgeDrafts,
   fetchCaptureDrafts,
   fetchCaptureDraft,
