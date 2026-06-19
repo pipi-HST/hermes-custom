@@ -218,7 +218,7 @@ export default function WorkspacePage() {
           activeTab={activeTab}
           collapsed={rightCollapsed}
           drafts={drafts}
-          gardenCount={gardenCards.length}
+          gardenCards={gardenCards}
           selectedCapture={selectedCapture}
           workbenchContext={workbenchSideContext}
           onToggleCollapsed={() => setRightCollapsed(value => !value)}
@@ -606,7 +606,7 @@ function AISidebar({
   activeTab,
   collapsed,
   drafts,
-  gardenCount,
+  gardenCards,
   selectedCapture,
   workbenchContext,
   onToggleCollapsed,
@@ -614,11 +614,24 @@ function AISidebar({
   activeTab: WorkspaceTab
   collapsed: boolean
   drafts: CaptureDraft[]
-  gardenCount: number
+  gardenCards: GardenCard[]
   selectedCapture?: WorkspaceCapture
   workbenchContext?: WorkbenchSideContext | null
   onToggleCollapsed: () => void
 }) {
+  const gardenKindCounts = useMemo(() => countBy(gardenCards, card => card.card_kind || 'unknown'), [gardenCards])
+  const gardenStatusCounts = useMemo(() => countBy(gardenCards, card => card.status || 'unknown'), [gardenCards])
+  const title = activeTab === 'workbench'
+    ? '来源与工具'
+    : activeTab === 'garden'
+      ? 'Garden 上下文'
+      : 'AI 建议'
+  const subtitle = activeTab === 'workbench'
+    ? '工作台上下文'
+    : activeTab === 'garden'
+      ? '卡片分布与状态'
+      : '只做辅助，不阻塞保存'
+
   if (collapsed) {
     return (
       <aside className="flex items-start justify-center border-t border-neutral-200 bg-white/70 px-2 py-4 dark:border-neutral-800 dark:bg-neutral-950/35 lg:border-l lg:border-t-0">
@@ -637,11 +650,9 @@ function AISidebar({
     <aside className="border-t border-neutral-200 bg-white/70 px-5 py-5 dark:border-neutral-800 dark:bg-neutral-950/35 lg:border-l lg:border-t-0">
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold">
-            {activeTab === 'workbench' ? '来源与工具' : 'AI 建议'}
-          </h2>
+          <h2 className="text-sm font-semibold">{title}</h2>
           <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-            {activeTab === 'workbench' ? '工作台上下文' : '只做辅助，不阻塞保存'}
+            {subtitle}
           </p>
         </div>
         <button
@@ -654,7 +665,7 @@ function AISidebar({
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <Metric label="Garden" value={gardenCount} />
+        <Metric label="Garden" value={gardenCards.length} />
         <Metric label="建议" value={drafts.length} />
       </div>
 
@@ -662,7 +673,11 @@ function AISidebar({
         <WorkbenchContextPanel context={workbenchContext} />
       )}
 
-      {activeTab !== 'workbench' && selectedCapture && (
+      {activeTab === 'garden' && (
+        <GardenContextPanel kindCounts={gardenKindCounts} statusCounts={gardenStatusCounts} />
+      )}
+
+      {activeTab === 'library' && selectedCapture && (
         <section className="mt-4 rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
           <h3 className="text-sm font-semibold">当前文件</h3>
           <p className="mt-2 text-sm font-medium">{selectedCapture.title || '(无标题)'}</p>
@@ -672,7 +687,7 @@ function AISidebar({
         </section>
       )}
 
-      {activeTab !== 'workbench' && (
+      {activeTab === 'library' && (
       <section className="mt-4 space-y-3">
         {drafts.length === 0 ? (
           <p className="rounded-lg border border-dashed border-neutral-300 p-4 text-sm text-neutral-400 dark:border-neutral-700">
@@ -695,6 +710,21 @@ function AISidebar({
       </section>
       )}
     </aside>
+  )
+}
+
+function GardenContextPanel({
+  kindCounts,
+  statusCounts,
+}: {
+  kindCounts: Record<string, number>
+  statusCounts: Record<string, number>
+}) {
+  return (
+    <section className="mt-4 space-y-3">
+      <CountGroup title="类型分布" counts={kindCounts} />
+      <CountGroup title="状态分布" counts={statusCounts} />
+    </section>
   )
 }
 
@@ -742,6 +772,31 @@ function WorkbenchContextPanel({ context }: { context?: WorkbenchSideContext | n
   )
 }
 
+function CountGroup({ title, counts }: { title: string; counts: Record<string, number> }) {
+  const entries = Object.entries(counts)
+  if (entries.length === 0) {
+    return (
+      <p className="rounded-lg border border-dashed border-neutral-300 p-4 text-sm text-neutral-400 dark:border-neutral-700">
+        暂无数据
+      </p>
+    )
+  }
+
+  return (
+    <section className="rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+      <h3 className="text-sm font-semibold">{title}</h3>
+      <div className="mt-3 space-y-2">
+        {entries.map(([label, value]) => (
+          <div key={label} className="flex items-center justify-between gap-3 text-sm">
+            <span className="truncate text-neutral-600 dark:text-neutral-400">{label}</span>
+            <span className="font-mono text-xs text-neutral-500">{value}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function LoadingState() {
   return (
     <div className="grid gap-3 md:grid-cols-2">
@@ -750,6 +805,14 @@ function LoadingState() {
       ))}
     </div>
   )
+}
+
+function countBy<T>(items: T[], getKey: (item: T) => string): Record<string, number> {
+  return items.reduce<Record<string, number>>((acc, item) => {
+    const key = getKey(item)
+    acc[key] = (acc[key] || 0) + 1
+    return acc
+  }, {})
 }
 
 function Metric({ label, value }: { label: string; value: number }) {
