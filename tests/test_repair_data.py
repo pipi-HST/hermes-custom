@@ -112,6 +112,25 @@ def test_duplicate_capture_keeps_frontmatter_id_and_repoints_committed_draft(tmp
     assert result["after"]["duplicate_capture_paths"] == 0
 
 
+def test_repair_data_apply_records_write_job(tmp_path):
+    db_path = tmp_path / "captures.db"
+    vault_path = tmp_path / "vault"
+    conn = init_db(str(db_path))
+    _write_note(vault_path, "captures/test.md", "keep-me")
+    _insert_capture(conn, "delete-me", "captures/test.md")
+    _insert_capture(conn, "keep-me", "captures/test.md")
+
+    result = repair_data(db_path, vault_path, apply=True)
+
+    job = conn.execute(
+        "SELECT * FROM knowledge_write_jobs WHERE intent = 'repair_data'"
+    ).fetchone()
+    assert job["status"] == "completed"
+    assert job["object_type"] == "repair_batch"
+    assert job["file_path"] == result["report_path"]
+    assert job["db_table"] == "captures,capture_drafts"
+
+
 def test_dry_run_reports_duplicate_capture_without_changing_db(tmp_path):
     db_path = tmp_path / "captures.db"
     vault_path = tmp_path / "vault"

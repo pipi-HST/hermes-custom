@@ -30,8 +30,11 @@ class VoiceExtractor(BaseExtractor):
 
     def extract(self, source: str, **kwargs) -> ExtractionResult:
         if not self.api_key:
-            return ExtractionResult(
-                raw_text="[语音转文字未配置 API key]", source_type="voice",
+            return ExtractionResult.failed(
+                code="auth_error",
+                message="语音转文字未配置 API key",
+                raw_text="[语音转文字未配置 API key]",
+                source_type="voice",
                 source_url=kwargs.get("source_url", ""),
             )
 
@@ -42,15 +45,22 @@ class VoiceExtractor(BaseExtractor):
                     raw_text=text, source_type="voice",
                     source_url=kwargs.get("source_url", source),
                 )
-            return ExtractionResult(
-                raw_text="[语音识别结果为空]", source_type="voice",
+            return ExtractionResult.failed(
+                code="empty_content",
+                message="语音识别结果为空",
+                raw_text="[语音识别结果为空]",
+                source_type="voice",
                 source_url=source,
             )
         except Exception as e:
             logger.warning(f"Voice ASR failed: {e}")
-            return ExtractionResult(
-                raw_text=f"[语音识别失败: {e}]", source_type="voice",
+            return ExtractionResult.failed(
+                code="external_service_error",
+                message=f"语音识别失败: {e}",
+                raw_text=f"[语音识别失败: {e}]",
+                source_type="voice",
                 source_url=source,
+                retryable=True,
             )
 
     def _call_asr(self, audio_url: str) -> str:

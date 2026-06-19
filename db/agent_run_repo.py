@@ -60,6 +60,44 @@ class AgentRunRepo:
         )
         self.conn.commit()
 
+    def record_object_refs(
+        self,
+        run_id: str,
+        refs: list[dict[str, Any]] | None,
+    ) -> None:
+        rows = []
+        for ref in refs or []:
+            object_type = str(ref.get("object_type") or "").strip()
+            object_id = str(ref.get("object_id") or "").strip()
+            if not object_type or not object_id:
+                continue
+            rows.append(
+                (
+                    run_id,
+                    object_type,
+                    object_id,
+                    str(ref.get("role") or "subject").strip() or "subject",
+                    str(ref.get("source") or "").strip(),
+                )
+            )
+        if not rows:
+            return
+        self.conn.executemany(
+            """INSERT OR IGNORE INTO agent_run_objects
+               (run_id, object_type, object_id, role, source)
+               VALUES (?, ?, ?, ?, ?)""",
+            rows,
+        )
+        self.conn.commit()
+
+    def object_refs(self, run_id: str) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """SELECT * FROM agent_run_objects
+               WHERE run_id = ?
+               ORDER BY id ASC""",
+            (run_id,),
+        ).fetchall()
+
     def complete_run(
         self,
         run_id: str,

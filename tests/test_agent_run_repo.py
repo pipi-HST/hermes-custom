@@ -53,3 +53,44 @@ def test_agent_run_repo_marks_error(tmp_path):
     latest = repo.latest(limit=1)[0]
     assert latest["status"] == "error"
     assert json.loads(latest["errors_json"]) == ["boom"]
+
+
+def test_agent_run_repo_records_object_refs(tmp_path):
+    conn = init_db(str(tmp_path / "captures.db"))
+    repo = AgentRunRepo(conn)
+
+    run = repo.start_run(
+        agent="garden",
+        intent="synthesize_garden",
+        trigger="wechat",
+        input_ref={"capture_ids": ["c1"]},
+    )
+    repo.record_object_refs(
+        run["id"],
+        [
+            {
+                "object_type": "capture",
+                "object_id": "c1",
+                "role": "source",
+                "source": "meta.capture_ids",
+            },
+            {
+                "object_type": "capture",
+                "object_id": "c1",
+                "role": "source",
+                "source": "duplicate",
+            },
+            {
+                "object_type": "garden_draft",
+                "object_id": "d1",
+                "role": "subject",
+                "source": "durable_artifacts",
+            },
+        ],
+    )
+
+    rows = repo.object_refs(run["id"])
+    assert [(row["object_type"], row["object_id"], row["role"]) for row in rows] == [
+        ("capture", "c1", "source"),
+        ("garden_draft", "d1", "subject"),
+    ]

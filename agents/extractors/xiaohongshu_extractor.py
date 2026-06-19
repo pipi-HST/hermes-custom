@@ -94,7 +94,7 @@ class XiaohongshuExtractor(BaseExtractor):
 
     def _description(self, page_html: str) -> str:
         candidates = self._meta_values(page_html, {"og:description", "description"})
-        candidates.extend(self._json_text_values(page_html, keys={"desc", "description", "content"}))
+        candidates.extend(self._json_text_values(page_html, keys={"desc", "description"}))
         return self._joined_text(candidates)
 
     def _image_urls(self, page_html: str) -> list[str]:
@@ -183,26 +183,51 @@ class XiaohongshuExtractor(BaseExtractor):
         description: str,
         image_sections: list[str],
     ) -> str:
+        main_text, comments = self._split_description(description)
         lines = [
             f"# {title or '小红书笔记'}",
             "",
             f"来源：{source_url}",
         ]
-        if description:
-            lines.extend(["", "## 正文文案", description])
+        if main_text:
+            lines.extend(["", "## 正文文案", main_text])
+        if comments:
+            lines.extend(["", "## 评论区摘录", comments])
         if image_sections:
             lines.extend(["", "## 图片内容", *image_sections])
         return "\n\n".join(line for line in lines if line is not None).strip()
 
+    def _split_description(self, description: str) -> tuple[str, str]:
+        text = (description or "").strip()
+        if not text:
+            return "", ""
+        paragraphs = [item.strip() for item in re.split(r"\n\s*\n", text) if item.strip()]
+        if not paragraphs:
+            return text, ""
+
+        split_index = None
+        for idx, paragraph in enumerate(paragraphs):
+            if "[话题]" in paragraph or re.search(r"(?:^|\s)#\S+", paragraph):
+                split_index = idx + 1
+                break
+        if split_index is None or split_index >= len(paragraphs):
+            return text, ""
+
+        main = "\n\n".join(paragraphs[:split_index]).strip()
+        comments = "\n\n".join(paragraphs[split_index:]).strip()
+        return main, comments
+
     def _failure(self, source: str, *, source_url: str = "") -> ExtractionResult:
-        return ExtractionResult(
+        return ExtractionResult.failed(
+            code="empty_content",
+            message="小红书内容未能提取",
             raw_text=(
                 f"[小红书内容未能提取] {source}\n"
                 "可以把正文复制给我，或把关键图片/截图发给我，我会继续 OCR 整理。"
             ),
             source_type="xiaohongshu",
             source_url=source_url or source,
-            extraction_failed=True,
+            retryable=True,
         )
 
     def _title(self, page_html: str) -> str:

@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
 
-from .base import BaseExtractor, ExtractionResult
+from .base import BaseExtractor, ExtractionFailure, ExtractionResult
 
 
 TEXT_SUFFIXES = {
@@ -45,12 +45,13 @@ class DocumentExtractor(BaseExtractor):
             else:
                 text = ""
         except Exception as exc:
-            return ExtractionResult(
+            return ExtractionResult.failed(
+                code="parse_error",
+                message=f"文档内容提取失败: {exc}",
                 raw_text=f"[文档内容提取失败: {exc}]",
                 source_type="document",
                 source_url=str(path),
                 title=path.stem,
-                extraction_failed=True,
             )
 
         return ExtractionResult(
@@ -59,6 +60,15 @@ class DocumentExtractor(BaseExtractor):
             source_url=str(path),
             title=path.stem,
             extraction_failed=not bool(text.strip()),
+            failure=(
+                None
+                if text.strip()
+                else ExtractionFailure(
+                    code="empty_content",
+                    message="文档内容为空",
+                    retryable=False,
+                )
+            ),
         )
 
     def _extract_docx(self, path: Path) -> str:

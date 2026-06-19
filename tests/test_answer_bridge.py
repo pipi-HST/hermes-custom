@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -131,6 +132,40 @@ def test_save_answer_creates_learning_note_draft(answer_config, monkeypatch):
     assert "这个概念为什么重要" in row["draft_text"]
     assert "它重要，因为" in row["draft_text"]
     assert "## 可沉淀的理解" not in row["draft_text"]
+
+
+def test_saved_answer_commit_uses_reading_write_service(answer_config, monkeypatch):
+    from bridge import answer_bridge, reading_bridge
+
+    monkeypatch.setattr(answer_bridge, "load_config", lambda _path: answer_config)
+    monkeypatch.setattr(reading_bridge, "load_config", lambda _path: answer_config)
+    monkeypatch.setattr(
+        reading_bridge,
+        "_postprocess_committed_learning_note",
+        lambda *_args, **_kwargs: {"embedding_index": {"updated": 1}},
+    )
+    answer_bridge._config = None
+    answer_bridge._repo = None
+    reading_bridge._config = None
+    reading_bridge._repo = None
+
+    draft = answer_bridge.save_answer_to_knowledge(
+        hermes_session_id="session-1",
+        user_message="这个框架怎么沉淀？",
+        assistant_answer="先保留问题、判断依据和后续动作。",
+        instruction="把刚才这段存起来",
+        output_type="auto",
+        assistant_message_id="assistant-1",
+        sources=[{"type": "capture_note", "id": "cap_a", "title": "材料 A"}],
+    )
+
+    committed = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"])
+
+    assert committed["status"] == "success"
+    assert committed["meta"]["write_service"] == "knowledge_write_service"
+    artifact = committed["durable_artifacts"][0]
+    assert artifact["type"] == "learning_note"
+    assert (Path(answer_config.vault_path) / artifact["path"]).exists()
 
 
 def test_save_answer_prefers_latest_full_rag_answer_for_recent_answer(answer_config, monkeypatch):

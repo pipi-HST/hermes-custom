@@ -23,13 +23,22 @@ from agents.theme_graph import (
     cluster_relationship_graph,
     filter_theme_nodes,
 )
+from bridge.context import KnowledgeContext
 from bridge.file_artifacts import write_markdown_export
 from bridge.result_envelope import artifact_ref, next_action, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.schema import init_db
 from db.repo import CaptureRepo
+from db.write_job_repo import KnowledgeWriteJobRepo
 
 logger = logging.getLogger(__name__)
+
+
+def _config_repo(context: KnowledgeContext | None = None):
+    if context is not None:
+        return context.config, context.capture_repo()
+    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    return config, CaptureRepo(init_db(config.db_path))
 
 
 def _graph_report_preview(report: str) -> str:
@@ -361,9 +370,12 @@ def _candidate_group_key(capture_ids: list[str]) -> tuple[str, ...]:
     return tuple(sorted(set(capture_ids)))
 
 
-def list_theme_candidates(*, limit: int = 5) -> dict:
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
-    repo = CaptureRepo(init_db(config.db_path))
+def list_theme_candidates(
+    *,
+    limit: int = 5,
+    context: KnowledgeContext | None = None,
+) -> dict:
+    _, repo = _config_repo(context)
     max_limit = max(1, min(int(limit or 5), 10))
     rows = repo.conn.execute(
         """SELECT * FROM pending_questions
@@ -420,21 +432,61 @@ def list_theme_candidates(*, limit: int = 5) -> dict:
     )
 
 
-def run_theme_scan(*, rescan_all: bool = False, export_file: bool = False) -> dict:
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
-    repo = CaptureRepo(init_db(config.db_path))
+def run_theme_scan(
+    *,
+    rescan_all: bool = False,
+    export_file: bool = False,
+    context: KnowledgeContext | None = None,
+) -> dict:
+    config, repo = _config_repo(context)
+    write_jobs = KnowledgeWriteJobRepo(repo.conn)
+    job_id = write_jobs.start(
+        intent="run_theme_scan",
+        object_type="theme_scan",
+        object_id="latest",
+        payload={"rescan_all": rescan_all, "export_file": export_file},
+    )
+
+    def operation() -> dict:
+        try:
+            write_jobs.mark_step(job_id, status="writing_file", step="run_theme_scan")
+            result = _run_theme_scan(
+                config,
+                repo,
+                rescan_all=rescan_all,
+                export_file=export_file,
+            )
+            if result.get("status") == "error":
+                write_jobs.fail(job_id, step="run_theme_scan", error="; ".join(result.get("errors") or []))
+            else:
+                artifacts = result.get("durable_artifacts") or []
+                first_path = ""
+                for artifact in artifacts:
+                    if isinstance(artifact, dict) and artifact.get("path"):
+                        first_path = str(artifact["path"])
+                        break
+                write_jobs.complete(
+                    job_id,
+                    file_path=first_path,
+                    db_table="captures,pending_questions",
+                )
+            return result
+        except Exception as exc:
+            write_jobs.repair_needed(
+                job_id,
+                step="run_theme_scan",
+                error=str(exc),
+                db_table="captures,pending_questions",
+            )
+            raise
+
     return run_with_ledger(
         repo.conn,
         agent="theme",
         intent="run_theme_scan",
         trigger="wechat",
         input_ref={"rescan_all": rescan_all, "export_file": export_file},
-        operation=lambda: _run_theme_scan(
-            config,
-            repo,
-            rescan_all=rescan_all,
-            export_file=export_file,
-        ),
+        operation=operation,
     )
 
 
@@ -730,9 +782,9 @@ def _theme_scan_report_artifact(
     )
 
 
-def run_graph_report() -> dict:
+def run_graph_report(context: KnowledgeContext | None = None) -> dict:
     """Generate a knowledge graph health report (cron entry point)."""
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    config = context.config if context is not None else load_config(str(Path(__file__).parent.parent / "config.yaml"))
     vault_path = Path(config.vault_path).expanduser()
 
     agent = ThemeAgent(

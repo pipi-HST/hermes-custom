@@ -88,6 +88,8 @@ def test_create_garden_card(repo):
     assert row is not None
     assert row["title"] == "测试卡片"
     assert row["status"] == "seed"
+    assert row["schema_version"] == "garden_card.v2"
+    assert json.loads(row["payload_json"])["claim"] == "核心结论"
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")
@@ -136,6 +138,9 @@ def test_garden_markdown_omits_empty_placeholder_sections():
             "key_materials": [
                 {"type": "case", "content": "自动化钩子能把检查前移。", "capture_id": "cap1"}
             ],
+            "use_cases": [
+                "上线前检查是否已有自动化钩子覆盖高风险路径。"
+            ],
         },
         links=[],
         captures=[
@@ -149,6 +154,13 @@ def test_garden_markdown_omits_empty_placeholder_sections():
     assert "暂无关联" not in markdown
     assert "待继续想" not in markdown
     assert "这张卡还需要" not in markdown
+    assert "工具、记忆和检查共同降低错误率。（来源" not in markdown
+    assert "自动化钩子能把检查前移。（来源" not in markdown
+    assert "## 什么时候用" in markdown
+    assert "## 核心判断" in markdown
+    assert "## 为什么成立" in markdown
+    assert "## 内容" not in markdown
+    assert "- 上线前检查是否已有自动化钩子覆盖高风险路径。" in markdown
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")
@@ -196,9 +208,12 @@ def test_synthesize_renders_focused_garden_card_instead_of_material_dump(mock_ca
     )
 
     markdown = result["markdown"]
-    assert "## 内容" in markdown
-    assert "## 适用或启发" in markdown
+    assert result["payload"]["schema_version"] == "garden_card.v2"
+    assert "## 核心判断" in markdown
+    assert "## 为什么成立" in markdown
+    assert "## 什么时候用" in markdown
     assert "## 来源" in markdown
+    assert "## 内容" not in markdown
     assert "## 支撑材料" not in markdown
     assert markdown.count("- 支撑判断") <= 4
     assert markdown.count("- 关键材料") <= 4
@@ -294,8 +309,9 @@ def test_synthesize_honors_requested_method_card_kind(mock_call):
     )
 
     assert result["card_kind"] == "method"
-    assert "## 内容" in result["markdown"]
-    assert "## 适用或启发" in result["markdown"]
+    assert "## 核心判断" in result["markdown"]
+    assert "## 为什么成立" in result["markdown"]
+    assert "## 什么时候用" in result["markdown"]
     assert "可复用做法" in result["markdown"]
     assert "## 我的判断" not in result["markdown"]
     assert "如果用户明确指定" in mock_call.call_args.args[0]
@@ -318,8 +334,9 @@ def test_synthesize_normalizes_legacy_caution_to_risk(mock_call):
     )
 
     assert result["card_kind"] == "risk"
-    assert "## 内容" in result["markdown"]
-    assert "## 适用或启发" in result["markdown"]
+    assert "## 核心判断" in result["markdown"]
+    assert "## 为什么成立" in result["markdown"]
+    assert "## 什么时候用" in result["markdown"]
     assert "边界和误区" in result["markdown"]
     assert "## 怎么避免" not in result["markdown"]
     assert "（待补充）" not in result["markdown"]
@@ -342,7 +359,8 @@ def test_synthesize_normalizes_question_to_viewpoint(mock_call):
     )
 
     assert result["card_kind"] == "viewpoint"
-    assert "## 内容" in result["markdown"]
+    assert "## 什么时候用" in result["markdown"]
+    assert "## 内容" not in result["markdown"]
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")
@@ -362,7 +380,8 @@ def test_synthesize_defaults_unknown_card_kind_to_viewpoint(mock_call):
     )
 
     assert result["card_kind"] == "viewpoint"
-    assert "## 内容" in result["markdown"]
+    assert "## 什么时候用" in result["markdown"]
+    assert "## 内容" not in result["markdown"]
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")
@@ -437,9 +456,10 @@ def test_step1_prompt_requires_precise_single_source_materials(mock_call):
     )
 
     prompt = mock_call.call_args.args[0]
-    assert "每条 key_materials 只能来自一篇 capture" in prompt
+    assert "support 只服务于对应判断" in prompt
+    assert "source_ids 必须对应真实来源" in prompt
     assert "混合多篇材料" in prompt
-    assert "capture_id 必须对应" in prompt
+    assert "source_ids 必须对应" in prompt
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")
@@ -539,6 +559,38 @@ def test_create_and_get_garden_draft(repo):
     assert json.loads(row["core_arguments"])[0]["claim"] == "观点一"
 
 
+def test_create_garden_draft_canonicalizes_short_payload_source_ids(repo):
+    draft_id = create_garden_draft(repo, {
+        "title": "来源规范化草稿",
+        "one_liner": "短来源 ID 应落成完整 capture ID。",
+        "payload": {
+            "title": "来源规范化草稿",
+            "claim": "短来源 ID 应落成完整 capture ID。",
+            "source_ids": ["fdd275b0"],
+            "core_judgments": [
+                {
+                    "statement": "来源详情页必须能查到原始材料。",
+                    "support": [
+                        {
+                            "summary": "支持依据",
+                            "source_ids": ["fdd275b0"],
+                        }
+                    ],
+                }
+            ],
+        },
+        "capture_ids": ["fdd275b0c9f6"],
+    })
+
+    row = get_garden_draft(repo, draft_id)
+    payload = json.loads(row["payload_json"])
+
+    assert json.loads(row["capture_ids"]) == ["fdd275b0c9f6"]
+    assert payload["source_ids"] == ["fdd275b0c9f6"]
+    assert payload["core_judgments"][0]["support"][0]["source_ids"] == ["fdd275b0c9f6"]
+    assert json.loads(row["core_arguments"])[0]["source_ids"] == ["fdd275b0c9f6"]
+
+
 def test_create_garden_draft_persists_card_kind(repo):
     draft_id = create_garden_draft(repo, {
         "title": "方法草稿",
@@ -612,6 +664,41 @@ def test_update_garden_draft_changes_content_and_instruction(repo):
     assert row["title"] == "修改后草稿"
     assert row["instruction"] == "更强调边界"
     assert json.loads(row["core_arguments"])[0]["claim"] == "新观点"
+
+
+def test_update_garden_draft_rewrites_canonical_capture_ids(repo):
+    draft_id = create_garden_draft(repo, {
+        "title": "短来源草稿",
+        "one_liner": "旧数据里可能只有短 ID。",
+        "core_arguments": [{"claim": "旧观点", "source_ids": ["fdd275b0"]}],
+        "capture_ids": ["fdd275b0"],
+    })
+
+    update_garden_draft(repo, draft_id, {
+        "title": "短来源草稿",
+        "one_liner": "更新时应改写为完整 ID。",
+        "payload": {
+            "title": "短来源草稿",
+            "claim": "更新时应改写为完整 ID。",
+            "source_ids": ["fdd275b0"],
+            "core_judgments": [
+                {
+                    "statement": "草稿提交前来源必须可解析。",
+                    "support": [
+                        {"summary": "支持依据", "source_ids": ["fdd275b0"]},
+                    ],
+                }
+            ],
+        },
+        "capture_ids": ["fdd275b0c9f6"],
+    })
+
+    row = get_garden_draft(repo, draft_id)
+    payload = json.loads(row["payload_json"])
+
+    assert json.loads(row["capture_ids"]) == ["fdd275b0c9f6"]
+    assert payload["source_ids"] == ["fdd275b0c9f6"]
+    assert payload["core_judgments"][0]["support"][0]["source_ids"] == ["fdd275b0c9f6"]
 
 
 def test_commit_garden_draft_to_card_creates_card_and_marks_draft(repo):

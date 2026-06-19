@@ -1,0 +1,14 @@
+# Minimal runtime and test dependencies for hermes-custom.
+# Version pins reflect the local .venv used for the 2026-06-19 stabilization baseline.
+fastapi==0.136.3
+httpx==0.28.1
+pydantic==2.13.4
+pypdf==6.12.2
+PyYAML==6.0.3
+pytest==9.0.3
+uvicorn==0.48.0
+
+# Optional but supported by agents/extractors/link_extractor.py.
+# Keep installed in environments that need stronger webpage extraction.
+readability-lxml
+trafilatura

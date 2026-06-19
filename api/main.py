@@ -40,7 +40,7 @@ def create_app() -> FastAPI:
     draft_repo = CaptureDraftRepo(conn)
     reading_repo = ReadingRepo(conn)
 
-    app.include_router(create_capture_router(repo, config.vault_path), prefix="/api")
+    app.include_router(create_capture_router(repo, config.vault_path, config), prefix="/api")
     app.include_router(create_capture_draft_router(draft_repo), prefix="/api")
     app.include_router(
         create_reading_router(reading_repo, {"vault_path": config.vault_path}),

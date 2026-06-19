@@ -1,5 +1,26 @@
 const API_BASE = 'http://localhost:8000/api'
 
+async function fetchItems<T>(url: string): Promise<T[]> {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return []
+    const data = await res.json()
+    return Array.isArray(data.items) ? data.items : []
+  } catch {
+    return []
+  }
+}
+
+async function fetchJsonOrNull<T>(url: string): Promise<T | null> {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return null
+    return res.json()
+  } catch {
+    return null
+  }
+}
+
 // ─── Capture ──────────────────────────────────────────────────────────────────
 
 export interface Capture {
@@ -31,10 +52,26 @@ export async function fetchCaptures(params?: {
   if (params?.folder) qs.set('folder', params.folder)
   if (params?.limit) qs.set('limit', String(params.limit))
 
-  const res = await fetch(`${API_BASE}/captures?${qs}`)
-  if (!res.ok) return []
-  const data = await res.json()
-  return Array.isArray(data.items) ? data.items : []
+  return fetchItems<Capture>(`${API_BASE}/captures?${qs}`)
+}
+
+export async function updateCapture(
+  captureId: string,
+  params: {
+    body: string
+    title?: string
+  },
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API_BASE}/captures/${captureId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      body: params.body,
+      title: params.title || '',
+    }),
+  })
+  if (!res.ok) throw new Error(`Failed to update capture: ${res.statusText}`)
+  return res.json()
 }
 
 // ─── Reading Sessions ─────────────────────────────────────────────────────────
@@ -83,16 +120,11 @@ export interface ReadingSessionDetail extends ReadingSession {
 
 export async function fetchReadingSessions(status = 'active', limit = 20): Promise<ReadingSession[]> {
   const qs = new URLSearchParams({ status, limit: String(limit) })
-  const res = await fetch(`${API_BASE}/reading/sessions?${qs}`)
-  if (!res.ok) return []
-  const data = await res.json()
-  return Array.isArray(data.items) ? data.items : []
+  return fetchItems<ReadingSession>(`${API_BASE}/reading/sessions?${qs}`)
 }
 
 export async function fetchReadingSession(sessionId: string): Promise<ReadingSessionDetail | null> {
-  const res = await fetch(`${API_BASE}/reading/sessions/${sessionId}`)
-  if (!res.ok) return null
-  return res.json()
+  return fetchJsonOrNull<ReadingSessionDetail>(`${API_BASE}/reading/sessions/${sessionId}`)
 }
 
 // ─── Drafts ───────────────────────────────────────────────────────────────────
@@ -113,16 +145,11 @@ export interface ReadingDraft {
 
 export async function fetchReadingDrafts(limit = 20): Promise<ReadingDraft[]> {
   const qs = new URLSearchParams({ limit: String(limit) })
-  const res = await fetch(`${API_BASE}/reading/drafts?${qs}`)
-  if (!res.ok) return []
-  const data = await res.json()
-  return Array.isArray(data.items) ? data.items : []
+  return fetchItems<ReadingDraft>(`${API_BASE}/reading/drafts?${qs}`)
 }
 
 export async function fetchReadingDraft(draftId: string): Promise<ReadingDraft | null> {
-  const res = await fetch(`${API_BASE}/reading/drafts/${draftId}`)
-  if (!res.ok) return null
-  return res.json()
+  return fetchJsonOrNull<ReadingDraft>(`${API_BASE}/reading/drafts/${draftId}`)
 }
 
 export async function createReadingDraft(
@@ -169,10 +196,7 @@ export async function commitReadingDraft(draftId: string): Promise<Record<string
 
 export async function fetchKnowledgeDrafts(limit = 50): Promise<ReadingDraft[]> {
   const qs = new URLSearchParams({ limit: String(limit) })
-  const res = await fetch(`${API_BASE}/knowledge/drafts?${qs}`)
-  if (!res.ok) return []
-  const data = await res.json()
-  return Array.isArray(data.items) ? data.items : []
+  return fetchItems<ReadingDraft>(`${API_BASE}/knowledge/drafts?${qs}`)
 }
 
 export async function saveAnswerDraft(params: {
@@ -230,10 +254,7 @@ export interface GardenCard {
 
 export async function fetchGardenCards(limit = 50): Promise<GardenCard[]> {
   const qs = new URLSearchParams({ limit: String(limit) })
-  const res = await fetch(`${API_BASE}/knowledge/garden-cards?${qs}`)
-  if (!res.ok) return []
-  const data = await res.json()
-  return Array.isArray(data.items) ? data.items : []
+  return fetchItems<GardenCard>(`${API_BASE}/knowledge/garden-cards?${qs}`)
 }
 
 // ─── Capture Drafts ───────────────────────────────────────────────────────
@@ -258,15 +279,49 @@ export interface CaptureDraft {
 
 export async function fetchCaptureDrafts(limit = 50): Promise<CaptureDraft[]> {
   const qs = new URLSearchParams({ limit: String(limit) })
-  const res = await fetch(`${API_BASE}/capture-drafts?${qs}`)
-  if (!res.ok) return []
-  const data = await res.json()
-  return Array.isArray(data.items) ? data.items : []
+  return fetchItems<CaptureDraft>(`${API_BASE}/capture-drafts?${qs}`)
 }
 
 export async function fetchCaptureDraft(draftId: string): Promise<CaptureDraft | null> {
-  const res = await fetch(`${API_BASE}/capture-drafts/${draftId}`)
-  if (!res.ok) return null
+  return fetchJsonOrNull<CaptureDraft>(`${API_BASE}/capture-drafts/${draftId}`)
+}
+
+export async function createEditableCaptureDraft(params: {
+  content: string
+  instruction?: string
+  source?: string
+  source_type?: string
+}): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API_BASE}/capture-drafts/editable`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      content: params.content,
+      instruction: params.instruction || '',
+      source: params.source || '',
+      source_type: params.source_type || 'manual',
+    }),
+  })
+  if (!res.ok) throw new Error(`Failed to create editable draft: ${res.statusText}`)
+  return res.json()
+}
+
+export async function updateEditableCaptureDraft(
+  draftId: string,
+  params: {
+    content: string
+    title?: string
+  },
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API_BASE}/capture-drafts/${draftId}/editable`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      content: params.content,
+      title: params.title || '',
+    }),
+  })
+  if (!res.ok) throw new Error(`Failed to update editable draft: ${res.statusText}`)
   return res.json()
 }
 

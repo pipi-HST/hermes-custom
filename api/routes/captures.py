@@ -2,14 +2,31 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+import yaml
 
+from agents.capture_agent import CaptureConfig
+from agents.embedder import Embedder
+from agents.library_agent import LibraryAgent
 from agents.markdown_writer import read_note
+from agents.outliner import Outliner
+from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest
 from db.repo import CaptureRepo
 
 
-def create_capture_router(repo: CaptureRepo, vault_path: str = "~/Obsidian/hermes-vault") -> APIRouter:
+class UpdateCaptureRequest(BaseModel):
+    body: str
+    title: str = ""
+
+
+def create_capture_router(
+    repo: CaptureRepo,
+    vault_path: str = "~/Obsidian/hermes-vault",
+    config: CaptureConfig | dict[str, Any] | None = None,
+) -> APIRouter:
     router = APIRouter()
     vault = Path(vault_path).expanduser()
 
@@ -37,6 +54,59 @@ def create_capture_router(repo: CaptureRepo, vault_path: str = "~/Obsidian/herme
         if item is None:
             raise HTTPException(status_code=404, detail="not found")
         return _strip_binary(_hydrate_capture(vault, item))
+
+    @router.patch("/captures/{capture_id}")
+    def update_capture(capture_id: str, body: UpdateCaptureRequest):
+        item = repo.get_by_id(capture_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="not found")
+        file_path = str(item.get("file_path") or "")
+        if not file_path:
+            raise HTTPException(status_code=400, detail="capture has no editable note")
+        note = read_note(vault, file_path)
+        if note is None:
+            raise HTTPException(status_code=404, detail="capture note file not found")
+
+        frontmatter, _current_body = note
+        updated_body = (body.body or "").strip()
+        if not updated_body:
+            raise HTTPException(status_code=400, detail="body cannot be empty")
+        if body.title.strip():
+            frontmatter["title"] = body.title.strip()
+            frontmatter["title_source"] = "user"
+        frontmatter["word_count"] = len(updated_body)
+
+        write_result = KnowledgeWriteService(vault).write_markdown_artifact(
+            MarkdownWriteRequest(
+                kind="capture_note",
+                relative_path=file_path,
+                content=_render_markdown(frontmatter, updated_body),
+                db_object_id=capture_id,
+                db_table="captures",
+                requires_backup=True,
+            )
+        )
+        repo.log_change(
+            "capture",
+            capture_id,
+            "body",
+            old_value="",
+            new_value="updated via capture API",
+            source="api",
+        )
+        library_report = _maintain_capture_after_edit(
+            repo,
+            vault,
+            capture_id,
+            config,
+        )
+        return {
+            "capture_id": capture_id,
+            "file_path": file_path,
+            "backup_path": write_result.backup_path,
+            "library_postprocess": library_report,
+            "item": _strip_binary(_hydrate_capture(vault, repo.get_by_id(capture_id) or item)),
+        }
 
     return router
 
@@ -87,3 +157,52 @@ def _matches_filters(item: dict, *, tag: str, search: str, folder: str) -> bool:
         if search.lower() not in haystack:
             return False
     return True
+
+
+def _render_markdown(frontmatter: dict, body: str) -> str:
+    return (
+        "---\n"
+        + yaml.dump(frontmatter, allow_unicode=True, sort_keys=False)
+        + "---\n\n"
+        + body
+    )
+
+
+def _maintain_capture_after_edit(
+    repo: CaptureRepo,
+    vault: Path,
+    capture_id: str,
+    config: CaptureConfig | dict[str, Any] | None,
+) -> dict:
+    cfg = _capture_route_config(config)
+    try:
+        outliner = Outliner(
+            api_key=cfg.get("llm_api_key", ""),
+            model="deepseek-v4-flash",
+            base_url=cfg.get("llm_base_url") or "https://api.deepseek.com",
+        )
+        embedder = (
+            Embedder(api_key=cfg.get("qwen_api_key", ""))
+            if cfg.get("qwen_api_key")
+            else None
+        )
+        return LibraryAgent(
+            vault,
+            outliner=outliner,
+            db_conn=repo.conn,
+            embedder=embedder,
+        ).maintain_capture(capture_id, apply=True)
+    except Exception as exc:  # pragma: no cover - defensive API degradation
+        return {"error": str(exc)}
+
+
+def _capture_route_config(config: CaptureConfig | dict[str, Any] | None) -> dict[str, str]:
+    if config is None:
+        return {}
+    if isinstance(config, dict):
+        return {str(key): str(value or "") for key, value in config.items()}
+    return {
+        "llm_api_key": config.llm_api_key,
+        "llm_base_url": config.llm_base_url,
+        "qwen_api_key": config.qwen_api_key,
+    }

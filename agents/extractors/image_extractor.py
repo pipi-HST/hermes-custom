@@ -48,16 +48,23 @@ class ImageExtractor(BaseExtractor):
 
     def extract(self, source: str, **kwargs) -> ExtractionResult:
         if not self.api_key:
-            return ExtractionResult(
-                raw_text="[图片提取未配置 API key]", source_type="image",
+            return ExtractionResult.failed(
+                code="auth_error",
+                message="图片提取未配置 API key",
+                raw_text="[图片提取未配置 API key]",
+                source_type="image",
                 source_url=kwargs.get("source_url", ""),
             )
 
         image_data = self._resolve_image(source)
         if not image_data:
-            return ExtractionResult(
-                raw_text="[图片数据获取失败]", source_type="image",
+            return ExtractionResult.failed(
+                code="network_error",
+                message="图片数据获取失败",
+                raw_text="[图片数据获取失败]",
+                source_type="image",
                 source_url=source,
+                retryable=True,
             )
 
         try:
@@ -65,16 +72,28 @@ class ImageExtractor(BaseExtractor):
             result_text = text if text and text != "无文字" else ""
             if not result_text and description and description != "无文字":
                 result_text = description
+            if not result_text.strip():
+                return ExtractionResult.failed(
+                    code="empty_content",
+                    message="图片中无文字内容",
+                    raw_text="[图片中无文字内容]",
+                    source_type="image",
+                    source_url=kwargs.get("source_url", source),
+                )
             return ExtractionResult(
-                raw_text=result_text or "[图片中无文字内容]",
+                raw_text=result_text,
                 source_type="image",
                 source_url=kwargs.get("source_url", source),
             )
         except Exception as e:
             logger.warning(f"Image VL extraction failed: {e}")
-            return ExtractionResult(
-                raw_text=f"[图片内容提取失败: {e}]", source_type="image",
+            return ExtractionResult.failed(
+                code="external_service_error",
+                message=f"图片内容提取失败: {e}",
+                raw_text=f"[图片内容提取失败: {e}]",
+                source_type="image",
                 source_url=source,
+                retryable=True,
             )
 
     def _resolve_image(self, source: str) -> str | None:

@@ -11,10 +11,12 @@ from agents.markdown_writer import read_note
 from agents.capture_agent import load_config
 from agents.managed_sections import is_managed_section_title
 from agents.rag_agent import RagAgent, format_answer
+from agents.rag_citations import validate_citations
 from agents.rag_context import build_rag_context_pack
 from agents.rag_graph import build_graph_retrieval
 from agents.embedder import Embedder
 from bridge.file_artifacts import write_markdown_export
+from bridge.context import KnowledgeContext
 from bridge.result_envelope import artifact_ref, source_ref, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.embedding_repo import CaptureEmbeddingRepo
@@ -48,8 +50,16 @@ def _init():
         _repo = CaptureRepo(init_db(_config.db_path))
     return _config, _repo
 
-def search_knowledge_base(query: str, export_file: bool = False) -> dict:
-    config, repo = _init()
+def search_knowledge_base(
+    query: str,
+    export_file: bool = False,
+    context: KnowledgeContext | None = None,
+) -> dict:
+    if context is None:
+        config, repo = _init()
+    else:
+        config = context.config
+        repo = context.capture_repo()
     return run_with_ledger(
         repo.conn,
         agent="rag",
@@ -172,26 +182,44 @@ def _search_knowledge_base(
     if export_file:
         chat_preview = "已生成 RAG 完整回答与引用报告文件。我会把文件发给你。"
 
+    source_map = [
+        source_ref(
+            role="evidence",
+            type=(
+                "capture_section"
+                if item.get("matched_kind") == "section"
+                else "capture_note"
+            ),
+            id=item.get("id", ""),
+            title=item.get("title") or item.get("file_path", ""),
+            path=item.get("file_path", ""),
+            section=item.get("section_title", ""),
+        )
+        for item in results
+    ]
+    citation_validation = validate_citations(resp["answer"], source_map)
+    repaired = False
+    if not citation_validation.valid and source_map and hasattr(rag, "repair_citations"):
+        try:
+            repaired_answer = rag.repair_citations(resp["answer"], source_map)
+            repaired_validation = validate_citations(repaired_answer, source_map)
+            if repaired_validation.valid:
+                resp["answer"] = repaired_answer
+                citation_validation = repaired_validation
+                repaired = True
+                chat_preview = format_answer(resp["answer"], resp["sources"])
+                if export_file:
+                    chat_preview = "已生成 RAG 完整回答与引用报告文件。我会把文件发给你。"
+        except Exception as exc:
+            logger.warning("[RAG] citation repair failed: %s", exc)
+
     return success_envelope(
         agent="rag",
         intent="search_knowledge_base",
         chat_preview=chat_preview,
         durable_artifacts=artifacts,
-        source_map=[
-            source_ref(
-                role="evidence",
-                type=(
-                    "capture_section"
-                    if item.get("matched_kind") == "section"
-                    else "capture_note"
-                ),
-                id=item.get("id", ""),
-                title=item.get("title") or item.get("file_path", ""),
-                path=item.get("file_path", ""),
-                section=item.get("section_title", ""),
-            )
-            for item in results
-        ],
+        source_map=source_map,
+        warnings=citation_validation.warnings,
         meta={
             "query": query,
             "answer": resp["answer"],
@@ -209,6 +237,8 @@ def _search_knowledge_base(
                 "retrieval": "indexed" if used_index else "fallback" if used_fallback else "vector",
                 "source_titles": titles,
             },
+            "citation_validation": citation_validation.to_meta(),
+            "citation_repaired": repaired,
             "export_file": export_file,
         },
     )

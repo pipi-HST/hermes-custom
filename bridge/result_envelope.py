@@ -22,6 +22,7 @@ ENVELOPE_FIELDS = (
 STATE_CHANGING_INTENTS = {
     "commit_capture_draft",
     "discard_capture_draft",
+    "discard_reading_artifact",
     "create_theme_page",
     "create_garden_card",
     "commit_garden_draft",

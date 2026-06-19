@@ -16,6 +16,7 @@ def extract_run_evidence(
             "status": "error",
             "evidence": {"has_envelope": False},
             "output_ref": {},
+            "object_refs": [],
             "warnings": [],
             "errors": ["tool did not return an envelope"],
         }
@@ -230,9 +231,97 @@ def extract_run_evidence(
         "status": status,
         "evidence": evidence,
         "output_ref": output_ref,
+        "object_refs": _object_refs(intent, artifacts, sources, meta, output_ref, evidence),
         "warnings": warnings,
         "errors": errors,
     }
+
+
+def extract_input_object_refs(
+    intent: str,
+    input_ref: Mapping[str, Any] | None,
+) -> list[dict[str, str]]:
+    if not isinstance(input_ref, Mapping):
+        return []
+    refs: list[dict[str, str]] = []
+    if intent in {"synthesize_garden", "run_theme_scan", "search_knowledge_base"}:
+        for capture_id in _strings(input_ref.get("capture_ids")):
+            _add_ref(refs, "capture", capture_id, role="source", source="input.capture_ids")
+    for key, object_type in (
+        ("capture_id", "capture"),
+        ("draft_id", "capture_draft"),
+        ("reading_draft_id", "reading_draft"),
+        ("garden_draft_id", "garden_draft"),
+        ("card_id", "garden_card"),
+        ("garden_card_id", "garden_card"),
+        ("review_item_id", "review_item"),
+        ("question_id", "pending_question"),
+    ):
+        _add_ref(refs, object_type, input_ref.get(key), role="subject", source=f"input.{key}")
+    return _dedupe_refs(refs)
+
+
+def _object_refs(
+    intent: str,
+    artifacts: list[Any],
+    sources: list[Any],
+    meta: Mapping[str, Any],
+    output_ref: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+
+    for artifact in artifacts:
+        if not isinstance(artifact, Mapping):
+            continue
+        object_type = _object_type_for_artifact(str(artifact.get("type") or ""))
+        if object_type:
+            _add_ref(
+                refs,
+                object_type,
+                artifact.get("id"),
+                role="subject",
+                source="durable_artifacts",
+            )
+
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        object_type = _object_type_for_artifact(str(source.get("type") or ""))
+        if object_type:
+            _add_ref(refs, object_type, source.get("id"), role="source", source="source_map")
+
+    if intent in {"synthesize_garden", "run_theme_scan"}:
+        for capture_id in _strings(meta.get("capture_ids")):
+            _add_ref(refs, "capture", capture_id, role="source", source="meta.capture_ids")
+    if intent in {"create_capture_draft", "show_capture_draft", "revise_capture_draft", "commit_capture_draft", "refine_capture"}:
+        _add_ref(refs, "capture_draft", evidence.get("draft_id"), role="subject", source="evidence.draft_id")
+        _add_ref(refs, "capture", evidence.get("capture_id"), role="subject", source="evidence.capture_id")
+    if intent in {"start_reading_session", "discuss_reading", "show_reading_session", "summarize_reading_session"}:
+        _add_ref(refs, "reading_draft", evidence.get("reading_draft_id"), role="subject", source="evidence.reading_draft_id")
+    if intent in {"save_answer_to_knowledge", "revise_answer_draft", "commit_reading_artifact"}:
+        _add_ref(refs, "reading_draft", evidence.get("draft_id"), role="subject", source="evidence.draft_id")
+        artifact_type = str(evidence.get("artifact_type") or "")
+        artifact_object_type = _object_type_for_artifact(artifact_type)
+        if artifact_object_type:
+            _add_ref(refs, artifact_object_type, evidence.get("artifact_id"), role="subject", source="evidence.artifact_id")
+    if intent in {"synthesize_garden", "revise_garden_draft"}:
+        _add_ref(refs, "garden_draft", output_ref.get("draft_id"), role="subject", source="output.draft_id")
+    if intent == "commit_garden_draft":
+        _add_ref(refs, "garden_card", output_ref.get("card_id"), role="subject", source="output.card_id")
+    if intent == "run_daily_review":
+        _add_ref(refs, "review_item", evidence.get("review_item_id"), role="subject", source="evidence.review_item_id")
+        for review_item_id in _strings(meta.get("review_item_ids")):
+            _add_ref(refs, "review_item", review_item_id, role="subject", source="meta.review_item_ids")
+    if intent == "run_theme_scan":
+        for question_id in _strings(meta.get("question_ids")):
+            _add_ref(refs, "pending_question", question_id, role="subject", source="meta.question_ids")
+        for theme_page_id in _strings(meta.get("theme_page_ids")):
+            _add_ref(refs, "theme_page", theme_page_id, role="subject", source="meta.theme_page_ids")
+    if meta.get("question_id"):
+        _add_ref(refs, "pending_question", meta.get("question_id"), role="source", source="meta.question_id")
+
+    return _dedupe_refs(refs)
 
 
 def _completion_status(
@@ -307,3 +396,65 @@ def _source_refs(sources: list[Any]) -> list[dict[str, str]]:
             }
         )
     return refs
+
+
+def _object_type_for_artifact(artifact_type: str) -> str:
+    return {
+        "capture": "capture",
+        "capture_note": "capture",
+        "capture_section": "capture",
+        "learning_note": "capture",
+        "discussion_note": "capture",
+        "capture_draft": "capture_draft",
+        "reading_draft": "reading_draft",
+        "garden_draft": "garden_draft",
+        "garden_card": "garden_card",
+        "knowledge_card": "garden_card",
+        "review_item": "review_item",
+        "pending_question": "pending_question",
+        "theme_page": "theme_page",
+    }.get(artifact_type, "")
+
+
+def _add_ref(
+    refs: list[dict[str, str]],
+    object_type: str,
+    object_id: Any,
+    *,
+    role: str,
+    source: str,
+) -> None:
+    object_type = str(object_type or "").strip()
+    object_id = str(object_id or "").strip()
+    if not object_type or not object_id:
+        return
+    refs.append(
+        {
+            "object_type": object_type,
+            "object_id": object_id,
+            "role": str(role or "subject").strip() or "subject",
+            "source": str(source or "").strip(),
+        }
+    )
+
+
+def _dedupe_refs(refs: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[tuple[str, str, str]] = set()
+    result: list[dict[str, str]] = []
+    for ref in refs:
+        key = (ref["object_type"], ref["object_id"], ref["role"])
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(ref)
+    return result
+
+
+def _strings(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, tuple):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []

@@ -24,6 +24,18 @@ def test_extracts_garden_draft_completion_evidence():
     assert result["evidence"]["draft_created"] is True
     assert result["evidence"]["draft_id"] == "draft1"
     assert result["evidence"]["capture_count"] == 2
+    assert {
+        "object_type": "garden_draft",
+        "object_id": "draft1",
+        "role": "subject",
+        "source": "durable_artifacts",
+    } in result["object_refs"]
+    assert {
+        "object_type": "capture",
+        "object_id": "c1",
+        "role": "source",
+        "source": "meta.capture_ids",
+    } in result["object_refs"]
 
 
 def test_extracts_garden_card_completion_evidence():
@@ -49,6 +61,12 @@ def test_extracts_garden_card_completion_evidence():
     assert result["evidence"]["card_created"] is True
     assert result["evidence"]["card_id"] == "card1"
     assert result["evidence"]["path"] == "garden/AI.md"
+    assert {
+        "object_type": "garden_card",
+        "object_id": "card1",
+        "role": "subject",
+        "source": "durable_artifacts",
+    } in result["object_refs"]
 
 
 def test_rag_no_result_search_is_success_not_incomplete():
@@ -122,6 +140,12 @@ def test_extracts_rag_source_names_paths_and_sections():
             "type": "capture_section",
         }
     ]
+    assert {
+        "object_type": "capture",
+        "object_id": "cap1",
+        "role": "source",
+        "source": "source_map",
+    } in result["object_refs"]
 
 
 def test_rag_evidence_extracts_graph_trace():

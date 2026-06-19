@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from agents.capture_agent import CaptureAgent, CaptureConfig, LLMResult
-from agents.extractors.base import ExtractionResult
+from agents.extractors.base import ExtractionFailure, ExtractionResult
 from agents.extractors.text_extractor import TextExtractor
 from agents.markdown_writer import read_note
 
@@ -42,6 +42,262 @@ def test_create_draft_without_instruction_does_not_write_obsidian(agent: Capture
     assert draft["draft_text"] == ""
     assert not (tmp_path / "raw").exists()
     assert not (tmp_path / "captures").exists()
+
+
+def test_create_editable_draft_generates_title_and_keeps_body_editable(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {
+            "title": "AI知识库入口",
+            "summary": "自由编辑入口接入知识库检索。",
+            "tags": ["ai-product"],
+        },
+    )
+
+    draft = agent.create_editable_draft(
+        "用户粘贴并编辑后的正文，可以像飞书一样自由修改。",
+        source="manual paste",
+    )
+
+    assert draft["status"] == "draft_ready"
+    assert draft["title"] == "AI知识库入口"
+    assert draft["raw_text"] == "用户粘贴并编辑后的正文，可以像飞书一样自由修改。"
+    assert draft["draft_text"] == "用户粘贴并编辑后的正文，可以像飞书一样自由修改。"
+    assert draft["summary"] == "自由编辑入口接入知识库检索。"
+    assert draft["tags"] == ["ai-product"]
+    assert draft["capture_intent"]["entry_mode"] == "editable_capture"
+    assert draft["capture_intent"]["title_source"] == "ai"
+    assert not (tmp_path / "captures").exists()
+
+
+def test_create_editable_draft_accepts_user_title(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {
+            "title": "AI 不应覆盖",
+            "summary": "用户先填标题，AI 只补摘要和标签。",
+            "tags": ["ai-product"],
+        },
+    )
+
+    draft = agent.create_editable_draft(
+        "用户粘贴正文，但一开始就输入了自己的标题。",
+        title="我的 AI 产品笔记",
+    )
+
+    assert draft["title"] == "我的 AI 产品笔记"
+    assert draft["summary"] == "用户先填标题，AI 只补摘要和标签。"
+    assert draft["tags"] == ["ai-product"]
+    assert draft["capture_intent"]["title_source"] == "user"
+
+
+def test_update_editable_draft_preserves_user_title_override(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    summaries = [
+        {"title": "AI自动标题", "summary": "初始摘要。", "tags": ["ai-product"]},
+        {"title": "AI新标题", "summary": "更新摘要。", "tags": ["ai-rag"]},
+        {"title": "AI不应覆盖", "summary": "再次更新。", "tags": ["ai-agent"]},
+    ]
+
+    def fake_summarize(_text, existing_tags=None):
+        return summaries.pop(0)
+
+    monkeypatch.setattr(agent.summarizer, "summarize", fake_summarize)
+    draft = agent.create_editable_draft("第一版正文")
+
+    updated = agent.update_editable_draft(
+        draft["id"],
+        content="第二版正文",
+        title="用户自己的标题",
+    )
+    assert updated is not None
+    assert updated["title"] == "用户自己的标题"
+    assert updated["draft_text"] == "第二版正文"
+    assert updated["capture_intent"]["title_source"] == "user"
+
+    updated_again = agent.update_editable_draft(
+        draft["id"],
+        content="第三版正文",
+    )
+    assert updated_again is not None
+    assert updated_again["title"] == "用户自己的标题"
+    assert updated_again["summary"] == "再次更新。"
+    assert updated_again["capture_intent"]["title_source"] == "user"
+
+
+def test_commit_editable_draft_uses_edited_body_and_frontmatter(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {
+            "title": "自由编辑入库",
+            "summary": "自由编辑后的内容进入原有检索 Pipeline。",
+            "tags": ["ai-product"],
+        },
+    )
+    draft = agent.create_editable_draft("原始粘贴正文")
+    updated = agent.update_editable_draft(draft["id"], content="用户最终编辑后的正文")
+    assert updated is not None
+
+    committed = agent.commit_draft(draft["id"])
+
+    capture_note = read_note(tmp_path, committed["file_path"])
+    raw_note = read_note(tmp_path, committed["raw_path"])
+    assert capture_note is not None
+    assert raw_note is not None
+    capture_frontmatter, capture_body = capture_note
+    _raw_frontmatter, raw_body = raw_note
+    assert raw_body == "原始粘贴正文"
+    assert capture_body == "用户最终编辑后的正文"
+    assert capture_frontmatter["title"] == "自由编辑入库"
+    assert capture_frontmatter["entry_mode"] == "editable_capture"
+    assert capture_frontmatter["title_source"] == "ai"
+
+
+def test_commit_short_editable_draft_uses_identity_index(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    class FakeEmbedder:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+
+        def embed(self, text: str) -> bytes:
+            assert "标题：短笔记检索" in text
+            return b"identity"
+
+    agent.config.qwen_api_key = "sk-test-qwen"
+    monkeypatch.setattr("agents.capture_agent.Embedder", FakeEmbedder, raising=False)
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {
+            "title": "短笔记检索",
+            "summary": "短自由笔记按整体检索。",
+            "tags": ["ai-rag"],
+        },
+    )
+    draft = agent.create_editable_draft("这是一条短自由笔记，讨论知识库入口体验。")
+
+    committed = agent.commit_draft(draft["id"])
+
+    rows = agent.repo.conn.execute(
+        """SELECT kind, section_title, embedding
+           FROM capture_embeddings
+           WHERE capture_id = ?
+           ORDER BY kind, section_title""",
+        (committed["capture_id"],),
+    ).fetchall()
+    assert [(row["kind"], row["section_title"], row["embedding"]) for row in rows] == [
+        ("identity", "", b"identity")
+    ]
+
+
+def test_commit_long_editable_draft_reuses_library_section_index(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    class FakeEmbedder:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+
+        def embed(self, text: str) -> bytes:
+            if "章节：入口自由度" in text:
+                return b"section-entry"
+            if "章节：检索复用" in text:
+                return b"section-rag"
+            return b"identity"
+
+    class FakeOutliner:
+        def __init__(self, **_kwargs):
+            pass
+
+        def generate(self, _body: str, _length: int):
+            return [
+                {"level": 1, "title": "入口自由度", "summary": "用户像飞书一样自由编辑。"},
+                {"level": 1, "title": "检索复用", "summary": "系统复用 Library Agent 和 RAG。"},
+            ]
+
+    long_body = (
+        "入口自由度是关键，用户需要先自由粘贴和修改。" * 80
+        + "\n\n"
+        + "检索复用也很关键，入库之后仍然应该使用原来的短长文本规则。" * 80
+    )
+    agent.config.qwen_api_key = "sk-test-qwen"
+    monkeypatch.setattr("agents.capture_agent.Embedder", FakeEmbedder, raising=False)
+    monkeypatch.setattr("agents.capture_agent.Outliner", FakeOutliner, raising=False)
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {
+            "title": "长笔记检索",
+            "summary": "长自由笔记按章节检索。",
+            "tags": ["ai-rag"],
+        },
+    )
+    draft = agent.create_editable_draft(long_body)
+
+    committed = agent.commit_draft(draft["id"])
+
+    rows = agent.repo.conn.execute(
+        """SELECT kind, section_title, embedding
+           FROM capture_embeddings
+           WHERE capture_id = ?
+           ORDER BY kind, section_title""",
+        (committed["capture_id"],),
+    ).fetchall()
+    values = [(row["kind"], row["section_title"], row["embedding"]) for row in rows]
+    assert ("identity", "", b"identity") in values
+    assert ("section", "入口自由度", b"section-entry") in values
+    assert ("section", "检索复用", b"section-rag") in values
+    assert committed["library_postprocess"]["outlines"]["updated"] == 1
+
+
+def test_create_draft_stops_on_typed_extraction_failure(agent: CaptureAgent):
+    class FailingExtractor:
+        def can_handle(self, _source: str) -> bool:
+            return True
+
+        def extract(self, _source: str, **_kwargs) -> ExtractionResult:
+            return ExtractionResult(
+                raw_text="[图片提取未配置 API key]",
+                source_type="image",
+                source_url="/tmp/image.png",
+                extraction_failed=True,
+                failure=ExtractionFailure(
+                    code="auth_error",
+                    message="图片提取未配置 API key",
+                    retryable=False,
+                ),
+            )
+
+    agent.extractors = [FailingExtractor()]
+
+    result = agent.create_draft("/tmp/image.png")
+
+    assert result["error"] == "内容提取失败：图片提取未配置 API key"
+    assert result["extraction_failed"] is True
+    assert result["failure"] == {
+        "code": "auth_error",
+        "message": "图片提取未配置 API key",
+        "retryable": False,
+    }
+    assert agent.draft_repo.list_open(limit=10) == []
 
 
 def test_create_draft_with_instruction_returns_draft_text(agent: CaptureAgent, tmp_path: Path, monkeypatch):
@@ -266,6 +522,102 @@ def test_full_text_save_uses_original_extracted_text_not_cleaned_text(
     assert draft["draft_text"] == draft["raw_text"]
 
 
+def test_xiaohongshu_full_text_save_keeps_raw_evidence_but_hides_local_paths(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    class FakeExtractor:
+        def can_handle(self, _source: str) -> bool:
+            return True
+
+        def extract(self, _source: str, **_kwargs) -> ExtractionResult:
+            return ExtractionResult(
+                raw_text=(
+                    "# Subagent 的三岔路\n\n"
+                    "来源：https://www.xiaohongshu.com/explore/test\n\n"
+                    "## 正文文案\n\n"
+                    "作者正文足够长，讨论 subagent 委派策略和模型训练分布之间的关系。"
+                    "这里继续补充主线、证据和结论，确保内容质量检测通过。\n\n"
+                    "#AI[话题]# #Agent[话题]# #Subagent[话题]#\n\n"
+                    "## 图片内容\n\n"
+                    "## 图片 1\n"
+                    "本地图片：/tmp/01.jpg\n"
+                    "图片 OCR 结果为空。\n\n"
+                    "## 图片 2\n"
+                    "本地图片：/tmp/02.jpg\n"
+                    "图片里的正文继续展开 Codex、Claude Code、Cursor 的差异。\n\n"
+                    "## 图片 3\n"
+                    "本地图片：/tmp/03.jpg\n"
+                    "一名年轻男子身穿白色夹克，站在栏杆前，背景是日落时分的城市天际线和海面。"
+                ),
+                source_type="xiaohongshu",
+                source_url="https://www.xiaohongshu.com/explore/test",
+                title="Subagent 的三岔路",
+            )
+
+    agent.extractors = [FakeExtractor()]
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
+    )
+
+    draft = agent.create_draft("ignored", instruction="全文提取出来，入库")
+
+    assert draft["status"] == "draft_ready"
+    assert "本地图片：/tmp/01.jpg" in draft["raw_text"]
+    assert "本地图片：/tmp/01.jpg" not in draft["draft_text"]
+    assert "图片 OCR 结果为空" not in draft["draft_text"]
+    assert "来源：https://www.xiaohongshu.com" not in draft["draft_text"]
+    assert "## 图片 1" not in draft["draft_text"]
+    assert "## 图片 2" not in draft["draft_text"]
+    assert "#AI[话题]#" not in draft["draft_text"]
+    assert "年轻男子身穿白色夹克" not in draft["draft_text"]
+    assert "作者正文足够长" in draft["draft_text"]
+    assert "图片里的正文继续展开" in draft["draft_text"]
+
+
+def test_xiaohongshu_raw_package_request_preserves_ocr_structure(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    class FakeExtractor:
+        def can_handle(self, _source: str) -> bool:
+            return True
+
+        def extract(self, _source: str, **_kwargs) -> ExtractionResult:
+            return ExtractionResult(
+                raw_text=(
+                    "# Subagent 的三岔路\n\n"
+                    "来源：https://www.xiaohongshu.com/explore/test\n\n"
+                    "## 正文文案\n\n"
+                    "作者正文足够长，讨论 subagent 委派策略和模型训练分布之间的关系。"
+                    "这里继续补充主线、证据和结论，确保内容质量检测通过。\n\n"
+                    "## 图片内容\n\n"
+                    "## 图片 1\n"
+                    "本地图片：/tmp/01.jpg\n"
+                    "图片 OCR 结果为空。"
+                ),
+                source_type="xiaohongshu",
+                source_url="https://www.xiaohongshu.com/explore/test",
+                title="Subagent 的三岔路",
+            )
+
+    agent.extractors = [FakeExtractor()]
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
+    )
+
+    draft = agent.create_draft("ignored", instruction="保留原始 OCR 抓取包并入库")
+
+    assert draft["status"] == "draft_ready"
+    assert "## 图片 1" in draft["draft_text"]
+    assert "本地图片：/tmp/01.jpg" in draft["draft_text"]
+    assert "图片 OCR 结果为空。" in draft["draft_text"]
+
+
 def test_revise_draft_full_text_save_uses_existing_raw_without_llm(
     agent: CaptureAgent,
     monkeypatch,
@@ -293,12 +645,15 @@ def test_revise_draft_full_text_save_uses_existing_raw_without_llm(
 
 def test_capture_intent_classifies_four_material_contracts(agent: CaptureAgent):
     full_text = agent._build_capture_intent("这篇文章全文入库，一字不改保存").to_dict()
+    raw_package = agent._build_capture_intent("保留原始 OCR 抓取包并入库").to_dict()
     refined = agent._build_capture_intent("稍加总结，整理成一篇精炼笔记").to_dict()
     focused = agent._build_capture_intent("总结全文核心内容，方法论那部分详细一些").to_dict()
     enhanced = agent._build_capture_intent("结合刚才讨论，整理成原文增强版笔记").to_dict()
 
     assert full_text["material_intent"] == "verbatim_full_text"
     assert full_text["output_shape"] == ["full_text"]
+    assert raw_package["material_intent"] == "verbatim_full_text"
+    assert raw_package["output_shape"] == ["full_text"]
     assert refined["material_intent"] == "refined_note"
     assert focused["material_intent"] == "focused_note"
     assert focused["emphasis"] == ["方法论"]
@@ -319,6 +674,24 @@ def test_enhanced_note_prompt_requires_source_layering(agent: CaptureAgent):
     assert "原文依据" in prompt
     assert "讨论形成的理解" in prompt
     assert "不要把 AI 解释伪装成作者原意" in prompt
+
+
+def test_xiaohongshu_revision_prompt_adds_multimodal_cleanup_rules(agent: CaptureAgent):
+    intent = agent._build_capture_intent("整理成一篇可读笔记").to_dict()
+
+    prompt = agent._build_revision_prompt(
+        instruction="整理成一篇可读笔记",
+        capture_intent=intent,
+        current_text="",
+        raw_text="## 正文文案\n作者观点。\n\n## 图片 1\n图片 OCR 文字。",
+        source_type="xiaohongshu",
+    )
+
+    assert "这是小红书图文素材" in prompt
+    assert "作者表达和图片卡片里的作者文字" in prompt
+    assert "不要保留本地图片路径" in prompt
+    assert "不要按“图片 1/图片 2”机械罗列" in prompt
+    assert "视觉描述默认丢弃" in prompt
 
 
 def test_prompt_allows_model_to_choose_draft_strategy(agent: CaptureAgent, monkeypatch):
@@ -834,6 +1207,54 @@ def test_commit_draft_writes_raw_and_capture_files(agent: CaptureAgent, tmp_path
     assert record["file_path"] == committed["file_path"]
 
 
+def test_commit_draft_uses_shared_write_service_for_raw_and_capture_files(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+):
+    calls: list[tuple[str, str]] = []
+
+    class RecordingWriteService:
+        def __init__(self, vault_path):
+            self.vault_path = Path(vault_path)
+
+        def write_markdown_artifact(self, request):
+            calls.append((request.kind, request.relative_path))
+            target = self.vault_path / request.relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(request.content, encoding="utf-8")
+            from bridge.knowledge_write_service import KnowledgeWriteResult
+
+            return KnowledgeWriteResult(
+                kind=request.kind,
+                file_path=request.relative_path,
+                db_object_id=request.db_object_id,
+                db_table=request.db_table,
+            )
+
+    monkeypatch.setattr("agents.capture_agent.KnowledgeWriteService", RecordingWriteService, raising=False)
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: "最终草稿：AI瓶颈在电力。")
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {
+            "title": "AI电力协议",
+            "summary": "AI发展受电力基础设施制约。",
+            "tags": ["ai-energy"],
+        },
+    )
+    draft = agent.create_draft(TEST_CONTENT, instruction="总结全文核心观点")
+
+    committed = agent.commit_draft(draft["id"])
+
+    assert calls == [
+        ("capture_raw", committed["raw_path"]),
+        ("capture_note", committed["file_path"]),
+    ]
+    assert (tmp_path / committed["raw_path"]).exists()
+    assert (tmp_path / committed["file_path"]).exists()
+
+
 def test_commit_draft_builds_identity_embedding_index(
     agent: CaptureAgent,
     tmp_path: Path,
@@ -1130,6 +1551,42 @@ def test_commit_already_committed_draft_rejected(agent: CaptureAgent, monkeypatc
     assert result is not None
     assert "error" in result
     assert "已入库" in result["error"]
+
+
+def test_discard_capture_draft_marks_abandoned(agent: CaptureAgent, monkeypatch):
+    """待审草稿删除后进入废弃状态。"""
+    from bridge import capture_bridge
+
+    draft = agent.create_draft(TEST_CONTENT)
+    monkeypatch.setattr(capture_bridge, "_config", agent.config)
+    monkeypatch.setattr(capture_bridge, "_agent", agent)
+
+    result = capture_bridge.discard_capture_draft(draft["id"])
+
+    assert result["status"] == "success"
+    assert result["intent"] == "discard_capture_draft"
+    assert result["meta"]["draft_status"] == "abandoned"
+    assert agent.draft_repo.get_by_id(draft["id"])["status"] == "abandoned"
+
+
+def test_discard_committed_capture_draft_rejected(agent: CaptureAgent, monkeypatch):
+    """已入库草稿不能删除。"""
+    from bridge import capture_bridge
+
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: "草稿内容")
+    monkeypatch.setattr(
+        agent.summarizer, "summarize",
+        lambda text, existing_tags=None: {"summary": "摘要", "tags": ["test"]},
+    )
+    draft = agent.create_draft(TEST_CONTENT, instruction="总结")
+    agent.commit_draft(draft["id"])
+    monkeypatch.setattr(capture_bridge, "_config", agent.config)
+    monkeypatch.setattr(capture_bridge, "_agent", agent)
+
+    result = capture_bridge.discard_capture_draft(draft["id"])
+
+    assert result["status"] == "error"
+    assert "入库" in result["errors"][0]
 
 
 def test_revise_abandoned_draft_rejected(agent: CaptureAgent, monkeypatch):

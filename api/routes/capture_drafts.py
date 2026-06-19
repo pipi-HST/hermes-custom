@@ -18,6 +18,19 @@ class CreateCaptureDraftRequest(BaseModel):
     source_type: str = ""
 
 
+class CreateEditableCaptureDraftRequest(BaseModel):
+    content: str
+    instruction: str = ""
+    source: str = ""
+    source_type: str = "manual"
+    title: str = ""
+
+
+class UpdateEditableCaptureDraftRequest(BaseModel):
+    content: str
+    title: str = ""
+
+
 class ReviseCaptureDraftRequest(BaseModel):
     instruction: str
 
@@ -50,6 +63,33 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
             instruction=body.instruction,
             source=body.source,
             source_type=body.source_type,
+        )
+        return result
+
+    @router.post("/capture-drafts/editable")
+    def create_editable_capture_draft(body: CreateEditableCaptureDraftRequest):
+        from bridge import capture_bridge
+
+        result = capture_bridge.create_editable_capture_draft(
+            content=body.content,
+            instruction=body.instruction,
+            source=body.source,
+            source_type=body.source_type,
+            title=body.title,
+        )
+        return result
+
+    @router.patch("/capture-drafts/{draft_id}/editable")
+    def update_editable_capture_draft(
+        draft_id: str,
+        body: UpdateEditableCaptureDraftRequest,
+    ):
+        from bridge import capture_bridge
+
+        result = capture_bridge.update_editable_capture_draft(
+            draft_id=draft_id,
+            content=body.content,
+            title=body.title,
         )
         return result
 

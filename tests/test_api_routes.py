@@ -10,9 +10,11 @@ from fastapi.testclient import TestClient
 from db.schema import init_db
 from db.repo import CaptureRepo, CaptureDraftRepo
 from db.reading_repo import ReadingRepo
+from agents.markdown_writer import read_note
 from api.routes.reading import create_reading_router
 from api.routes.knowledge import create_knowledge_router
 from api.routes.capture_drafts import create_capture_draft_router
+from api.routes.captures import create_capture_router
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +53,10 @@ def client(tmp_path, reading_repo, capture_repo, draft_repo):
     )
     app.include_router(
         create_knowledge_router(reading_repo, capture_repo, str(tmp_path)),
+        prefix="/api",
+    )
+    app.include_router(
+        create_capture_router(capture_repo, str(tmp_path)),
         prefix="/api",
     )
     app.include_router(
@@ -210,6 +216,65 @@ def test_list_garden_cards_empty(client):
 
 
 # ---------------------------------------------------------------------------
+# Capture note tests
+# ---------------------------------------------------------------------------
+
+def test_update_capture_note_backs_up_and_runs_library(
+    client,
+    tmp_path,
+    capture_repo,
+    monkeypatch,
+):
+    """PATCH /api/captures/{id} updates Capture Note, creates backup, and maintains Library."""
+    capture = capture_repo.insert(
+        file_path="captures/test-note.md",
+        raw_path="_archive/raw/test-note.md",
+    )
+    note_path = tmp_path / "captures" / "test-note.md"
+    note_path.parent.mkdir(parents=True)
+    note_path.write_text(
+        "---\n"
+        f"id: {capture['id']}\n"
+        "title: Old Title\n"
+        "tags: []\n"
+        "story: Old summary\n"
+        "word_count: 8\n"
+        "---\n\n"
+        "Old body",
+        encoding="utf-8",
+    )
+    library_calls: list[tuple[str, bool]] = []
+
+    class FakeLibraryAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def maintain_capture(self, capture_id: str, *, apply: bool = False):
+            library_calls.append((capture_id, apply))
+            return {"embedding_index": {"updated": 1}, "outlines": {"updated": 0}}
+
+    monkeypatch.setattr("api.routes.captures.LibraryAgent", FakeLibraryAgent)
+
+    resp = client.patch(
+        f"/api/captures/{capture['id']}",
+        json={"body": "New edited body for RAG", "title": "User Title"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["backup_path"].startswith("_archive/write_backups/captures/")
+    assert (tmp_path / body["backup_path"]).exists()
+    assert library_calls == [(capture["id"], True)]
+    updated_note = read_note(tmp_path, "captures/test-note.md")
+    assert updated_note is not None
+    frontmatter, note_body = updated_note
+    assert frontmatter["title"] == "User Title"
+    assert frontmatter["title_source"] == "user"
+    assert frontmatter["word_count"] == len("New edited body for RAG")
+    assert note_body == "New edited body for RAG"
+
+
+# ---------------------------------------------------------------------------
 # Bridge-dependent tests (mocked)
 # ---------------------------------------------------------------------------
 
@@ -342,6 +407,75 @@ def test_get_capture_draft_not_found(client):
     """GET /api/capture-drafts/{id} returns 404 for nonexistent draft."""
     resp = client.get("/api/capture-drafts/nonexistent")
     assert resp.status_code == 404
+
+
+def test_create_editable_capture_draft_calls_bridge(client):
+    """POST /api/capture-drafts/editable delegates to editable Capture bridge."""
+    mock_result = {
+        "status": "success",
+        "intent": "create_editable_capture_draft",
+        "meta": {"draft_id": "draft1", "title": "AI 标题"},
+    }
+
+    with patch(
+        "bridge.capture_bridge.create_editable_capture_draft",
+        return_value=mock_result,
+    ) as mock_create:
+        resp = client.post(
+            "/api/capture-drafts/editable",
+            json={
+                "content": "自由粘贴正文",
+                "instruction": "整理一下",
+                "source": "manual",
+                "source_type": "manual",
+                "title": "用户标题",
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["intent"] == "create_editable_capture_draft"
+    mock_create.assert_called_once_with(
+        content="自由粘贴正文",
+        instruction="整理一下",
+        source="manual",
+        source_type="manual",
+        title="用户标题",
+    )
+
+
+def test_update_editable_capture_draft_calls_bridge(client, draft_repo):
+    """PATCH /api/capture-drafts/{id}/editable delegates to editable Capture bridge."""
+    draft = draft_repo.create(
+        raw_text="Original.",
+        title="AI Title",
+        draft_text="Original.",
+        status="draft_ready",
+        capture_intent={"entry_mode": "editable_capture", "title_source": "ai"},
+    )
+    mock_result = {
+        "status": "success",
+        "intent": "update_editable_capture_draft",
+        "meta": {"draft_id": draft["id"], "title": "用户标题"},
+    }
+
+    with patch(
+        "bridge.capture_bridge.update_editable_capture_draft",
+        return_value=mock_result,
+    ) as mock_update:
+        resp = client.patch(
+            f"/api/capture-drafts/{draft['id']}/editable",
+            json={"content": "用户编辑后的正文", "title": "用户标题"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["intent"] == "update_editable_capture_draft"
+    mock_update.assert_called_once_with(
+        draft_id=draft["id"],
+        content="用户编辑后的正文",
+        title="用户标题",
+    )
 
 
 def test_revise_capture_draft_calls_bridge(client, draft_repo):

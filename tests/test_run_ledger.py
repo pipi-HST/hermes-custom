@@ -39,6 +39,40 @@ def test_run_with_ledger_records_success(tmp_path):
     ]
 
 
+def test_run_with_ledger_records_object_refs(tmp_path):
+    conn = init_db(str(tmp_path / "captures.db"))
+
+    run_with_ledger(
+        conn,
+        agent="garden",
+        intent="synthesize_garden",
+        trigger="wechat",
+        input_ref={"capture_ids": ["c1"]},
+        operation=lambda: success_envelope(
+            agent="garden",
+            intent="synthesize_garden",
+            chat_preview="已生成草稿",
+            durable_artifacts=[
+                {
+                    "type": "garden_draft",
+                    "id": "draft1",
+                    "title": "Draft",
+                    "status": "draft_ready",
+                }
+            ],
+            meta={"capture_ids": ["c1"], "draft_id": "draft1"},
+        ),
+    )
+
+    repo = AgentRunRepo(conn)
+    latest = repo.latest(limit=1)[0]
+    refs = repo.object_refs(latest["id"])
+    assert [(row["object_type"], row["object_id"], row["role"]) for row in refs] == [
+        ("capture", "c1", "source"),
+        ("garden_draft", "draft1", "subject"),
+    ]
+
+
 def test_run_with_ledger_records_error_and_reraises(tmp_path):
     conn = init_db(str(tmp_path / "captures.db"))
 

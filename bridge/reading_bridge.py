@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
-import shutil
 import sys
 
 import httpx
@@ -21,6 +21,8 @@ from agents.embedder import Embedder
 from agents.garden_agent import create_garden_card
 from agents.library_agent import LibraryAgent
 from agents.markdown_writer import read_note
+from bridge.context import KnowledgeContext
+from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest, KnowledgeWriteResult
 from agents.outliner import Outliner
 from bridge.result_envelope import (
     artifact_ref,
@@ -33,10 +35,12 @@ from bridge.run_ledger import run_with_ledger
 from db.reading_repo import ReadingRepo
 from db.repo import CaptureRepo
 from db.schema import init_db
+from db.write_job_repo import KnowledgeWriteJobRepo
 
 _config = None
 _repo: ReadingRepo | None = None
 _capture_repo: CaptureRepo | None = None
+logger = logging.getLogger(__name__)
 
 CLARIFY_OUTPUT_TYPE = (
     "你想整理成哪种？\n"
@@ -53,7 +57,9 @@ OUTPUT_TYPES = {
 }
 
 
-def _init():
+def _init(context: KnowledgeContext | None = None):
+    if context is not None:
+        return context.config, context.reading_repo(), context.capture_repo()
     global _config, _repo, _capture_repo
     if _config is None:
         _config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
@@ -63,8 +69,8 @@ def _init():
     return _config, _repo, _capture_repo
 
 
-def _run(intent: str, input_ref: dict, operation):
-    _, repo, _ = _init()
+def _run(intent: str, input_ref: dict, operation, context: KnowledgeContext | None = None):
+    _, repo, _ = _init(context)
     return run_with_ledger(
         repo.conn,
         agent="reading",
@@ -83,6 +89,7 @@ def start_reading_session(
     excerpt: str = "",
     file_ref: str = "",
     image_ref: str = "",
+    context: KnowledgeContext | None = None,
 ) -> dict:
     """Start a temporary reading discussion without creating a capture draft."""
     return _run(
@@ -104,7 +111,9 @@ def start_reading_session(
             excerpt=excerpt,
             file_ref=file_ref,
             image_ref=image_ref,
+            context=context,
         ),
+        context=context,
     )
 
 
@@ -117,8 +126,9 @@ def _start_reading_session(
     excerpt: str = "",
     file_ref: str = "",
     image_ref: str = "",
+    context: KnowledgeContext | None = None,
 ) -> dict:
-    config, repo, capture_repo = _init()
+    config, repo, capture_repo = _init(context)
     source_type = _infer_source_type(
         capture_id=capture_id,
         draft_id=draft_id,
@@ -191,6 +201,7 @@ def discuss_reading(
     focus: str = "",
     assistant_answer: str = "",
     evidence: list[dict[str, Any]] | None = None,
+    context: KnowledgeContext | None = None,
 ) -> dict:
     """Record and return a reading discussion turn."""
     return _run(
@@ -207,7 +218,9 @@ def discuss_reading(
             focus=focus,
             assistant_answer=assistant_answer,
             evidence=evidence or [],
+            context=context,
         ),
+        context=context,
     )
 
 
@@ -218,8 +231,9 @@ def _discuss_reading(
     focus: str = "",
     assistant_answer: str = "",
     evidence: list[dict[str, Any]] | None = None,
+    context: KnowledgeContext | None = None,
 ) -> dict:
-    _, repo, _ = _init()
+    _, repo, _ = _init(context)
     session = _resolve_session(repo, session_id)
     if not session:
         return error_envelope(
@@ -283,17 +297,18 @@ def _discuss_reading(
     )
 
 
-def show_reading_session(session_id: str = "") -> dict:
+def show_reading_session(session_id: str = "", context: KnowledgeContext | None = None) -> dict:
     """Show current Reading Session state."""
     return _run(
         "show_reading_session",
         {"session_id": session_id},
-        lambda: _show_reading_session(session_id=session_id),
+        lambda: _show_reading_session(session_id=session_id, context=context),
+        context=context,
     )
 
 
-def _show_reading_session(session_id: str = "") -> dict:
-    _, repo, _ = _init()
+def _show_reading_session(session_id: str = "", context: KnowledgeContext | None = None) -> dict:
+    _, repo, _ = _init(context)
     session = _resolve_session(repo, session_id)
     if not session:
         return error_envelope(
@@ -337,6 +352,7 @@ def summarize_reading_session(
     session_id: str = "",
     output_type: str = "",
     instruction: str = "",
+    context: KnowledgeContext | None = None,
 ) -> dict:
     """Create a reviewable Reading Draft, or clarify output type."""
     return _run(
@@ -350,7 +366,9 @@ def summarize_reading_session(
             session_id=session_id,
             output_type=output_type,
             instruction=instruction,
+            context=context,
         ),
+        context=context,
     )
 
 
@@ -359,8 +377,9 @@ def _summarize_reading_session(
     session_id: str = "",
     output_type: str = "",
     instruction: str = "",
+    context: KnowledgeContext | None = None,
 ) -> dict:
-    config, repo, capture_repo = _init()
+    config, repo, capture_repo = _init(context)
     session = _resolve_session(repo, session_id)
     if not session:
         return error_envelope(
@@ -449,17 +468,117 @@ def _summarize_reading_session(
     )
 
 
-def commit_reading_artifact(draft_id: str = "") -> dict:
+def commit_reading_artifact(draft_id: str = "", context: KnowledgeContext | None = None) -> dict:
     """Commit a Reading Draft after user confirmation."""
+    _, _, capture_repo = _init(context)
+    write_jobs = KnowledgeWriteJobRepo(capture_repo.conn)
+    job_id = write_jobs.start(
+        intent="commit_reading_artifact",
+        object_type="reading_draft",
+        object_id=draft_id,
+        payload={"draft_id": draft_id},
+    )
+
+    def operation() -> dict:
+        try:
+            write_jobs.mark_step(job_id, status="writing_file", step="commit_reading_artifact")
+            result = _commit_reading_artifact(draft_id=draft_id, context=context)
+            if result.get("status") == "error":
+                write_jobs.fail(job_id, step="commit_reading_artifact", error="; ".join(result.get("errors") or []))
+            else:
+                meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+                db_table = "garden_cards" if meta.get("garden_card_id") else "captures"
+                capture_id = str(meta.get("capture_id") or "")
+                embedding = None
+                if capture_id:
+                    embedding = capture_repo.conn.execute(
+                        """SELECT 1 FROM capture_embeddings
+                           WHERE capture_id = ? AND kind = 'identity'
+                             AND embedding IS NOT NULL
+                           LIMIT 1""",
+                        (capture_id,),
+                    ).fetchone()
+                if capture_id and not embedding:
+                    write_jobs.repair_needed(
+                        job_id,
+                        step="identity_embedding",
+                        error="identity embedding pending or failed",
+                        file_path=str(meta.get("file_path") or ""),
+                        db_table="captures,capture_embeddings",
+                    )
+                else:
+                    write_jobs.complete(
+                        job_id,
+                        file_path=str(meta.get("file_path") or ""),
+                        db_table=db_table,
+                    )
+            return result
+        except Exception as exc:
+            write_jobs.fail(job_id, step="commit_reading_artifact", error=str(exc))
+            raise
+
     return _run(
         "commit_reading_artifact",
         {"draft_id": draft_id},
-        lambda: _commit_reading_artifact(draft_id=draft_id),
+        operation,
+        context=context,
     )
 
 
-def _commit_reading_artifact(draft_id: str = "") -> dict:
-    config, repo, capture_repo = _init()
+def discard_reading_artifact(draft_id: str = "", context: KnowledgeContext | None = None) -> dict:
+    """Mark a reviewable Reading Draft as discarded."""
+    return _run(
+        "discard_reading_artifact",
+        {"draft_id": draft_id},
+        lambda: _discard_reading_artifact(draft_id=draft_id, context=context),
+        context=context,
+    )
+
+
+def _discard_reading_artifact(draft_id: str = "", context: KnowledgeContext | None = None) -> dict:
+    _, repo, _ = _init(context)
+    draft = repo.get_draft(draft_id) if draft_id else repo.get_latest_open_draft()
+    if not draft:
+        return error_envelope(
+            agent="reading",
+            intent="discard_reading_artifact",
+            error="没有找到可删除的阅读整理草稿。",
+        )
+    if draft.get("status") == "committed":
+        return error_envelope(
+            agent="reading",
+            intent="discard_reading_artifact",
+            error="阅读整理草稿已保存，不能删除。",
+        )
+    if draft.get("status") == "discarded":
+        return error_envelope(
+            agent="reading",
+            intent="discard_reading_artifact",
+            error="阅读整理草稿已删除，不能重复删除。",
+        )
+    updated = repo.update_draft(draft["id"], status="discarded") or draft
+    title = updated.get("title") or draft.get("title") or "阅读整理草稿"
+    return success_envelope(
+        agent="reading",
+        intent="discard_reading_artifact",
+        chat_preview=f"已删除阅读整理草稿：《{title}》。",
+        durable_artifacts=[
+            artifact_ref(
+                type="reading_draft",
+                id=draft["id"],
+                title=title,
+                status=updated.get("status") or "discarded",
+            )
+        ],
+        meta={
+            "reading_draft_id": draft["id"],
+            "draft_status": updated.get("status") or "discarded",
+        },
+    )
+
+
+def _commit_reading_artifact(draft_id: str = "", context: KnowledgeContext | None = None) -> dict:
+    config, repo, capture_repo = _init(context)
     draft = repo.get_draft(draft_id) if draft_id else repo.get_latest_open_draft()
     if not draft:
         return error_envelope(
@@ -516,22 +635,34 @@ def _commit_independent_note(
     tags = _extract_tags(draft_title, draft.get("draft_text", ""))
     if tags:
         frontmatter["tags"] = tags
-    rel_path = _write_note_file(
+    write_result = _write_note_file(
         vault_path=vault_path,
         folder=folder,
         title=draft_title,
         draft_id=capture_id,
+        kind=note_type,
+        db_object_id=capture_id,
+        db_table="captures",
         frontmatter=frontmatter,
         body=draft.get("draft_text", ""),
     )
+    rel_path = write_result.file_path
     capture_repo.update(capture_id, file_path=rel_path, raw_path="")
     library_report = _postprocess_committed_learning_note(config, repo, capture_id)
     repo.update_draft(draft["id"], status="committed")
     repo.update_session(draft["session_id"], status="committed", committed_artifact_id=rel_path)
+    warnings = []
+    if library_report.get("error"):
+        warnings.append(f"Library postprocess failed: {library_report['error']}")
+    chat_preview = f"已保存阅读整理：《{draft.get('title') or '阅读整理'}》。"
+    if warnings:
+        chat_preview += "但索引维护失败，稍后可用 Library 修复。"
+    else:
+        chat_preview += "已加入知识库检索索引。"
     return success_envelope(
         agent="reading",
         intent="commit_reading_artifact",
-        chat_preview=f"已保存阅读整理：《{draft.get('title') or '阅读整理'}》。已加入知识库检索索引。",
+        chat_preview=chat_preview,
         durable_artifacts=[
             artifact_ref(
                 type=note_type,
@@ -547,7 +678,10 @@ def _commit_independent_note(
             "artifact_type": note_type,
             "file_path": rel_path,
             "library_postprocess": library_report,
+            "write_service": "knowledge_write_service",
+            "write_backup_path": write_result.backup_path,
         },
+        warnings=warnings,
     )
 
 
@@ -575,13 +709,16 @@ def _postprocess_committed_learning_note(config, repo: ReadingRepo, capture_id: 
 
 
 def _commit_knowledge_card(config, vault_path: Path, repo: ReadingRepo, draft: dict) -> dict:
-    garden_data, card_body = _garden_data_from_reading_draft(config, repo, draft)
+    garden_data, card_body, synth_warnings = _garden_data_from_reading_draft(config, repo, draft)
     card_id = create_garden_card(repo, garden_data)
-    rel_path = _write_note_file(
+    write_result = _write_note_file(
         vault_path=vault_path,
         folder="garden",
         title=draft.get("title") or "知识卡片",
         draft_id=card_id,
+        kind="knowledge_card",
+        db_object_id=card_id,
+        db_table="garden_cards",
         frontmatter={
             "type": "garden_card",
             "card_kind": garden_data["card_kind"],
@@ -593,6 +730,7 @@ def _commit_knowledge_card(config, vault_path: Path, repo: ReadingRepo, draft: d
         },
         body=card_body,
     )
+    rel_path = write_result.file_path
     repo.update_draft(draft["id"], status="committed")
     repo.update_session(draft["session_id"], status="committed", committed_artifact_id=rel_path)
     return success_envelope(
@@ -613,7 +751,11 @@ def _commit_knowledge_card(config, vault_path: Path, repo: ReadingRepo, draft: d
             "garden_card_id": card_id,
             "artifact_type": "knowledge_card",
             "file_path": rel_path,
+            "synthesis_warnings": synth_warnings,
+            "write_service": "knowledge_write_service",
+            "write_backup_path": write_result.backup_path,
         },
+        warnings=synth_warnings,
     )
 
 
@@ -633,7 +775,7 @@ def _synthesize_reading_card(
     summary: str,
     session: dict,
     evidence: list[dict],
-) -> tuple[dict, str]:
+) -> tuple[dict, str, list[str]]:
     """Use LLM to synthesize a Q&A conversation into a structured knowledge card.
 
     Returns (garden_data_dict, synthesized_markdown_body).
@@ -680,6 +822,7 @@ def _synthesize_reading_card(
     )
 
     extracted: dict | None = None
+    warnings: list[str] = []
     try:
         with httpx.Client(timeout=60) as client:
             resp = client.post(
@@ -701,8 +844,10 @@ def _synthesize_reading_card(
             resp.raise_for_status()
             raw = resp.json()["choices"][0]["message"]["content"].strip()
             extracted = _parse_card_json(raw)
-    except Exception:
-        pass
+    except Exception as exc:
+        message = f"Reading card LLM synthesis failed: {exc}"
+        warnings.append(message)
+        logger.warning(message)
 
     # --- Build result ---------------------------------------------------
     if extracted is not None:
@@ -746,7 +891,7 @@ def _synthesize_reading_card(
 
     # Build synthesized markdown body
     md = _build_card_markdown(title, one_liner, card_kind, core_args, key_mats, evidence)
-    return garden_data, md
+    return garden_data, md, warnings
 
 
 def _parse_card_json(raw: str) -> dict:
@@ -796,7 +941,7 @@ def _build_card_markdown(
     return "\n".join(lines).strip() + "\n"
 
 
-def _garden_data_from_reading_draft(config, repo: ReadingRepo, draft: dict) -> tuple[dict, str]:
+def _garden_data_from_reading_draft(config, repo: ReadingRepo, draft: dict) -> tuple[dict, str, list[str]]:
     session = repo.get_session(draft["session_id"]) or {}
     evidence = repo.list_evidence(draft["session_id"])
     title = draft.get("title") or "知识卡片"
@@ -866,14 +1011,22 @@ def _commit_enhanced_capture(
         )
     old_text = full_path.read_text(encoding="utf-8")
     previous_hash = _sha256(old_text)
-    backup_path = _backup_capture_file(full_path)
     new_text = _merge_frontmatter(old_text, draft.get("draft_text", ""))
-    full_path.write_text(new_text, encoding="utf-8")
+    write_result = KnowledgeWriteService(vault_path).write_markdown_artifact(
+        MarkdownWriteRequest(
+            kind="capture_note",
+            relative_path=capture["file_path"],
+            content=new_text,
+            db_object_id=capture_id,
+            db_table="captures",
+            requires_backup=True,
+        )
+    )
     new_hash = _sha256(new_text)
     backup = repo.record_capture_backup(
         capture_id=capture_id,
         reading_draft_id=draft["id"],
-        backup_file_path=str(backup_path),
+        backup_file_path=write_result.backup_path,
         previous_file_hash=previous_hash,
         new_file_hash=new_hash,
     )
@@ -899,16 +1052,17 @@ def _commit_enhanced_capture(
                 type="capture_backup",
                 id=backup["id"],
                 title="旧版 Capture 备份",
-                path=str(backup_path),
+                path=write_result.backup_path,
                 status="created",
             ),
         ],
         meta={
             "reading_draft_id": draft["id"],
             "capture_id": capture_id,
-            "backup_file_path": str(backup_path),
+            "backup_file_path": write_result.backup_path,
             "previous_file_hash": previous_hash,
             "new_file_hash": new_hash,
+            "write_service": "knowledge_write_service",
         },
     )
 
@@ -1120,21 +1274,29 @@ def _write_note_file(
     folder: str,
     title: str,
     draft_id: str,
+    kind: str,
+    db_object_id: str,
+    db_table: str,
     frontmatter: dict[str, Any],
     body: str,
-) -> str:
+) -> KnowledgeWriteResult:
     safe_title = _safe_filename(title)
     relative = Path(folder) / f"{safe_title}-{draft_id[:8]}.md"
-    full_path = vault_path / relative
-    full_path.parent.mkdir(parents=True, exist_ok=True)
     content = (
         "---\n"
         f"{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False)}"
         "---\n\n"
         f"{body.strip()}\n"
     )
-    full_path.write_text(content, encoding="utf-8")
-    return str(relative)
+    return KnowledgeWriteService(vault_path).write_markdown_artifact(
+        MarkdownWriteRequest(
+            kind=kind,
+            relative_path=relative.as_posix(),
+            content=content,
+            db_object_id=db_object_id,
+            db_table=db_table,
+        )
+    )
 
 
 def _safe_filename(title: str) -> str:
@@ -1142,15 +1304,6 @@ def _safe_filename(title: str) -> str:
     text = re.sub(r'[/\\:*?"<>|？]', "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:48] or "阅读整理"
-
-
-def _backup_capture_file(full_path: Path) -> Path:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup_dir = Path(__file__).parent.parent / "data" / "backups" / "reading"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    backup_path = backup_dir / f"{full_path.stem}-{timestamp}{full_path.suffix}"
-    shutil.copy2(full_path, backup_path)
-    return backup_path
 
 
 def _merge_frontmatter(old_text: str, draft_text: str) -> str:

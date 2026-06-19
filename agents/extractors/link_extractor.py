@@ -63,9 +63,13 @@ class LinkExtractor(BaseExtractor):
             return result
 
         # Level 3: give up
-        return ExtractionResult(
+        return ExtractionResult.failed(
+            code="empty_content",
+            message="网页内容未能提取",
             raw_text=(f"[内容未能提取] {url}\n请复制粘贴正文给我。"),
-            source_type="link", source_url=url, extraction_failed=True,
+            source_type="link",
+            source_url=url,
+            retryable=True,
         )
 
     def _try_readability(self, url: str, ua: str) -> ExtractionResult | None:

@@ -387,6 +387,34 @@ def test_run_theme_scan_reports_unindexed_new_captures(tmp_path: Path) -> None:
     assert "索引未完成" in result["chat_preview"]
 
 
+def test_run_theme_scan_records_write_job_for_empty_scan(tmp_path: Path) -> None:
+    """Theme scan 即使没有待处理内容，也应记录自动化写入边界。"""
+    from db.schema import init_db
+
+    db_path = str(tmp_path / "test.db")
+    conn = init_db(db_path)
+
+    with patch("bridge.theme_bridge.load_config") as mock_cfg:
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        from bridge.theme_bridge import run_theme_scan
+
+        result = run_theme_scan()
+
+    assert result["status"] == "success"
+    job = conn.execute(
+        "SELECT * FROM knowledge_write_jobs WHERE intent = 'run_theme_scan'"
+    ).fetchone()
+    assert job["status"] == "completed"
+    assert job["object_type"] == "theme_scan"
+    assert job["db_table"] == "captures,pending_questions"
+
+
 def test_run_theme_scan_builds_cluster_without_llm_filter(tmp_path: Path) -> None:
     """Theme scan 应先用索引图谱发现关联，而不是依赖逐篇 LLM 精筛。"""
     from db.embedding_repo import CaptureEmbeddingRepo

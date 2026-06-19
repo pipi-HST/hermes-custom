@@ -7,13 +7,17 @@ import {
   reviseReadingDraft,
   fetchKnowledgeDrafts,
   fetchCaptureDrafts,
+  fetchCaptureDraft,
+  createEditableCaptureDraft,
+  updateEditableCaptureDraft,
   reviseCaptureDraft,
   commitCaptureDraft,
   sendMessageToGateway,
 } from '../lib/api'
 import { DraftReviewPanel } from '../components/DraftReviewPanel'
 
-type WorkbenchMode = 'chat' | 'draft-review' | 'capture-review'
+type WorkbenchMode = 'chat' | 'editable-capture' | 'draft-review' | 'capture-review'
+type EditableStatus = 'empty' | 'editing' | 'saving_draft' | 'ready_to_commit' | 'committing' | 'committed' | 'error'
 
 interface ChatMessage {
   id: string
@@ -22,7 +26,7 @@ interface ChatMessage {
   timestamp: string
 }
 
-export default function KnowledgeChatPage() {
+export default function KnowledgeChatPage({ embedded = false }: { embedded?: boolean }) {
   const [mode, setMode] = useState<WorkbenchMode>('chat')
   const [drafts, setDrafts] = useState<ReadingDraft[]>([])
   const [selectedDraft, setSelectedDraft] = useState<ReadingDraft | null>(null)
@@ -40,6 +44,14 @@ export default function KnowledgeChatPage() {
   const [captureReviseInput, setCaptureReviseInput] = useState('')
   const [captureActionLoading, setCaptureActionLoading] = useState(false)
   const [captureLoading, setCaptureLoading] = useState(false)
+
+  // Free editable capture state
+  const [editableContent, setEditableContent] = useState('')
+  const [editableSource, setEditableSource] = useState('')
+  const [editableTitle, setEditableTitle] = useState('')
+  const [editableDraft, setEditableDraft] = useState<CaptureDraft | null>(null)
+  const [editableStatus, setEditableStatus] = useState<EditableStatus>('empty')
+  const [editableError, setEditableError] = useState<string | null>(null)
 
   useEffect(() => {
     loadDrafts()
@@ -199,8 +211,77 @@ export default function KnowledgeChatPage() {
     }
   }
 
+  // ─── Editable capture actions ───────────────────────────────────────────
+
+  const loadEditableDraftFromResult = async (result: Record<string, unknown>) => {
+    const meta = (result.meta || {}) as Record<string, unknown>
+    const draftId = String(meta.draft_id || '')
+    if (!draftId) return null
+    const draft = await fetchCaptureDraft(draftId)
+    if (!draft) return null
+    setEditableDraft(draft)
+    setEditableTitle(draft.title || '')
+    setEditableContent(draft.draft_text || draft.raw_text || '')
+    return draft
+  }
+
+  const handleEditableSave = async () => {
+    if (!editableContent.trim()) return
+    setEditableStatus('saving_draft')
+    setEditableError(null)
+    try {
+      const result = editableDraft
+        ? await updateEditableCaptureDraft(editableDraft.id, {
+            content: editableContent,
+            title: editableTitle,
+          })
+        : await createEditableCaptureDraft({
+            content: editableContent,
+            source: editableSource,
+            source_type: 'manual',
+          })
+      const draft = await loadEditableDraftFromResult(result)
+      setEditableStatus(draft ? 'ready_to_commit' : 'error')
+      if (!draft) setEditableError('草稿已保存，但没有返回可加载的草稿 ID。')
+      await loadCaptureDrafts()
+    } catch (err) {
+      setEditableStatus('error')
+      setEditableError(err instanceof Error ? err.message : '保存失败')
+    }
+  }
+
+  const handleEditableCommit = async () => {
+    if (!editableDraft) return
+    setEditableStatus('committing')
+    setEditableError(null)
+    try {
+      const result = await updateEditableCaptureDraft(editableDraft.id, {
+        content: editableContent,
+        title: editableTitle,
+      })
+      const draft = await loadEditableDraftFromResult(result)
+      if (!draft) throw new Error('提交前无法刷新草稿')
+      await commitCaptureDraft(draft.id)
+      setEditableStatus('committed')
+      setEditableDraft(null)
+      await loadCaptureDrafts()
+    } catch (err) {
+      setEditableStatus('error')
+      setEditableError(err instanceof Error ? err.message : '提交失败')
+    }
+  }
+
+  const handleEditableReset = () => {
+    setEditableContent('')
+    setEditableSource('')
+    setEditableTitle('')
+    setEditableDraft(null)
+    setEditableStatus('empty')
+    setEditableError(null)
+  }
+
   return (
-    <div className="flex h-screen">
+    <div className={`flex ${embedded ? 'h-full min-h-[640px]' : 'h-screen'}`}>
       {/* Left panel: Draft list or Capture list depending on mode */}
       <aside className="w-64 shrink-0 border-r border-neutral-200 dark:border-neutral-800
         flex flex-col overflow-hidden">
@@ -273,6 +354,7 @@ export default function KnowledgeChatPage() {
         <div className="flex border-b border-neutral-200 dark:border-neutral-800 px-4">
           {([
             ['chat', '对话'],
+            ['editable-capture', '粘贴整理'],
             ['draft-review', '草稿审阅'],
             ['capture-review', '捕获审阅'],
           ] as const).map(([key, label]) => (
@@ -339,6 +421,110 @@ export default function KnowledgeChatPage() {
               </div>
             </div>
           </>
+        )}
+
+        {mode === 'editable-capture' && (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="px-6 py-4 border-b border-neutral-200 dark:border-neutral-800">
+              <h2 className="text-lg font-medium text-neutral-900 dark:text-neutral-100">
+                粘贴整理
+              </h2>
+              <p className="text-sm text-neutral-500 mt-1">
+                直接粘贴或写下内容，Hermes 会自动生成标题、标签和检索索引。
+              </p>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+              {editableError && (
+                <div className="px-3 py-2 rounded-md bg-red-50 dark:bg-red-950
+                  text-red-700 dark:text-red-300 text-sm">
+                  {editableError}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-medium text-neutral-500 mb-1">
+                  来源
+                </label>
+                <input
+                  value={editableSource}
+                  onChange={e => setEditableSource(e.target.value)}
+                  placeholder="可选：链接、公众号、小红书、手动记录"
+                  className="w-full px-3 py-2 text-sm rounded-md border border-neutral-200
+                    dark:border-neutral-700 bg-transparent
+                    focus:outline-none focus:ring-1 focus:ring-neutral-400"
+                />
+              </div>
+
+              {editableDraft && (
+                <div>
+                  <label className="block text-xs font-medium text-neutral-500 mb-1">
+                    生成标题
+                  </label>
+                  <input
+                    value={editableTitle}
+                    onChange={e => setEditableTitle(e.target.value)}
+                    placeholder="Hermes 会自动生成标题；你也可以手动覆盖"
+                    className="w-full px-3 py-2 text-sm rounded-md border border-neutral-200
+                      dark:border-neutral-700 bg-transparent
+                      focus:outline-none focus:ring-1 focus:ring-neutral-400"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-medium text-neutral-500 mb-1">
+                  正文
+                </label>
+                <textarea
+                  value={editableContent}
+                  onChange={e => {
+                    setEditableContent(e.target.value)
+                    if (editableStatus === 'empty') setEditableStatus('editing')
+                  }}
+                  placeholder="把文章片段、产品判断、公众号内容、小红书内容或自己的想法粘贴到这里..."
+                  rows={18}
+                  className="w-full px-3 py-3 text-sm rounded-md border border-neutral-200
+                    dark:border-neutral-700 bg-transparent resize-y leading-relaxed
+                    focus:outline-none focus:ring-1 focus:ring-neutral-400"
+                />
+              </div>
+            </div>
+
+            <div className="border-t border-neutral-200 dark:border-neutral-800 px-6 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs text-neutral-500">
+                  {editableStatusLabel(editableStatus)}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleEditableReset}
+                    className="px-3 py-2 text-sm rounded-md border border-neutral-300 dark:border-neutral-600
+                      text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                  >
+                    新建
+                  </button>
+                  <button
+                    onClick={handleEditableSave}
+                    disabled={!editableContent.trim() || editableStatus === 'saving_draft' || editableStatus === 'committing'}
+                    className="px-4 py-2 text-sm rounded-md border border-neutral-300 dark:border-neutral-600
+                      text-neutral-700 dark:text-neutral-300 disabled:opacity-40 transition-opacity
+                      hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                  >
+                    {editableStatus === 'saving_draft' ? '整理中...' : '保存并整理'}
+                  </button>
+                  <button
+                    onClick={handleEditableCommit}
+                    disabled={!editableDraft || editableStatus === 'committing' || editableStatus === 'saving_draft'}
+                    className="px-4 py-2 text-sm rounded-md bg-neutral-900 dark:bg-neutral-100
+                      text-white dark:text-neutral-900 disabled:opacity-40 transition-opacity"
+                  >
+                    {editableStatus === 'committing' ? '入库中...' : '确认入库'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {mode === 'draft-review' && (
@@ -481,7 +667,66 @@ export default function KnowledgeChatPage() {
         <h3 className="text-xs font-medium uppercase tracking-wider text-neutral-400 mb-3">
           来源与工具
         </h3>
-        {mode === 'capture-review' && selectedCapture ? (
+        {mode === 'editable-capture' ? (
+          <div className="text-sm space-y-4">
+            <div>
+              <p className="text-xs text-neutral-500">状态</p>
+              <p className="text-neutral-700 dark:text-neutral-300">
+                {editableStatusLabel(editableStatus)}
+              </p>
+            </div>
+            {editableDraft ? (
+              <>
+                <div>
+                  <p className="text-xs text-neutral-500">草稿 ID</p>
+                  <p className="text-xs text-neutral-600 dark:text-neutral-400 font-mono truncate">
+                    {editableDraft.id}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-neutral-500">标题</p>
+                  <p className="text-neutral-700 dark:text-neutral-300">
+                    {editableDraft.title || '生成中'}
+                  </p>
+                </div>
+                {editableDraft.summary && (
+                  <div>
+                    <p className="text-xs text-neutral-500">摘要</p>
+                    <p className="text-xs text-neutral-600 dark:text-neutral-400">
+                      {editableDraft.summary}
+                    </p>
+                  </div>
+                )}
+                {editableDraft.tags.length > 0 && (
+                  <div>
+                    <p className="text-xs text-neutral-500 mb-1">标签</p>
+                    <div className="flex flex-wrap gap-1">
+                      {editableDraft.tags.map(tag => (
+                        <span
+                          key={tag}
+                          className="px-2 py-0.5 text-xs rounded-full bg-neutral-100 dark:bg-neutral-800
+                            text-neutral-600 dark:text-neutral-400"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div>
+                  <p className="text-xs text-neutral-500">检索链路</p>
+                  <p className="text-xs text-neutral-600 dark:text-neutral-400">
+                    确认入库后会复用现有 Library Agent 和 RAG 索引。
+                  </p>
+                </div>
+              </>
+            ) : (
+              <p className="text-xs text-neutral-400">
+                保存后这里会显示 Hermes 自动生成的标题、摘要和标签。
+              </p>
+            )}
+          </div>
+        ) : mode === 'capture-review' && selectedCapture ? (
           <div className="text-sm space-y-3">
             <div>
               <p className="text-xs text-neutral-500">草稿 ID</p>
@@ -590,4 +835,17 @@ function outputTypeLabel(type: string): string {
     knowledge_card: '知识卡片',
   }
   return labels[type] || type
+}
+
+function editableStatusLabel(status: EditableStatus): string {
+  const labels: Record<EditableStatus, string> = {
+    empty: '等待粘贴内容',
+    editing: '正在编辑',
+    saving_draft: '正在生成标题、摘要和标签',
+    ready_to_commit: '草稿已保存，可确认入库',
+    committing: '正在写入知识库并建立检索索引',
+    committed: '已入库，可被知识库问答检索',
+    error: '需要处理错误后重试',
+  }
+  return labels[status]
 }

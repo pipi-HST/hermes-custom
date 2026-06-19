@@ -2,6 +2,37 @@
 
 Hermes is a personal knowledge-management system where WeChat/Hermes inputs become Obsidian notes, and agents maintain distinct knowledge objects around those notes.
 
+## Product Workflow
+
+Hermes Knowledge should feel like one workflow to the user:
+
+```text
+material or question
+  -> AI reads or discusses with sources
+  -> a draft is produced
+  -> the user reviews and confirms
+  -> durable knowledge is written
+  -> the knowledge can be cited and reused later
+```
+
+User-facing writes should follow this rule: AI may prepare a draft without confirmation, but AI must not create, overwrite, repair, or delete durable knowledge without a confirmable action.
+
+Long answers, extracted material, and generated reports should be available as durable artifacts or full views. A chat reply is only a preview, not the source of truth.
+
+## Product Vocabulary
+
+Default user-facing terms:
+
+| Term | User meaning | Internal implementation may include |
+| --- | --- | --- |
+| Capture | Saved source material and its processed note | Capture Agent, extractors, raw archive, capture draft |
+| Reading Session | A temporary discussion around one or more sources | reading sessions, turns, evidence, reading drafts |
+| Draft | Reviewable AI output before durable write | capture drafts, reading drafts, garden drafts |
+| Knowledge Card | A reusable knowledge object | Garden Card, `garden_cards`, `garden/*.md` |
+| Source | Citable evidence used by AI output | Capture, Capture Section, Theme Page, Knowledge Card, Source Map |
+
+Avoid making normal users think in these implementation terms by default: Agent names, Theme scan, MOC, Canvas, Run Ledger, embedding index, or raw database table names.
+
 ## Language
 
 **Capture**:
@@ -40,20 +71,24 @@ _Avoid_: using MOC when the domain meaning is Theme or Theme Page.
 An unresolved question kept on a **Theme Page** when there is not yet a current viewpoint or hypothesis.
 _Avoid_: garden card, claim.
 
-**Garden Card**:
-A viewpoint object stored under `garden/` that contains a current claim, hypothesis, framework, or judgment the user is shaping or has accepted.
+**Knowledge Card**:
+A reusable knowledge object stored under `garden/`. It can contain a viewpoint, fact, method, risk, framework, or judgment the user is shaping or has accepted.
 _Avoid_: summary, theme page, pure question, capture note.
 
+**Garden Card**:
+The legacy/internal name for a **Knowledge Card**, kept because code, database tables, and the `garden/` directory still use it.
+_Avoid_: using Garden Card as the default user-facing product term when Knowledge Card is clearer.
+
 **Seed Garden Card**:
-A **Garden Card** the user allowed into the garden for refinement, but which does not yet represent the user's accepted view.
+A **Knowledge Card** the user allowed into the garden for refinement, but which does not yet represent the user's accepted view.
 _Avoid_: accepted view, final opinion.
 
 **Accepted Garden Card**:
-A **Garden Card** the user has explicitly accepted as their current view or reusable framework.
+A **Knowledge Card** the user has explicitly accepted as their current view or reusable framework.
 _Avoid_: seed, candidate, archived view.
 
 **Archived Garden Card**:
-A **Garden Card** kept for history but no longer used as the user's current view.
+A **Knowledge Card** kept for history but no longer used as the user's current view.
 _Avoid_: accepted view, active viewpoint.
 
 **Review Item**:
@@ -69,7 +104,7 @@ A structured entry inside a **Source Map** that records the source role, object 
 _Avoid_: plain filename string, untyped citation.
 
 **Viewpoint Source**:
-The **Garden Card** source for a claim about the user's view. Only an **Accepted Garden Card** can be used as the user's accepted viewpoint source.
+The **Knowledge Card** source for a claim about the user's view. Only an **Accepted Garden Card** can be used as the user's accepted viewpoint source.
 _Avoid_: using seed cards or capture notes as accepted viewpoint sources.
 
 **Structure Source**:
@@ -85,7 +120,7 @@ The **Raw Evidence** source used to check original wording or trace a claim back
 _Avoid_: default evidence source, daily reading source.
 
 **Durable Artifact**:
-A long-lived result created by an agent, such as a Capture Draft, Capture Note, Raw Evidence, Theme Page, Garden Card, Librarian Report, or Review Trace.
+A long-lived result created by an agent, such as a Capture Draft, Capture Note, Raw Evidence, Theme Page, Knowledge Card, Librarian Report, or Review Trace.
 _Avoid_: chat message, preview, temporary reply.
 
 **Durable Artifact Reference**:
@@ -112,7 +147,8 @@ Next Actions that write durable artifacts, delete or repair data, create knowled
 
 - "Capture" was previously used for an agent, an action, a directory, a SQLite table, and a Markdown note. Resolved: use **Capture** for the intake action, **Capture Draft** for pre-commit working material, and **Capture Note** for the committed processed Markdown note.
 - "Theme" and "MOC" were previously mixed. Resolved: **Theme** is the topic concept, **Theme Page** is its Obsidian page, and **MOC** is the page structure.
-- "Garden Card" can look like a long-running question, but a pure unresolved question belongs as an **Open Question** on a **Theme Page**. A Garden Card must contain a current viewpoint or hypothesis.
+- "Garden Card" is now treated as an implementation/legacy name for **Knowledge Card**. Use **Knowledge Card** in normal user-facing copy unless referring to code, database tables, or `garden/`.
+- A **Knowledge Card** can look like a long-running question, but a pure unresolved question belongs as an **Open Question** on a **Theme Page**. A Knowledge Card must contain reusable knowledge, not only a question.
 - A **Seed Garden Card** is not the user's accepted view. Only an **Accepted Garden Card** may be described by RAG as "the user's view."
 - A **Review Item** is sized by usefulness for recall. It may be a whole short Capture Note, but long Capture Notes should produce section-level Review Items.
 - A **Capture Section** is not an arbitrary chunk. It is a named section from the Capture Note outline that agents can cite, retrieve, and review.
@@ -134,13 +170,13 @@ Domain expert: "No. The Capture creates a Capture Draft first. After the user co
 
 Dev: "Can a Capture Note contain my final opinion?"
 
-Domain expert: "No. A Capture Note is processed material. A Garden Card is where accepted or evolving viewpoints live."
+Domain expert: "No. A Capture Note is processed material. A Knowledge Card is where accepted or evolving reusable knowledge lives."
 
 Dev: "Should the agent create a MOC for this?"
 
 Domain expert: "Say Theme Page. The page may use a MOC structure, but the domain object is the Theme Page."
 
-Dev: "Can we make a Garden Card called 'Why does AI engineering get stuck in organizations?'"
+Dev: "Can we make a Knowledge Card called 'Why does AI engineering get stuck in organizations?'"
 
 Domain expert: "Only if it has a current hypothesis. If it is just a question, keep it as an Open Question on the Theme Page."
 

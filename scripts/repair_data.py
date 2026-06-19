@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.markdown_writer import make_note_filename, read_note
 from db.schema import init_db
+from db.write_job_repo import KnowledgeWriteJobRepo
 
 
 OPEN_DRAFT_STATUSES = ("raw_extracted", "draft_ready", "revision_requested")
@@ -41,7 +42,30 @@ def repair_data(
         backup_path = _backup_db(db, backup_root, timestamp)
 
     conn = init_db(str(db))
+    write_jobs = KnowledgeWriteJobRepo(conn) if apply else None
+    job_id = (
+        write_jobs.start(
+            intent="repair_data",
+            object_type="repair_batch",
+            object_id=timestamp,
+            payload={
+                "db_path": str(db),
+                "vault_path": str(vault),
+                "backup_path": str(backup_path) if backup_path else "",
+                "rename_readable": rename_readable,
+            },
+        )
+        if write_jobs
+        else ""
+    )
     try:
+        if write_jobs:
+            write_jobs.mark_step(
+                job_id,
+                status="auditing",
+                step="repair_data.audit",
+                file_path=str(backup_path) if backup_path else "",
+            )
         vault_index = _index_vault(vault)
         before = _summary(conn, vault)
         actions: list[dict[str, Any]] = []
@@ -62,6 +86,13 @@ def repair_data(
             actions.extend(_readable_rename_actions(conn, vault, actions))
 
         if apply:
+            if write_jobs:
+                write_jobs.mark_step(
+                    job_id,
+                    status="writing_db",
+                    step="repair_data.apply",
+                    db_table="captures,capture_drafts",
+                )
             _apply_actions(conn, vault, actions)
 
         after = _summary(conn, vault)
@@ -77,8 +108,30 @@ def repair_data(
             "missing_file_reports": missing_reports,
             "missing_file_deletions": missing_deletions,
         }
+        if write_jobs:
+            write_jobs.mark_step(
+                job_id,
+                status="writing_file",
+                step="repair_data.report",
+                db_table="captures,capture_drafts",
+            )
         result["report_path"] = str(_write_report(report_root, timestamp, result))
+        if write_jobs:
+            write_jobs.complete(
+                job_id,
+                file_path=result["report_path"],
+                db_table="captures,capture_drafts",
+            )
         return result
+    except Exception as exc:
+        if write_jobs:
+            write_jobs.repair_needed(
+                job_id,
+                step="repair_data",
+                error=str(exc),
+                db_table="captures,capture_drafts",
+            )
+        raise
     finally:
         conn.close()
 

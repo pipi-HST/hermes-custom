@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import httpx
+from agents.rag_citations import build_citation_repair_prompt
 
 ANSWER_PREVIEW_LIMIT = 1000
 TOTAL_PREVIEW_LIMIT = 1400
@@ -173,6 +174,10 @@ class RagAgent:
             "section_title": c.get("section_title", ""),
         } for c in captures]
         return {"answer": answer, "sources": sources}
+
+    def repair_citations(self, answer_text: str, source_map: list[dict]) -> str:
+        prompt = build_citation_repair_prompt(answer_text, source_map)
+        return self._call_llm(prompt)
 
     def _call_llm(self, prompt: str) -> str:
         headers = {

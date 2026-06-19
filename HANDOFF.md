@@ -2,6 +2,8 @@
 
 > 最后更新：2026-05-27
 
+> **当前状态提醒（2026-06-19）：** 这是一份历史交接文档，不再是唯一运行手册。里面关于“5 个 Agent”“5 张表”“112 个测试”和 `dashboard/` 端口 3000 的描述已经过时。继续开发前，优先以 `SETUP.md`、`CONTEXT.md`、`db/schema.py`、`tests/`、`dashboard/DEPRECATED.md` 和 `docs/superpowers/plans/2026-06-19-hermes-knowledge-stabilization-roadmap.md` 为当前依据。本文件保留历史上下文，不应被当作实时架构清单。
+
 ## 项目概述
 
 基于 Hermes Agent 框架构建的个人 AI 知识管理助手。用户通过微信/飞书发送链接或文本，Agent 提取、清洗、生成草稿供确认，用户满意后存入本地 Obsidian vault。

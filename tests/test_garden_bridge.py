@@ -289,6 +289,118 @@ def test_synthesize_garden_accepts_unique_capture_id_prefix(repo, tmp_path):
     assert mock_synthesize.call_args.args[0][0]["id"] == "2bafca34bdd7"
 
 
+def test_synthesize_garden_canonicalizes_short_payload_source_ids(repo, tmp_path):
+    """Agent 返回短 source_ids 时，草稿 payload 应保存完整 capture id。"""
+    from bridge.garden_bridge import synthesize_garden
+
+    captures_dir = tmp_path / "captures"
+    captures_dir.mkdir()
+    (captures_dir / "cap.md").write_text(
+        "---\ntitle: 前缀素材\nstory: 摘要\n---\n\n正文内容\n",
+        encoding="utf-8",
+    )
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path, created_at) VALUES (?, ?, datetime('now'))",
+        ("2bafca34bdd7", "captures/cap.md"),
+    )
+    repo.conn.commit()
+
+    agent_result = {
+        "title": "前缀观点",
+        "one_liner": "短 id 也应持久化为完整 capture。",
+        "payload": {
+            "title": "前缀观点",
+            "claim": "短 id 也应持久化为完整 capture。",
+            "source_ids": ["2bafca34"],
+            "core_judgments": [
+                {
+                    "statement": "详情页来源依赖完整 capture id。",
+                    "support": [
+                        {"summary": "支持依据", "source_ids": ["2bafca34"]},
+                    ],
+                }
+            ],
+        },
+        "core_arguments": [{"claim": "详情页来源依赖完整 capture id。", "source_ids": ["2bafca34"]}],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": "# 前缀观点\n\n正文",
+    }
+    db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
+
+    with patch("bridge.garden_bridge.load_config") as mock_cfg, \
+            patch.object(GardenAgent, "synthesize", return_value=agent_result):
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        result = synthesize_garden(capture_ids=["2bafca34"])
+
+    assert result["status"] == "success"
+    draft = repo.conn.execute(
+        "SELECT capture_ids, payload_json, core_arguments FROM garden_drafts WHERE id = ?",
+        (result["meta"]["draft_id"],),
+    ).fetchone()
+    payload = json.loads(draft["payload_json"])
+
+    assert json.loads(draft["capture_ids"]) == ["2bafca34bdd7"]
+    assert payload["source_ids"] == ["2bafca34bdd7"]
+    assert payload["core_judgments"][0]["support"][0]["source_ids"] == ["2bafca34bdd7"]
+    assert json.loads(draft["core_arguments"])[0]["source_ids"] == ["2bafca34bdd7"]
+
+
+def test_synthesize_garden_resolves_committed_capture_draft_id(repo, tmp_path):
+    """刚入库后误传 draft id 时，应解析到 committed capture id。"""
+    from bridge.garden_bridge import synthesize_garden
+
+    captures_dir = tmp_path / "captures"
+    captures_dir.mkdir()
+    (captures_dir / "cap.md").write_text(
+        "---\ntitle: 已入库素材\nstory: 摘要\n---\n\n正文内容\n",
+        encoding="utf-8",
+    )
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path, created_at) VALUES (?, ?, datetime('now'))",
+        ("cap-committed", "captures/cap.md"),
+    )
+    repo.conn.execute(
+        """INSERT INTO capture_drafts
+           (id, status, committed_capture_id, title, draft_text, raw_text)
+           VALUES (?, 'committed', ?, '已入库素材', '正文内容', '原文')""",
+        ("draft-committed", "cap-committed"),
+    )
+    repo.conn.commit()
+    agent_result = {
+        "title": "已入库观点",
+        "one_liner": "误传 draft id 也应合成成功。",
+        "core_arguments": [{"claim": "使用 committed capture。"}],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": "# 已入库观点\n",
+    }
+    db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
+
+    with patch("bridge.garden_bridge.load_config") as mock_cfg, \
+            patch.object(GardenAgent, "synthesize", return_value=agent_result) as mock_synthesize:
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        result = synthesize_garden(capture_ids=["draft-committed"])
+
+    assert result["status"] == "success"
+    assert result["meta"]["capture_ids"] == ["cap-committed"]
+    assert result["meta"]["resolved_draft_ids"] == {"draft-committed": "cap-committed"}
+    assert result["warnings"]
+    assert mock_synthesize.call_args.args[0][0]["id"] == "cap-committed"
+
+
 def test_synthesize_garden_passes_card_kind_to_agent(repo, tmp_path):
     """Garden bridge 应把用户指定的卡片类型传给 GardenAgent。"""
     from bridge.garden_bridge import synthesize_garden
@@ -419,6 +531,46 @@ def test_commit_garden_draft_writes_card_file_and_marks_draft(repo, tmp_path):
     ).fetchone()
     assert draft["status"] == "committed"
     assert draft["committed_card_id"] == artifact["id"]
+
+
+def test_archive_garden_card_records_write_job(repo, tmp_path):
+    """归档知识卡片应留下可审计的写入补偿记录。"""
+    from agents.garden_agent import create_garden_card
+    from bridge.garden_bridge import archive_garden_card
+
+    card_id = create_garden_card(repo, {
+        "title": "待归档观点",
+        "one_liner": "归档只影响卡片库状态。",
+        "core_arguments": [],
+        "key_materials": [],
+        "knowledge_links": [],
+        "capture_ids": [],
+    })
+    db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
+
+    with patch("bridge.garden_bridge.load_config") as mock_cfg:
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        result = archive_garden_card(card_id)
+
+    assert result["status"] == "success"
+    card = repo.conn.execute(
+        "SELECT status FROM garden_cards WHERE id = ?",
+        (card_id,),
+    ).fetchone()
+    assert card["status"] == "archived"
+    job = repo.conn.execute(
+        """SELECT * FROM knowledge_write_jobs
+           WHERE intent = 'archive_garden_card' AND object_id = ?""",
+        (card_id,),
+    ).fetchone()
+    assert job["status"] == "completed"
+    assert job["db_table"] == "garden_cards"
 
 
 def test_commit_theme_origin_garden_card_updates_source_theme_page(repo, tmp_path):

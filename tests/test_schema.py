@@ -119,6 +119,48 @@ def test_capture_embeddings_table_exists(tmp_path):
     conn.close()
 
 
+def test_agent_run_objects_table_exists(tmp_path):
+    from db.schema import init_db
+
+    conn = init_db(str(tmp_path / "test.db"))
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(agent_run_objects)")]
+
+    assert cols == [
+        "id",
+        "run_id",
+        "object_type",
+        "object_id",
+        "role",
+        "source",
+        "created_at",
+    ]
+    conn.close()
+
+
+def test_knowledge_write_jobs_table_exists(tmp_path):
+    from db.schema import init_db
+
+    conn = init_db(str(tmp_path / "test.db"))
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(knowledge_write_jobs)")]
+
+    assert cols == [
+        "id",
+        "intent",
+        "object_type",
+        "object_id",
+        "status",
+        "step",
+        "file_path",
+        "db_table",
+        "payload_json",
+        "error",
+        "retry_count",
+        "created_at",
+        "updated_at",
+    ]
+    conn.close()
+
+
 def test_capture_metadata_table_exists(tmp_path):
     from db.schema import init_db
 
@@ -148,6 +190,8 @@ def test_garden_drafts_table_exists(tmp_path):
         "title",
         "one_liner",
         "card_kind",
+        "schema_version",
+        "payload_json",
         "core_arguments",
         "knowledge_links",
         "key_materials",

@@ -151,6 +151,35 @@ class CaptureDraftRepo:
             return None
         return self._row_to_dict(row)
 
+    def find_duplicate(self, *, source: str = "", raw_text: str = "") -> Optional[dict]:
+        clauses = []
+        values: list[str] = []
+        if source:
+            clauses.append("source = ?")
+            values.append(source)
+        if raw_text:
+            clauses.append("raw_text = ?")
+            values.append(raw_text)
+        if not clauses:
+            return None
+        row = self.conn.execute(
+            f"""SELECT * FROM capture_drafts
+                WHERE ({' OR '.join(clauses)})
+                ORDER BY
+                    CASE
+                        WHEN status IN ('raw_extracted', 'draft_ready', 'revision_requested', 'draft_incomplete') THEN 0
+                        WHEN status = 'committed' THEN 1
+                        ELSE 2
+                    END,
+                    datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
+                    rowid DESC
+                LIMIT 1""",
+            values,
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_dict(row)
+
     def update(self, draft_id: str, **kwargs) -> Optional[dict]:
         allowed = {
             "draft_text", "instruction", "capture_intent", "summary", "tags", "status",

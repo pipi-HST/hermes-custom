@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import json
 import re
+import sqlite3
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +14,7 @@ import httpx
 import yaml
 
 from agents.cleaner import clean_text, is_meaningful_content
-from agents.markdown_writer import write_note, read_note, NoteMeta
+from agents.markdown_writer import make_note_filename, read_note, NoteMeta
 from agents.summarizer import Summarizer
 from agents.capture_indexer import build_identity_index
 from agents.embedder import Embedder
@@ -26,6 +27,7 @@ from agents.extractors.xiaohongshu_extractor import XiaohongshuExtractor
 from agents.extractors.document_extractor import DocumentExtractor
 from agents.library_agent import LibraryAgent
 from agents.outliner import Outliner
+from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest
 from db.repo import CaptureDraftRepo, CaptureRepo
 from db.embedding_repo import CaptureEmbeddingRepo
 from db.schema import init_db
@@ -112,9 +114,9 @@ def load_config(config_path: str = "config.yaml") -> CaptureConfig:
 
 
 class CaptureAgent:
-    def __init__(self, config: CaptureConfig):
+    def __init__(self, config: CaptureConfig, conn: sqlite3.Connection | None = None):
         self.config = config
-        self.conn = init_db(config.db_path)
+        self.conn = conn if conn is not None else init_db(config.db_path)
         self.repo = CaptureRepo(self.conn)
         self.draft_repo = CaptureDraftRepo(self.conn)
         self.summarizer = Summarizer(
@@ -146,6 +148,25 @@ class CaptureAgent:
 
         title = _derive_capture_title(extracted.title, cleaned, extracted.source_type)
         source_body = extracted.raw_text
+        extracted_source = extracted.source_url or source_url
+        existing = (
+            self.draft_repo.find_duplicate(source=extracted_source)
+            if extracted_source
+            else None
+        )
+        if existing and existing.get("status") in (
+            "raw_extracted",
+            "draft_ready",
+            "revision_requested",
+            "draft_incomplete",
+        ):
+            existing["duplicate_of"] = existing.get("id", "")
+            existing["duplicate_state"] = "open"
+            return existing
+        if existing and existing.get("status") == "committed":
+            existing["duplicate_of"] = existing.get("id", "")
+            existing["duplicate_state"] = "committed"
+            return existing
         capture_intent_obj = self._build_capture_intent_with_planning(
             instruction,
             source_text=cleaned,
@@ -154,12 +175,17 @@ class CaptureAgent:
         title = capture_intent_obj.semantic_title or title
         capture_intent = capture_intent_obj.to_dict()
         stored_raw_text = source_body if self._is_full_text_save_intent(capture_intent) else cleaned
+        draft_body = self._presentation_text(
+            extracted.source_type,
+            stored_raw_text,
+            instruction=instruction,
+        )
         draft = self.draft_repo.create(
             raw_text=stored_raw_text,
-            source=extracted.source_url or source_url,
+            source=extracted_source,
             source_type=extracted.source_type or source_type or "note",
             title=title,
-            word_count=len(stored_raw_text),
+            word_count=len(draft_body),
             instruction=instruction,
             capture_intent=capture_intent,
         )
@@ -169,7 +195,7 @@ class CaptureAgent:
                 tag_result = self.summarizer.summarize(cleaned, existing_tags)
                 return self.draft_repo.update(
                     draft["id"],
-                    draft_text=stored_raw_text,
+                    draft_text=draft_body,
                     instruction=instruction,
                     capture_intent=capture_intent,
                     summary=tag_result.get("summary", ""),
@@ -189,6 +215,89 @@ class CaptureAgent:
                 return saved
         return draft
 
+    def create_editable_draft(
+        self,
+        content: str,
+        *,
+        source: str = "",
+        source_type: str = "manual",
+        instruction: str = "",
+        title: str = "",
+    ) -> dict:
+        """Create a user-editable draft without rewriting the pasted body."""
+        body = (content or "").strip()
+        if not body:
+            return {"error": "内容不能为空"}
+
+        metadata = self._summarize_editable_body(body)
+        user_title = title.strip()
+        draft_title = user_title or metadata.get("title") or _derive_capture_title(None, body, source_type)
+        capture_intent = self._editable_capture_intent(
+            instruction=instruction,
+            title_source="user" if user_title else "ai",
+        )
+        return self.draft_repo.create(
+            raw_text=body,
+            source=source,
+            source_type=source_type or "manual",
+            title=draft_title,
+            word_count=len(body),
+            draft_text=body,
+            instruction=instruction,
+            capture_intent=capture_intent,
+            summary=metadata.get("summary", ""),
+            tags=metadata.get("tags", []),
+            status="draft_ready",
+        )
+
+    def update_editable_draft(
+        self,
+        draft_id: str,
+        *,
+        content: str,
+        title: str = "",
+    ) -> Optional[dict]:
+        """Update the editable body and regenerate non-user-owned metadata."""
+        draft = self.draft_repo.get_by_id(draft_id)
+        if not draft:
+            return None
+        if draft.get("status") in ("committed", "abandoned"):
+            return {"error": f"草稿已{'入库' if draft['status'] == 'committed' else '废弃'}，无法修改"}
+
+        capture_intent = draft.get("capture_intent") or {}
+        if capture_intent.get("entry_mode") != "editable_capture":
+            return {"error": "这不是自由编辑草稿"}
+
+        body = (content or "").strip()
+        if not body:
+            return {"error": "内容不能为空"}
+
+        title_source = str(capture_intent.get("title_source") or "ai")
+        updates: dict[str, object] = {
+            "draft_text": body,
+            "word_count": len(body),
+            "status": "draft_ready",
+        }
+        if title.strip():
+            updates["title"] = title.strip()
+            title_source = "user"
+
+        metadata = self._summarize_editable_body(body)
+        updates["summary"] = metadata.get("summary", "")
+        updates["tags"] = metadata.get("tags", [])
+        if title_source != "user":
+            updates["title"] = metadata.get("title") or _derive_capture_title(None, body, draft.get("source_type", ""))
+            title_source = "ai"
+
+        capture_intent = {
+            **capture_intent,
+            "title_source": title_source,
+            "editable_source_of_truth": "draft_text",
+            "pipeline_policy": "reuse_capture_library_rag",
+        }
+        updates["capture_intent"] = capture_intent
+        return self.draft_repo.update(draft_id, **updates)
+
     def revise_draft(self, draft_id: str, instruction: str) -> Optional[dict]:
         """按用户指令生成或更新草稿，不写入正式知识库。"""
         draft = self.draft_repo.get_by_id(draft_id)
@@ -207,12 +316,17 @@ class CaptureAgent:
         ).to_dict()
         if self._is_full_text_save_intent(capture_intent):
             source_text = draft.get("raw_text", "") or current_text
+            draft_body = self._presentation_text(
+                draft.get("source_type", ""),
+                source_text,
+                instruction=instruction,
+            )
             existing_tags = self._get_existing_tags(Path(self.config.vault_path).expanduser())
             summary_source = clean_text(source_text) or source_text
             tag_result = self.summarizer.summarize(summary_source, existing_tags)
             return self.draft_repo.update(
                 draft_id,
-                draft_text=source_text,
+                draft_text=draft_body,
                 instruction=instruction,
                 capture_intent=capture_intent,
                 summary=tag_result.get("summary", ""),
@@ -224,6 +338,7 @@ class CaptureAgent:
             capture_intent=capture_intent,
             current_text=current_text,
             raw_text=draft.get("raw_text", ""),
+            source_type=draft.get("source_type", ""),
         )
         if isinstance(llm_result, LLMResult):
             new_text = _strip_draft_preamble(llm_result.text)
@@ -443,6 +558,44 @@ class CaptureAgent:
     def _is_full_text_save_intent(self, capture_intent: dict) -> bool:
         return capture_intent.get("output_shape") == ["full_text"]
 
+    def _editable_capture_intent(self, *, instruction: str = "", title_source: str = "ai") -> dict:
+        intent = self._build_capture_intent(instruction or "自由编辑后入库").to_dict()
+        intent.update(
+            {
+                "entry_mode": "editable_capture",
+                "title_source": title_source,
+                "editable_source_of_truth": "draft_text",
+                "pipeline_policy": "reuse_capture_library_rag",
+            }
+        )
+        return intent
+
+    def _summarize_editable_body(self, body: str) -> dict:
+        try:
+            result = self.summarizer.summarize(
+                clean_text(body) or body,
+                self._get_existing_tags(Path(self.config.vault_path).expanduser()),
+            )
+        except Exception as exc:
+            logger.warning(f"Editable draft metadata generation failed: {exc}")
+            result = {}
+        return {
+            "title": _clean_semantic_title(str(result.get("title") or "")),
+            "summary": str(result.get("summary") or ""),
+            "tags": result.get("tags") if isinstance(result.get("tags"), list) else [],
+        }
+
+    def _is_raw_package_request(self, user_request: str) -> bool:
+        return bool(
+            re.search(
+                r"(保留|保存|入库).{0,12}(OCR|图片编号|本地图片|图片地址|原始抓取|原始包|抓取包)|"
+                r"(OCR|图片编号|本地图片|图片地址|原始抓取|原始包|抓取包).{0,12}(保留|保存|入库)|"
+                r"(不要|不许).{0,6}(清理|去噪|过滤)",
+                user_request or "",
+                flags=re.IGNORECASE,
+            )
+        )
+
     def _is_full_text_save_request(self, user_request: str) -> bool:
         return bool(
             re.search(
@@ -452,8 +605,15 @@ class CaptureAgent:
             )
         )
 
+    def _presentation_text(self, source_type: str, text: str, *, instruction: str = "") -> str:
+        if source_type != "xiaohongshu":
+            return text
+        if self._is_raw_package_request(instruction):
+            return text
+        return _clean_xiaohongshu_author_content_text(text)
+
     def _detect_material_intent(self, user_request: str, emphasis: list[str]) -> str:
-        if self._is_full_text_save_request(user_request):
+        if self._is_full_text_save_request(user_request) or self._is_raw_package_request(user_request):
             return "verbatim_full_text"
         if re.search(r"(原文增强版|增强版笔记|结合.{0,8}讨论|讨论.{0,8}整理进|学习讨论.{0,8}笔记)", user_request):
             return "enhanced_note"
@@ -615,6 +775,7 @@ class CaptureAgent:
         capture_intent: dict,
         current_text: str,
         raw_text: str,
+        source_type: str = "",
     ) -> str | LLMResult:
         source_text = (raw_text or current_text or "").strip()
         if self._should_use_chunked_reading(source_text, capture_intent):
@@ -623,12 +784,14 @@ class CaptureAgent:
                 capture_intent=capture_intent,
                 current_text=current_text,
                 source_text=source_text,
+                source_type=source_type,
             )
         prompt = self._build_revision_prompt(
             instruction=instruction,
             capture_intent=capture_intent,
             current_text=current_text,
             raw_text=raw_text,
+            source_type=source_type,
         )
         return self._call_llm(prompt)
 
@@ -647,11 +810,13 @@ class CaptureAgent:
         capture_intent: dict,
         current_text: str,
         source_text: str,
+        source_type: str = "",
     ) -> str | LLMResult:
         notes_result = self._build_long_source_notes(
             source_text=source_text,
             instruction=instruction,
             capture_intent=capture_intent,
+            source_type=source_type,
         )
         if notes_result.incomplete:
             return notes_result
@@ -660,6 +825,7 @@ class CaptureAgent:
             capture_intent=capture_intent,
             current_text="" if (current_text or "").strip() == source_text else current_text,
             section_notes=notes_result.text,
+            source_type=source_type,
         )
         return self._call_llm(prompt)
 
@@ -669,6 +835,7 @@ class CaptureAgent:
         source_text: str,
         instruction: str,
         capture_intent: dict,
+        source_type: str = "",
     ) -> LLMResult:
         chunks = self._split_long_source_text(source_text)
         notes: list[str] = []
@@ -680,6 +847,7 @@ class CaptureAgent:
                 chunk=chunk,
                 index=index,
                 total=len(chunks),
+                source_type=source_type,
             )
             result = self._call_llm(prompt, return_meta=True)
             if not isinstance(result, LLMResult):
@@ -785,6 +953,7 @@ class CaptureAgent:
         chunk: str,
         index: int,
         total: int,
+        source_type: str = "",
     ) -> str:
         emphasis = capture_intent.get("emphasis", [])
         emphasis_rule = ""
@@ -812,7 +981,8 @@ class CaptureAgent:
             "- 控制在约 800 中文字以内。\n"
             f"{self._build_detail_policy_rule(capture_intent)}"
             f"{emphasis_rule}"
-            f"{source_like_rule}\n"
+            f"{source_like_rule}"
+            f"{self._build_source_type_rule(source_type)}\n"
             f"分段原文：\n{chunk}\n\n"
             "请输出这一段的分段阅读笔记。"
         )
@@ -824,6 +994,7 @@ class CaptureAgent:
         capture_intent: dict,
         current_text: str,
         section_notes: str,
+        source_type: str = "",
     ) -> str:
         current = (current_text or "").strip()
         current_context = ""
@@ -854,6 +1025,7 @@ class CaptureAgent:
             "- 不要逐段搬运分段笔记；把它们综合成一篇可读的整理稿。\n"
             "- 不要输出“好的，我们开始”这类对话开场白；第一行就进入正文。\n"
             "- 如果用户明确说“只要/仅保留/删除其他内容”，才只处理指定部分。\n"
+            f"{self._build_source_type_rule(source_type)}"
             f"{emphasis_rule}\n"
             f"分段阅读笔记：\n{section_notes}\n\n"
             "请直接输出最终整理稿。"
@@ -866,6 +1038,7 @@ class CaptureAgent:
         capture_intent: dict,
         current_text: str,
         raw_text: str,
+        source_type: str = "",
     ) -> str:
         """Build a revision prompt without duplicating the same source text."""
         current = (current_text or "").strip()
@@ -896,9 +1069,23 @@ class CaptureAgent:
             "- 不要输出标签、摘要、提纲、目录或任务合同；这些元信息由系统另行处理。\n"
             "- 不要输出“好的，我们开始”这类对话开场白；第一行就进入正文。\n"
             "- 如果用户明确说“只要/仅保留/删除其他内容”，才只处理指定部分。\n"
+            f"{self._build_source_type_rule(source_type)}"
             f"{emphasis_rule}\n"
             f"{material}\n\n"
             "请直接输出最终整理稿。"
+        )
+
+    def _build_source_type_rule(self, source_type: str) -> str:
+        if source_type != "xiaohongshu":
+            return ""
+        return (
+            "- 这是小红书图文素材：先区分作者正文、图片卡片 OCR、评论、话题标签、来源链接和纯视觉描述。\n"
+            "- 如果用户要求全文保存或一字不改，保留的是作者表达和图片卡片里的作者文字，"
+            "不是 OCR/抓取运行包；不要保留本地图片路径、图片地址、OCR 空结果、下载失败、图片编号等过程噪音。\n"
+            "- 图片 OCR 不要按“图片 1/图片 2”机械罗列；把承载观点的卡片文字并入正文结构。"
+            "重复信息只保留更完整的一版。\n"
+            "- 头像、人物外观、背景风景、封面装饰等没有知识观点的视觉描述默认丢弃。\n"
+            "- 来源链接、话题标签和评论不要混进正文主线；除非用户明确要求整理评论，否则评论区只作为参考。\n"
         )
 
     def _create_revision_draft_from_capture(self, capture_id: str) -> Optional[dict]:
@@ -954,6 +1141,7 @@ class CaptureAgent:
         body = draft.get("draft_text") or draft.get("raw_text", "")
         summary = draft.get("summary", "")
         tags = draft.get("tags", [])
+        capture_intent = draft.get("capture_intent") or {}
         if not summary and body.strip():
             tag_result = self.summarizer.summarize(body, self._get_existing_tags(vault_path))
             summary = tag_result.get("summary", "")
@@ -968,7 +1156,13 @@ class CaptureAgent:
             source=draft.get("source", ""),
             source_type=draft.get("source_type", "note"),
         )
-        raw_path = write_note(vault_path, meta, draft.get("raw_text", ""), stage="raw")
+        raw_path = self._write_capture_note(
+            vault_path,
+            meta,
+            draft.get("raw_text", ""),
+            stage="raw",
+            kind="capture_raw",
+        )
         capture_meta = NoteMeta(
             id=capture["id"],
             title=meta.title,
@@ -980,7 +1174,14 @@ class CaptureAgent:
             story=summary,
             word_count=len(body),
         )
-        file_path = write_note(vault_path, capture_meta, body, stage="captures")
+        file_path = self._write_capture_note(
+            vault_path,
+            capture_meta,
+            body,
+            stage="captures",
+            kind="capture_note",
+            extra_frontmatter=_capture_note_intent_frontmatter(capture_intent),
+        )
         self.repo.update(capture["id"], raw_path=raw_path, file_path=file_path)
         self._index_committed_identity(capture["id"], file_path)
         library_postprocess = self._postprocess_committed_library(
@@ -1007,6 +1208,57 @@ class CaptureAgent:
             "file_path": file_path,
             "library_postprocess": library_postprocess,
         }
+
+    def _write_capture_note(
+        self,
+        vault_path: Path,
+        meta: NoteMeta,
+        body: str,
+        *,
+        stage: str,
+        kind: str,
+        extra_frontmatter: dict | None = None,
+    ) -> str:
+        relative_stage = "_archive/raw" if stage == "raw" else stage
+        filename = make_note_filename(meta.title, meta.date, meta.id)
+        relative_path = f"{relative_stage}/{filename}"
+        if stage == "raw":
+            frontmatter = {
+                "id": meta.id,
+                "title": meta.title,
+                "date": meta.date,
+                "source": meta.source,
+                "source_type": meta.source_type,
+                "status": "raw",
+            }
+        else:
+            frontmatter = {
+                "id": meta.id,
+                "title": meta.title,
+                "date": meta.date,
+                "created": meta.created,
+                "source": meta.source,
+                "source_type": meta.source_type,
+                "tags": meta.tags,
+                "story": meta.story,
+                "word_count": meta.word_count,
+            }
+            frontmatter.update(extra_frontmatter or {})
+        content = (
+            "---\n"
+            f"{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False)}"
+            "---\n\n"
+            f"{body}"
+        )
+        return KnowledgeWriteService(vault_path).write_markdown_artifact(
+            MarkdownWriteRequest(
+                kind=kind,
+                relative_path=relative_path,
+                content=content,
+                db_object_id=meta.id,
+                db_table="captures",
+            )
+        ).file_path
 
     def _index_committed_identity(self, capture_id: str, file_path: str) -> None:
         """Build the identity embedding needed by Theme/RAG immediately after commit."""
@@ -1065,16 +1317,33 @@ class CaptureAgent:
         # Step 1: Extract
         extractor = next(e for e in self.extractors if e.can_handle(raw_input))
         extracted = extractor.extract(raw_input, source_url=source_url, source_type=source_type)
-        if not extracted.raw_text.strip():
-            return {"error": "内容提取失败：无法获取正文"}, ""
 
         # Step 2: Clean
         if getattr(extracted, "extraction_failed", False):
+            failure = getattr(extracted, "failure", None)
+            failure_message = (
+                getattr(failure, "message", "")
+                or extracted.raw_text.strip().strip("[]")
+                or "无法获取正文"
+            )
+            failure_payload = (
+                failure.to_dict()
+                if failure is not None and hasattr(failure, "to_dict")
+                else {
+                    "code": "external_service_error",
+                    "message": failure_message,
+                    "retryable": False,
+                }
+            )
             return {
-                "error": "内容提取失败：无法获取正文",
+                "error": f"内容提取失败：{failure_message}",
                 "extraction_failed": True,
+                "failure": failure_payload,
                 "hint": extracted.raw_text or "可以换成文本文件，或把正文复制粘贴给我重试。",
             }, ""
+
+        if not extracted.raw_text.strip():
+            return {"error": "内容提取失败：无法获取正文"}, ""
 
         cleaned = clean_text(extracted.raw_text)
         if not cleaned.strip():
@@ -1261,6 +1530,17 @@ def _derive_capture_title(extracted_title: str | None, text: str, source_type: s
     return _derive_title(extracted_title, text)
 
 
+def _capture_note_intent_frontmatter(capture_intent: dict) -> dict:
+    if not isinstance(capture_intent, dict):
+        return {}
+    if capture_intent.get("entry_mode") != "editable_capture":
+        return {}
+    return {
+        "entry_mode": "editable_capture",
+        "title_source": capture_intent.get("title_source") or "ai",
+    }
+
+
 def _first_markdown_h1(text: str) -> str:
     for line in (text or "").splitlines():
         match = re.match(r"^#\s+(.+?)\s*$", line.strip())
@@ -1285,3 +1565,123 @@ def _strip_draft_preamble(text: str) -> str:
             continue
         break
     return "\n\n".join(paragraphs).strip()
+
+
+def _clean_xiaohongshu_author_content_text(text: str) -> str:
+    """Build a loyal author-content draft from a Xiaohongshu OCR evidence pack."""
+    title = _first_markdown_title(text)
+    kept: list[str] = []
+    skip_comments = False
+    seen_blocks: set[str] = set()
+
+    for raw_block in re.split(r"\n\s*\n", text or ""):
+        block = raw_block.strip()
+        if not block:
+            continue
+
+        if block.startswith("## 评论区摘录"):
+            skip_comments = True
+            continue
+        if skip_comments:
+            if re.match(r"^##\s+", block):
+                skip_comments = False
+            else:
+                continue
+
+        cleaned = _clean_xiaohongshu_author_block(block, title=title)
+        if not cleaned:
+            continue
+        normalized = re.sub(r"\s+", "", cleaned)
+        if normalized in seen_blocks:
+            continue
+        seen_blocks.add(normalized)
+        kept.append(cleaned)
+
+    if title:
+        body = [item for item in kept if item.strip() != f"# {title}"]
+        return "\n\n".join([f"# {title}", *body]).strip()
+    return "\n\n".join(kept).strip() or text
+
+
+def _clean_xiaohongshu_author_block(block: str, *, title: str = "") -> str:
+    lines: list[str] = []
+    for raw_line in block.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if _is_xiaohongshu_runtime_noise(line):
+            continue
+        if _is_xiaohongshu_topic_line(line):
+            continue
+        if _is_xiaohongshu_visual_noise(line):
+            continue
+        heading = re.match(r"^#{1,6}\s+(.+)$", line)
+        if heading:
+            heading_text = heading.group(1).strip()
+            if heading_text in {"正文文案", "图片内容", "评论区摘录"}:
+                continue
+            if re.fullmatch(r"图片\s*\d+", heading_text):
+                continue
+        if title and line == title:
+            continue
+        if line in {"观察"}:
+            continue
+        if re.fullmatch(r"\d+\s*/\s*\d+", line):
+            continue
+        lines.append(line)
+
+    cleaned = "\n".join(lines).strip()
+    if _is_xiaohongshu_visual_noise(cleaned):
+        return ""
+    return cleaned
+
+
+def _is_xiaohongshu_runtime_noise(line: str) -> bool:
+    stripped = line.strip()
+    if stripped.startswith("来源："):
+        return True
+    if stripped.startswith("本地图片："):
+        return True
+    if stripped.startswith("图片地址："):
+        return True
+    if stripped in {"图片 OCR 结果为空。", "图片下载失败，无法 OCR。"}:
+        return True
+    if re.fullmatch(r"https?://\S+", stripped):
+        return True
+    return False
+
+
+def _is_xiaohongshu_topic_line(line: str) -> bool:
+    stripped = line.strip()
+    if "[话题]" in stripped:
+        return True
+    tags = re.findall(r"#\S+", stripped)
+    return bool(tags) and len("".join(tags)) >= len(stripped.replace(" ", "")) * 0.7
+
+
+def _is_xiaohongshu_visual_noise(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped or len(stripped) > 140:
+        return False
+    if re.search(r"图片\s*\d+\s*描述[:：]", stripped):
+        return True
+    visual_terms = (
+        "男子", "女性", "男人", "女人", "人物", "人像", "身穿", "穿着",
+        "面带微笑", "站在", "坐在", "栏杆", "背景", "天际线", "海面",
+        "纯白色", "日落", "城市", "配图", "照片", "封面",
+    )
+    knowledge_terms = (
+        "AI", "agent", "Agent", "Codex", "Claude", "Cursor", "subagent",
+        "模型", "训练", "RL", "prompt", "harness", "工具", "上下文",
+    )
+    has_visual = any(term in stripped for term in visual_terms)
+    has_knowledge = any(term in stripped for term in knowledge_terms)
+    return has_visual and not has_knowledge
+
+
+def _first_markdown_title(text: str) -> str:
+    for line in (text or "").splitlines():
+        match = re.match(r"^#\s+(.+)$", line.strip())
+        if match:
+            return match.group(1).strip()
+    return ""

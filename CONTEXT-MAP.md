@@ -2,7 +2,7 @@
 
 ## Contexts
 
-- [Knowledge](./CONTEXT.md) - turns WeChat/Hermes inputs into durable knowledge objects such as Capture Notes, Theme Pages, Garden Cards, Source Maps, and Agent Result Envelopes.
+- [Knowledge](./CONTEXT.md) - turns WeChat/Hermes inputs into a sourced workflow: Capture or Reading Session, reviewable Draft, confirmed durable artifact, and later cited reuse through Knowledge Cards, Source Maps, and Agent Result Envelopes.
 - [Life Assistant](./contexts/life/CONTEXT.md) - tracks life rhythm, reminders, sitting behavior, sleep, meals, and exercise.
 
 ## Relationships

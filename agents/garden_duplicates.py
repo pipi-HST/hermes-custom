@@ -6,6 +6,8 @@ import re
 from difflib import SequenceMatcher
 from typing import Any
 
+from agents.garden_card_payload import normalize_garden_payload, parse_payload_json
+
 
 OPEN_DRAFT_STATUSES = ("draft_ready", "revision_requested")
 
@@ -49,7 +51,7 @@ def find_garden_duplicate(conn, candidate: dict[str, Any]) -> dict[str, Any]:
 def _existing_items(conn) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for row in conn.execute(
-        """SELECT id, title, one_liner, card_kind, core_arguments, capture_ids
+        """SELECT id, title, one_liner, card_kind, payload_json, core_arguments, capture_ids
            FROM garden_cards
            WHERE status != 'archived'"""
     ).fetchall():
@@ -57,7 +59,7 @@ def _existing_items(conn) -> list[dict[str, Any]]:
 
     placeholders = ",".join("?" for _ in OPEN_DRAFT_STATUSES)
     for row in conn.execute(
-        f"""SELECT id, title, one_liner, card_kind, core_arguments, capture_ids
+        f"""SELECT id, title, one_liner, card_kind, payload_json, core_arguments, capture_ids
             FROM garden_drafts
             WHERE status IN ({placeholders})""",
         OPEN_DRAFT_STATUSES,
@@ -67,24 +69,26 @@ def _existing_items(conn) -> list[dict[str, Any]]:
 
 
 def _candidate_view(candidate: dict[str, Any]) -> dict[str, Any]:
+    payload = normalize_garden_payload(candidate.get("payload"), legacy=candidate)
     return {
-        "title": str(candidate.get("title") or ""),
-        "one_liner": str(candidate.get("one_liner") or ""),
-        "card_kind": str(candidate.get("card_kind") or "viewpoint"),
-        "claims": _claim_text(candidate.get("core_arguments") or []),
-        "capture_ids": set(str(cid) for cid in candidate.get("capture_ids") or [] if cid),
+        "title": payload["title"],
+        "one_liner": payload["claim"],
+        "card_kind": payload["card_kind"],
+        "claims": " ".join(item["statement"] for item in payload["core_judgments"]),
+        "capture_ids": set(payload["source_ids"]),
     }
 
 
 def _row_view(row: dict[str, Any], *, item_type: str) -> dict[str, Any]:
+    payload = normalize_garden_payload(parse_payload_json(row.get("payload_json")), legacy=row)
     return {
         "id": str(row.get("id") or ""),
         "type": item_type,
-        "title": str(row.get("title") or ""),
-        "one_liner": str(row.get("one_liner") or ""),
-        "card_kind": str(row.get("card_kind") or "viewpoint"),
-        "claims": _claim_text(_json_list(row.get("core_arguments"))),
-        "capture_ids": set(_json_list(row.get("capture_ids"))),
+        "title": payload["title"],
+        "one_liner": payload["claim"],
+        "card_kind": payload["card_kind"],
+        "claims": " ".join(item["statement"] for item in payload["core_judgments"]),
+        "capture_ids": set(payload["source_ids"]),
     }
 
 

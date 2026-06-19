@@ -168,6 +168,227 @@ def test_search_knowledge_base_uses_best_section_embedding(monkeypatch, tmp_path
     assert envelope["meta"]["graph_trace"]["final_count"] >= 1
 
 
+def test_search_knowledge_base_accepts_explicit_context(monkeypatch, tmp_path):
+    from bridge import rag_bridge
+    from bridge.context import KnowledgeContext
+    from db.repo import CaptureRepo
+
+    db_path = tmp_path / "captures.db"
+    vault = tmp_path / "vault"
+    rel_path = _write_capture(vault)
+    conn = init_db(str(db_path))
+    conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap1", rel_path),
+    )
+    repo = CaptureEmbeddingRepo(conn)
+    repo.upsert(
+        capture_id="cap1",
+        kind="section",
+        section_id="second",
+        section_title="第二部分",
+        index_text="节奏狙击 Terminal-Bench 故意留坑",
+        embedding=_vec(1.0, 0.0),
+        source_hash="second",
+        file_path=rel_path,
+    )
+
+    class FakeEmbedder:
+        def __init__(self, **_kwargs):
+            pass
+
+        def embed(self, _text: str) -> bytes:
+            return _vec(1.0, 0.0)
+
+    class FakeRagAgent:
+        def __init__(self, **_kwargs):
+            pass
+
+        def query(self, _question, captures, *, context_pack=None):
+            return {
+                "answer": "显式 context 能完成检索。[1]",
+                "sources": [
+                    {
+                        "title": captures[0]["title"],
+                        "file_path": captures[0]["file_path"],
+                        "section_title": captures[0].get("section_title", ""),
+                    }
+                ],
+            }
+
+    config = CaptureConfig(
+        vault_path=str(vault),
+        db_path=str(db_path),
+        qwen_api_key="qwen-test",
+        llm_api_key="llm-test",
+    )
+    context = KnowledgeContext(
+        config=config,
+        conn=conn,
+        vault_path=vault,
+    )
+    monkeypatch.setattr(rag_bridge, "load_config", lambda _path: pytest.fail("context path should not load config"))
+    monkeypatch.setattr(rag_bridge, "Embedder", FakeEmbedder)
+    monkeypatch.setattr(rag_bridge, "RagAgent", FakeRagAgent)
+
+    envelope = rag_bridge.search_knowledge_base("Terminal-Bench", context=context)
+
+    assert envelope["status"] == "success"
+    assert envelope["meta"]["answer"] == "显式 context 能完成检索。[1]"
+    assert envelope["source_map"][0]["section"] == "第二部分"
+    assert CaptureRepo(context.conn).get_by_id("cap1") is not None
+
+
+def test_search_knowledge_base_warns_when_answer_has_no_citations(monkeypatch, tmp_path):
+    from bridge import rag_bridge
+
+    db_path = tmp_path / "captures.db"
+    vault = tmp_path / "vault"
+    rel_path = _write_capture(vault)
+    conn = init_db(str(db_path))
+    conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap1", rel_path),
+    )
+    repo = CaptureEmbeddingRepo(conn)
+    repo.upsert(
+        capture_id="cap1",
+        kind="section",
+        section_id="second",
+        section_title="第二部分",
+        index_text="节奏狙击 Terminal-Bench 故意留坑",
+        embedding=_vec(1.0, 0.0),
+        source_hash="second",
+        file_path=rel_path,
+    )
+
+    class FakeEmbedder:
+        def __init__(self, **_kwargs):
+            pass
+
+        def embed(self, _text: str) -> bytes:
+            return _vec(1.0, 0.0)
+
+    class FakeRagAgent:
+        def __init__(self, **_kwargs):
+            pass
+
+        def query(self, _question, captures, *, context_pack=None):
+            return {
+                "answer": "第二部分是重点，但这个回答没有编号引用。",
+                "sources": [
+                    {
+                        "title": captures[0]["title"],
+                        "file_path": captures[0]["file_path"],
+                        "section_title": captures[0].get("section_title", ""),
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(
+        rag_bridge,
+        "load_config",
+        lambda _path: CaptureConfig(
+            vault_path=str(vault),
+            db_path=str(db_path),
+            qwen_api_key="qwen-test",
+            llm_api_key="llm-test",
+        ),
+    )
+    monkeypatch.setattr(rag_bridge, "Embedder", FakeEmbedder)
+    monkeypatch.setattr(rag_bridge, "RagAgent", FakeRagAgent)
+    rag_bridge._config = None
+    rag_bridge._repo = None
+
+    envelope = rag_bridge.search_knowledge_base("Terminal-Bench 的坑是什么？")
+
+    assert envelope["warnings"] == ["missing_citations"]
+    assert envelope["meta"]["citation_validation"] == {
+        "valid": False,
+        "missing_citations": True,
+        "unknown_citation_ids": [],
+        "cited_source_ids": [],
+    }
+
+
+def test_search_knowledge_base_repairs_missing_citations_once(monkeypatch, tmp_path):
+    from bridge import rag_bridge
+
+    db_path = tmp_path / "captures.db"
+    vault = tmp_path / "vault"
+    rel_path = _write_capture(vault)
+    conn = init_db(str(db_path))
+    conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap1", rel_path),
+    )
+    repo = CaptureEmbeddingRepo(conn)
+    repo.upsert(
+        capture_id="cap1",
+        kind="section",
+        section_id="second",
+        section_title="第二部分",
+        index_text="节奏狙击 Terminal-Bench 故意留坑",
+        embedding=_vec(1.0, 0.0),
+        source_hash="second",
+        file_path=rel_path,
+    )
+
+    class FakeEmbedder:
+        def __init__(self, **_kwargs):
+            pass
+
+        def embed(self, _text: str) -> bytes:
+            return _vec(1.0, 0.0)
+
+    class FakeRagAgent:
+        repair_calls = 0
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def query(self, _question, captures, *, context_pack=None):
+            return {
+                "answer": "第二部分是重点，但这个回答缺少编号引用。",
+                "sources": [
+                    {
+                        "title": captures[0]["title"],
+                        "file_path": captures[0]["file_path"],
+                        "section_title": captures[0].get("section_title", ""),
+                    }
+                ],
+            }
+
+        def repair_citations(self, answer_text, source_map):
+            FakeRagAgent.repair_calls += 1
+            assert "第二部分是重点" in answer_text
+            assert source_map[0]["title"] == "长文"
+            return "第二部分是重点，但这个回答已经补上编号引用。[1]"
+
+    monkeypatch.setattr(
+        rag_bridge,
+        "load_config",
+        lambda _path: CaptureConfig(
+            vault_path=str(vault),
+            db_path=str(db_path),
+            qwen_api_key="qwen-test",
+            llm_api_key="llm-test",
+        ),
+    )
+    monkeypatch.setattr(rag_bridge, "Embedder", FakeEmbedder)
+    monkeypatch.setattr(rag_bridge, "RagAgent", FakeRagAgent)
+    rag_bridge._config = None
+    rag_bridge._repo = None
+
+    envelope = rag_bridge.search_knowledge_base("Terminal-Bench 的坑是什么？")
+
+    assert FakeRagAgent.repair_calls == 1
+    assert envelope["warnings"] == []
+    assert envelope["meta"]["answer"] == "第二部分是重点，但这个回答已经补上编号引用。[1]"
+    assert envelope["meta"]["citation_validation"]["valid"] is True
+    assert "已经补上编号引用。[1]" in envelope["chat_preview"]
+
+
 def test_indexed_search_ignores_managed_section_embeddings(tmp_path):
     from bridge import rag_bridge
     from db.repo import CaptureRepo

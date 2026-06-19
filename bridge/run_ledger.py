@@ -5,7 +5,7 @@ import sqlite3
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from agents.run_evidence import extract_run_evidence
+from agents.run_evidence import extract_input_object_refs, extract_run_evidence
 from db.agent_run_repo import AgentRunRepo
 
 
@@ -26,6 +26,10 @@ def run_with_ledger(
         input_ref=input_ref or {},
     )
     repo.record_event(run["id"], event_type="started", payload=input_ref or {})
+    repo.record_object_refs(
+        run["id"],
+        extract_input_object_refs(intent, input_ref or {}),
+    )
     try:
         result = operation()
     except Exception as exc:
@@ -38,6 +42,7 @@ def run_with_ledger(
         raise
 
     extracted = extract_run_evidence(agent, intent, result)
+    repo.record_object_refs(run["id"], extracted.get("object_refs") or [])
     if extracted["status"] == "error":
         repo.fail_run(
             run["id"],

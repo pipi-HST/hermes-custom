@@ -67,6 +67,38 @@ def test_xiaohongshu_extractor_builds_multimodal_note_package(tmp_path: Path):
     assert image_extractor.paths == [str(tmp_path / "01.jpg"), str(tmp_path / "02.jpg")]
 
 
+def test_xiaohongshu_extractor_separates_comments_after_topic_tags(tmp_path: Path):
+    from agents.extractors.xiaohongshu_extractor import XiaohongshuExtractor
+
+    html = """
+    <html>
+      <head>
+        <meta property="og:title" content="Subagent 的三岔路">
+        <meta name="description" content="正文第一段。
+
+正文第二段。
+
+#AI[话题]# #Agent[话题]#
+
+这个逆向角度挺锋利的。
+
+所以 cc 的 harness 做得好">
+      </head>
+    </html>
+    """
+    extractor = XiaohongshuExtractor(media_dir=tmp_path)
+    extractor._fetch_url = lambda url: ("https://www.xiaohongshu.com/explore/65f1abc123", html)
+
+    result = extractor.extract("http://xhslink.com/test")
+
+    assert "## 正文文案" in result.raw_text
+    assert "正文第二段" in result.raw_text
+    assert "## 评论区摘录" in result.raw_text
+    assert result.raw_text.index("## 评论区摘录") > result.raw_text.index("#AI[话题]#")
+    body = result.raw_text.split("## 正文文案", 1)[1].split("## 评论区摘录", 1)[0]
+    assert "这个逆向角度挺锋利的" not in body
+
+
 def test_xiaohongshu_extractor_derives_meaningful_title_from_image_ocr(tmp_path: Path):
     from agents.extractors.xiaohongshu_extractor import XiaohongshuExtractor
 

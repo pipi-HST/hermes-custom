@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import CaptureAgent, CaptureConfig, load_config
+from bridge.context import KnowledgeContext
 from bridge.file_artifacts import write_markdown_export
 from bridge.result_envelope import (
     artifact_ref,
@@ -14,11 +16,13 @@ from bridge.result_envelope import (
     success_envelope,
 )
 from bridge.run_ledger import run_with_ledger
+from db.write_job_repo import KnowledgeWriteJobRepo
 
 _config = None
 _agent = None
 PREVIEW_LIMIT = 1500
 DRAFT_PAGE_SIZE = 1400
+AGENT_COMMIT_REVIEW_WINDOW_SECONDS = 120
 
 def _init():
     global _config, _agent
@@ -26,6 +30,12 @@ def _init():
         _config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
         _agent = CaptureAgent(_config)
     return _config, _agent
+
+
+def _agent_from_context(context: KnowledgeContext | None = None):
+    if context is not None:
+        return context.config, context.capture_agent()
+    return _init()
 
 
 def _clip_text(text: str, limit: int) -> str:
@@ -268,9 +278,13 @@ def _run_capture_with_ledger(agent_obj, intent: str, input_ref: dict, operation)
     )
 
 
-def capture_content(content: str, instruction: str = "") -> dict:
+def capture_content(
+    content: str,
+    instruction: str = "",
+    context: KnowledgeContext | None = None,
+) -> dict:
     """提取内容并生成可确认的草稿；不直接写入 Obsidian 正式库。"""
-    _, agent = _init()
+    _, agent = _agent_from_context(context)
     return _run_capture_with_ledger(
         agent,
         "create_capture_draft",
@@ -283,6 +297,172 @@ def capture_content(content: str, instruction: str = "") -> dict:
     )
 
 
+def create_editable_capture_draft(
+    content: str,
+    instruction: str = "",
+    source: str = "",
+    source_type: str = "manual",
+    title: str = "",
+    context: KnowledgeContext | None = None,
+) -> dict:
+    """Create a free-editing Capture draft that still commits through Capture."""
+    _, agent = _agent_from_context(context)
+    return _run_capture_with_ledger(
+        agent,
+        "create_editable_capture_draft",
+        {
+            "content_length": len(content or ""),
+            "content_preview": _clip_text(content or "", 120),
+            "instruction": instruction,
+            "source": source,
+            "source_type": source_type,
+            "title_provided": bool(title.strip()),
+        },
+        lambda: _create_editable_capture_draft(
+            agent,
+            content=content,
+            instruction=instruction,
+            source=source,
+            source_type=source_type,
+            title=title,
+        ),
+    )
+
+
+def _create_editable_capture_draft(
+    agent,
+    *,
+    content: str,
+    instruction: str = "",
+    source: str = "",
+    source_type: str = "manual",
+    title: str = "",
+) -> dict:
+    result = agent.create_editable_draft(
+        content,
+        source=source,
+        source_type=source_type,
+        instruction=instruction,
+        title=title,
+    )
+    if "error" in result:
+        return error_envelope(
+            agent="capture",
+            intent="create_editable_capture_draft",
+            error=result["error"],
+        )
+    return success_envelope(
+        agent="capture",
+        intent="create_editable_capture_draft",
+        chat_preview=(
+            f"已保存自由编辑草稿《{result.get('title') or '无标题'}》。"
+            "标题、摘要和标签已自动生成；确认后可入库检索。"
+        ),
+        durable_artifacts=[
+            artifact_ref(
+                type="capture_draft",
+                id=result.get("id", ""),
+                title=result.get("title", ""),
+                status=result.get("status", ""),
+            )
+        ],
+        next_actions=[
+            next_action(
+                label="存库",
+                intent="commit_capture_draft",
+                payload={"draft_id": result.get("id", "")},
+                requires_confirmation=True,
+            )
+        ],
+        meta={
+            "draft_id": result.get("id", ""),
+            "title": result.get("title", ""),
+            "summary": result.get("summary", ""),
+            "tags": result.get("tags", []),
+            "word_count": result.get("word_count", 0),
+            "draft_status": result.get("status", ""),
+            "capture_intent": result.get("capture_intent", {}),
+        },
+    )
+
+
+def update_editable_capture_draft(
+    draft_id: str,
+    content: str,
+    title: str = "",
+    context: KnowledgeContext | None = None,
+) -> dict:
+    """Update a free-editing Capture draft without committing it."""
+    _, agent = _agent_from_context(context)
+    return _run_capture_with_ledger(
+        agent,
+        "update_editable_capture_draft",
+        {
+            "draft_id": draft_id,
+            "content_length": len(content or ""),
+            "title_provided": bool((title or "").strip()),
+        },
+        lambda: _update_editable_capture_draft(
+            agent,
+            draft_id=draft_id,
+            content=content,
+            title=title,
+        ),
+    )
+
+
+def _update_editable_capture_draft(
+    agent,
+    *,
+    draft_id: str,
+    content: str,
+    title: str = "",
+) -> dict:
+    result = agent.update_editable_draft(draft_id, content=content, title=title)
+    if result is None:
+        return error_envelope(
+            agent="capture",
+            intent="update_editable_capture_draft",
+            error=f"draft {draft_id} 未找到",
+        )
+    if "error" in result:
+        return error_envelope(
+            agent="capture",
+            intent="update_editable_capture_draft",
+            error=result["error"],
+        )
+    return success_envelope(
+        agent="capture",
+        intent="update_editable_capture_draft",
+        chat_preview=f"已更新自由编辑草稿《{result.get('title') or '无标题'}》。",
+        durable_artifacts=[
+            artifact_ref(
+                type="capture_draft",
+                id=result.get("id", ""),
+                title=result.get("title", ""),
+                status=result.get("status", ""),
+            )
+        ],
+        next_actions=[
+            next_action(
+                label="存库",
+                intent="commit_capture_draft",
+                payload={"draft_id": result.get("id", "")},
+                requires_confirmation=True,
+            )
+        ],
+        meta={
+            "draft_id": result.get("id", ""),
+            "title": result.get("title", ""),
+            "summary": result.get("summary", ""),
+            "tags": result.get("tags", []),
+            "word_count": result.get("word_count", 0),
+            "draft_status": result.get("status", ""),
+            "capture_intent": result.get("capture_intent", {}),
+        },
+    )
+
+
 def _capture_content(agent, content: str, instruction: str = "") -> dict:
     result = agent.create_draft(content, instruction=instruction)
     if "error" in result:
@@ -292,9 +472,37 @@ def _capture_content(agent, content: str, instruction: str = "") -> dict:
             intent="create_capture_draft",
             error=f"{result['error']}。{hint}".strip("。"),
         )
+    duplicate_state = result.get("duplicate_state", "")
+    if duplicate_state == "committed":
+        title = _clip_text(result.get("title") or "无标题", 100)
+        capture_id = result.get("committed_capture_id", "")
+        return success_envelope(
+            agent="capture",
+            intent="create_capture_draft",
+            chat_preview=(
+                f"这份材料已经入库过：《{title}》。\n\n"
+                "我没有重复创建草稿。你可以查看已有笔记，或者明确说“基于已有文章创建修订草稿”。"
+            ),
+            durable_artifacts=[
+                artifact_ref(
+                    type="capture_note",
+                    id=capture_id,
+                    title=result.get("title", ""),
+                    status="already_committed",
+                )
+            ],
+            meta={
+                "duplicate_state": duplicate_state,
+                "draft_id": result.get("id", ""),
+                "capture_id": capture_id,
+                "title": result.get("title", ""),
+            },
+        )
     draft_text = result.get("draft_text", "")
     if draft_text:
         message, preview_truncated = _draft_saved_preview(result, "生成")
+        if duplicate_state == "open":
+            message = message.replace("已生成", "已找到已有待审", 1)
         actions = [
             next_action(
                 label="展开草稿",
@@ -366,9 +574,14 @@ def _capture_content(agent, content: str, instruction: str = "") -> dict:
     )
 
 
-def show_capture_draft(draft_id: str = "", page: int = 1, as_file: bool = False) -> dict:
+def show_capture_draft(
+    draft_id: str = "",
+    page: int = 1,
+    as_file: bool = False,
+    context: KnowledgeContext | None = None,
+) -> dict:
     """显示最近或指定的待确认草稿正文；只读草稿，不入库。"""
-    _, agent = _init()
+    _, agent = _agent_from_context(context)
     return _run_capture_with_ledger(
         agent,
         "show_capture_draft",
@@ -471,9 +684,13 @@ def _show_capture_draft(agent, draft_id: str = "", page: int = 1, as_file: bool 
     )
 
 
-def revise_capture_draft(draft_id: str = "", instruction: str = "") -> dict:
+def revise_capture_draft(
+    draft_id: str = "",
+    instruction: str = "",
+    context: KnowledgeContext | None = None,
+) -> dict:
     """按用户反馈修改最近或指定草稿，不写入正式库。"""
-    _, agent = _init()
+    _, agent = _agent_from_context(context)
     return _run_capture_with_ledger(
         agent,
         "revise_capture_draft",
@@ -554,18 +771,159 @@ def _revise_capture_draft(agent, draft_id: str = "", instruction: str = "") -> d
     )
 
 
-def commit_capture_draft(draft_id: str = "") -> dict:
+def commit_capture_draft(
+    draft_id: str = "",
+    confirmation: str = "",
+    confirmation_source: str = "agent",
+    context: KnowledgeContext | None = None,
+) -> dict:
     """用户确认后将草稿写入 Obsidian raw/ 和 captures/。"""
-    _, agent = _init()
+    _, agent = _agent_from_context(context)
+    conn = getattr(getattr(agent, "repo", None), "conn", None) or getattr(
+        getattr(agent, "draft_repo", None),
+        "conn",
+        None,
+    )
+    write_jobs = KnowledgeWriteJobRepo(conn) if conn is not None else None
+    job_id = (
+        write_jobs.start(
+            intent="commit_capture_draft",
+            object_type="capture_draft",
+            object_id=draft_id,
+            payload={"draft_id": draft_id, "confirmation_source": confirmation_source},
+        )
+        if write_jobs
+        else ""
+    )
+
+    def operation() -> dict:
+        try:
+            if write_jobs:
+                write_jobs.mark_step(job_id, status="writing_file", step="commit_capture_draft")
+            result = _commit_capture_draft(
+                agent,
+                draft_id=draft_id,
+                confirmation=confirmation,
+                confirmation_source=confirmation_source,
+            )
+            if result.get("status") == "error":
+                if write_jobs:
+                    write_jobs.fail(job_id, step="commit_capture_draft", error="; ".join(result.get("errors") or []))
+            else:
+                meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+                if write_jobs:
+                    capture_id = str(meta.get("capture_id") or "")
+                    embedding = None
+                    if capture_id:
+                        embedding = conn.execute(
+                            """SELECT 1 FROM capture_embeddings
+                               WHERE capture_id = ? AND kind = 'identity'
+                                 AND embedding IS NOT NULL
+                               LIMIT 1""",
+                            (capture_id,),
+                        ).fetchone()
+                    if capture_id and not embedding:
+                        write_jobs.repair_needed(
+                            job_id,
+                            step="identity_embedding",
+                            error="identity embedding pending or failed",
+                            file_path=str(meta.get("file_path") or ""),
+                            db_table="captures,capture_embeddings",
+                        )
+                    else:
+                        write_jobs.complete(
+                            job_id,
+                            file_path=str(meta.get("file_path") or ""),
+                            db_table="captures,capture_embeddings",
+                        )
+            return result
+        except Exception as exc:
+            if write_jobs:
+                write_jobs.fail(job_id, step="commit_capture_draft", error=str(exc))
+            raise
+
     return _run_capture_with_ledger(
         agent,
         "commit_capture_draft",
-        {"draft_id": draft_id},
-        lambda: _commit_capture_draft(agent, draft_id=draft_id),
+        {
+            "draft_id": draft_id,
+            "confirmation_source": confirmation_source,
+            "confirmation_preview": _clip_text(confirmation or "", 80),
+        },
+        operation,
     )
 
 
-def _commit_capture_draft(agent, draft_id: str = "") -> dict:
+def discard_capture_draft(
+    draft_id: str = "",
+    context: KnowledgeContext | None = None,
+) -> dict:
+    """Mark a reviewable Capture draft as abandoned."""
+    _, agent = _agent_from_context(context)
+    return _run_capture_with_ledger(
+        agent,
+        "discard_capture_draft",
+        {"draft_id": draft_id},
+        lambda: _discard_capture_draft(agent, draft_id=draft_id),
+    )
+
+
+def _discard_capture_draft(agent, draft_id: str = "") -> dict:
+    if not draft_id:
+        latest = agent.draft_repo.get_latest_open()
+        draft_id = latest["id"] if latest else ""
+    if not draft_id:
+        return error_envelope(
+            agent="capture",
+            intent="discard_capture_draft",
+            error="没有可删除的待审草稿。",
+        )
+    draft = agent.draft_repo.get_by_id(draft_id)
+    if not draft:
+        return error_envelope(
+            agent="capture",
+            intent="discard_capture_draft",
+            error=f"draft {draft_id} 未找到",
+        )
+    if draft.get("status") == "committed":
+        return error_envelope(
+            agent="capture",
+            intent="discard_capture_draft",
+            error="草稿已入库，不能删除。",
+        )
+    if draft.get("status") == "abandoned":
+        return error_envelope(
+            agent="capture",
+            intent="discard_capture_draft",
+            error="草稿已删除，不能重复删除。",
+        )
+    updated = agent.draft_repo.update(draft_id, status="abandoned") or draft
+    title = updated.get("title") or draft.get("title") or "未命名草稿"
+    return success_envelope(
+        agent="capture",
+        intent="discard_capture_draft",
+        chat_preview=f"已删除 Capture 草稿：《{title}》。",
+        durable_artifacts=[
+            artifact_ref(
+                type="capture_draft",
+                id=draft_id,
+                title=title,
+                status=updated.get("status") or "abandoned",
+            )
+        ],
+        meta={
+            "draft_id": draft_id,
+            "draft_status": updated.get("status") or "abandoned",
+        },
+    )
+
+
+def _commit_capture_draft(
+    agent,
+    draft_id: str = "",
+    confirmation: str = "",
+    confirmation_source: str = "agent",
+) -> dict:
     if not draft_id:
         latest = agent.draft_repo.get_latest_open()
         draft_id = latest["id"] if latest else ""
@@ -574,6 +932,24 @@ def _commit_capture_draft(agent, draft_id: str = "") -> dict:
             agent="capture",
             intent="commit_capture_draft",
             error="没有可入库的草稿。",
+        )
+    draft = agent.draft_repo.get_by_id(draft_id)
+    if not draft:
+        return error_envelope(
+            agent="capture",
+            intent="commit_capture_draft",
+            error=f"draft {draft_id} 未找到",
+        )
+    review_error = _commit_review_gate(
+        draft,
+        confirmation=confirmation,
+        confirmation_source=confirmation_source,
+    )
+    if review_error:
+        return error_envelope(
+            agent="capture",
+            intent="commit_capture_draft",
+            error=review_error,
         )
     result = agent.commit_draft(draft_id)
     if result is None:
@@ -593,6 +969,17 @@ def _commit_capture_draft(agent, draft_id: str = "") -> dict:
             f"摘要：{result.get('summary', '')}\n"
             f"标签：{', '.join(result.get('tags', []))}"
     )
+    capture_id = result.get("capture_id", "")
+    actions = []
+    if capture_id:
+        actions.append(
+            next_action(
+                label="生成知识卡片",
+                intent="synthesize_garden",
+                payload={"capture_ids": [capture_id]},
+                requires_confirmation=False,
+            )
+        )
     return success_envelope(
         agent="capture",
         intent="commit_capture_draft",
@@ -600,22 +987,23 @@ def _commit_capture_draft(agent, draft_id: str = "") -> dict:
         durable_artifacts=[
             artifact_ref(
                 type="raw_evidence",
-                id=result.get("capture_id", ""),
+                id=capture_id,
                 title=result.get("title", ""),
                 path=result.get("raw_path", ""),
                 status="created",
             ),
             artifact_ref(
                 type="capture_note",
-                id=result.get("capture_id", ""),
+                id=capture_id,
                 title=result.get("title", ""),
                 path=result.get("file_path", ""),
                 status="created",
             ),
         ],
+        next_actions=actions,
         meta={
             "draft_id": draft_id,
-            "capture_id": result.get("capture_id", ""),
+            "capture_id": capture_id,
             "title": result.get("title", ""),
             "summary": result.get("summary", ""),
             "tags": result.get("tags", []),
@@ -625,9 +1013,52 @@ def _commit_capture_draft(agent, draft_id: str = "") -> dict:
     )
 
 
-def refine_capture(draft_id: str = "", instruction: str = "") -> dict:
+def _commit_review_gate(
+    draft: dict,
+    *,
+    confirmation: str = "",
+    confirmation_source: str = "agent",
+) -> str:
+    if confirmation_source in {"dashboard", "api", "manual"}:
+        return ""
+    if draft.get("status") not in {"raw_extracted", "draft_ready", "revision_requested"}:
+        return ""
+    created_at = _parse_datetime(draft.get("created_at", ""))
+    if created_at is None:
+        return ""
+    age = (datetime.now(timezone.utc) - created_at).total_seconds()
+    if age > AGENT_COMMIT_REVIEW_WINDOW_SECONDS:
+        return ""
+    instruction = (draft.get("instruction") or "").strip()
+    confirmation_text = (confirmation or "").strip()
+    if confirmation_text and confirmation_text != instruction:
+        return ""
+    return (
+        "草稿刚生成，还没有经过独立确认。请先审阅待审草稿；"
+        "如果满意，请在下一条消息单独回复「确认存库」或在前端点击「确认入库」。"
+    )
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def refine_capture(
+    draft_id: str = "",
+    instruction: str = "",
+    context: KnowledgeContext | None = None,
+) -> dict:
     """兼容旧工具名：现在只修改草稿，不直接入库。"""
-    _, agent = _init()
+    _, agent = _agent_from_context(context)
     return _run_capture_with_ledger(
         agent,
         "refine_capture",

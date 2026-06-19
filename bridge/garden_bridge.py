@@ -5,9 +5,9 @@ import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-import yaml
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import load_config
+from agents.garden_card_payload import parse_payload_json, render_garden_card_markdown
 from agents.markdown_writer import append_garden_card_to_theme_page, read_note
 from agents.garden_agent import (
     CARD_KIND_LABELS,
@@ -20,12 +20,22 @@ from agents.garden_agent import (
 )
 from agents.garden_duplicates import find_garden_duplicate
 from bridge.file_artifacts import write_markdown_export
+from bridge.context import KnowledgeContext
+from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest
 from bridge.result_envelope import artifact_ref, error_envelope, next_action, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.schema import init_db
 from db.repo import CaptureRepo
+from db.write_job_repo import KnowledgeWriteJobRepo
 
 logger = logging.getLogger(__name__)
+
+
+def _config_repo(context: KnowledgeContext | None = None):
+    if context is not None:
+        return context.config, context.capture_repo()
+    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    return config, CaptureRepo(init_db(config.db_path))
 
 
 def _hydrate_capture(vault_path: Path, row: dict) -> dict:
@@ -68,6 +78,28 @@ def _resolve_capture_row(conn, capture_id: str):
         (f"{capture_id}%",),
     ).fetchall()
     return rows[0] if len(rows) == 1 else None
+
+
+def _resolve_capture_or_committed_draft(conn, raw_id: str) -> tuple[dict | None, str]:
+    row = _resolve_capture_row(conn, raw_id)
+    if row:
+        return dict(row), ""
+    raw_id = (raw_id or "").strip()
+    if not raw_id:
+        return None, ""
+    draft = conn.execute(
+        "SELECT id, status, committed_capture_id FROM capture_drafts WHERE id = ?",
+        (raw_id,),
+    ).fetchone()
+    if not draft:
+        return None, ""
+    committed_id = str(draft["committed_capture_id"] or "").strip()
+    if draft["status"] != "committed" or not committed_id:
+        return None, ""
+    row = _resolve_capture_row(conn, committed_id)
+    if not row:
+        return None, ""
+    return dict(row), f"已将草稿 {raw_id} 转为已入库内容 {committed_id}"
 
 
 def _draft_preview(
@@ -177,33 +209,22 @@ def _possible_duplicate_warning(duplicate: dict) -> str:
 
 def _garden_card_markdown(
     draft: dict,
-    card_id: str,
     *,
     source_links: list[str] | None = None,
+    source_ref_map: dict[str, str] | None = None,
     related_links: list[str] | None = None,
     source_theme: str = "",
 ) -> str:
     now = datetime.now(timezone.utc).isoformat()
-    frontmatter = {
-        "type": "garden_card",
-        "card_kind": draft.get("card_kind", "viewpoint"),
-        "status": "seed",
-        "title": draft.get("title", ""),
-        "created": draft.get("created_at", ""),
-        "updated": now,
-    }
-    if source_links:
-        frontmatter["sources"] = source_links
-    if related_links:
-        frontmatter["related"] = related_links
-    if source_theme:
-        frontmatter["source_theme"] = source_theme
-    body = (draft.get("markdown") or "").strip()
-    return (
-        "---\n"
-        f"{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False)}"
-        "---\n\n"
-        f"{body}\n"
+    return render_garden_card_markdown(
+        parse_payload_json(draft.get("payload_json")),
+        status="seed",
+        created_at=draft.get("created_at", ""),
+        updated_at=now,
+        source_links=source_links,
+        source_ref_map=source_ref_map,
+        related_links=related_links,
+        source_theme=source_theme,
     )
 
 
@@ -245,6 +266,35 @@ def _capture_property_links(conn, vault_path: Path, capture_ids: list[str]) -> l
     return links
 
 
+def _capture_property_link_map(conn, vault_path: Path, capture_ids: list[str]) -> dict[str, str]:
+    link_map: dict[str, str] = {}
+    for capture_id in capture_ids:
+        row = _resolve_capture_row(conn, capture_id)
+        if not row:
+            continue
+        data = dict(row)
+        file_path = data.get("file_path") or ""
+        title = ""
+        if file_path:
+            note = read_note(vault_path, file_path)
+            if note:
+                title = str(note[0].get("title") or "").strip()
+        title = title or Path(file_path).stem or str(data.get("id") or capture_id)
+        if file_path:
+            link = f"[[{Path(file_path).with_suffix('')}|{title}]]"
+        else:
+            link = title
+        resolved_id = str(data.get("id") or capture_id).strip()
+        if resolved_id:
+            link_map[resolved_id] = link
+            if len(resolved_id) >= 8:
+                link_map[resolved_id[:8]] = link
+        raw_id = str(capture_id or "").strip()
+        if raw_id:
+            link_map[raw_id] = link
+    return link_map
+
+
 def _garden_property_links(conn, card_ids: list[str]) -> list[str]:
     links: list[str] = []
     for card_id in card_ids:
@@ -269,7 +319,8 @@ def synthesize_garden(capture_ids: list[str] = None,
                       question_id: str = "",
                       title: str = "",
                       card_kind: str = "",
-                      export_file: bool = False) -> dict:
+                      export_file: bool = False,
+                      context: KnowledgeContext | None = None) -> dict:
     """合成知识卡片。
 
     Args:
@@ -281,8 +332,7 @@ def synthesize_garden(capture_ids: list[str] = None,
     Returns:
         Agent Result Envelope.
     """
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
-    repo = CaptureRepo(init_db(config.db_path))
+    config, repo = _config_repo(context)
     return run_with_ledger(
         repo.conn,
         agent="garden",
@@ -344,10 +394,15 @@ def _synthesize_garden(
 
     # 获取并 hydrate captures
     raw_rows = []
+    resolved_warnings = []
+    resolved_draft_ids = {}
     for cid in capture_ids:
-        row = _resolve_capture_row(conn, cid)
+        row, warning = _resolve_capture_or_committed_draft(conn, cid)
         if row:
-            raw_rows.append(dict(row))
+            raw_rows.append(row)
+        if warning:
+            resolved_warnings.append(warning)
+            resolved_draft_ids[str(cid)] = row["id"] if row else ""
 
     if not raw_rows:
         return error_envelope(
@@ -391,6 +446,7 @@ def _synthesize_garden(
         "core_arguments": result.get("core_arguments", []),
         "key_materials": result.get("key_materials", []),
         "knowledge_links": result.get("knowledge_links", []),
+        "payload": result.get("payload", {}),
         "markdown": result.get("markdown", ""),
         "capture_ids": capture_ids,
         "question_id": question_id,
@@ -454,8 +510,9 @@ def _synthesize_garden(
             "duplicate_status": duplicate["status"],
             "duplicate_match": duplicate.get("match") or {},
             "export_file": export_file,
+            "resolved_draft_ids": resolved_draft_ids,
         },
-        warnings=[duplicate_warning] if duplicate_warning else [],
+        warnings=[warning for warning in [duplicate_warning, *resolved_warnings] if warning],
     )
 
 
@@ -484,10 +541,13 @@ def _garden_draft_export_artifact(
     )
 
 
-def revise_garden_draft(draft_id: str = "", instruction: str = "") -> dict:
+def revise_garden_draft(
+    draft_id: str = "",
+    instruction: str = "",
+    context: KnowledgeContext | None = None,
+) -> dict:
     """修改最近或指定 Knowledge Card Draft。"""
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
-    repo = CaptureRepo(init_db(config.db_path))
+    config, repo = _config_repo(context)
     return run_with_ledger(
         repo.conn,
         agent="garden",
@@ -575,6 +635,7 @@ def _revise_garden_draft(
         "core_arguments": result.get("core_arguments", []),
         "key_materials": result.get("key_materials", []),
         "knowledge_links": result.get("knowledge_links", []),
+        "payload": result.get("payload", {}),
         "markdown": result.get("markdown", draft["markdown"]),
         "instruction": instruction,
     })
@@ -613,17 +674,57 @@ def _revise_garden_draft(
     )
 
 
-def commit_garden_draft(draft_id: str = "") -> dict:
+def commit_garden_draft(draft_id: str = "", context: KnowledgeContext | None = None) -> dict:
     """确认 Knowledge Card Draft，写入 garden_cards 和 Obsidian garden 文件。"""
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
-    repo = CaptureRepo(init_db(config.db_path))
+    config, repo = _config_repo(context)
+    write_jobs = KnowledgeWriteJobRepo(repo.conn)
+    job_id = write_jobs.start(
+        intent="commit_garden_draft",
+        object_type="garden_draft",
+        object_id=draft_id,
+        payload={"draft_id": draft_id},
+    )
+
+    def operation() -> dict:
+        try:
+            write_jobs.mark_step(job_id, status="writing_file", step="commit_garden_draft")
+            result = _commit_garden_draft(config, repo, draft_id=draft_id)
+            if result.get("status") == "error":
+                write_jobs.fail(job_id, step="commit_garden_draft", error="; ".join(result.get("errors") or []))
+            else:
+                meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+                write_jobs.complete(
+                    job_id,
+                    file_path=str(meta.get("path") or ""),
+                    db_table="garden_cards",
+                )
+            return result
+        except Exception as exc:
+            committed = ""
+            if draft_id:
+                row = repo.conn.execute(
+                    "SELECT committed_card_id FROM garden_drafts WHERE id = ?",
+                    (draft_id,),
+                ).fetchone()
+                committed = str(row["committed_card_id"] or "") if row else ""
+            if committed:
+                write_jobs.repair_needed(
+                    job_id,
+                    step="commit_garden_draft",
+                    error=str(exc),
+                    db_table="garden_cards",
+                )
+            else:
+                write_jobs.fail(job_id, step="commit_garden_draft", error=str(exc))
+            raise
+
     return run_with_ledger(
         repo.conn,
         agent="garden",
         intent="commit_garden_draft",
         trigger="wechat",
         input_ref={"draft_id": draft_id},
-        operation=lambda: _commit_garden_draft(config, repo, draft_id=draft_id),
+        operation=operation,
     )
 
 
@@ -655,28 +756,33 @@ def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
             error="这个知识卡片草稿已经入库或无法入库。",
         )
 
-    garden_dir = vault_path / "garden"
-    garden_dir.mkdir(exist_ok=True)
     filename = _safe_garden_filename(draft["title"], card_id)
-    md_path = garden_dir / filename
     source_links = _capture_property_links(
+        repo.conn, vault_path, _json_list(draft["capture_ids"])
+    )
+    source_ref_map = _capture_property_link_map(
         repo.conn, vault_path, _json_list(draft["capture_ids"])
     )
     related_links = _garden_property_links(
         repo.conn, _json_list(draft["knowledge_links"])
     )
     source_theme = _theme_path_for_question(repo.conn, draft.get("question_id") or "")
-    md_path.write_text(
-        _garden_card_markdown(
-            draft,
-            card_id,
-            source_links=source_links,
-            related_links=related_links,
-            source_theme=source_theme,
-        ),
-        encoding="utf-8",
+    write_result = KnowledgeWriteService(vault_path).write_markdown_artifact(
+        MarkdownWriteRequest(
+            kind="knowledge_card",
+            relative_path=f"garden/{filename}",
+            content=_garden_card_markdown(
+                draft,
+                source_links=source_links,
+                source_ref_map=source_ref_map,
+                related_links=related_links,
+                source_theme=source_theme,
+            ),
+            db_object_id=card_id,
+            db_table="garden_cards",
+        )
     )
-    rel_path = f"garden/{filename}"
+    rel_path = write_result.file_path
 
     theme_sync_status = "not_applicable"
     theme_sync_error = ""
@@ -722,5 +828,98 @@ def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
             "source_theme": source_theme,
             "theme_sync_status": theme_sync_status,
             "theme_sync_error": theme_sync_error,
+            "write_service": "knowledge_write_service",
+            "write_backup_path": write_result.backup_path,
+        },
+        warnings=write_result.warnings,
+    )
+
+
+def archive_garden_card(card_id: str = "", context: KnowledgeContext | None = None) -> dict:
+    """Archive a Knowledge Card without deleting its Obsidian file."""
+    _, repo = _config_repo(context)
+    write_jobs = KnowledgeWriteJobRepo(repo.conn)
+    job_id = write_jobs.start(
+        intent="archive_garden_card",
+        object_type="garden_card",
+        object_id=card_id,
+        payload={"card_id": card_id},
+    )
+
+    def operation() -> dict:
+        try:
+            write_jobs.mark_step(job_id, status="writing_db", step="archive_garden_card")
+            result = _archive_garden_card(repo, card_id=card_id)
+            if result.get("status") == "error":
+                write_jobs.fail(job_id, step="archive_garden_card", error="; ".join(result.get("errors") or []))
+            else:
+                write_jobs.complete(job_id, db_table="garden_cards")
+            return result
+        except Exception as exc:
+            write_jobs.repair_needed(
+                job_id,
+                step="archive_garden_card",
+                error=str(exc),
+                db_table="garden_cards",
+            )
+            raise
+
+    return run_with_ledger(
+        repo.conn,
+        agent="garden",
+        intent="archive_garden_card",
+        trigger="dashboard",
+        input_ref={"card_id": card_id},
+        operation=operation,
+    )
+
+
+def _archive_garden_card(repo: CaptureRepo, card_id: str = "") -> dict:
+    card_id = (card_id or "").strip()
+    if not card_id:
+        return error_envelope(
+            agent="garden",
+            intent="archive_garden_card",
+            error="请指定要归档的知识卡片。",
+        )
+    row = repo.conn.execute(
+        "SELECT * FROM garden_cards WHERE id = ?",
+        (card_id,),
+    ).fetchone()
+    if not row:
+        return error_envelope(
+            agent="garden",
+            intent="archive_garden_card",
+            error="没有找到这张知识卡片。",
+        )
+    card = dict(row)
+    if card.get("status") == "archived":
+        return error_envelope(
+            agent="garden",
+            intent="archive_garden_card",
+            error="这张知识卡片已经归档。",
+        )
+    now = datetime.now(timezone.utc).isoformat()
+    repo.conn.execute(
+        "UPDATE garden_cards SET status='archived', updated_at=? WHERE id=?",
+        (now, card_id),
+    )
+    repo.conn.commit()
+    return success_envelope(
+        agent="garden",
+        intent="archive_garden_card",
+        chat_preview=f"已归档知识卡片：《{card.get('title') or card_id}》。",
+        durable_artifacts=[
+            artifact_ref(
+                type="garden_card",
+                id=card_id,
+                title=card.get("title") or "知识卡片",
+                status="archived",
+            )
+        ],
+        meta={
+            "card_id": card_id,
+            "previous_status": card.get("status", ""),
+            "archived_at": now,
         },
     )

@@ -1,16 +1,16 @@
 # Hermes Knowledge 启动说明
 
-这个仓库现在只管 Hermes 的知识库管理能力。
+这个仓库现在只管 Hermes 的知识库能力层。
 
-它负责 Capture、Library、RAG、Theme、Garden、Review、Canvas、Obsidian 同步和知识库 Dashboard。Life Assistant 已经拆到独立仓库，不再放在这里。
+它负责 Capture、Library、RAG、Theme、Garden / Knowledge Cards、Review、Canvas bridge、Obsidian 同步和 Knowledge API。Life Assistant 已经拆到独立仓库，不再放在这里。
 
 ## 三个仓库分别管什么
 
 | 项目 | 本地路径 | GitHub | 职责 |
 |------|----------|--------|------|
-| Hermes Knowledge | `/Users/pipi/hermes-custom` | `pipi-HST/hermes-custom` | 知识库 Agent、Obsidian 文件、知识库 Dashboard |
+| Hermes Knowledge | `/Users/pipi/hermes-custom` | `pipi-HST/hermes-custom` | 知识库 Agent、Obsidian 文件、Knowledge API |
 | Hermes Life | `/Users/pipi/hermes-life` | `pipi-HST/hermes-life` | 生活记录、提醒、Life memory、Life Dashboard 源码 |
-| Hermes Runtime | `/Users/pipi/Downloads/hermes-agent-main` | `pipi-HST/hermes-agent-main` | 微信/飞书网关、工具注册、消息分发 |
+| Hermes Runtime | `/Users/pipi/Downloads/hermes-agent-main` | `pipi-HST/hermes-agent-main` | 微信/飞书网关、工具注册、消息分发、用户侧 Dashboard |
 
 人话版：只有一个 Hermes 主入口。知识库和生活助手是两个独立能力项目，都接到同一个 Hermes runtime 下面。
 
@@ -21,7 +21,7 @@ cd /Users/pipi/hermes-custom
 cp config.example.yaml config.yaml
 ```
 
-`config.yaml` 不进 Git。这里放 Knowledge 项目的 LLM key、数据库路径、Obsidian vault 路径。
+`config.yaml` 不进 Git。这里放 Knowledge 项目的 LLM key、Qwen / DashScope key、数据库路径、Obsidian vault 路径。这个文件是本地敏感配置，不要复制到文档、日志、Issue 或提交信息里。
 
 ## 启动 Knowledge API
 
@@ -55,14 +55,24 @@ True
 False
 ```
 
-## 启动 Knowledge Dashboard
+## Knowledge Dashboard
 
-```bash
-cd /Users/pipi/hermes-custom/dashboard
-npm run dev
+`/Users/pipi/hermes-custom/dashboard` 是旧的自定义 Next.js Dashboard，已经废弃。`dashboard/package.json` 中的 `dev`、`build`、`start` 会主动退出并提示使用 Hermes runtime dashboard。
+
+当前用户侧 Dashboard 由 Hermes Runtime 提供，默认地址是：
+
+```text
+http://127.0.0.1:9119/
 ```
 
-默认地址：`http://localhost:3010`
+启动方式：
+
+```bash
+cd /Users/pipi/Downloads/hermes-agent-main
+.venv/bin/python hermes dashboard
+```
+
+如果需要查看旧 Dashboard 的历史说明，读 `dashboard/DEPRECATED.md`，不要再按旧 `npm run dev` 路径启动。
 
 ## 启动 Hermes Runtime
 
@@ -112,4 +122,3 @@ mkdir -p ~/.hermes/sessions
 ```
 
 然后重启 Hermes runtime，再看 `~/.hermes/logs/`。
-

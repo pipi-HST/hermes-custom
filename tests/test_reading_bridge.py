@@ -207,6 +207,7 @@ def test_commit_learning_note_writes_independent_file(reading_config):
     assert artifact["path"].startswith("learning/")
     assert (Path(reading_config.vault_path) / artifact["path"]).exists()
     assert result["meta"]["library_postprocess"]["embedding_index"]["updated"] == 1
+    assert result["meta"]["write_service"] == "knowledge_write_service"
 
     conn = init_db(reading_config.db_path)
     capture = conn.execute(
@@ -222,33 +223,84 @@ def test_commit_learning_note_writes_independent_file(reading_config):
     assert "reading_draft_id:" in text
 
 
-def test_commit_knowledge_card_writes_garden_file(reading_config):
+def test_discard_reading_artifact_marks_draft_discarded(reading_config):
     from bridge import reading_bridge
 
     with patch.object(reading_bridge, "load_config", return_value=reading_config):
         reading_bridge._config = None
         reading_bridge._repo = None
-        session = reading_bridge.start_reading_session(
-            message="讨论",
-            excerpt="先判断结构，再决定整理粒度。",
-        )
-        reading_bridge.discuss_reading(
-            session_id=session["meta"]["reading_session_id"],
-            message="这个方法以后怎么复用？",
-            assistant_answer="它可以作为长文整理前先判断结构的工作流。",
-        )
+        session = reading_bridge.start_reading_session(message="讨论", excerpt="正文")
         draft = reading_bridge.summarize_reading_session(
             session_id=session["meta"]["reading_session_id"],
-            output_type="knowledge_card",
+            output_type="local_learning_note",
         )
-        result = reading_bridge.commit_reading_artifact(
-            draft["meta"]["reading_draft_id"]
-        )
+        draft_id = draft["meta"]["reading_draft_id"]
+        result = reading_bridge.discard_reading_artifact(draft_id)
+
+    assert result["status"] == "success"
+    assert result["intent"] == "discard_reading_artifact"
+    assert result["meta"]["draft_status"] == "discarded"
+
+    conn = init_db(reading_config.db_path)
+    row = conn.execute("SELECT status FROM reading_drafts WHERE id = ?", (draft_id,)).fetchone()
+    assert row["status"] == "discarded"
+
+
+def test_commit_learning_note_warns_when_library_postprocess_fails(reading_config):
+    from bridge import reading_bridge
+
+    with patch.object(reading_bridge, "load_config", return_value=reading_config):
+        with patch.object(
+            reading_bridge,
+            "_postprocess_committed_learning_note",
+            lambda *_args, **_kwargs: {"error": "outliner timeout"},
+        ):
+            reading_bridge._config = None
+            reading_bridge._repo = None
+            session = reading_bridge.start_reading_session(message="讨论", excerpt="正文")
+            draft = reading_bridge.summarize_reading_session(
+                session_id=session["meta"]["reading_session_id"],
+                output_type="local_learning_note",
+            )
+            result = reading_bridge.commit_reading_artifact(
+                draft["meta"]["reading_draft_id"]
+            )
+
+    assert result["status"] == "success"
+    assert "已加入知识库检索索引" not in result["chat_preview"]
+    assert "索引维护失败" in result["chat_preview"]
+    assert result["warnings"] == ["Library postprocess failed: outliner timeout"]
+
+
+def test_commit_knowledge_card_writes_garden_file(reading_config):
+    from bridge import reading_bridge
+
+    with patch.object(reading_bridge, "load_config", return_value=reading_config):
+        with patch.object(reading_bridge.httpx, "Client", side_effect=RuntimeError("no model")):
+            reading_bridge._config = None
+            reading_bridge._repo = None
+            session = reading_bridge.start_reading_session(
+                message="讨论",
+                excerpt="先判断结构，再决定整理粒度。",
+            )
+            reading_bridge.discuss_reading(
+                session_id=session["meta"]["reading_session_id"],
+                message="这个方法以后怎么复用？",
+                assistant_answer="它可以作为长文整理前先判断结构的工作流。",
+            )
+            draft = reading_bridge.summarize_reading_session(
+                session_id=session["meta"]["reading_session_id"],
+                output_type="knowledge_card",
+            )
+            result = reading_bridge.commit_reading_artifact(
+                draft["meta"]["reading_draft_id"]
+            )
 
     assert result["status"] == "success"
     artifact = result["durable_artifacts"][0]
     assert artifact["type"] == "knowledge_card"
     assert result["meta"]["garden_card_id"] == artifact["id"]
+    assert result["meta"]["write_service"] == "knowledge_write_service"
     assert artifact["path"].startswith("garden/")
     card_path = Path(reading_config.vault_path) / artifact["path"]
     assert card_path.exists()
@@ -266,6 +318,24 @@ def test_commit_knowledge_card_writes_garden_file(reading_config):
     assert row is not None
     assert row["title"].endswith("知识卡片")
     assert row["card_kind"] == "viewpoint"
+
+
+def test_synthesize_reading_card_warns_on_llm_failure(reading_config):
+    from bridge import reading_bridge
+
+    with patch.object(reading_bridge.httpx, "Client", side_effect=RuntimeError("no model")):
+        garden_data, card_body, warnings = reading_bridge._synthesize_reading_card(
+            reading_config,
+            title="复用方法",
+            draft_text="这个方法以后可以复用。",
+            summary="先判断结构，再决定整理粒度。",
+            session={"focus": "长文整理"},
+            evidence=[],
+        )
+
+    assert garden_data["card_kind"] == "viewpoint"
+    assert "先判断结构" in card_body
+    assert warnings == ["Reading card LLM synthesis failed: no model"]
 
 
 def test_commit_enhanced_capture_backs_up_and_rewrites_capture(reading_config):
@@ -311,10 +381,13 @@ def test_commit_enhanced_capture_backs_up_and_rewrites_capture(reading_config):
     assert result["durable_artifacts"][0]["type"] == "capture_note"
     assert result["durable_artifacts"][1]["type"] == "capture_backup"
     assert "阅读讨论补充" in capture_path.read_text(encoding="utf-8")
-    assert Path(result["durable_artifacts"][1]["path"]).exists()
+    backup_path = result["durable_artifacts"][1]["path"]
+    assert backup_path.startswith("_archive/write_backups/captures/source-")
+    assert (vault / backup_path).exists()
+    assert result["meta"]["write_service"] == "knowledge_write_service"
 
     conn = init_db(reading_config.db_path)
-    backup_count = conn.execute(
-        "SELECT count(*) FROM capture_version_backups WHERE capture_id = 'cap1'"
-    ).fetchone()[0]
-    assert backup_count == 1
+    backup = conn.execute(
+        "SELECT backup_file_path FROM capture_version_backups WHERE capture_id = 'cap1'"
+    ).fetchone()
+    assert backup["backup_file_path"] == backup_path

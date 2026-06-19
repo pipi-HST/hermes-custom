@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS garden_cards (
     title TEXT NOT NULL DEFAULT '',
     one_liner TEXT NOT NULL DEFAULT '',
     card_kind TEXT NOT NULL DEFAULT 'viewpoint',
+    schema_version TEXT NOT NULL DEFAULT 'garden_card.v1',
+    payload_json TEXT NOT NULL DEFAULT '{}',
     core_arguments TEXT NOT NULL DEFAULT '[]',
     knowledge_links TEXT NOT NULL DEFAULT '[]',
     key_materials TEXT NOT NULL DEFAULT '[]',
@@ -67,6 +69,8 @@ CREATE TABLE IF NOT EXISTS garden_drafts (
     title TEXT NOT NULL DEFAULT '',
     one_liner TEXT NOT NULL DEFAULT '',
     card_kind TEXT NOT NULL DEFAULT 'viewpoint',
+    schema_version TEXT NOT NULL DEFAULT 'garden_card.v1',
+    payload_json TEXT NOT NULL DEFAULT '{}',
     core_arguments TEXT NOT NULL DEFAULT '[]',
     knowledge_links TEXT NOT NULL DEFAULT '[]',
     key_materials TEXT NOT NULL DEFAULT '[]',
@@ -210,6 +214,24 @@ CREATE TABLE IF NOT EXISTS agent_run_events (
 )
 """
 
+CREATE_AGENT_RUN_OBJECTS_TABLE = """
+CREATE TABLE IF NOT EXISTS agent_run_objects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'subject',
+    source TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(run_id, object_type, object_id, role)
+)
+"""
+
+CREATE_AGENT_RUN_OBJECTS_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_agent_run_objects_lookup
+ON agent_run_objects (object_type, object_id, run_id)
+"""
+
 CREATE_READING_SESSIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS reading_sessions (
     id TEXT PRIMARY KEY,
@@ -287,6 +309,24 @@ CREATE TABLE IF NOT EXISTS capture_version_backups (
 )
 """
 
+CREATE_KNOWLEDGE_WRITE_JOBS_TABLE = """
+CREATE TABLE IF NOT EXISTS knowledge_write_jobs (
+    id TEXT PRIMARY KEY,
+    intent TEXT NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    step TEXT NOT NULL DEFAULT '',
+    file_path TEXT NOT NULL DEFAULT '',
+    db_table TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT NOT NULL DEFAULT '',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 
 def init_db(db_path: str) -> sqlite3.Connection:
     path = Path(db_path)
@@ -300,6 +340,8 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute(CREATE_CHANGE_LOG_TABLE)
     conn.execute(CREATE_AGENT_RUNS_TABLE)
     conn.execute(CREATE_AGENT_RUN_EVENTS_TABLE)
+    conn.execute(CREATE_AGENT_RUN_OBJECTS_TABLE)
+    conn.execute(CREATE_AGENT_RUN_OBJECTS_INDEX)
     conn.execute(CREATE_GARDEN_CARDS_TABLE)
     conn.execute(CREATE_GARDEN_DRAFTS_TABLE)
     _migrate_garden_tables(conn)
@@ -315,6 +357,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute(CREATE_READING_EVIDENCE_TABLE)
     conn.execute(CREATE_READING_DRAFTS_TABLE)
     conn.execute(CREATE_CAPTURE_VERSION_BACKUPS_TABLE)
+    conn.execute(CREATE_KNOWLEDGE_WRITE_JOBS_TABLE)
     conn.commit()
     return conn
 
@@ -377,6 +420,16 @@ def _migrate_garden_tables(conn: sqlite3.Connection) -> None:
             conn.execute(
                 f"ALTER TABLE {table} "
                 "ADD COLUMN card_kind TEXT NOT NULL DEFAULT 'viewpoint'"
+            )
+        if "schema_version" not in existing:
+            conn.execute(
+                f"ALTER TABLE {table} "
+                "ADD COLUMN schema_version TEXT NOT NULL DEFAULT 'garden_card.v1'"
+            )
+        if "payload_json" not in existing:
+            conn.execute(
+                f"ALTER TABLE {table} "
+                "ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'"
             )
 
 
