@@ -15,6 +15,7 @@ import {
   sendMessageToGateway,
 } from '../../lib/api'
 import { DraftReviewPanel } from '../../components/DraftReviewPanel'
+import { WorkbenchDraftQueue } from './WorkbenchDraftQueue'
 
 type WorkbenchMode = 'chat' | 'editable-capture' | 'draft-review' | 'capture-review'
 type EditableStatus = 'empty' | 'editing' | 'saving_draft' | 'ready_to_commit' | 'committing' | 'committed' | 'error'
@@ -483,71 +484,17 @@ export default function KnowledgeWorkbench({
 
   return (
     <div className={`flex ${embedded ? 'h-full min-h-[640px]' : 'h-screen'}`}>
-      {/* Left panel: Draft list or Capture list depending on mode */}
-      <aside className="w-64 shrink-0 border-r border-neutral-200 dark:border-neutral-800
-        flex flex-col overflow-hidden">
-        <div className="px-4 py-3 border-b border-neutral-200 dark:border-neutral-800">
-          <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-            {mode === 'capture-review' ? '捕获草稿' : '草稿列表'}
-          </h3>
-        </div>
-        <div className="flex-1 overflow-y-auto px-2 py-2">
-          {mode === 'capture-review' ? (
-            /* Capture drafts list */
-            captureLoading ? (
-              <p className="text-xs text-neutral-400 px-2 py-4">加载中...</p>
-            ) : captureDrafts.length === 0 ? (
-              <p className="text-xs text-neutral-400 px-2 py-4">暂无捕获草稿</p>
-            ) : (
-              captureDrafts.map(draft => (
-                <button
-                  key={draft.id}
-                  onClick={() => handleCaptureSelect(draft)}
-                  className={`w-full text-left px-3 py-2 rounded-md mb-1 text-sm transition-colors
-                    ${selectedCapture?.id === draft.id
-                      ? 'bg-neutral-200 dark:bg-neutral-800'
-                      : 'hover:bg-neutral-100 dark:hover:bg-neutral-900'
-                    }`}
-                >
-                  <div className="font-medium text-neutral-800 dark:text-neutral-200 truncate">
-                    {draft.title || '(无标题)'}
-                  </div>
-                  <div className="text-xs text-neutral-400 mt-0.5">
-                    {draft.source_type} · {draft.status}
-                  </div>
-                  <div className="text-xs text-neutral-400 truncate">
-                    {draft.summary || `${draft.word_count} 字`}
-                  </div>
-                </button>
-              ))
-            )
-          ) : (
-            /* Reading / knowledge drafts list */
-            drafts.length === 0 ? (
-              <p className="text-xs text-neutral-400 px-2 py-4">暂无待审阅草稿</p>
-            ) : (
-              drafts.map(draft => (
-                <button
-                  key={draft.id}
-                  onClick={() => handleDraftSelect(draft)}
-                  className={`w-full text-left px-3 py-2 rounded-md mb-1 text-sm transition-colors
-                    ${selectedDraft?.id === draft.id
-                      ? 'bg-neutral-200 dark:bg-neutral-800'
-                      : 'hover:bg-neutral-100 dark:hover:bg-neutral-900'
-                    }`}
-                >
-                  <div className="font-medium text-neutral-800 dark:text-neutral-200 truncate">
-                    {draft.title || '(无标题)'}
-                  </div>
-                  <div className="text-xs text-neutral-400 mt-0.5">
-                    {outputTypeLabel(draft.output_type)} · {draft.status}
-                  </div>
-                </button>
-              ))
-            )
-          )}
-        </div>
-      </aside>
+      <WorkbenchDraftQueue
+        mode={mode}
+        drafts={drafts}
+        selectedDraft={selectedDraft}
+        captureDrafts={captureDrafts}
+        selectedCapture={selectedCapture}
+        captureLoading={captureLoading}
+        onDraftSelect={handleDraftSelect}
+        onCaptureSelect={handleCaptureSelect}
+        outputTypeLabel={outputTypeLabel}
+      />
 
       {/* Center: Chat or Draft Review */}
       <div className="flex-1 flex flex-col overflow-hidden">
