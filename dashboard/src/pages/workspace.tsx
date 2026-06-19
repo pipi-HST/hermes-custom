@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useRouter } from 'next/router'
 import type { Capture, CaptureDraft, GardenCard } from '../lib/api'
 import {
   commitCaptureDraft,
@@ -9,7 +10,7 @@ import {
   updateCapture,
 } from '../lib/api'
 import GardenBoard from '../features/garden/GardenBoard'
-import KnowledgeWorkbench from '../features/workbench/KnowledgeWorkbench'
+import KnowledgeWorkbench, { type WorkbenchMode } from '../features/workbench/KnowledgeWorkbench'
 import type { WorkbenchSideContext } from '../features/workbench/KnowledgeWorkbench'
 
 type WorkspaceTab = 'library' | 'workbench' | 'garden'
@@ -29,13 +30,14 @@ const tabItems: Array<{
 ]
 
 export default function WorkspacePage() {
+  const router = useRouter()
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('library')
   const [activeFolder, setActiveFolder] = useState('Inbox')
   const [expandedFolders, setExpandedFolders] = useState<string[]>(['Inbox'])
   const [selectedCaptureId, setSelectedCaptureId] = useState<string>('')
   const [leftCollapsed, setLeftCollapsed] = useState(false)
   const [rightCollapsed, setRightCollapsed] = useState(false)
-  const workbenchInitialMode: 'chat' | 'editable-capture' = 'chat'
+  const [workbenchInitialMode, setWorkbenchInitialMode] = useState<WorkbenchMode>('chat')
   const [workbenchSideContext, setWorkbenchSideContext] = useState<WorkbenchSideContext | null>(null)
   const [creatingFolder, setCreatingFolder] = useState<string | null>(null)
   const [captures, setCaptures] = useState<WorkspaceCapture[]>([])
@@ -68,6 +70,14 @@ export default function WorkspacePage() {
   useEffect(() => {
     void loadWorkspace()
   }, [loadWorkspace])
+
+  useEffect(() => {
+    if (!router.isReady) return
+    const nextTab = parseWorkspaceTab(router.query.tab)
+    if (nextTab) setActiveTab(nextTab)
+    const nextMode = parseWorkbenchMode(router.query.mode)
+    if (nextMode) setWorkbenchInitialMode(nextMode)
+  }, [router.isReady, router.query.mode, router.query.tab])
 
   const folderNames = useMemo(() => {
     const dynamicFolders = captures
@@ -835,6 +845,21 @@ function activeTitle(tab: WorkspaceTab, folder: string) {
     garden: 'Garden Card 展示',
   }
   return titles[tab]
+}
+
+function parseWorkspaceTab(value: string | string[] | undefined): WorkspaceTab | null {
+  const tab = Array.isArray(value) ? value[0] : value
+  return tab === 'library' || tab === 'workbench' || tab === 'garden' ? tab : null
+}
+
+function parseWorkbenchMode(value: string | string[] | undefined): WorkbenchMode | null {
+  const mode = Array.isArray(value) ? value[0] : value
+  return (
+    mode === 'chat' ||
+    mode === 'editable-capture' ||
+    mode === 'draft-review' ||
+    mode === 'capture-review'
+  ) ? mode : null
 }
 
 function sourceLabel(sourceType: string) {

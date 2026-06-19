@@ -1,5 +1,12 @@
-import KnowledgeWorkbench from '../features/workbench/KnowledgeWorkbench'
+import type { GetServerSideProps } from 'next'
 
-export default function KnowledgeChatPage() {
-  return <KnowledgeWorkbench />
+export const getServerSideProps: GetServerSideProps = async () => ({
+  redirect: {
+    destination: '/workspace?tab=workbench',
+    permanent: false,
+  },
+})
+
+export default function KnowledgeChatRedirectPage() {
+  return null
 }

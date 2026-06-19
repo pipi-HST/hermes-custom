@@ -18,7 +18,7 @@ import { DraftReviewPanel } from '../../components/DraftReviewPanel'
 import { WorkbenchDraftQueue } from './WorkbenchDraftQueue'
 import { WorkbenchSidePanel } from './WorkbenchSidePanel'
 
-type WorkbenchMode = 'chat' | 'editable-capture' | 'draft-review' | 'capture-review'
+export type WorkbenchMode = 'chat' | 'editable-capture' | 'draft-review' | 'capture-review'
 type EditableStatus = 'empty' | 'editing' | 'saving_draft' | 'ready_to_commit' | 'committing' | 'committed' | 'error'
 
 interface ChatMessage {
@@ -141,6 +141,10 @@ export default function KnowledgeWorkbench({
   useEffect(() => {
     loadDrafts()
   }, [])
+
+  useEffect(() => {
+    setMode(initialMode)
+  }, [initialMode])
 
   useEffect(() => {
     setSessionId(crypto.randomUUID())
