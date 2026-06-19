@@ -124,6 +124,11 @@ export default function WorkspacePage() {
   ) => {
     if (!router.isReady) return
     const nextQuery = buildWorkspaceQuery(tab, mode, folder)
+    const nextSearch = new URLSearchParams(nextQuery).toString()
+    const nextAsPath = `/workspace${nextSearch ? `?${nextSearch}` : ''}`
+    if (router.asPath === nextAsPath) {
+      return
+    }
     const currentTab = parseWorkspaceTab(router.query.tab) || 'library'
     const currentMode = parseWorkbenchMode(router.query.mode) || 'chat'
     const currentFolder = parseQueryValue(router.query.folder)
@@ -144,7 +149,7 @@ export default function WorkspacePage() {
       undefined,
       { shallow: true },
     )
-  }, [activeFolder, router, router.query.folder, router.query.mode, router.query.tab, workbenchInitialMode])
+  }, [activeFolder, router, router.asPath, router.query.folder, router.query.mode, router.query.tab, workbenchInitialMode])
 
   const selectTab = useCallback((tab: WorkspaceTab) => {
     setActiveTab(tab)
