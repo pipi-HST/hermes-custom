@@ -12,6 +12,7 @@ import {
 import GardenBoard from '../features/garden/GardenBoard'
 import KnowledgeWorkbench, { type WorkbenchMode } from '../features/workbench/KnowledgeWorkbench'
 import type { WorkbenchSideContext } from '../features/workbench/KnowledgeWorkbench'
+import { WorkbenchSideContextContent } from '../features/workbench/WorkbenchSidePanel'
 
 type WorkspaceTab = 'library' | 'workbench' | 'garden'
 type WorkspaceCapture = Capture
@@ -684,7 +685,7 @@ function AISidebar({
       </div>
 
       {activeTab === 'workbench' && (
-        <WorkbenchContextPanel context={workbenchContext} />
+        <WorkbenchSideContextContent context={workbenchContext} variant="cards" />
       )}
 
       {activeTab === 'garden' && (
@@ -738,50 +739,6 @@ function GardenContextPanel({
     <section className="mt-4 space-y-3">
       <CountGroup title="类型分布" counts={kindCounts} />
       <CountGroup title="状态分布" counts={statusCounts} />
-    </section>
-  )
-}
-
-function WorkbenchContextPanel({ context }: { context?: WorkbenchSideContext | null }) {
-  if (!context || (context.sections.length === 0 && context.emptyText)) {
-    return (
-      <p className="mt-4 rounded-lg border border-dashed border-neutral-300 p-4 text-sm text-neutral-400 dark:border-neutral-700">
-        {context?.emptyText || '选择草稿或对话以查看相关信息'}
-      </p>
-    )
-  }
-
-  return (
-    <section className="mt-4 space-y-3">
-      {context.sections.map(section => (
-        <div
-          key={section.label}
-          className="rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900"
-        >
-          <p className="text-xs text-neutral-500">{section.label}</p>
-          {section.tags ? (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {section.tags.map(tag => (
-                <span
-                  key={tag}
-                  className="rounded-md bg-neutral-100 px-2 py-1 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"
-                >
-                  {tag}
-                </span>
-              ))}
-            </div>
-          ) : (
-            <p className={`mt-1 whitespace-pre-wrap text-sm text-neutral-700 dark:text-neutral-300 ${section.mono ? 'font-mono text-xs' : ''}`}>
-              {section.value || '-'}
-            </p>
-          )}
-        </div>
-      ))}
-      {context.emptyText && (
-        <p className="rounded-lg border border-dashed border-neutral-300 p-4 text-sm text-neutral-400 dark:border-neutral-700">
-          {context.emptyText}
-        </p>
-      )}
     </section>
   )
 }
