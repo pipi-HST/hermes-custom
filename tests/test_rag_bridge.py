@@ -46,6 +46,35 @@ tags:
     return rel_path
 
 
+def _write_learning_note(vault: Path) -> str:
+    rel_path = "learning/基于知识库回答这个问题：最近市场会涨还是会跌-41cc4cc1.md"
+    path = vault / rel_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        """---
+id: note1
+type: learning_note
+title: 基于知识库回答这个问题：最近市场会涨还是会跌
+story: 市场短期有韧性，中期压力积累。
+---
+
+# 基于知识库回答这个问题：最近市场会涨还是会跌
+
+## 解释：基于知识库回答这个问题：最近市场会涨还是会跌
+
+短期市场尚不具备形成历史大顶的典型特征，但中长期估值已进入偏贵区域。
+
+原回答还提到其他背景材料 [2][3]。
+
+## 参考来源
+
+- answer：[1] 【行业知识圈儿.宏观】2026年5月15日 财报分析和二季度市场展望
+""",
+        encoding="utf-8",
+    )
+    return rel_path
+
+
 def test_search_knowledge_base_uses_best_section_embedding(monkeypatch, tmp_path):
     from bridge import rag_bridge
 

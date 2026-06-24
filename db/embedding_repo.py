@@ -5,7 +5,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 
-from agents.embedder import cosine_similarity
+from agents.embedder import batch_cosine_similarity
 
 
 class CaptureEmbeddingRepo:
@@ -89,16 +89,45 @@ class CaptureEmbeddingRepo:
         kinds: tuple[str, ...] = ("identity", "section"),
         limit: int = 5,
     ) -> list[dict]:
+        if not kinds or limit <= 0:
+            return []
         placeholders = ", ".join("?" for _ in kinds)
         rows = self.conn.execute(
-            f"""SELECT * FROM capture_embeddings
+            f"""SELECT id, embedding
+                FROM capture_embeddings
                 WHERE embedding IS NOT NULL AND kind IN ({placeholders})""",
             kinds,
         ).fetchall()
-        scored: list[dict] = []
-        for row in rows:
-            item = dict(row)
-            item["score"] = cosine_similarity(query_embedding, item["embedding"])
-            scored.append(item)
-        scored.sort(key=lambda item: item["score"], reverse=True)
-        return scored[:limit]
+        if not rows:
+            return []
+        embeddings = [row["embedding"] for row in rows]
+        scores = batch_cosine_similarity(query_embedding, embeddings)
+        scored: list[tuple[str, float]] = []
+        for row, score in zip(rows, scores):
+            scored.append((row["id"], score))
+        scored.sort(key=lambda item: item[1], reverse=True)
+
+        top_scored = scored[:limit]
+        top_ids = [row_id for row_id, _score in top_scored]
+        top_scores = {row_id: score for row_id, score in top_scored}
+        full_rows = self._get_rows_by_ids(top_ids)
+        full_rows_by_id = {row["id"]: dict(row) for row in full_rows}
+
+        items: list[dict] = []
+        for row_id in top_ids:
+            item = full_rows_by_id.get(row_id)
+            if not item:
+                continue
+            item["score"] = top_scores[row_id]
+            items.append(item)
+        return items
+
+    def _get_rows_by_ids(self, row_ids: list[str]) -> list[sqlite3.Row]:
+        if not row_ids:
+            return []
+        placeholders = ", ".join("?" for _ in row_ids)
+        return self.conn.execute(
+            f"""SELECT * FROM capture_embeddings
+                WHERE id IN ({placeholders})""",
+            row_ids,
+        ).fetchall()

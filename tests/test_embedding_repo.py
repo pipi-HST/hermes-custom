@@ -91,3 +91,45 @@ def test_search_returns_rows_by_cosine_similarity(tmp_path):
 
     assert [row["capture_id"] for row in rows] == ["cap1", "cap2"]
     assert rows[0]["score"] > rows[1]["score"]
+
+
+def test_search_scores_lightweight_candidates_before_loading_full_rows(tmp_path):
+    conn = init_db(str(tmp_path / "test.db"))
+    repo = CaptureEmbeddingRepo(conn)
+    repo.upsert(
+        capture_id="cap1",
+        kind="identity",
+        section_id="",
+        section_title="",
+        index_text="positive full row",
+        embedding=_emb(1.0),
+        source_hash="h1",
+        file_path="captures/a.md",
+    )
+    repo.upsert(
+        capture_id="cap2",
+        kind="section",
+        section_id="s1",
+        section_title="Section",
+        index_text="negative full row",
+        embedding=_emb(-1.0),
+        source_hash="h2",
+        file_path="captures/b.md",
+    )
+
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+    rows = repo.search(_emb(1.0), kinds=("identity", "section"), limit=1)
+    conn.set_trace_callback(None)
+
+    candidate_selects = [
+        sql
+        for sql in statements
+        if "FROM capture_embeddings" in sql
+        and "embedding IS NOT NULL" in sql
+    ]
+    assert candidate_selects
+    assert "SELECT id, embedding" in " ".join(candidate_selects[0].split())
+    assert "SELECT *" not in candidate_selects[0]
+    assert [row["capture_id"] for row in rows] == ["cap1"]
+    assert rows[0]["index_text"] == "positive full row"

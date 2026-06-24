@@ -119,6 +119,19 @@ def test_capture_embeddings_table_exists(tmp_path):
     conn.close()
 
 
+def test_capture_embeddings_search_index_exists(tmp_path):
+    from db.schema import init_db
+
+    conn = init_db(str(tmp_path / "test.db"))
+    indexes = {
+        row["name"]
+        for row in conn.execute("PRAGMA index_list(capture_embeddings)").fetchall()
+    }
+
+    assert "idx_capture_embeddings_search" in indexes
+    conn.close()
+
+
 def test_agent_run_objects_table_exists(tmp_path):
     from db.schema import init_db
 

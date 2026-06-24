@@ -136,6 +136,12 @@ CREATE TABLE IF NOT EXISTS capture_embeddings (
 )
 """
 
+CREATE_CAPTURE_EMBEDDINGS_SEARCH_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_capture_embeddings_search
+ON capture_embeddings (kind)
+WHERE embedding IS NOT NULL
+"""
+
 CREATE_CAPTURE_METADATA_TABLE = """
 CREATE TABLE IF NOT EXISTS capture_metadata (
     capture_id TEXT PRIMARY KEY,
@@ -349,6 +355,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute(CREATE_CAPTURE_DRAFTS_TABLE)
     _migrate_capture_drafts_table(conn)
     conn.execute(CREATE_CAPTURE_EMBEDDINGS_TABLE)
+    conn.execute(CREATE_CAPTURE_EMBEDDINGS_SEARCH_INDEX)
     conn.execute(CREATE_CAPTURE_METADATA_TABLE)
     conn.execute(CREATE_REVIEW_ITEMS_TABLE)
     _migrate_review_items_table(conn)

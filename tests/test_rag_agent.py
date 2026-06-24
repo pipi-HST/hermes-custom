@@ -177,6 +177,21 @@ def test_build_prompt_falls_back_to_summary():
     assert "只用摘要" in prompt
 
 
+def test_build_prompt_marks_long_source_excerpt_at_natural_boundary():
+    sentence = "自然边界句子说明知识库证据。"
+    long_body = sentence * 1200 + "不应该进入提示"
+    captures = [{"title": "长材料", "story": "", "body": long_body}]
+
+    prompt = build_rag_prompt("query", captures)
+
+    assert "该来源过长，已省略后续内容" in prompt
+    assert "不应该进入提示" not in prompt
+    body = prompt.split("[1] 《长材料》\n", 1)[1].split("\n\n请用", 1)[0]
+    assert body.rstrip().endswith("。）")
+    excerpt = body.split("\n\n（该来源过长", 1)[0]
+    assert excerpt.endswith("。")
+
+
 def test_build_prompt_includes_garden_and_theme_as_orientation_only():
     captures = [{"title": "材料", "story": "", "body": "正文证据"}]
     context_pack = {
@@ -286,3 +301,43 @@ def test_call_llm_continues_once_when_generation_hits_length(monkeypatch):
     assert answer == "第一段没写完，第二段补完。"
     assert len(requests) == 2
     assert "继续完成上一条回答" in requests[1]["messages"][-1]["content"]
+
+
+def test_call_llm_uses_configured_model_for_short_prompt(monkeypatch):
+    requests = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {"content": "回答"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, headers, json):
+            requests.append(json)
+            return FakeResponse()
+
+    monkeypatch.setattr("agents.rag_agent.httpx.Client", FakeClient)
+
+    agent = RagAgent(llm_api_key="test", llm_model="deepseek-v4-pro")
+    answer = agent._call_llm("短问题")
+
+    assert answer == "回答"
+    assert requests[0]["model"] == "deepseek-v4-pro"

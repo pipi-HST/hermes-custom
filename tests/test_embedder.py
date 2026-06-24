@@ -63,3 +63,26 @@ def test_find_top_k():
     results = find_top_k(q, [("a", c2), ("b", c1), ("c", c3)], k=2)
     assert results[0][0] == "b"  # identical top
     assert results[0][1] > results[1][1]
+
+
+def test_batch_cosine_similarity_matches_scalar():
+    import struct
+    from agents.embedder import batch_cosine_similarity
+    query = struct.pack("1024f", *[1.0] * 1024)
+    embs = [
+        struct.pack("1024f", *[1.0] * 1024),
+        struct.pack("1024f", *[-1.0] * 1024),
+        struct.pack("1024f", *([1.0] + [0.0] * 1023)),
+    ]
+    batch_scores = batch_cosine_similarity(query, embs)
+    scalar_scores = [cosine_similarity(query, e) for e in embs]
+    assert len(batch_scores) == len(embs)
+    for b, s in zip(batch_scores, scalar_scores):
+        assert b == pytest.approx(s, abs=1e-5)
+
+
+def test_batch_cosine_similarity_empty():
+    from agents.embedder import batch_cosine_similarity
+    import struct
+    query = struct.pack("1024f", *[1.0] * 1024)
+    assert batch_cosine_similarity(query, []) == []

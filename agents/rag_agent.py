@@ -8,7 +8,9 @@ from agents.rag_citations import build_citation_repair_prompt
 ANSWER_PREVIEW_LIMIT = 1000
 TOTAL_PREVIEW_LIMIT = 1400
 MAX_SOURCE_LINES = 8
+SOURCE_PROMPT_LIMIT = 8000
 CONTINUATION_HINT = "\n\n（已省略后续内容，回复“继续展开”可查看更多。）"
+SOURCE_OMISSION_HINT = "\n\n（该来源过长，已省略后续内容。）"
 
 RAG_SYSTEM_PROMPT = """你是个人知识助手。根据用户的知识库内容回答问题。
 
@@ -38,7 +40,7 @@ def build_rag_prompt(
     for i, c in enumerate(captures, 1):
         title = c.get("title") or "无标题"
         text = c.get("body") or c.get("story", "")
-        parts.append(f"[{i}] 《{title}》\n{text[:8000]}\n")
+        parts.append(f"[{i}] 《{title}》\n{_source_prompt_excerpt(text)}\n")
     parts.append("请用 [1][2] 等编号在回答中标注每条信息的来源。")
     return "\n".join(parts)
 
@@ -92,6 +94,18 @@ def _truncate_answer(answer: str, limit: int) -> str:
     cutoff = _clean_partial_citation_suffix(cutoff).rstrip()
     cutoff = _strip_trailing_orphan_markdown(cutoff).rstrip()
     return cutoff + CONTINUATION_HINT
+
+
+def _source_prompt_excerpt(text: str, limit: int = SOURCE_PROMPT_LIMIT) -> str:
+    if len(text) <= limit:
+        return text
+    budget = max(0, limit - len(SOURCE_OMISSION_HINT))
+    cutoff = _natural_cutoff(text, budget)
+    cutoff = _clean_partial_citation_suffix(cutoff).rstrip()
+    cutoff = _strip_trailing_orphan_markdown(cutoff).rstrip()
+    if not cutoff:
+        cutoff = text[:budget].rstrip()
+    return cutoff + SOURCE_OMISSION_HINT
 
 
 def _natural_cutoff(text: str, limit: int) -> str:
@@ -184,13 +198,12 @@ class RagAgent:
             "Authorization": f"Bearer {self.llm_api_key}",
             "Content-Type": "application/json",
         }
-        is_simple = len(prompt) < 3000
         messages = [
             {"role": "system", "content": RAG_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ]
         body = {
-            "model": self.llm_model if not is_simple else "deepseek-v4-flash",
+            "model": self.llm_model,
             "messages": messages,
             "temperature": 0.3,
             "max_tokens": 1600,
