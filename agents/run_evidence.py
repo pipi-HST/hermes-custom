@@ -64,6 +64,24 @@ def extract_run_evidence(
         output_ref["query"] = meta.get("query", "")
         output_ref["answer"] = meta.get("answer", "")
         output_ref["sources"] = source_refs
+    elif intent == "continue_rag_answer":
+        source_run_id = str(meta.get("source_run_id") or "")
+        page = int(meta.get("page") or 0)
+        has_more = bool(meta.get("has_more"))
+        evidence.update(
+            {
+                "source_run_id": source_run_id,
+                "page": page,
+                "has_more": has_more,
+            }
+        )
+        output_ref.update(
+            {
+                "source_run_id": source_run_id,
+                "page": page,
+                "has_more": has_more,
+            }
+        )
     elif intent == "synthesize_garden":
         draft_artifact = _first_artifact(artifacts, "garden_draft")
         draft_id = str(meta.get("draft_id") or draft_artifact.get("id") or "")

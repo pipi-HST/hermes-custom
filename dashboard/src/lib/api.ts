@@ -370,7 +370,7 @@ export interface ChatStreamCallbacks {
   onDelta: (text: string) => void
   onComplete: (fullText: string) => void
   onError: (error: string) => void
-  onToolProgress?: (toolName: string, preview: string, status?: string) => void
+  onToolProgress?: (toolName: string, preview: string, status?: string, payload?: Record<string, unknown>) => void
 }
 
 export async function sendMessageToGateway(
@@ -440,6 +440,7 @@ export async function sendMessageToGateway(
                 toolName,
                 String(parsed.label || parsed.preview || parsed.tool || ''),
                 typeof parsed.status === 'string' ? parsed.status : undefined,
+                parsed,
               )
             }
           } else {

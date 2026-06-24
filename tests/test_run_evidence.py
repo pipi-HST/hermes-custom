@@ -174,6 +174,36 @@ def test_rag_evidence_extracts_graph_trace():
     assert result["evidence"]["graph_stopped_reason"] == "enough_evidence"
 
 
+def test_continue_rag_answer_records_paging_output():
+    envelope = success_envelope(
+        agent="rag",
+        intent="continue_rag_answer",
+        chat_preview="第二页正文",
+        source_map=[
+            source_ref(
+                role="evidence",
+                type="capture_note",
+                id="cap1",
+                title="材料",
+                path="captures/a.md",
+            )
+        ],
+        meta={"source_run_id": "run1", "page": 2, "has_more": False},
+    )
+
+    result = extract_run_evidence("rag", "continue_rag_answer", envelope)
+
+    assert result["status"] == "success"
+    assert result["evidence"]["source_run_id"] == "run1"
+    assert result["evidence"]["page"] == 2
+    assert result["evidence"]["has_more"] is False
+    assert result["output_ref"] == {
+        "source_run_id": "run1",
+        "page": 2,
+        "has_more": False,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Reading session evidence
 # ---------------------------------------------------------------------------

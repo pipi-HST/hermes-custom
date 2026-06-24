@@ -31,6 +31,7 @@ interface ToolEvent {
   toolName: string
   preview: string
   status: string
+  stage?: string
   timestamp: string
 }
 
@@ -272,17 +273,18 @@ export default function KnowledgeWorkbench({
           )
           setIsLoading(false)
         },
-        onToolProgress: (toolName: string, preview: string, status = 'running') => {
+        onToolProgress: (toolName: string, preview: string, status = 'running', payload?: Record<string, unknown>) => {
           setToolEvents(prev => [
             {
               id: crypto.randomUUID(),
               toolName,
               preview,
               status,
+              stage: typeof payload?.stage === 'string' ? payload.stage : undefined,
               timestamp: new Date().toISOString(),
             },
             ...prev,
-          ].slice(0, 6))
+          ].slice(0, 12))
         },
       },
       sessionId || crypto.randomUUID(),
@@ -509,8 +511,9 @@ export default function KnowledgeWorkbench({
         sections.unshift({ label: '会话 ID', value: sessionId, mono: true })
       }
       if (toolEvents.length > 0) {
+        const hasResearchProgress = toolEvents.some(event => event.toolName === 'research_with_web')
         sections.push({
-          label: '工具进度',
+          label: hasResearchProgress ? '检索过程' : '工具进度',
           value: toolEvents
             .map(event => `${event.status}: ${event.preview || event.toolName}`)
             .join('\n'),
