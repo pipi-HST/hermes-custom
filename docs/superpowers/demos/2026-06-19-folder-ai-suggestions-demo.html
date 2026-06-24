@@ -1,0 +1,1298 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hermes Knowledge Workspace Demo</title>
+  <style>
+    :root {
+      --bg: #f4f5f1;
+      --surface: #ffffff;
+      --surface-soft: #f7f8f4;
+      --surface-muted: #eef1ea;
+      --text: #17211c;
+      --muted: #66736b;
+      --faint: #89938d;
+      --line: #d9dfd6;
+      --line-strong: #c9d1c6;
+      --accent: #1f6b4f;
+      --accent-soft: #e0eee7;
+      --accent-line: #a9cdbd;
+      --warning: #765a1d;
+      --warning-soft: #fff4d8;
+      --danger: #8a3f35;
+      --danger-soft: #f8e6e2;
+      --radius: 8px;
+      --shadow: 0 18px 45px rgba(30, 42, 34, 0.08);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    button {
+      border: 0;
+      cursor: pointer;
+    }
+
+    .workspace {
+      min-height: 100dvh;
+      display: grid;
+      grid-template-columns: 270px minmax(560px, 1fr) 340px;
+      gap: 1px;
+      background: var(--line);
+    }
+
+    .rail,
+    .center,
+    .inspector {
+      min-width: 0;
+      background: var(--surface);
+    }
+
+    .rail {
+      display: flex;
+      min-height: 100dvh;
+      flex-direction: column;
+      padding: 16px 12px;
+    }
+
+    .brand {
+      margin: 0;
+      padding: 0 8px 14px;
+      font-size: 17px;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .rail-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 0 4px 12px;
+    }
+
+    .button {
+      min-height: 36px;
+      border-radius: var(--radius);
+      padding: 8px 10px;
+      background: var(--surface-muted);
+      color: var(--text);
+      white-space: nowrap;
+      transition: background 140ms ease, transform 140ms ease;
+    }
+
+    .button:hover {
+      background: #e7ece3;
+    }
+
+    .button:active {
+      transform: translateY(1px);
+    }
+
+    .button.primary {
+      background: var(--accent);
+      color: #ffffff;
+    }
+
+    .button.subtle {
+      background: transparent;
+      border: 1px solid var(--line);
+      color: var(--muted);
+    }
+
+    .group-label {
+      margin: 14px 8px 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .folder-tree,
+    .smart-list {
+      display: grid;
+      gap: 2px;
+    }
+
+    .tree-item,
+    .smart-item {
+      width: 100%;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      border-radius: var(--radius);
+      padding: 8px 9px;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+    }
+
+    .tree-item:hover,
+    .smart-item:hover {
+      background: var(--surface-soft);
+    }
+
+    .tree-item.active,
+    .smart-item.active {
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 680;
+    }
+
+    .item-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .count {
+      color: var(--faint);
+      font-size: 12px;
+      font-weight: 520;
+    }
+
+    .obsidian-box {
+      margin: auto 4px 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px;
+      background: var(--surface-soft);
+    }
+
+    .obsidian-box strong {
+      display: block;
+      font-size: 13px;
+    }
+
+    .obsidian-box p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .center {
+      display: flex;
+      min-height: 100dvh;
+      flex-direction: column;
+    }
+
+    .topbar {
+      min-height: 70px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+      padding: 12px 18px;
+      background: var(--surface);
+    }
+
+    .title-stack h1 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .title-stack p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .search-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      border-bottom: 1px solid var(--line);
+      padding: 12px 18px;
+      background: var(--surface-soft);
+    }
+
+    .search {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text);
+      outline: none;
+      padding: 8px 10px;
+    }
+
+    .search:focus,
+    input:focus,
+    textarea:focus,
+    select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(31, 107, 79, 0.14);
+    }
+
+    .tabs {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .tab {
+      min-height: 34px;
+      border-radius: var(--radius);
+      padding: 7px 10px;
+      background: transparent;
+      color: var(--muted);
+    }
+
+    .tab.active {
+      background: var(--surface);
+      color: var(--text);
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .view {
+      display: none;
+      min-height: 0;
+      flex: 1;
+      overflow: auto;
+    }
+
+    .view.active {
+      display: block;
+    }
+
+    .file-view {
+      padding: 14px 18px 22px;
+    }
+
+    .file-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .folder-summary {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 12px;
+      margin-bottom: 12px;
+      background: var(--surface-soft);
+    }
+
+    .folder-summary h2 {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    .folder-summary p {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .file-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 13px;
+      background: var(--surface);
+      text-align: left;
+      color: var(--text);
+    }
+
+    .file-row:hover,
+    .file-row.active {
+      border-color: var(--accent-line);
+      background: #fbfdf9;
+    }
+
+    .file-main {
+      min-width: 0;
+    }
+
+    .file-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 680;
+    }
+
+    .file-content {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .file-meta {
+      margin-top: 4px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .file-side {
+      display: grid;
+      justify-items: end;
+      gap: 7px;
+      min-width: 108px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .status {
+      display: inline-flex;
+      width: fit-content;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 8px;
+      background: var(--surface-muted);
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .status.good {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .status.warn {
+      background: var(--warning-soft);
+      color: var(--warning);
+    }
+
+    .status.danger {
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+
+    .detail-view,
+    .capture-view,
+    .cards-view {
+      padding: 18px;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 250px;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .note-paper,
+    .side-card,
+    .capture-panel,
+    .knowledge-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .note-paper {
+      padding: 22px;
+    }
+
+    .note-paper h2 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .note-paper .summary {
+      margin: 10px 0 0;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .note-body {
+      margin-top: 22px;
+      color: var(--text);
+      line-height: 1.82;
+      font-size: 15px;
+    }
+
+    .note-body h3 {
+      margin: 24px 0 8px;
+      font-size: 16px;
+    }
+
+    .note-body p {
+      margin: 0 0 12px;
+    }
+
+    .side-card {
+      padding: 13px;
+    }
+
+    .side-card + .side-card {
+      margin-top: 10px;
+    }
+
+    .side-card h3,
+    .capture-panel h2,
+    .knowledge-card h3 {
+      margin: 0 0 9px;
+      font-size: 14px;
+      line-height: 1.3;
+    }
+
+    .key-value {
+      display: grid;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .kv-row {
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr);
+      gap: 8px;
+    }
+
+    .kv-row strong {
+      color: var(--text);
+      font-weight: 620;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .tag {
+      border-radius: 999px;
+      padding: 5px 8px;
+      background: var(--surface-muted);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .capture-panel {
+      padding: 16px;
+    }
+
+    .capture-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 220px;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-soft);
+      color: var(--text);
+      outline: none;
+      padding: 9px 10px;
+    }
+
+    textarea {
+      min-height: 310px;
+      resize: vertical;
+      line-height: 1.7;
+    }
+
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .knowledge-card {
+      min-height: 170px;
+      padding: 16px;
+      display: grid;
+      gap: 10px;
+      align-content: start;
+    }
+
+    .knowledge-card.featured {
+      background: linear-gradient(135deg, #eff7f2, #ffffff);
+      border-color: var(--accent-line);
+    }
+
+    .knowledge-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .inspector {
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      padding: 14px;
+      gap: 12px;
+      overflow: auto;
+    }
+
+    .inspector-tabs {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .inspector-tab {
+      min-height: 32px;
+      border-radius: var(--radius);
+      background: var(--surface-soft);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .inspector-tab.active {
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 680;
+    }
+
+    .inspector-pane {
+      display: none;
+      gap: 12px;
+    }
+
+    .inspector-pane.active {
+      display: grid;
+    }
+
+    .inspector-header h2 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .inspector-header p {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .inspector-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-soft);
+      padding: 12px;
+    }
+
+    .chat-thread {
+      display: grid;
+      gap: 8px;
+    }
+
+    .chat-bubble {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px;
+      background: var(--surface);
+    }
+
+    .chat-bubble.user {
+      background: var(--accent-soft);
+      border-color: var(--accent-line);
+    }
+
+    .chat-bubble strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 12px;
+    }
+
+    .chat-bubble p {
+      margin: 0;
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .source-list,
+    .tool-list,
+    .migration-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .source-item,
+    .tool-item,
+    .migration-item {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 9px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .source-item strong,
+    .tool-item strong,
+    .migration-item strong {
+      display: block;
+      color: var(--text);
+      font-size: 13px;
+      margin-bottom: 3px;
+    }
+
+    .inspector-card h3 {
+      margin: 0 0 8px;
+      font-size: 13px;
+    }
+
+    .inspector-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .inspector-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 10px;
+    }
+
+    .mini {
+      min-height: 30px;
+      border-radius: 7px;
+      padding: 6px 9px;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--line);
+      font-size: 12px;
+    }
+
+    .mini.accept {
+      background: var(--accent-soft);
+      border-color: var(--accent-line);
+      color: var(--accent);
+    }
+
+    .sync-line {
+      display: grid;
+      gap: 7px;
+      margin-top: 9px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .route-note {
+      border-radius: var(--radius);
+      padding: 10px;
+      background: var(--warning-soft);
+      color: var(--warning);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    @media (max-width: 1180px) {
+      .workspace {
+        grid-template-columns: 240px minmax(0, 1fr);
+      }
+
+      .inspector {
+        grid-column: 1 / -1;
+        min-height: auto;
+        border-top: 1px solid var(--line);
+      }
+    }
+
+    @media (max-width: 760px) {
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+
+      .rail,
+      .center,
+      .inspector {
+        min-height: auto;
+      }
+
+      .topbar,
+      .search-row,
+      .capture-grid,
+      .detail-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .top-actions,
+      .tabs {
+        flex-wrap: wrap;
+      }
+
+      .list-head {
+        display: none;
+      }
+
+      .file-row {
+        grid-template-columns: 1fr;
+      }
+
+      .cards-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="workspace">
+    <aside class="rail">
+      <h1 class="brand">Hermes Knowledge</h1>
+      <div class="rail-actions">
+        <button class="button primary" type="button" data-open-view="capture">新建笔记</button>
+        <button class="button" type="button" data-open-view="capture">导入文件</button>
+      </div>
+
+      <div class="group-label">文件夹</div>
+      <div class="folder-tree">
+        <button class="tree-item active" type="button" data-folder="Inbox" data-folder-title="Inbox">
+          <span class="item-title">Inbox</span><span class="count">12</span>
+        </button>
+        <button class="tree-item" type="button" data-folder="AI 产品" data-folder-title="AI 产品">
+          <span class="item-title">AI 产品</span><span class="count">28</span>
+        </button>
+        <button class="tree-item" type="button" data-folder="数据 Agent" data-folder-title="数据 Agent">
+          <span class="item-title">数据 Agent</span><span class="count">9</span>
+        </button>
+        <button class="tree-item" type="button" data-folder="待读" data-folder-title="待读">
+          <span class="item-title">待读</span><span class="count">17</span>
+        </button>
+        <button class="tree-item" type="button" data-folder="临时" data-folder-title="临时">
+          <span class="item-title">临时</span><span class="count">5</span>
+        </button>
+      </div>
+
+      <button class="button subtle" type="button" style="margin: 10px 4px 0;">新建文件夹</button>
+
+      <div class="group-label">智能视图</div>
+      <div class="smart-list">
+        <button class="smart-item" type="button" data-smart="recent" data-folder-title="最近入库">
+          <span class="item-title">最近入库</span><span class="count">34</span>
+        </button>
+        <button class="smart-item" type="button" data-smart="review" data-folder-title="待审阅">
+          <span class="item-title">待审阅</span><span class="count">6</span>
+        </button>
+        <button class="smart-item" type="button" data-smart="suggestions" data-folder-title="有 AI 建议">
+          <span class="item-title">有 AI 建议</span><span class="count">4</span>
+        </button>
+        <button class="smart-item" type="button" data-smart="cards" data-open-view="cards" data-folder-title="Garden Cards">
+          <span class="item-title">Garden Cards</span><span class="count">18</span>
+        </button>
+      </div>
+
+      <div class="obsidian-box">
+        <strong>Obsidian 同步</strong>
+        <p>前台只保留一级文件夹。folder_path 写入一级分类，物理文件仍可先保留在 captures 下。</p>
+      </div>
+    </aside>
+
+    <main class="center">
+      <header class="topbar">
+        <div class="title-stack">
+          <h1 id="workspaceTitle">Inbox</h1>
+          <p id="workspaceSubtitle">文件夹视图。这里显示当前文件夹下的知识条目。</p>
+        </div>
+        <div class="top-actions">
+          <button class="button" type="button" data-open-view="list">文件列表</button>
+          <button class="button" type="button" data-open-view="detail">打开笔记</button>
+          <button class="button" type="button" data-open-inspector="chat">问 Hermes</button>
+          <button class="button primary" type="button" data-open-view="capture">添加内容</button>
+        </div>
+      </header>
+
+      <div class="search-row">
+        <input class="search" value="" placeholder="搜索标题、正文、标签、来源" />
+        <div class="tabs" aria-label="视图切换">
+          <button class="tab active" type="button" data-open-view="list">列表</button>
+          <button class="tab" type="button" data-open-view="detail">阅读</button>
+          <button class="tab" type="button" data-open-view="capture">粘贴</button>
+          <button class="tab" type="button" data-open-view="cards">卡片</button>
+        </div>
+      </div>
+
+      <section class="view file-view active" id="view-list">
+        <div class="folder-summary">
+          <h2 id="folderSummaryTitle">Inbox 下的文件</h2>
+          <p id="folderSummaryText">点开一级文件夹后，主区域直接展示这个文件夹里的文件和内容预览。文件夹只做一级，下面放文件。</p>
+        </div>
+        <div class="file-list">
+          <button class="file-row active" type="button" data-folder-name="AI 产品" data-open-view="detail" data-title="AI 产品的笔记入口应该让人先控制">
+            <div class="file-main">
+              <div class="file-title">AI 产品的笔记入口应该让人先控制</div>
+              <div class="file-meta">
+                <span>AI 产品</span>
+                <span>ai-product</span>
+                <span>capture-flow</span>
+              </div>
+              <div class="file-content">知识工作台不能让用户感觉自己在等待复杂 pipeline。更好的入口应该像文件夹里的新建文档：先放进去，先能改，再由 AI 补充结构。</div>
+            </div>
+            <div class="file-side">
+              <span>粘贴整理</span>
+              <span class="status good">已入库</span>
+              <span>今天</span>
+            </div>
+          </button>
+          <button class="file-row" type="button" data-folder-name="AI 产品" data-open-view="detail" data-title="飞书为什么让人更敢记录">
+            <div class="file-main">
+              <div class="file-title">飞书为什么让人更敢记录</div>
+              <div class="file-meta">
+                <span>AI 产品</span>
+                <span>product-taste</span>
+              </div>
+              <div class="file-content">飞书给人的安全感来自可见文件夹、标题、正文可编辑和用户能决定放在哪里。Hermes 需要把这些控制感放在 AI 整理之前。</div>
+            </div>
+            <div class="file-side">
+              <span>对话沉淀</span>
+              <span class="status warn">待审阅</span>
+              <span>昨天</span>
+            </div>
+          </button>
+          <button class="file-row" type="button" data-folder-name="数据 Agent" data-open-view="detail" data-title="Data Agent 产品成功关键">
+            <div class="file-main">
+              <div class="file-title">Data Agent 产品成功关键</div>
+              <div class="file-meta">
+                <span>数据 Agent</span>
+                <span>data-agent</span>
+                <span>analysis</span>
+              </div>
+              <div class="file-content">Data Agent 不是只把自然语言转 SQL，而是要处理口径、权限、追问和结果解释。成功关键在于让用户相信答案来源和计算过程。</div>
+            </div>
+            <div class="file-side">
+              <span>文件导入</span>
+              <span class="status good">已索引</span>
+              <span>周三</span>
+            </div>
+          </button>
+          <button class="file-row" type="button" data-folder-name="Inbox" data-open-view="detail" data-title="主题入口和文件夹入口不要混在一起">
+            <div class="file-main">
+              <div class="file-title">主题入口和文件夹入口不要混在一起</div>
+              <div class="file-meta">
+                <span>Inbox</span>
+                <span>theme</span>
+                <span>workspace</span>
+              </div>
+              <div class="file-content">文件夹是用户主动放置的位置，Theme 是 AI 发现的关联网络。二者应该并存，但不能让用户以为 AI 分类替代了自己的目录。</div>
+            </div>
+            <div class="file-side">
+              <span>Hermes 回答</span>
+              <span class="status">有建议</span>
+              <span>周二</span>
+            </div>
+          </button>
+          <button class="file-row" type="button" data-folder-name="待读" data-open-view="detail" data-title="OpenAI Data Agent 轻整理文字稿">
+            <div class="file-main">
+              <div class="file-title">OpenAI Data Agent 轻整理文字稿</div>
+              <div class="file-meta">
+                <span>待读</span>
+                <span>transcript</span>
+                <span>data-agent</span>
+              </div>
+              <div class="file-content">这是一份还没有完全加工的材料。先放在待读，用户之后可以决定是否整理成正式笔记或生成 Garden Card。</div>
+            </div>
+            <div class="file-side">
+              <span>本地文件</span>
+              <span class="status warn">未审阅</span>
+              <span>周一</span>
+            </div>
+          </button>
+          <button class="file-row" type="button" data-folder-name="临时" data-open-view="detail" data-title="临时想法：插件式主题入口">
+            <div class="file-main">
+              <div class="file-title">临时想法：插件式主题入口</div>
+              <div class="file-meta">
+                <span>临时</span>
+                <span>idea</span>
+                <span>theme</span>
+              </div>
+              <div class="file-content">主题入口不一定要做成主流程，也可以作为插件式辅助能力。先记录想法，后续由 AI 建议是否合并到正式笔记。</div>
+            </div>
+            <div class="file-side">
+              <span>手写笔记</span>
+              <span class="status">草稿</span>
+              <span>今天</span>
+            </div>
+          </button>
+        </div>
+      </section>
+
+      <section class="view detail-view" id="view-detail">
+        <div class="detail-grid">
+          <article class="note-paper">
+            <h2 id="noteTitle">AI 产品的笔记入口应该让人先控制</h2>
+            <p class="summary">这条笔记来自粘贴整理。用户先决定标题、正文和文件夹，AI 补摘要、标签、关联和检索状态。</p>
+            <div class="note-body">
+              <h3>核心判断</h3>
+              <p>知识工作台不能让用户感觉自己在等待一个复杂 pipeline。更好的入口应该像文件夹里的新建文档：先放进去，先能改，再由 AI 补充结构。</p>
+              <p>文件夹是人的位置感，标签是检索属性，Garden 是 AI 发现的关联网络。这三者需要同时存在，但不能混成一个概念。</p>
+              <h3>产品含义</h3>
+              <p>新 UI 应该把旧的工作台能力收进右侧 inspector，把卡片展示作为一个智能视图，而不是让用户在多个页面之间来回找状态。</p>
+            </div>
+          </article>
+
+          <aside>
+            <div class="side-card">
+              <h3>文件信息</h3>
+              <div class="key-value">
+                <div class="kv-row"><strong>文件夹</strong><span>AI 产品</span></div>
+                <div class="kv-row"><strong>物理路径</strong><span>captures/2026-06-19-ai-product.md</span></div>
+                <div class="kv-row"><strong>同步</strong><span>frontmatter folder_path 已同步</span></div>
+              </div>
+            </div>
+            <div class="side-card">
+              <h3>标签</h3>
+              <div class="tag-row">
+                <span class="tag">ai-product</span>
+                <span class="tag">knowledge-workbench</span>
+                <span class="tag">capture-flow</span>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view capture-view" id="view-capture">
+        <div class="capture-panel">
+          <h2>添加到当前文件夹</h2>
+          <div class="capture-grid">
+            <label>
+              标题
+              <input value="AI 产品的笔记入口应该让人先控制" />
+            </label>
+            <label>
+              保存到
+              <select id="folderSelect">
+                <option>Inbox</option>
+                <option selected>AI 产品</option>
+                <option>数据 Agent</option>
+                <option>待读</option>
+              </select>
+            </label>
+          </div>
+          <label>
+            正文
+            <textarea>我想把这条内容像飞书一样先放进某个文件夹，然后自由修改。Hermes 负责补标题、摘要、标签、关联和 RAG 索引，但不应该挡在保存前面。</textarea>
+          </label>
+          <div class="inspector-actions">
+            <button class="button primary" type="button">保存并整理</button>
+            <button class="button" type="button">只存草稿</button>
+            <button class="button subtle" type="button">从本地文件导入</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="view cards-view" id="view-cards">
+        <div class="cards-grid">
+          <article class="knowledge-card featured">
+            <span class="status good">Garden Card</span>
+            <h3>文件夹是人的位置感</h3>
+            <p>文件夹解决用户“我把它放在哪里”的确定感。标签和主题不能替代这个动作。</p>
+            <div class="tag-row">
+              <span class="tag">AI 产品</span>
+              <span class="tag">工作台</span>
+            </div>
+          </article>
+          <article class="knowledge-card">
+            <span class="status">关联卡片</span>
+            <h3>AI 建议不应该阻塞入库</h3>
+            <p>建议层适合在保存后出现，让用户采用、忽略或稍后整理。</p>
+            <div class="tag-row">
+              <span class="tag">capture</span>
+              <span class="tag">workflow</span>
+            </div>
+          </article>
+          <article class="knowledge-card">
+            <span class="status">旧卡片页迁移</span>
+            <h3>卡片视图成为智能视图</h3>
+            <p>旧卡片展示页不再孤立存在，而是挂到左侧 Garden Cards 和笔记详情里。</p>
+            <div class="tag-row">
+              <span class="tag">garden</span>
+              <span class="tag">cards</span>
+            </div>
+          </article>
+          <article class="knowledge-card">
+            <span class="status warn">待生成</span>
+            <h3>这篇笔记可生成卡片</h3>
+            <p>从当前笔记抽出一个可复用观点卡，生成前先让用户确认。</p>
+            <div class="inspector-actions">
+              <button class="mini accept" type="button">生成卡片</button>
+              <button class="mini" type="button">忽略</button>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <aside class="inspector">
+      <div class="inspector-header">
+        <h2>Hermes Inspector</h2>
+        <p>旧工作台里的 AI 对话、草稿审阅、引用、工具调用和运行状态收进这里。</p>
+      </div>
+
+      <div class="inspector-tabs" aria-label="Inspector tabs">
+        <button class="inspector-tab active" type="button" data-inspector-tab="chat">AI 对话</button>
+        <button class="inspector-tab" type="button" data-inspector-tab="review">审阅</button>
+        <button class="inspector-tab" type="button" data-inspector-tab="sources">来源</button>
+        <button class="inspector-tab" type="button" data-inspector-tab="related">关联</button>
+        <button class="inspector-tab" type="button" data-inspector-tab="tools">工具</button>
+        <button class="inspector-tab" type="button" data-inspector-tab="obsidian">Obsidian</button>
+      </div>
+
+      <div class="inspector-pane active" id="pane-chat">
+        <section class="inspector-card">
+          <h3>带上下文问 Hermes</h3>
+          <div class="chat-thread">
+            <div class="chat-bubble user">
+              <strong>你</strong>
+              <p>基于当前文件夹，哪些内容应该优先整理成正式笔记？</p>
+            </div>
+            <div class="chat-bubble">
+              <strong>Hermes</strong>
+              <p>当前文件夹里有两类高价值内容：产品入口判断和 Data Agent 成功关键。建议先处理已入库但未生成卡片的笔记。</p>
+            </div>
+          </div>
+          <div class="inspector-actions">
+            <button class="mini accept" type="button">追问</button>
+            <button class="mini" type="button">保存回答</button>
+          </div>
+        </section>
+      </div>
+
+      <div class="inspector-pane" id="pane-review">
+        <section class="inspector-card">
+          <h3>当前状态</h3>
+          <div class="key-value">
+            <div class="kv-row"><strong>审阅</strong><span>可直接入库</span></div>
+            <div class="kv-row"><strong>RAG</strong><span>短文本整体索引</span></div>
+            <div class="kv-row"><strong>来源</strong><span>自由粘贴</span></div>
+          </div>
+        </section>
+        <section class="inspector-card">
+          <h3>AI 建议</h3>
+          <p>建议移动到 AI 产品。原因是正文讨论知识入口、文件夹心智和人机分工。</p>
+          <div class="inspector-actions">
+            <button class="mini accept" type="button" id="acceptFolder">采用文件夹</button>
+            <button class="mini" type="button">换一个</button>
+            <button class="mini" type="button">忽略</button>
+          </div>
+        </section>
+      </div>
+
+      <div class="inspector-pane" id="pane-sources">
+        <section class="inspector-card">
+          <h3>来源和引用</h3>
+          <div class="source-list">
+            <div class="source-item">
+              <strong>当前笔记</strong>
+              captures/2026-06-19-ai-product.md
+            </div>
+            <div class="source-item">
+              <strong>原始材料</strong>
+              _archive/raw/2026-06-19-ai-product.md
+            </div>
+            <div class="source-item">
+              <strong>可引用片段</strong>
+              “文件夹是人的位置感，标签是检索属性，Garden 是 AI 发现的关联网络。”
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="inspector-pane" id="pane-related">
+        <section class="inspector-card">
+          <h3>关联知识</h3>
+          <div class="source-list">
+            <div class="source-item"><strong>飞书为什么让人更敢记录</strong>同属 AI 产品，讨论用户控制感。</div>
+            <div class="source-item"><strong>RAG 入库规则</strong>解释短文本整体索引和长文本章节索引。</div>
+            <div class="source-item"><strong>主题入口设计</strong>讨论 Theme 和文件夹的边界。</div>
+          </div>
+        </section>
+      </div>
+
+      <div class="inspector-pane" id="pane-tools">
+        <section class="inspector-card">
+          <h3>工具调用和运行状态</h3>
+          <div class="tool-list">
+            <div class="tool-item"><strong>Capture Agent</strong>生成标题、摘要、标签，保留用户正文。</div>
+            <div class="tool-item"><strong>Library Agent</strong>提交后进入原有知识库维护流程。</div>
+            <div class="tool-item"><strong>RAG Indexer</strong>短文本整体索引，长文本继续复用章节索引规则。</div>
+            <div class="tool-item"><strong>Garden Card</strong>可从当前笔记生成卡片，默认需要用户确认。</div>
+          </div>
+        </section>
+        <section class="inspector-card">
+          <h3>迁移清单</h3>
+          <div class="migration-list">
+            <div class="migration-item"><strong>AI 对话框</strong>迁到 Inspector 的 AI 对话 tab。</div>
+            <div class="migration-item"><strong>草稿审阅</strong>迁到审阅 tab。</div>
+            <div class="migration-item"><strong>来源和 citation</strong>迁到来源 tab。</div>
+            <div class="migration-item"><strong>工具日志</strong>迁到工具 tab。</div>
+            <div class="migration-item"><strong>卡片展示页</strong>迁到中间卡片视图和左侧 Garden Cards。</div>
+          </div>
+        </section>
+      </div>
+
+      <div class="inspector-pane" id="pane-obsidian">
+        <section class="inspector-card">
+          <h3>Obsidian 映射</h3>
+          <p>前台文件夹先写入 frontmatter，不强制移动物理文件。</p>
+          <div class="sync-line">
+            <span>folder_path: AI 产品</span>
+            <span>file_path: captures/2026-06-19-ai-product.md</span>
+            <span>raw_path: _archive/raw/2026-06-19-ai-product.md</span>
+          </div>
+        </section>
+        <div class="route-note">
+          一级文件夹是人的分类；Obsidian 物理路径先服务系统稳定性。
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    const folderButtons = document.querySelectorAll("[data-folder], [data-smart]");
+    const viewButtons = document.querySelectorAll("[data-open-view]");
+    const inspectorOpeners = document.querySelectorAll("[data-open-inspector]");
+    const inspectorTabs = document.querySelectorAll("[data-inspector-tab]");
+    const inspectorPanes = document.querySelectorAll(".inspector-pane");
+    const tabs = document.querySelectorAll(".tab");
+    const views = {
+      list: document.querySelector("#view-list"),
+      detail: document.querySelector("#view-detail"),
+      capture: document.querySelector("#view-capture"),
+      cards: document.querySelector("#view-cards"),
+    };
+    const title = document.querySelector("#workspaceTitle");
+    const subtitle = document.querySelector("#workspaceSubtitle");
+    const noteTitle = document.querySelector("#noteTitle");
+    const fileRows = document.querySelectorAll(".file-row");
+    const folderSelect = document.querySelector("#folderSelect");
+    const folderSummaryTitle = document.querySelector("#folderSummaryTitle");
+    const folderSummaryText = document.querySelector("#folderSummaryText");
+
+    function openView(name) {
+      Object.entries(views).forEach(([key, element]) => {
+        element.classList.toggle("active", key === name);
+      });
+      tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.openView === name));
+    }
+
+    function openInspector(name) {
+      inspectorTabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.inspectorTab === name));
+      inspectorPanes.forEach((pane) => pane.classList.toggle("active", pane.id === `pane-${name}`));
+    }
+
+    function updateFolderContents(name, smart) {
+      let visibleCount = 0;
+      fileRows.forEach((row) => {
+        const visible = smart || row.dataset.folderName === name;
+        row.style.display = visible ? "grid" : "none";
+        row.classList.remove("active");
+        if (visible && visibleCount === 0) row.classList.add("active");
+        if (visible) visibleCount += 1;
+      });
+
+      if (folderSummaryTitle) {
+        folderSummaryTitle.textContent = smart ? `${name} 中的文件` : `${name} 下的文件`;
+      }
+      if (folderSummaryText) {
+        folderSummaryText.textContent = smart
+          ? `这是跨文件夹聚合视图，共显示 ${visibleCount} 条相关内容。`
+          : `这是一级文件夹，共显示 ${visibleCount} 个文件。文件夹下面直接放文件，不再做二级目录。`;
+      }
+    }
+
+    viewButtons.forEach((button) => {
+      button.addEventListener("click", () => openView(button.dataset.openView));
+    });
+
+    inspectorOpeners.forEach((button) => {
+      button.addEventListener("click", () => openInspector(button.dataset.openInspector));
+    });
+
+    inspectorTabs.forEach((tab) => {
+      tab.addEventListener("click", () => openInspector(tab.dataset.inspectorTab));
+    });
+
+    folderButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        folderButtons.forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        const name = button.dataset.folderTitle || button.dataset.folder || "文件夹";
+        title.textContent = name;
+        subtitle.textContent = button.dataset.smart
+          ? "智能视图。这里聚合跨文件夹的知识条目。"
+          : "文件夹视图。这里显示当前文件夹下的知识条目。";
+        if (button.dataset.folder && folderSelect) {
+          folderSelect.value = button.dataset.folder;
+        }
+        updateFolderContents(name, Boolean(button.dataset.smart));
+        if (!button.dataset.openView) {
+          openView("list");
+        }
+      });
+    });
+
+    fileRows.forEach((row) => {
+      row.addEventListener("click", () => {
+        fileRows.forEach((item) => item.classList.remove("active"));
+        row.classList.add("active");
+        if (noteTitle && row.dataset.title) {
+          noteTitle.textContent = row.dataset.title;
+        }
+        openView("detail");
+      });
+    });
+
+    document.querySelector("#acceptFolder").addEventListener("click", () => {
+      if (folderSelect) folderSelect.value = "AI 产品";
+      title.textContent = "AI 产品";
+      subtitle.textContent = "文件夹建议已采用。当前内容保存到这个前台文件夹。";
+      updateFolderContents("AI 产品", false);
+      openView("capture");
+    });
+
+    updateFolderContents("Inbox", false);
+  </script>
+</body>
+</html>
