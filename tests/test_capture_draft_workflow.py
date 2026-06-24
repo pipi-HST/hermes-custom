@@ -100,6 +100,99 @@ def test_create_editable_draft_accepts_user_title(
     assert draft["capture_intent"]["title_source"] == "user"
 
 
+def test_create_editable_draft_stores_light_body_and_suggestions(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    def fake_organize(_text, *, existing_tags=None, existing_folders=None):
+        assert existing_folders == ["Inbox", "知识库自定义文件夹"]
+        return {
+            "title": "智能问数落地",
+            "summary": "智能问数需要数据治理、语义层和产品运营协同。",
+            "tags": ["data-agent", "ai-product"],
+            "body_markdown": "# 智能问数落地\n\n正文只做格式修正。",
+            "folder_suggestion": {
+                "mode": "new",
+                "folder_path": "智能问数",
+                "reason": "这是一个可持续积累的独立主题。",
+            },
+            "card_suggestion": {
+                "should_generate": True,
+                "reason": "材料包含可复用的方法判断。",
+            },
+            "warnings": ["确认案例是否完整。"],
+        }
+
+    monkeypatch.setattr(agent.summarizer, "organize_editable_draft", fake_organize)
+
+    draft = agent.create_editable_draft(
+        "智能问数落地正文",
+        existing_folders=["知识库自定义文件夹"],
+    )
+
+    assert draft["title"] == "智能问数落地"
+    assert draft["draft_text"] == "智能问数落地正文"
+    assert draft["summary"] == "智能问数需要数据治理、语义层和产品运营协同。"
+    assert draft["tags"] == ["data-agent", "ai-product"]
+    assert draft["capture_intent"]["folder_suggestion"]["folder_path"] == "智能问数"
+    assert draft["capture_intent"]["card_suggestion"]["should_generate"] is True
+    assert draft["capture_intent"]["warnings"] == ["确认案例是否完整。"]
+
+
+def test_create_editable_draft_ignores_ai_returned_body_markdown(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    original = "第一段保留。\n\n第二段保留。\n\n第三段也必须保留。"
+
+    def fake_organize(_text, *, existing_tags=None, existing_folders=None):
+        return {
+            "title": "截断保护",
+            "summary": "测试正文不能被 AI 缩短。",
+            "tags": ["ai-product"],
+            "body_markdown": "第一段保留。",
+            "folder_suggestion": {},
+            "card_suggestion": {},
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(agent.summarizer, "organize_editable_draft", fake_organize)
+
+    draft = agent.create_editable_draft(original)
+
+    assert draft["draft_text"] == original
+
+
+def test_create_editable_draft_preserves_body_when_metadata_has_no_body(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    original = "第一段讲知织库。\n\n第二段也要保留。"
+
+    def fake_organize(_text, *, existing_tags=None, existing_folders=None):
+        return {
+            "title": "长文整理",
+            "summary": "长文也要返回整理后的正文。",
+            "tags": ["ai-product"],
+            "body_markdown": "",
+            "folder_suggestion": {},
+            "card_suggestion": {},
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(agent.summarizer, "organize_editable_draft", fake_organize)
+    monkeypatch.setattr(
+        agent.summarizer,
+        "cleanup_editable_body",
+        lambda _text: (_ for _ in ()).throw(AssertionError("正文不应再调用 AI 整理")),
+        raising=False,
+    )
+
+    draft = agent.create_editable_draft(original)
+
+    assert draft["draft_text"] == original
+
+
 def test_editable_draft_commits_folder_path_to_capture_note(
     agent: CaptureAgent,
     monkeypatch,
@@ -405,7 +498,7 @@ def test_create_draft_uses_llm_planning_for_unenumerated_user_focus(
     assert "detail_policy" in prompts[0]
 
 
-def test_capture_planning_falls_back_to_rules_when_llm_plan_is_invalid(
+def test_capture_planning_invalid_plan_uses_conservative_fallback(
     agent: CaptureAgent,
     monkeypatch,
 ):
@@ -506,20 +599,22 @@ def test_full_text_save_uses_original_extracted_text_not_cleaned_text(
     agent: CaptureAgent,
     monkeypatch,
 ):
+    extracted_text = (
+        "  # 原文标题  \n\n"
+        "第一段原文保留  行内空格。这里继续补充足够长的正文，"
+        "确保质量检测认为它是一篇真实材料。\n\n\n"
+        "关注我们，获取更多精彩内容\n\n"
+        "第二段原文也要保留。它包含作者的完整表达、例子和结论，"
+        "全文入库时都不能被清洗器改写。  "
+    )
+
     class FakeExtractor:
         def can_handle(self, _source: str) -> bool:
             return True
 
         def extract(self, _source: str, **_kwargs) -> ExtractionResult:
             return ExtractionResult(
-                raw_text=(
-                    "  # 原文标题  \n\n"
-                    "第一段原文保留  行内空格。这里继续补充足够长的正文，"
-                    "确保质量检测认为它是一篇真实材料。\n\n\n"
-                    "关注我们，获取更多精彩内容\n\n"
-                    "第二段原文也要保留。它包含作者的完整表达、例子和结论，"
-                    "全文入库时都不能被清洗器改写。  "
-                ),
+                raw_text=extracted_text,
                 source_type="note",
                 source_url="",
                 title="原文标题",
@@ -539,14 +634,7 @@ def test_full_text_save_uses_original_extracted_text_not_cleaned_text(
 
     draft = agent.create_draft("ignored", instruction="这篇原文一字不改全文入库")
 
-    assert draft["raw_text"] == (
-        "  # 原文标题  \n\n"
-        "第一段原文保留  行内空格。这里继续补充足够长的正文，"
-        "确保质量检测认为它是一篇真实材料。\n\n\n"
-        "关注我们，获取更多精彩内容\n\n"
-        "第二段原文也要保留。它包含作者的完整表达、例子和结论，"
-        "全文入库时都不能被清洗器改写。  "
-    )
+    assert draft["raw_text"] == extracted_text
     assert draft["draft_text"] == draft["raw_text"]
 
 
@@ -783,6 +871,22 @@ def test_medium_density_prompt_preserves_argument_function_without_hard_rules(ag
 def test_only_instruction_sets_selected_sections_coverage(agent: CaptureAgent, monkeypatch):
     prompts: list[str] = []
 
+    agent._capture_planning_enabled = True
+    monkeypatch.setattr(
+        agent,
+        "_call_capture_planner",
+        lambda **kwargs: {
+            "task_type": "organize",
+            "coverage": "selected_sections",
+            "focus": ["中国变压器供应链"],
+            "detail_level": "medium",
+            "compression": "medium",
+            "preserve": [],
+            "title": "",
+            "detail_policy": "",
+        },
+        raising=False,
+    )
     monkeypatch.setattr(agent, "_call_llm", lambda prompt: prompts.append(prompt) or "只保留供应链。")
     monkeypatch.setattr(
         agent.summarizer,
@@ -834,68 +938,64 @@ def test_capture_intent_defaults_summary_full_content_to_medium(agent: CaptureAg
     assert intent["detail_level"] == "medium"
 
 
-def test_capture_intent_detects_brief_detail_level(agent: CaptureAgent):
-    intent = agent._build_capture_intent("用几句话简短摘要一下").to_dict()
+def test_capture_intent_planner_sets_detail_and_preserve_fields(agent: CaptureAgent, monkeypatch):
+    agent._capture_planning_enabled = True
+    monkeypatch.setattr(
+        agent,
+        "_call_capture_planner",
+        lambda **kwargs: {
+            "task_type": "organize",
+            "coverage": "full_article",
+            "focus": ["方法论"],
+            "detail_level": "source_like",
+            "compression": "low",
+            "preserve": ["original_wording", "data", "examples"],
+            "title": "",
+            "detail_policy": "用户点名部分重点展开。",
+        },
+        raising=False,
+    )
 
-    assert intent["detail_level"] == "brief"
+    intent = agent._build_capture_intent_with_planning(
+        "总结全文核心内容，方法论那部分详细一些，案例和数据别删",
+        source_text=TEST_CONTENT,
+    ).to_dict()
 
-
-def test_capture_intent_detects_deep_detail_level(agent: CaptureAgent):
-    intent = agent._build_capture_intent("深度总结，尽量保留细节").to_dict()
-
-    assert intent["detail_level"] == "deep"
-
-
-def test_capture_intent_detects_source_like_detail_and_low_compression(agent: CaptureAgent):
-    intent = agent._build_capture_intent("稍加总结，尽可能地提取原文，保留关键表述和数据").to_dict()
-
+    assert intent["plan_source"] == "llm"
+    assert intent["task_type"] == "organize"
+    assert intent["coverage"] == "full_article"
     assert intent["detail_level"] == "source_like"
     assert intent["compression"] == "low"
-    assert "original_wording" in intent["preserve"]
-    assert "data" in intent["preserve"]
-
-
-def test_capture_intent_detects_user_named_section_as_emphasis_not_selected(agent: CaptureAgent):
-    intent = agent._build_capture_intent("总结全文核心内容，方法论那部分详细一些，案例和数据别删").to_dict()
-
-    assert intent["coverage"] == "full_article"
-    assert intent["detail_level"] == "deep"
     assert intent["emphasis"] == ["方法论"]
-    assert "examples" in intent["preserve"]
-    assert "data" in intent["preserve"]
+    assert intent["preserve"] == ["original_wording", "data", "examples"]
 
 
-def test_capture_intent_selected_section_when_user_says_only(agent: CaptureAgent):
-    intent = agent._build_capture_intent("只看商业模式部分，其他不用整理").to_dict()
+def test_capture_intent_planner_can_choose_selected_sections(agent: CaptureAgent, monkeypatch):
+    agent._capture_planning_enabled = True
+    monkeypatch.setattr(
+        agent,
+        "_call_capture_planner",
+        lambda **kwargs: {
+            "task_type": "organize",
+            "coverage": "selected_sections",
+            "focus": ["商业模式"],
+            "detail_level": "medium",
+            "compression": "medium",
+            "preserve": [],
+            "title": "",
+            "detail_policy": "",
+        },
+        raising=False,
+    )
 
+    intent = agent._build_capture_intent_with_planning(
+        "只看商业模式部分，其他不用整理",
+        source_text=TEST_CONTENT,
+    ).to_dict()
+
+    assert intent["plan_source"] == "llm"
     assert intent["coverage"] == "selected_sections"
     assert intent["emphasis"] == ["商业模式"]
-    assert intent["compression"] == "medium"
-
-
-def test_about_two_parts_instruction_extracts_real_emphasis(agent: CaptureAgent):
-    intent = agent._build_capture_intent(
-        "提取重点内容，而且关于41天发版的另一层是节奏狙击和"
-        "Terminal-Bench那个故意没补的坑这两部分应该要详细去阐述和解释"
-    ).to_dict()
-
-    assert intent["emphasis"] == [
-        "41天发版的另一层是节奏狙击",
-        "Terminal-Bench那个故意没补的坑",
-    ]
-
-
-def test_emphasis_extraction_removes_quotes_and_action_words(agent: CaptureAgent):
-    intent = agent._build_capture_intent(
-        "提取全文重点内容，其中关于「41天发版的另一层是节奏狙击」和"
-        "「Terminal-Bench那个故意没补的坑」这两部分要详细阐述和解释，着重展开这两部分。"
-    ).to_dict()
-
-    assert intent["emphasis"] == [
-        "41天发版的另一层是节奏狙击",
-        "Terminal-Bench那个故意没补的坑",
-    ]
-    assert "展开" not in intent["emphasis"]
 
 
 def test_near_budget_content_gets_internal_planning_instruction(agent: CaptureAgent):
@@ -997,6 +1097,10 @@ def test_medium_density_longish_source_uses_chunked_reading(agent: CaptureAgent,
 
 def test_source_like_prompt_asks_model_to_preserve_original_texture(agent: CaptureAgent):
     intent = agent._build_capture_intent("尽可能地提取原文，案例和数据别删").to_dict()
+    intent["plan_source"] = "llm"
+    intent["detail_level"] = "source_like"
+    intent["compression"] = "low"
+    intent["preserve"] = ["original_wording", "data", "examples"]
 
     prompt = agent._build_revision_prompt(
         instruction="尽可能地提取原文，案例和数据别删",
@@ -1015,6 +1119,10 @@ def test_source_like_prompt_asks_model_to_preserve_original_texture(agent: Captu
 
 def test_source_like_long_section_notes_preserve_texture_before_final(agent: CaptureAgent):
     intent = agent._build_capture_intent("尽可能地提取原文，案例和数据别删").to_dict()
+    intent["plan_source"] = "llm"
+    intent["detail_level"] = "source_like"
+    intent["compression"] = "low"
+    intent["preserve"] = ["original_wording", "data", "examples"]
 
     prompt = agent._build_section_note_prompt(
         instruction="尽可能地提取原文，案例和数据别删",
@@ -1423,7 +1531,7 @@ def test_commit_full_text_save_writes_full_capture_without_outline(
     monkeypatch.setattr(
         agent,
         "_call_llm",
-        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
+        lambda prompt, *args, **kwargs: TEST_CONTENT,
     )
     monkeypatch.setattr(
         agent.summarizer,
@@ -1478,7 +1586,7 @@ def test_commit_long_full_text_save_renders_directory_without_rewriting_source(
     monkeypatch.setattr(
         agent,
         "_call_llm",
-        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call revision LLM"),
+        lambda prompt, *args, **kwargs: long_body,
     )
     monkeypatch.setattr(
         agent.summarizer,

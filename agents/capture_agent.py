@@ -224,13 +224,14 @@ class CaptureAgent:
         instruction: str = "",
         title: str = "",
         folder_path: str = "",
+        existing_folders: list[str] | None = None,
     ) -> dict:
         """Create a user-editable draft without rewriting the pasted body."""
         body = (content or "").strip()
         if not body:
             return {"error": "内容不能为空"}
 
-        metadata = self._summarize_editable_body(body)
+        metadata = self._organize_editable_body(body, existing_folders=existing_folders)
         user_title = title.strip()
         draft_title = user_title or metadata.get("title") or _derive_capture_title(None, body, source_type)
         capture_intent = self._editable_capture_intent(
@@ -238,13 +239,17 @@ class CaptureAgent:
             title_source="user" if user_title else "ai",
             folder_path=folder_path,
         )
+        capture_intent["folder_suggestion"] = metadata.get("folder_suggestion") or {}
+        capture_intent["card_suggestion"] = metadata.get("card_suggestion") or {}
+        capture_intent["warnings"] = metadata.get("warnings") or []
+        draft_body = metadata.get("body_markdown") or body
         return self.draft_repo.create(
             raw_text=body,
             source=source,
             source_type=source_type or "manual",
             title=draft_title,
-            word_count=len(body),
-            draft_text=body,
+            word_count=len(draft_body),
+            draft_text=draft_body,
             instruction=instruction,
             capture_intent=capture_intent,
             summary=metadata.get("summary", ""),
@@ -258,6 +263,12 @@ class CaptureAgent:
         *,
         content: str,
         title: str = "",
+        summary: str | None = None,
+        tags: list[str] | None = None,
+        folder_path: str | None = None,
+        folder_suggestion: dict | None = None,
+        card_suggestion: dict | None = None,
+        existing_folders: list[str] | None = None,
     ) -> Optional[dict]:
         """Update the editable body and regenerate non-user-owned metadata."""
         draft = self.draft_repo.get_by_id(draft_id)
@@ -284,9 +295,17 @@ class CaptureAgent:
             updates["title"] = title.strip()
             title_source = "user"
 
-        metadata = self._summarize_editable_body(body)
-        updates["summary"] = metadata.get("summary", "")
-        updates["tags"] = metadata.get("tags", [])
+        metadata = self._organize_editable_body(body, existing_folders=existing_folders)
+        if summary is not None:
+            updates["summary"] = summary.strip()
+        else:
+            updates["summary"] = metadata.get("summary", "")
+        if tags is not None:
+            updates["tags"] = tags
+        else:
+            updates["tags"] = metadata.get("tags", [])
+        updates["draft_text"] = metadata.get("body_markdown") or body
+        updates["word_count"] = len(updates["draft_text"])
         if title_source != "user":
             updates["title"] = metadata.get("title") or _derive_capture_title(None, body, draft.get("source_type", ""))
             title_source = "ai"
@@ -297,6 +316,11 @@ class CaptureAgent:
             "editable_source_of_truth": "draft_text",
             "pipeline_policy": "reuse_capture_library_rag",
         }
+        if folder_path is not None:
+            capture_intent["folder_path"] = folder_path.strip() or "Inbox"
+        capture_intent["folder_suggestion"] = folder_suggestion if isinstance(folder_suggestion, dict) else metadata.get("folder_suggestion") or {}
+        capture_intent["card_suggestion"] = card_suggestion if isinstance(card_suggestion, dict) else metadata.get("card_suggestion") or {}
+        capture_intent["warnings"] = metadata.get("warnings") or []
         updates["capture_intent"] = capture_intent
         return self.draft_repo.update(draft_id, **updates)
 
@@ -581,19 +605,71 @@ class CaptureAgent:
         return intent
 
     def _summarize_editable_body(self, body: str) -> dict:
+        return self._organize_editable_body(body)
+
+    def _organize_editable_body(
+        self,
+        body: str,
+        *,
+        existing_folders: list[str] | None = None,
+    ) -> dict:
+        cleaned_body = self._light_cleanup_editable_body(body)
+        existing_tags = self._get_existing_tags(Path(self.config.vault_path).expanduser())
+        folder_options = self._normalize_existing_folders(existing_folders)
+        if not folder_options:
+            folder_options = self._get_existing_folders(Path(self.config.vault_path).expanduser())
         try:
-            result = self.summarizer.summarize(
-                clean_text(body) or body,
-                self._get_existing_tags(Path(self.config.vault_path).expanduser()),
-            )
+            organizer = getattr(self.summarizer, "organize_editable_draft", None)
+            if callable(organizer) and "summarize" not in getattr(self.summarizer, "__dict__", {}):
+                result = organizer(
+                    cleaned_body,
+                    existing_tags=existing_tags,
+                    existing_folders=folder_options,
+                )
+            else:
+                result = self.summarizer.summarize(clean_text(cleaned_body) or cleaned_body, existing_tags)
         except Exception as exc:
             logger.warning(f"Editable draft metadata generation failed: {exc}")
             result = {}
+        folder_suggestion = result.get("folder_suggestion") if isinstance(result.get("folder_suggestion"), dict) else {}
+        folder_path = str(folder_suggestion.get("folder_path") or "").strip()
+        if folder_path and folder_suggestion.get("mode") not in {"existing", "new"}:
+            folder_suggestion["mode"] = "existing" if folder_path in folder_options else "new"
+        elif folder_path and folder_suggestion.get("mode") == "existing" and folder_path not in folder_options:
+            folder_suggestion["mode"] = "new"
+        card_suggestion = result.get("card_suggestion") if isinstance(result.get("card_suggestion"), dict) else {}
         return {
             "title": _clean_semantic_title(str(result.get("title") or "")),
             "summary": str(result.get("summary") or ""),
             "tags": result.get("tags") if isinstance(result.get("tags"), list) else [],
+            "body_markdown": cleaned_body,
+            "folder_suggestion": folder_suggestion,
+            "card_suggestion": card_suggestion,
+            "warnings": result.get("warnings") if isinstance(result.get("warnings"), list) else [],
         }
+
+    def _light_cleanup_editable_body(self, body: str) -> str:
+        text = (body or "").replace("\r\n", "\n").replace("\r", "\n")
+        lines = [line.rstrip() for line in text.split("\n")]
+        cleaned = "\n".join(lines).strip()
+        cleaned = re.sub(r"\n{4,}", "\n\n\n", cleaned)
+        return cleaned
+
+    def _normalize_existing_folders(self, folders: list[str] | None) -> list[str]:
+        normalized = ["Inbox"]
+        for item in folders or []:
+            folder = str(item or "").strip()
+            if folder and folder not in normalized:
+                normalized.append(folder)
+        return normalized
+
+    def _get_existing_folders(self, vault_path: Path) -> list[str]:
+        folders = ["Inbox"]
+        if vault_path.exists():
+            for path in vault_path.iterdir():
+                if path.is_dir() and not path.name.startswith(".") and path.name not in folders:
+                    folders.append(path.name)
+        return folders
 
     def _is_raw_package_request(self, user_request: str) -> bool:
         return bool(

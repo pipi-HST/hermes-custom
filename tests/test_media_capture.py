@@ -180,6 +180,11 @@ def test_full_text_draft_from_markdown_file_uses_h1_title_and_exact_body(
         "summarize",
         lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["data"]},
     )
+    monkeypatch.setattr(
+        agent,
+        "_call_llm",
+        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
+    )
 
     result = agent.create_draft(str(doc), instruction="全文入库，一字不改全文原文入库")
 

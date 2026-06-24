@@ -506,6 +506,7 @@ def test_create_editable_capture_draft_calls_bridge(client):
                 "source_type": "manual",
                 "title": "用户标题",
                 "folder_path": "AI 产品",
+                "existing_folders": ["Inbox", "AI 产品"],
             },
         )
 
@@ -519,6 +520,7 @@ def test_create_editable_capture_draft_calls_bridge(client):
         source_type="manual",
         title="用户标题",
         folder_path="AI 产品",
+        existing_folders=["Inbox", "AI 产品"],
     )
 
 
@@ -543,7 +545,11 @@ def test_update_editable_capture_draft_calls_bridge(client, draft_repo):
     ) as mock_update:
         resp = client.patch(
             f"/api/capture-drafts/{draft['id']}/editable",
-            json={"content": "用户编辑后的正文", "title": "用户标题"},
+            json={
+                "content": "用户编辑后的正文",
+                "title": "用户标题",
+                "existing_folders": ["Inbox", "AI 产品"],
+            },
         )
 
     assert resp.status_code == 200
@@ -553,6 +559,12 @@ def test_update_editable_capture_draft_calls_bridge(client, draft_repo):
         draft_id=draft["id"],
         content="用户编辑后的正文",
         title="用户标题",
+        summary=None,
+        tags=None,
+        folder_path="",
+        folder_suggestion=None,
+        card_suggestion=None,
+        existing_folders=["Inbox", "AI 产品"],
     )
 
 

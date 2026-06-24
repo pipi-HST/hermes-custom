@@ -41,6 +41,18 @@ def test_start_reading_session_does_not_create_capture_draft(reading_config):
     assert conn.execute("SELECT count(*) FROM capture_drafts").fetchone()[0] == 0
 
 
+def test_reading_metadata_llm_requires_explicit_env(reading_config, monkeypatch):
+    from bridge import reading_bridge
+
+    reading_config.llm_api_key = "real-key"
+    reading_config.llm_base_url = "https://llm.example"
+    monkeypatch.delenv("HERMES_FULL_TEXT_METADATA_LLM", raising=False)
+    assert reading_bridge._metadata_llm_enabled(reading_config) is False
+
+    monkeypatch.setenv("HERMES_FULL_TEXT_METADATA_LLM", "1")
+    assert reading_bridge._metadata_llm_enabled(reading_config) is True
+
+
 def test_discuss_reading_records_turn_and_evidence(reading_config):
     from bridge import reading_bridge
 
@@ -138,6 +150,48 @@ def test_summarize_reading_session_creates_learning_note_draft(reading_config):
     assert result["durable_artifacts"][0]["type"] == "reading_draft"
     assert result["meta"]["output_type"] == "local_learning_note"
     assert "已生成局部学习笔记草稿" in result["chat_preview"]
+
+
+def test_summarize_reading_session_metadata_uses_full_draft_text(reading_config):
+    from bridge import reading_bridge
+
+    captured: dict[str, str] = {}
+
+    def fake_metadata(_config, markdown: str) -> dict:
+        captured["markdown"] = markdown
+        return {
+            "summary": "阅读全文后的讨论摘要。",
+            "tags": ["ai-eval", "product-loop"],
+            "source": "ai_full_text",
+        }
+
+    with patch.object(reading_bridge, "load_config", return_value=reading_config):
+        with patch.object(reading_bridge, "_generate_full_text_metadata", fake_metadata):
+            with patch.object(
+                reading_bridge,
+                "_postprocess_committed_learning_note",
+                lambda *_args, **_kwargs: {"embedding_index": {"updated": 1}},
+            ):
+                reading_bridge._config = None
+                reading_bridge._repo = None
+                session = reading_bridge.start_reading_session(message="讨论", excerpt="正文")
+                reading_bridge.discuss_reading(
+                    session_id=session["meta"]["reading_session_id"],
+                    message="这个方法怎么理解？",
+                    assistant_answer="开头解释。\n\n" + ("中段分析。\n" * 20) + "\nTAIL_ONLY_SIGNAL：尾部判断。",
+                )
+                draft = reading_bridge.summarize_reading_session(
+                    session_id=session["meta"]["reading_session_id"],
+                    output_type="local_learning_note",
+                )
+                result = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"])
+
+    assert "TAIL_ONLY_SIGNAL" in captured["markdown"]
+    text = (Path(reading_config.vault_path) / result["durable_artifacts"][0]["path"]).read_text(encoding="utf-8")
+    frontmatter = text.split("---", 2)[1]
+    assert "story: 阅读全文后的讨论摘要。" in frontmatter
+    assert "ai-eval" in frontmatter
+    assert "product-loop" in frontmatter
 
 
 def test_summarize_reading_session_creates_knowledge_card_draft(reading_config):

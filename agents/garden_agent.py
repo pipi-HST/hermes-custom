@@ -25,6 +25,9 @@ EXTRACT_PROMPT = """分析以下知识库内容，提取一张可复用的 Knowl
 
 用户指定卡片类型：{requested_card_kind}
 
+用户生成建议：
+{instruction}
+
 内容：
 {content_text}
 
@@ -53,6 +56,7 @@ EXTRACT_PROMPT = """分析以下知识库内容，提取一张可复用的 Knowl
 
 要求：
 - 先提炼一个中心知识对象，再选材料支撑它。
+- 如果用户生成建议里列出了候选卡片，请优先参考其中的标题、类型和角度；但仍需根据材料判断是否成立。
 - 如果用户明确指定卡片类型，card_kind 必须遵循用户指定；否则你自己判断最适合的类型。
 - card_kind 只能是 viewpoint, fact, method, risk。
 - Knowledge Card 不是摘要清单；不要把每篇文章的要点都摊开。
@@ -154,7 +158,8 @@ class GardenAgent:
     def synthesize(self, captures: list[dict],
                    existing_garden_cards: list[dict],
                    title: str = "",
-                   card_kind: str = "") -> dict:
+                   card_kind: str = "",
+                   instruction: str = "") -> dict:
         """两步合成——返回 v2 payload 和旧字段兼容投影。"""
         if not captures:
             return {"error": "no captures provided"}
@@ -165,7 +170,7 @@ class GardenAgent:
             for c in captures
         )
         try:
-            extracted = self._step1_extract(content_text, card_kind=card_kind)
+            extracted = self._step1_extract(content_text, card_kind=card_kind, instruction=instruction)
         except Exception as exc:
             logger.warning("Knowledge Card structured extraction failed: %s", exc)
             return {"error": f"Knowledge Card 结构化提取失败：{exc.__class__.__name__}"}
@@ -208,11 +213,12 @@ class GardenAgent:
             "markdown": markdown,
         }
 
-    def _step1_extract(self, content_text: str, card_kind: str = "") -> dict:
+    def _step1_extract(self, content_text: str, card_kind: str = "", instruction: str = "") -> dict:
         requested = _normalize_card_kind(card_kind) if card_kind else "未指定，由你判断"
         prompt = EXTRACT_PROMPT.format(
             content_text=content_text[:12000],
             requested_card_kind=requested,
+            instruction=(instruction or "未指定").strip()[:4000],
         )
         raw = self._call_llm(prompt, max_tokens=6000)
         try:

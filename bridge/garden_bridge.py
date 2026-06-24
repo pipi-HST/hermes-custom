@@ -319,6 +319,7 @@ def synthesize_garden(capture_ids: list[str] = None,
                       question_id: str = "",
                       title: str = "",
                       card_kind: str = "",
+                      instruction: str = "",
                       export_file: bool = False,
                       context: KnowledgeContext | None = None) -> dict:
     """合成知识卡片。
@@ -343,6 +344,7 @@ def synthesize_garden(capture_ids: list[str] = None,
             "question_id": question_id,
             "title": title,
             "card_kind": card_kind,
+            "instruction": instruction,
             "export_file": export_file,
         },
         operation=lambda: _synthesize_garden(
@@ -352,6 +354,7 @@ def synthesize_garden(capture_ids: list[str] = None,
             question_id=question_id,
             title=title,
             card_kind=card_kind,
+            instruction=instruction,
             export_file=export_file,
         ),
     )
@@ -364,6 +367,7 @@ def _synthesize_garden(
     question_id: str = "",
     title: str = "",
     card_kind: str = "",
+    instruction: str = "",
     export_file: bool = False,
 ) -> dict:
     conn = repo.conn
@@ -430,6 +434,7 @@ def _synthesize_garden(
         existing_cards,
         title=title,
         card_kind=card_kind,
+        instruction=instruction,
     )
 
     if "error" in result:
@@ -450,7 +455,7 @@ def _synthesize_garden(
         "markdown": result.get("markdown", ""),
         "capture_ids": capture_ids,
         "question_id": question_id,
-        "instruction": title,
+        "instruction": instruction or title,
     }
     duplicate = find_garden_duplicate(conn, garden_data)
     if duplicate["status"] == "duplicate":

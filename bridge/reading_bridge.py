@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import sys
 
@@ -21,6 +22,7 @@ from agents.embedder import Embedder
 from agents.garden_agent import create_garden_card
 from agents.library_agent import LibraryAgent
 from agents.markdown_writer import read_note
+from agents.summarizer import Summarizer
 from bridge.context import KnowledgeContext
 from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest, KnowledgeWriteResult
 from agents.outliner import Outliner
@@ -424,14 +426,15 @@ def _summarize_reading_session(
         output_type=normalized_type,
         instruction=instruction,
     )
+    metadata = _generate_full_text_metadata(config, draft_text)
     draft = repo.create_draft(
         session_id=session["id"],
         output_type=normalized_type,
         target_capture_id=target_capture_id,
         title=title,
-        summary=_draft_summary(turns),
+        summary=metadata.get("summary") or _draft_summary(turns),
         draft_text=draft_text,
-        meta={"instruction": instruction},
+        meta={"instruction": instruction, "metadata": metadata},
     )
     return success_envelope(
         agent="reading",
@@ -632,7 +635,12 @@ def _commit_independent_note(
     # Enrich frontmatter for better RAG identity embedding
     if draft_summary:
         frontmatter["story"] = draft_summary
-    tags = _extract_tags(draft_title, draft.get("draft_text", ""))
+    metadata = draft.get("meta_json") if isinstance(draft.get("meta_json"), dict) else {}
+    metadata = metadata.get("metadata") if isinstance(metadata.get("metadata"), dict) else {}
+    metadata_tags = metadata.get("tags") if isinstance(metadata.get("tags"), list) else []
+    tags = [str(tag).strip() for tag in metadata_tags if str(tag).strip()][:8]
+    if not tags:
+        tags = _extract_tags(draft_title, draft.get("draft_text", ""))
     if tags:
         frontmatter["tags"] = tags
     write_result = _write_note_file(
@@ -1172,7 +1180,81 @@ def _draft_title(session: dict, output_type: str) -> str:
 def _draft_summary(turns: list[dict]) -> str:
     if not turns:
         return "整理当前阅读讨论。"
-    return _clip(turns[-1].get("assistant_answer", ""), 140) or "整理当前阅读讨论。"
+    return _summary_from_markdown(turns[-1].get("assistant_answer", "")) or "整理当前阅读讨论。"
+
+
+def _generate_full_text_metadata(config, markdown: str) -> dict:
+    if not _metadata_llm_enabled(config):
+        return {}
+    try:
+        summarizer = Summarizer(
+            api_key=getattr(config, "llm_api_key", ""),
+            model=getattr(config, "llm_model", ""),
+            base_url=getattr(config, "llm_base_url", "") or "https://api.deepseek.com",
+        )
+        result = summarizer.summarize(markdown, [])
+    except Exception:
+        return {}
+    return _normalize_metadata(result)
+
+
+def _metadata_llm_enabled(config) -> bool:
+    if os.environ.get("HERMES_FULL_TEXT_METADATA_LLM") != "1":
+        return False
+    api_key = str(getattr(config, "llm_api_key", "") or "").strip()
+    base_url = str(getattr(config, "llm_base_url", "") or "")
+    if not api_key or api_key.startswith("test-"):
+        return False
+    return "example.test" not in base_url
+
+
+def _normalize_metadata(result: dict) -> dict:
+    tags = result.get("tags") if isinstance(result.get("tags"), list) else []
+    return {
+        "title": str(result.get("title") or "").strip(),
+        "summary": _clip_to_sentence(_plain_summary_text(str(result.get("summary") or "")), 140),
+        "tags": [str(tag).strip() for tag in tags if str(tag).strip()][:8],
+        "source": "ai_full_text",
+    }
+
+
+def _summary_from_markdown(markdown: str) -> str:
+    paragraph: list[str] = []
+    for raw_line in (markdown or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            if paragraph:
+                break
+            continue
+        if line.startswith("#"):
+            if paragraph:
+                break
+            continue
+        paragraph.append(line)
+    text = _plain_summary_text(" ".join(paragraph))
+    text = re.split(r"(?:以下是具体分析|具体分析如下|具体要点|参考来源|文内引用来源)", text, maxsplit=1)[0].strip()
+    return _clip_to_sentence(text, 140)
+
+
+def _plain_summary_text(text: str) -> str:
+    text = re.sub(r"`([^`]+)`", r"\1", text or "")
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"\*([^*]+)\*", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"^\s*[-*]\s+", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _clip_to_sentence(text: str, limit: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    window = text[:limit].rstrip()
+    for index in range(len(window) - 1, max(0, limit // 2), -1):
+        if window[index] in "。！？.!?":
+            return window[: index + 1]
+    return _clip(text, limit)
 
 
 def _build_draft_text(

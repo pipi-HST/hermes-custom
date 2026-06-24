@@ -31,6 +31,36 @@ def test_defaults_multi_source_answer_to_learning_note():
     assert decision["needs_target_choice"] is False
 
 
+def test_auto_instruction_can_request_knowledge_card():
+    from bridge.answer_bridge import choose_answer_output_type
+
+    decision = choose_answer_output_type(
+        instruction="保存为知识卡片",
+        requested_output_type="auto",
+        sources=[],
+        target_capture_id="",
+    )
+
+    assert decision["output_type"] == "knowledge_card"
+    assert decision["target_capture_id"] == ""
+    assert decision["needs_target_choice"] is False
+
+
+def test_auto_instruction_can_request_capture_enhancement_with_single_source():
+    from bridge.answer_bridge import choose_answer_output_type
+
+    decision = choose_answer_output_type(
+        instruction="补进主笔记",
+        requested_output_type="auto",
+        sources=[{"type": "capture_note", "id": "cap_a", "title": "A"}],
+        target_capture_id="",
+    )
+
+    assert decision["output_type"] == "enhance_capture"
+    assert decision["target_capture_id"] == "cap_a"
+    assert decision["needs_target_choice"] is False
+
+
 def test_requires_explicit_target_for_multi_source_capture_enhancement():
     from bridge.answer_bridge import choose_answer_output_type
 
@@ -101,6 +131,18 @@ def answer_config(tmp_path):
     )
 
 
+def test_answer_metadata_llm_requires_explicit_env(answer_config, monkeypatch):
+    from bridge import answer_bridge
+
+    answer_config.llm_api_key = "real-key"
+    answer_config.llm_base_url = "https://llm.example"
+    monkeypatch.delenv("HERMES_FULL_TEXT_METADATA_LLM", raising=False)
+    assert answer_bridge._metadata_llm_enabled(answer_config) is False
+
+    monkeypatch.setenv("HERMES_FULL_TEXT_METADATA_LLM", "1")
+    assert answer_bridge._metadata_llm_enabled(answer_config) is True
+
+
 def test_save_answer_creates_learning_note_draft(answer_config, monkeypatch):
     from bridge import answer_bridge
 
@@ -118,6 +160,7 @@ def test_save_answer_creates_learning_note_draft(answer_config, monkeypatch):
         sources=[
             {"type": "capture_note", "id": "cap_a", "title": "材料 A"},
             {"type": "capture_note", "id": "cap_b", "title": "材料 B"},
+            {"type": "web", "id": "https://example.com/a", "title": "网页 A", "url": "https://example.com/a", "ref": "W1"},
         ],
     )
 
@@ -131,7 +174,124 @@ def test_save_answer_creates_learning_note_draft(answer_config, monkeypatch):
     assert row["output_type"] == "local_learning_note"
     assert "这个概念为什么重要" in row["draft_text"]
     assert "它重要，因为" in row["draft_text"]
+    assert "web：[W1] 网页 A — https://example.com/a" in row["draft_text"]
     assert "## 可沉淀的理解" not in row["draft_text"]
+    meta = json.loads(row["meta_json"])
+    assert meta["source_type"] == "knowledge_web_research"
+    assert meta["research_mode"] == "local_web"
+    assert meta["knowledge_sources"][0]["id"] == "cap_a"
+    assert meta["web_sources"][0]["url"] == "https://example.com/a"
+
+
+def test_save_answer_summary_uses_clean_first_conclusion(answer_config, monkeypatch):
+    from bridge import answer_bridge, reading_bridge
+
+    monkeypatch.setattr(answer_bridge, "load_config", lambda _path: answer_config)
+    monkeypatch.setattr(reading_bridge, "load_config", lambda _path: answer_config)
+    monkeypatch.setattr(
+        reading_bridge,
+        "_postprocess_committed_learning_note",
+        lambda *_args, **_kwargs: {"embedding_index": {"updated": 1}},
+    )
+    answer_bridge._config = None
+    answer_bridge._repo = None
+    reading_bridge._config = None
+    reading_bridge._repo = None
+
+    long_answer = (
+        "根据知识库提供的材料，当前市场走势可以总结为：**短期经历了较深的调整，"
+        "尤其是前期涨幅巨大的科技主线，但从情绪和波动率等指标看，目前尚不符合历史大顶的典型特征。"
+        "不过，中长期看市场估值已处于偏贵水平。**\n\n"
+        "以下是具体分析：\n\n"
+        "**1. 近期市场调整与结构分化**\n\n"
+        "* **市场调整**：近期市场经历了一次比较深的回调。"
+    )
+
+    result = answer_bridge.save_answer_to_knowledge(
+        hermes_session_id="session-1",
+        user_message="最近市场会涨还是会跌？",
+        assistant_answer=long_answer,
+        instruction="存成学习笔记",
+        output_type="local_learning_note",
+        assistant_message_id="assistant-1",
+        sources=[{"type": "capture_note", "id": "cap_a", "title": "材料 A"}],
+    )
+
+    conn = sqlite3.connect(answer_config.db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT summary FROM reading_drafts WHERE id = ?",
+        (result["meta"]["reading_draft_id"],),
+    ).fetchone()
+
+    assert row["summary"]
+    assert "\n" not in row["summary"]
+    assert "**" not in row["summary"]
+    assert "以下是具体分析" not in row["summary"]
+    assert "市场调整与结构分化" not in row["summary"]
+    assert row["summary"].endswith("。")
+
+    committed = reading_bridge.commit_reading_artifact(result["meta"]["reading_draft_id"])
+    text = (Path(answer_config.vault_path) / committed["durable_artifacts"][0]["path"]).read_text(encoding="utf-8")
+    frontmatter = text.split("---", 2)[1]
+    assert "story:" in frontmatter
+    assert "**" not in frontmatter
+    assert "以下是具体分析" not in frontmatter
+    assert "市场调整与结构分化" not in frontmatter
+
+
+def test_save_answer_metadata_uses_full_draft_text(answer_config, monkeypatch):
+    from bridge import answer_bridge, reading_bridge
+
+    captured: dict[str, str] = {}
+
+    def fake_metadata(_config, markdown: str) -> dict:
+        captured["markdown"] = markdown
+        return {
+            "summary": "这是基于全文生成的摘要。",
+            "tags": ["finance-market", "risk-valuation"],
+            "source": "ai_full_text",
+        }
+
+    monkeypatch.setattr(answer_bridge, "load_config", lambda _path: answer_config)
+    monkeypatch.setattr(reading_bridge, "load_config", lambda _path: answer_config)
+    monkeypatch.setattr(answer_bridge, "_generate_full_text_metadata", fake_metadata)
+    monkeypatch.setattr(
+        reading_bridge,
+        "_postprocess_committed_learning_note",
+        lambda *_args, **_kwargs: {"embedding_index": {"updated": 1}},
+    )
+    answer_bridge._config = None
+    answer_bridge._repo = None
+    reading_bridge._config = None
+    reading_bridge._repo = None
+
+    result = answer_bridge.save_answer_to_knowledge(
+        hermes_session_id="session-1",
+        user_message="最近市场会涨还是会跌？",
+        assistant_answer="开头内容。\n\n" + ("中间内容。\n" * 20) + "\nTAIL_ONLY_SIGNAL：尾部结论。",
+        instruction="存成学习笔记",
+        output_type="local_learning_note",
+        assistant_message_id="assistant-1",
+        sources=[{"type": "capture_note", "id": "cap_a", "title": "材料 A"}],
+    )
+
+    assert "TAIL_ONLY_SIGNAL" in captured["markdown"]
+    conn = sqlite3.connect(answer_config.db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT summary, meta_json FROM reading_drafts WHERE id = ?",
+        (result["meta"]["reading_draft_id"],),
+    ).fetchone()
+    assert row["summary"] == "这是基于全文生成的摘要。"
+    assert json.loads(row["meta_json"])["metadata"]["tags"] == ["finance-market", "risk-valuation"]
+
+    committed = reading_bridge.commit_reading_artifact(result["meta"]["reading_draft_id"])
+    text = (Path(answer_config.vault_path) / committed["durable_artifacts"][0]["path"]).read_text(encoding="utf-8")
+    frontmatter = text.split("---", 2)[1]
+    assert "story: 这是基于全文生成的摘要。" in frontmatter
+    assert "finance-market" in frontmatter
+    assert "risk-valuation" in frontmatter
 
 
 def test_saved_answer_commit_uses_reading_write_service(answer_config, monkeypatch):

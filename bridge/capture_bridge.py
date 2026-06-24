@@ -304,6 +304,7 @@ def create_editable_capture_draft(
     source_type: str = "manual",
     title: str = "",
     folder_path: str = "",
+    existing_folders: list[str] | None = None,
     context: KnowledgeContext | None = None,
 ) -> dict:
     """Create a free-editing Capture draft that still commits through Capture."""
@@ -319,6 +320,7 @@ def create_editable_capture_draft(
             "source_type": source_type,
             "title_provided": bool(title.strip()),
             "folder_path": folder_path,
+            "existing_folder_count": len(existing_folders or []),
         },
         lambda: _create_editable_capture_draft(
             agent,
@@ -328,6 +330,7 @@ def create_editable_capture_draft(
             source_type=source_type,
             title=title,
             folder_path=folder_path,
+            existing_folders=existing_folders,
         ),
     )
 
@@ -341,6 +344,7 @@ def _create_editable_capture_draft(
     source_type: str = "manual",
     title: str = "",
     folder_path: str = "",
+    existing_folders: list[str] | None = None,
 ) -> dict:
     result = agent.create_editable_draft(
         content,
@@ -349,6 +353,7 @@ def _create_editable_capture_draft(
         instruction=instruction,
         title=title,
         folder_path=folder_path,
+        existing_folders=existing_folders,
     )
     if "error" in result:
         return error_envelope(
@@ -395,6 +400,12 @@ def update_editable_capture_draft(
     draft_id: str,
     content: str,
     title: str = "",
+    summary: str | None = None,
+    tags: list[str] | None = None,
+    folder_path: str | None = None,
+    folder_suggestion: dict | None = None,
+    card_suggestion: dict | None = None,
+    existing_folders: list[str] | None = None,
     context: KnowledgeContext | None = None,
 ) -> dict:
     """Update a free-editing Capture draft without committing it."""
@@ -406,12 +417,22 @@ def update_editable_capture_draft(
             "draft_id": draft_id,
             "content_length": len(content or ""),
             "title_provided": bool((title or "").strip()),
+            "summary_provided": summary is not None,
+            "tags_provided": tags is not None,
+            "folder_path": folder_path or "",
+            "existing_folder_count": len(existing_folders or []),
         },
         lambda: _update_editable_capture_draft(
             agent,
             draft_id=draft_id,
             content=content,
             title=title,
+            summary=summary,
+            tags=tags,
+            folder_path=folder_path,
+            folder_suggestion=folder_suggestion,
+            card_suggestion=card_suggestion,
+            existing_folders=existing_folders,
         ),
     )
 
@@ -422,8 +443,24 @@ def _update_editable_capture_draft(
     draft_id: str,
     content: str,
     title: str = "",
+    summary: str | None = None,
+    tags: list[str] | None = None,
+    folder_path: str | None = None,
+    folder_suggestion: dict | None = None,
+    card_suggestion: dict | None = None,
+    existing_folders: list[str] | None = None,
 ) -> dict:
-    result = agent.update_editable_draft(draft_id, content=content, title=title)
+    result = agent.update_editable_draft(
+        draft_id,
+        content=content,
+        title=title,
+        summary=summary,
+        tags=tags,
+        folder_path=folder_path,
+        folder_suggestion=folder_suggestion,
+        card_suggestion=card_suggestion,
+        existing_folders=existing_folders,
+    )
     if result is None:
         return error_envelope(
             agent="capture",

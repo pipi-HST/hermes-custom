@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -12,6 +13,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.capture_agent import load_config
+from agents.summarizer import Summarizer
 from bridge.result_envelope import artifact_ref, error_envelope, next_action, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.reading_repo import ReadingRepo
@@ -247,7 +249,7 @@ def _save_answer_to_knowledge(
     target_capture_id: str,
     answer_source: str,
 ) -> dict:
-    _, repo = _init()
+    config, repo = _init()
     resolved = _resolve_answer_source(
         repo=repo,
         user_message=user_message,
@@ -258,6 +260,7 @@ def _save_answer_to_knowledge(
     )
     assistant_answer = resolved["assistant_answer"]
     sources = resolved["sources"]
+    source_groups = _group_answer_sources(sources)
     decision = choose_answer_output_type(
         instruction=instruction,
         requested_output_type=output_type,
@@ -295,6 +298,8 @@ def _save_answer_to_knowledge(
             "assistant_message_id": assistant_message_id,
             "instruction": instruction,
             "answer_source": resolved["answer_source"],
+            "source_type": source_groups["source_type"],
+            "research_mode": source_groups["research_mode"],
         },
     )
     turn = repo.add_turn(
@@ -323,12 +328,13 @@ def _save_answer_to_knowledge(
         output_type=decision["output_type"],
         sources=sources,
     )
+    metadata = _generate_full_text_metadata(config, draft_text)
     draft = repo.create_draft(
         session_id=session["id"],
         output_type=decision["output_type"],
         target_capture_id=decision["target_capture_id"],
         title=title,
-        summary=_clip(assistant_answer, 180),
+        summary=metadata.get("summary") or _summary_from_markdown(assistant_answer),
         draft_text=draft_text,
         meta={
             "origin": "assistant_answer",
@@ -336,7 +342,12 @@ def _save_answer_to_knowledge(
             "assistant_message_id": assistant_message_id,
             "instruction": instruction,
             "sources": sources,
+            "knowledge_sources": source_groups["knowledge_sources"],
+            "web_sources": source_groups["web_sources"],
+            "source_type": source_groups["source_type"],
+            "research_mode": source_groups["research_mode"],
             "answer_source": resolved["answer_source"],
+            "metadata": metadata,
         },
     )
     label = {
@@ -375,8 +386,39 @@ def _save_answer_to_knowledge(
             "target_capture_id": decision["target_capture_id"],
             "needs_target_choice": False,
             "answer_source": resolved["answer_source"],
+            "source_type": source_groups["source_type"],
+            "research_mode": source_groups["research_mode"],
         },
     )
+
+
+def _group_answer_sources(sources: list[dict[str, Any]]) -> dict[str, Any]:
+    knowledge_sources: list[dict[str, Any]] = []
+    web_sources: list[dict[str, Any]] = []
+    for item in sources or []:
+        source_type = str(item.get("type") or item.get("source_kind") or "").strip()
+        if source_type in {"web", "web_page", "web_search"} or item.get("url"):
+            web_sources.append(item)
+        elif source_type in {"knowledge", "capture", "capture_note", "capture_section", "knowledge_base", "capture_draft"}:
+            knowledge_sources.append(item)
+    if web_sources and knowledge_sources:
+        source_type = "knowledge_web_research"
+        research_mode = "local_web"
+    elif web_sources:
+        source_type = "web_research"
+        research_mode = "web_only"
+    elif knowledge_sources:
+        source_type = "knowledge_research"
+        research_mode = "local_only"
+    else:
+        source_type = "conversation"
+        research_mode = "none"
+    return {
+        "knowledge_sources": knowledge_sources,
+        "web_sources": web_sources,
+        "source_type": source_type,
+        "research_mode": research_mode,
+    }
 
 
 def _resolve_answer_source(
@@ -457,9 +499,7 @@ def _should_use_latest_rag_answer(
         return False
     if _looks_truncated(assistant_answer):
         return True
-    if not re.search(r"回答|刚才|这段|存成笔记|存为笔记|保存|全文|完整|原样|不要修改", instruction or ""):
-        return False
-    return _related_to_latest_query(user_message, str(latest.get("query") or ""))
+    return False
 
 
 def _looks_truncated(text: str) -> bool:
@@ -486,13 +526,6 @@ def _topic_phrase(user_message: str, assistant_answer: str = "") -> str:
     """Extract a short topic phrase for section headings (improves RAG retrieval)."""
     text = re.sub(r"\s+", " ", user_message or assistant_answer or "").strip()
     text = re.sub(r"[#*_`>\[\]()]+", "", text)
-    # Strip common question prefixes
-    text = re.sub(
-        r"^(请问|请解释|请帮我|帮我|我想了解|怎么|如何|什么是|什么是|"
-        r"能不能|可以|为什么|能否)\s*",
-        "",
-        text,
-    )
     text = text.strip(" ，。；：？?")
     return text[:24].strip() or "对话笔记"
 
@@ -517,7 +550,11 @@ def _build_answer_draft_text(
         ).strip()
         kind = str(item.get("type") or item.get("source_kind") or "AI 解释").strip()
         if label:
-            source_lines.append(f"- {kind}：{label}")
+            url = str(item.get("url") or "").strip()
+            ref = str(item.get("ref") or item.get("label") or "").strip()
+            prefix = f"[{ref}] " if ref and re.match(r"^[KW]\d+$", ref) else ""
+            suffix = f" — {url}" if url and url != label else ""
+            source_lines.append(f"- {kind}：{prefix}{label}{suffix}")
     if not source_lines:
         source_lines.append("- AI 解释：来自当前 Hermes 对话")
     if output_type == "knowledge_card":
@@ -582,12 +619,77 @@ def _call_revision_llm(
 
 
 def _summary_from_markdown(markdown: str) -> str:
+    paragraph: list[str] = []
     for raw_line in (markdown or "").splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("#") or line.startswith("-"):
+        if not line:
+            if paragraph:
+                break
             continue
-        return _clip(line, 180)
-    return ""
+        if line.startswith("#"):
+            if paragraph:
+                break
+            continue
+        paragraph.append(line)
+    text = _plain_summary_text(" ".join(paragraph))
+    text = re.split(r"(?:以下是具体分析|具体分析如下|具体要点|参考来源|文内引用来源)", text, maxsplit=1)[0].strip()
+    return _clip_to_sentence(text, 140)
+
+
+def _generate_full_text_metadata(config, markdown: str) -> dict:
+    if not _metadata_llm_enabled(config):
+        return {}
+    try:
+        summarizer = Summarizer(
+            api_key=getattr(config, "llm_api_key", ""),
+            model=getattr(config, "llm_model", ""),
+            base_url=getattr(config, "llm_base_url", "") or "https://api.deepseek.com",
+        )
+        result = summarizer.summarize(markdown, [])
+    except Exception:
+        return {}
+    return _normalize_metadata(result)
+
+
+def _metadata_llm_enabled(config) -> bool:
+    if os.environ.get("HERMES_FULL_TEXT_METADATA_LLM") != "1":
+        return False
+    api_key = str(getattr(config, "llm_api_key", "") or "").strip()
+    base_url = str(getattr(config, "llm_base_url", "") or "")
+    if not api_key or api_key.startswith("test-"):
+        return False
+    return "example.test" not in base_url
+
+
+def _normalize_metadata(result: dict) -> dict:
+    tags = result.get("tags") if isinstance(result.get("tags"), list) else []
+    return {
+        "title": str(result.get("title") or "").strip(),
+        "summary": _clip_to_sentence(_plain_summary_text(str(result.get("summary") or "")), 140),
+        "tags": [str(tag).strip() for tag in tags if str(tag).strip()][:8],
+        "source": "ai_full_text",
+    }
+
+
+def _plain_summary_text(text: str) -> str:
+    text = re.sub(r"`([^`]+)`", r"\1", text or "")
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"\*([^*]+)\*", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"^\s*[-*]\s+", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _clip_to_sentence(text: str, limit: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    window = text[:limit].rstrip()
+    for index in range(len(window) - 1, max(0, limit // 2), -1):
+        if window[index] in "。！？.!?":
+            return window[: index + 1]
+    return _clip(text, limit)
 
 
 def _clip(text: str, limit: int) -> str:
