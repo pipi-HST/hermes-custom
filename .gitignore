@@ -14,6 +14,8 @@ config.yaml
 
 data/*.db
 data/*.db-*
+data/*.db.backup-*
+data/*.db.bak.*
 data/*.bak
 data/*.log
 data/backups/
@@ -21,10 +23,19 @@ data/repair_reports/
 data/reports/
 data/exports/
 data/media/
+data/knowledge_folders.json
+data/test-reset-backups/
 reports/
+/plans/
+output/research-eval/
+output/playwright/
+scripts/rollback-codex-app-to-dmg.sh
 
 dashboard/node_modules/
 dashboard/.next/
 dashboard/*.tsbuildinfo
+dashboard/.playwright-cli/
+
+/.playwright-cli/
 
 .superpowers/
