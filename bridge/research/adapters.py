@@ -1,0 +1,254 @@
+"""Default search and extract adapters for the research pipeline."""
+from __future__ import annotations
+
+import asyncio
+import re
+import sys
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
+from typing import Any, Awaitable, Callable
+
+import httpx
+
+from bridge.research.types import (
+    ResearchSearchAdapter,
+    ResearchExtractAdapter,
+    MAX_WEB_RESULTS,
+    MAX_EXTRACT_URLS,
+    LOCAL_EXTRACT_TIMEOUT_SECONDS,
+    LOCAL_EXTRACT_MAX_WORKERS,
+    SEARCH_ONLY_EXTRACT_BACKENDS,
+    FALLBACK_SEARCH_BACKENDS,
+    MAX_FALLBACK_SEARCH_BACKENDS,
+)
+from bridge.research.utils import (
+    _search_query_from_private_context,
+    _parse_web_search,
+    _parse_web_extract,
+    _ensure_main_repo_on_path,
+    _stage_timeout,
+)
+from bridge.research.search import _html_text
+
+
+def _legacy_search_web(
+    query: str,
+    warnings: list[str],
+    *,
+    search_adapter: ResearchSearchAdapter | None,
+    extract_adapter: ResearchExtractAdapter | None,
+) -> list[dict[str, Any]]:
+    if search_adapter is None:
+        search_adapter = _default_web_search
+    if extract_adapter is None:
+        extract_adapter = _default_web_extract
+    try:
+        raw = search_adapter(_search_query_from_private_context(query), MAX_WEB_RESULTS)
+        results = _parse_web_search(raw)
+    except Exception as exc:
+        warnings.append(f"联网搜索失败：{exc}")
+        return []
+
+    urls = [item["url"] for item in results[:MAX_EXTRACT_URLS] if item.get("url")]
+    extracted_by_url: dict[str, str] = {}
+    if urls:
+        try:
+            extracted_by_url = _parse_web_extract(extract_adapter(urls))
+        except Exception as exc:
+            warnings.append(f"网页正文抽取失败，已仅使用搜索摘要：{exc}")
+
+    sources: list[dict[str, Any]] = []
+    for index, item in enumerate(results[:MAX_WEB_RESULTS], 1):
+        url = item.get("url", "")
+        sources.append(
+            {
+                "ref": f"W{index}",
+                "type": "web",
+                "id": url or f"web-{index}",
+                "title": item.get("title") or url or f"网页来源 {index}",
+                "url": url,
+                "excerpt": (extracted_by_url.get(url) or item.get("description") or "").strip()[:1800],
+                "description": item.get("description") or "",
+            }
+        )
+    return sources
+
+
+def _default_web_search(query: str, limit: int) -> str:
+    _ensure_main_repo_on_path()
+    from tools.web_tools import web_search_tool
+
+    return web_search_tool(query, limit=limit)
+
+
+def _default_search_backend() -> str:
+    try:
+        _ensure_main_repo_on_path()
+        from tools import web_tools
+
+        return str(web_tools._get_search_backend() or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _available_fallback_search_backends(primary_backend: str) -> list[str]:
+    try:
+        _ensure_main_repo_on_path()
+        from tools import web_tools
+    except Exception:
+        return []
+    primary = (primary_backend or "").strip().lower()
+    backends: list[str] = []
+    for backend in FALLBACK_SEARCH_BACKENDS:
+        if backend == primary:
+            continue
+        try:
+            if web_tools._is_backend_available(backend):
+                backends.append(backend)
+        except Exception:
+            continue
+    return backends[:MAX_FALLBACK_SEARCH_BACKENDS]
+
+
+def _fallback_search_adapter(backend: str) -> ResearchSearchAdapter:
+    def _adapter(query: str, limit: int) -> str | dict[str, Any]:
+        return _web_search_with_backend(query, limit, backend)
+
+    return _adapter
+
+
+def _web_search_with_backend(query: str, limit: int, backend: str) -> str | dict[str, Any]:
+    _ensure_main_repo_on_path()
+    from agent.web_search_registry import get_provider
+    from tools import web_tools
+
+    web_tools._ensure_builtin_web_provider_registered(backend)
+    provider = get_provider(backend)
+    if provider is None or not provider.supports_search():
+        raise RuntimeError(f"搜索后端不可用：{backend}")
+    return provider.search(query, limit)
+
+
+def _default_web_extract(
+    urls: list[str],
+    *,
+    local_extract: Callable[..., dict[str, Any]] | None = None,
+) -> str | dict[str, Any]:
+    _ensure_main_repo_on_path()
+    from tools import web_tools
+
+    extract_backend = ""
+    try:
+        extract_backend = str(web_tools._get_extract_backend() or "").strip().lower()
+    except Exception:
+        extract_backend = ""
+    if not extract_backend or extract_backend in SEARCH_ONLY_EXTRACT_BACKENDS:
+        local_extract = local_extract or _local_web_extract
+        return local_extract(urls, extract_backend=extract_backend)
+
+    result = web_tools.web_extract_tool(urls, format="markdown", use_llm_processing=False)
+    if asyncio.iscoroutine(result):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(result)
+        return _run_coroutine_in_thread(result)
+    return result
+
+
+def _local_web_extract(urls: list[str], *, extract_backend: str = "") -> dict[str, Any]:
+    selected_urls = [url for url in urls[:MAX_EXTRACT_URLS] if url]
+    results: list[dict[str, Any]] = []
+    headers = {"User-Agent": "HermesResearchBot/1.0"}
+    timeout_seconds = _stage_timeout(LOCAL_EXTRACT_TIMEOUT_SECONDS)
+    if timeout_seconds < 1.0:
+        return {
+            "success": True,
+            "results": [
+                {"url": url, "content": "", "error": "research budget exhausted before extraction"}
+                for url in selected_urls
+            ],
+            "meta": {
+                "extract_backend": extract_backend,
+                "fallback_extract_backend": "local_http",
+                "allow_summary_fallback": True,
+            },
+        }
+    if not selected_urls:
+        return {
+            "success": True,
+            "results": [],
+            "meta": {
+                "extract_backend": extract_backend,
+                "fallback_extract_backend": "local_http",
+                "allow_summary_fallback": True,
+            },
+        }
+
+    def fetch(index: int, url: str) -> tuple[int, dict[str, Any]]:
+        try:
+            with httpx.Client(timeout=timeout_seconds, follow_redirects=True, headers=headers) as client:
+                response = client.get(url)
+                response.raise_for_status()
+                content = _extract_readable_text(response.text, url=url)
+            if not content:
+                raise RuntimeError("empty extracted content")
+            return index, {"url": url, "content": content}
+        except Exception as exc:
+            return index, {"url": url, "content": "", "error": str(exc)}
+
+    ordered: list[dict[str, Any] | None] = [None] * len(selected_urls)
+    max_workers = max(1, min(len(selected_urls), LOCAL_EXTRACT_MAX_WORKERS))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(fetch, index, url) for index, url in enumerate(selected_urls)]
+        try:
+            for future in as_completed(futures, timeout=timeout_seconds + 1.0):
+                index, item = future.result()
+                ordered[index] = item
+        except FuturesTimeoutError:
+            for future in futures:
+                future.cancel()
+    for index, item in enumerate(ordered):
+        results.append(item or {"url": selected_urls[index], "content": "", "error": "local extract timed out"})
+    return {
+        "success": True,
+        "results": results,
+        "meta": {
+            "extract_backend": extract_backend,
+            "fallback_extract_backend": "local_http",
+            "allow_summary_fallback": True,
+        },
+    }
+
+
+def _extract_readable_text(html: str, *, url: str) -> str:
+    try:
+        import trafilatura
+
+        extracted = trafilatura.extract(
+            html,
+            url=url,
+            include_comments=False,
+            include_tables=True,
+            favor_precision=True,
+        )
+        if extracted and extracted.strip():
+            return re.sub(r"\s+", " ", extracted).strip()[:12000]
+    except Exception:
+        pass
+    try:
+        from readability import Document
+
+        summary_html = Document(html).summary()
+        text = _html_text(summary_html)
+        if text:
+            return text[:12000]
+    except Exception:
+        pass
+    text = _html_text(re.sub(r"<(script|style|noscript)[^>]*>.*?</\1>", " ", html, flags=re.I | re.S))
+    return text[:12000]
+
+
+def _run_coroutine_in_thread(coro: Awaitable[str | dict[str, Any]]) -> str | dict[str, Any]:
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(asyncio.run, coro)
+        return future.result()

@@ -1,0 +1,191 @@
+# Source preference registry — domain trust scores and classification rules.
+# Trusted sections are merged into a composite lookup at runtime.
+# Merge order (later wins): finance → official → news → profile → glossary → china_market.
+# A domain may appear in multiple sections; the last section's score is used.
+
+trusted:
+  finance:
+    companiesmarketcap.com: 9
+    finance.yahoo.com: 8
+    nasdaq.com: 8
+    macrotrends.net: 7
+    investing.com: 7
+    marketwatch.com: 6
+    reuters.com: 6
+    bloomberg.com: 6
+    cnbc.com: 5
+    sina.com.cn: 4
+    stcn.com: 4
+    21jingji.com: 4
+    xueqiu.com: 3
+
+  official:
+    federalreserve.gov: 12
+    sec.gov: 10
+    whitehouse.gov: 9
+    congress.gov: 9
+    gov.cn: 9
+    pbc.gov.cn: 10
+    csrc.gov.cn: 10
+    sse.com.cn: 9
+    szse.cn: 9
+
+  china_market:
+    eastmoney.com: 8
+    finance.eastmoney.com: 9
+    finance.sina.com.cn: 8
+    # stcn.com also in finance(4) and news(5) — china_market(8) wins
+    stcn.com: 8
+    cs.com.cn: 8
+    cnstock.com: 8
+    cls.cn: 8
+    # 21jingji.com also in finance(4) and news(5) — china_market(7) wins
+    21jingji.com: 7
+    # sse.com.cn / szse.cn also in official(9) — china_market(8) wins
+    sse.com.cn: 8
+    szse.cn: 8
+    p5w.net: 6
+    # xueqiu.com also in finance(3) and news(3) — china_market(4) wins
+    xueqiu.com: 4
+
+  news:
+    reuters.com: 8
+    bloomberg.com: 8
+    cnbc.com: 7
+    wsj.com: 7
+    ft.com: 7
+    sina.com.cn: 5
+    stcn.com: 5
+    21jingji.com: 5
+    xueqiu.com: 3
+
+  profile:
+    baike.baidu.com: 7
+    wikipedia.org: 7
+    britannica.com: 8
+    people.com.cn: 7
+    xinhuanet.com: 7
+    thepaper.cn: 6
+    caixin.com: 7
+    yicai.com: 6
+    hbr.org: 6
+    forbes.com: 5
+
+  glossary:
+    investopedia.com: 8
+    corporatefinanceinstitute.com: 7
+    wallstreetprep.com: 6
+    nasdaq.com: 6
+    fidelity.com: 5
+    schwab.com: 5
+    mba智库.com: 5
+    wiki.mbalib.com: 5
+
+low_quality:
+  douyin.com: -8
+  iesdouyin.com: -8
+  toutiao.com: -5
+  ixigua.com: -5
+  guba.sina.com.cn: -7
+  k.sina.com.cn: -6
+  aiqicha.baidu.com: -6
+  zhidao.baidu.com: -6
+  baijiahao.baidu.com: -6
+  xueqiu.com: -5
+  zhuanlan.zhihu.com: -5
+
+weak_secondary:
+  aistudy.baidu.com: -4
+  blog.csdn.net: -4
+  csdn.net: -4
+  mp.weixin.qq.com: -3
+  ourplay.net: -4
+  top.aibase.com: -4
+  zhihu.com: -3
+  zhuanlan.zhihu.com: -3
+  sohu.com: -3
+  m.sohu.com: -3
+  m.163.com: -3
+  php.cn: -4
+
+# Domains mapped to source-kind labels for query expansion.
+source_kind_query_domains:
+  finance_glossary:
+    - investopedia.com
+    - corporatefinanceinstitute.com
+  glossary:
+    - investopedia.com
+    - corporatefinanceinstitute.com
+  dictionary:
+    - investopedia.com
+    - corporatefinanceinstitute.com
+  术语表:
+    - wiki.mbalib.com
+    - investopedia.com
+  financial_data:
+    - companiesmarketcap.com
+    - finance.yahoo.com
+  stock_market:
+    - companiesmarketcap.com
+    - finance.yahoo.com
+
+# Name aliases → canonical domain(s).
+source_identity_aliases:
+  investopedia:
+    - investopedia.com
+  corporate finance institute:
+    - corporatefinanceinstitute.com
+  cfi:
+    - corporatefinanceinstitute.com
+
+# Language dictionary domains (set — no scores).
+language_dictionary_domains:
+  - dictionary.cambridge.org
+  - dictionary.com
+  - merriam-webster.com
+  - oxfordlearnersdictionaries.com
+  - collinsdictionary.com
+
+# Source-kind labels that trigger multi-source preference.
+multi_source_preferred_kinds:
+  - finance_glossary
+  - glossary
+  - dictionary
+  - 术语表
+  - encyclopedia
+  - profile
+  - reputable_media
+  - academic
+
+# Encyclopedia domains for source classification.
+encyclopedia_domains:
+  - baike.baidu.com
+  - wikipedia.org
+  - britannica.com
+
+# Greek letter → English name mapping for symbol normalization.
+greek_letter_names:
+  α: alpha
+  β: beta
+  γ: gamma
+  δ: delta
+  ε: epsilon
+  ζ: zeta
+  η: eta
+  θ: theta
+  ι: iota
+  κ: kappa
+  λ: lambda
+  μ: mu
+  ν: nu
+  ξ: xi
+  ο: omicron
+  π: pi
+  ρ: rho
+  σ: sigma
+  τ: tau
+  υ: upsilon
+  φ: phi
+  χ: chi
+  ψ: psi
+  ω: omega
