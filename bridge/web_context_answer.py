@@ -45,6 +45,22 @@ WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS = 35
 
 LocalSearchAdapter = Callable[[str, list[str]], tuple[str, list[dict[str, Any]]]]
 
+PROCESS_LANGUAGE_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    r"从(?:搜索结果|联网搜索|检索结果|现有(?:资料|信息)|本次(?:搜索|检索))(?:(?:来看)|(?:看)|(?:显示)|(?:可见)|(?:可知))?[，,：:\\s]*"
+    r"|根据(?:搜索结果|联网搜索|检索结果)[，,：:\\s]*"
+    r"|需要先明确一点[：:\\s]*"
+    r")",
+    re.I,
+)
+PROCESS_LANGUAGE_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:从搜索结果|从联网搜索|从检索结果|本次搜索|本次检索).{0,40}$"
+    r"|(?:以下|下面)是(?:搜索|检索|整理)到的.{0,30}$"
+    r")\s*$",
+    re.I,
+)
+
 
 def web_context_answer(
     *,
@@ -135,6 +151,7 @@ def web_context_answer(
     )
     _add_stage_timing(stage_timings, "synthesis_ms", synthesis_started)
     answer = _repair_answer_refs(answer, knowledge_sources, web_sources)
+    answer = _remove_process_language(answer)
     cited_knowledge, cited_web = _cited_sources(answer, knowledge_sources, web_sources)
     if cited_knowledge or cited_web:
         knowledge_sources = cited_knowledge
@@ -440,9 +457,12 @@ def _generate_answer(payload: dict[str, Any], warnings: list[str]) -> str:
     prompt = "\n".join(
         [
             "你是知识工作台里的联网辅助理解模块。",
-            "直接回答用户问题，优先帮助用户理解、整理、比较、加工信息。",
-            "不要写搜索过程、系统反思、免责声明；必要的不确定性要写成答案边界。",
-            "可以使用博客、媒体、论坛作为观点或解释材料，但不要把它们包装成官方事实。",
+            "目标：直接帮助用户理解、整理、比较、加工信息，而不是展示检索过程。",
+            "你负责语义判断：自行判断用户真正想知道什么、材料分别适合支撑什么、答案应该采用什么结构。",
+            "不要套固定题型模板；如果问题天然适合比较，可以用表格；如果不适合，就用更自然的段落或要点。",
+            "答案必须先回答问题，不要以“从搜索结果看”“根据检索结果”“需要先明确一点”等过程语开头。",
+            "不要写系统反思或免责声明；必要的不确定性要写成答案内容的一部分。",
+            "优先识别一手来源、官方说明、媒体报道、论坛/博客各自的用途；弱来源可以作为背景或观点材料，但不要包装成官方结论。",
             "引用只能使用给定编号，如 [W1] 或 [K1]。",
             f"用户问题：{payload['query']}",
             f"当前选区：{_clip_text(str((payload.get('selection_context') or {}).get('selected_text') or ''), 600)}",
@@ -537,6 +557,19 @@ def _repair_answer_refs(answer: str, knowledge_sources: list[dict[str, Any]], we
         return f"[{ref}]" if ref in available else ""
 
     return re.sub(r"\[([WK]\d+)\]", replace, answer or "").strip()
+
+
+def _remove_process_language(answer: str) -> str:
+    text = (answer or "").strip()
+    if not text:
+        return text
+    lines = [line for line in text.splitlines() if not PROCESS_LANGUAGE_LINE_RE.match(line)]
+    text = "\n".join(lines).strip()
+    previous = None
+    while text and previous != text:
+        previous = text
+        text = PROCESS_LANGUAGE_PREFIX_RE.sub("", text).lstrip(" ，,：:").strip()
+    return text
 
 
 def _cited_sources(

@@ -41,7 +41,7 @@ def test_web_context_answer_uses_summary_materials_without_extract(monkeypatch):
         refs = [source["ref"] for source in payload["web_sources"]]
         assert refs == ["W1", "W2"]
         assert all(source["extract_status"] == "summary" for source in payload["web_sources"])
-        return "DeepSeek 主要在招 Harness 研究员、研发工程师、产品经理，也有全栈、算法和运维岗位 [W1][W2]，不存在的引用会被移除 [W9]。"
+        return "从搜索结果看，DeepSeek 主要在招 Harness 研究员、研发工程师、产品经理，也有全栈、算法和运维岗位 [W1][W2]，不存在的引用会被移除 [W9]。"
 
     monkeypatch.setattr(web_context_answer, "_llm_json", fake_llm_json)
 
@@ -64,6 +64,7 @@ def test_web_context_answer_uses_summary_materials_without_extract(monkeypatch):
     assert "critic_ms" not in result["meta"]["provider_status"]["stage_timings"]
     assert result["meta"]["search_quality"] == {"passed": True, "reason": "materials_available"}
     assert "[W9]" not in result["chat_preview"]
+    assert not result["chat_preview"].startswith("从搜索结果看")
     assert [source["ref"] for source in result["meta"]["web_sources"]] == ["W1", "W2"]
     assert [item["ref"] for item in result["source_map"]] == ["W1", "W2"]
     assert len(llm_calls) == 2
@@ -169,3 +170,52 @@ def test_async_web_context_answer_emits_candidate_trace(monkeypatch):
     assert result["meta"]["research_trace"]["candidate_sources"][0]["ref"] == "W1"
     assert ranked
     assert ranked[0]["web_sources"][0]["title"] == "什么是 Harness Engineering"
+
+
+def test_web_context_answer_prompt_uses_generic_answer_contract(monkeypatch):
+    prompts = []
+
+    def fake_llm_json(prompt, *, timeout_seconds):
+        if "生成网页搜索词" in prompt:
+            return {"queries": ["Codex Claude Code difference"]}
+        if "选择网页材料" in prompt:
+            return {"selected_refs": ["W1", "W2"], "open_refs": []}
+        return {}
+
+    def fake_search(_query, _limit):
+        return {
+            "results": [
+                {
+                    "title": "OpenAI Codex docs",
+                    "url": "https://openai.com/codex",
+                    "description": "Codex is an OpenAI coding agent.",
+                },
+                {
+                    "title": "Claude Code docs",
+                    "url": "https://docs.anthropic.com/claude-code",
+                    "description": "Claude Code is an agentic coding tool.",
+                },
+            ]
+        }
+
+    def fake_call_text_llm(prompt, **_kwargs):
+        prompts.append(prompt)
+        return "Codex 和 Claude Code 都是 AI 编程 Agent，区别主要在默认工作流和生态。"
+
+    monkeypatch.setattr(web_context_answer, "_llm_json", fake_llm_json)
+    monkeypatch.setattr(web_context_answer, "_call_text_llm", fake_call_text_llm)
+
+    result = web_context_answer.web_context_answer(
+        query="Codex 和 Claude Code 的区别是什么？",
+        mode="web_only",
+        search_adapter=fake_search,
+        extract_adapter=lambda _urls: {"results": []},
+    )
+
+    assert result["chat_preview"].startswith("Codex 和 Claude Code")
+    assert prompts
+    answer_prompt = prompts[-1]
+    assert "自行判断用户真正想知道什么" in answer_prompt
+    assert "不要套固定题型模板" in answer_prompt
+    assert "如果问题天然适合比较，可以用表格" in answer_prompt
+    assert "产品对比题" not in answer_prompt
