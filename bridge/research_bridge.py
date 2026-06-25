@@ -449,6 +449,37 @@ _search_infra_module._fetch_url_summary = _fetch_url_summary
 # access via ``agents.source_registry.get_registry()``.
 
 
+def web_assist_answer(
+    *,
+    query: str,
+    mode: str = "local_web",
+    article_context: dict[str, Any] | None = None,
+    selection_context: dict[str, Any] | None = None,
+    export_file: bool = False,
+    search_adapter: ResearchSearchAdapter | None = None,
+    extract_adapter: ResearchExtractAdapter | None = None,
+    synthesize_adapter: ResearchSynthesizeAdapter | None = None,
+) -> dict[str, Any]:
+    """Answer with the product-default web assist path.
+
+    This path treats web search as external material for understanding and
+    knowledge processing.  It bounds resources, preserves citations, and skips
+    the legacy evidence-critic/research-repair chain by default.
+    """
+    return _web_assist_answer_impl(
+        query=query,
+        mode=mode,
+        article_context=article_context,
+        selection_context=selection_context,
+        export_file=export_file,
+        search_adapter=search_adapter,
+        extract_adapter=extract_adapter,
+        synthesize_adapter=synthesize_adapter,
+        intent="web_assist_answer",
+        path_label="web_assist",
+    )
+
+
 def light_web_answer(
     *,
     query: str,
@@ -460,20 +491,42 @@ def light_web_answer(
     extract_adapter: ResearchExtractAdapter | None = None,
     synthesize_adapter: ResearchSynthesizeAdapter | None = None,
 ) -> dict[str, Any]:
-    """Answer with the lightweight web QA path.
+    """Backward-compatible lightweight web QA path."""
+    return _web_assist_answer_impl(
+        query=query,
+        mode=mode,
+        article_context=article_context,
+        selection_context=selection_context,
+        export_file=export_file,
+        search_adapter=search_adapter,
+        extract_adapter=extract_adapter,
+        synthesize_adapter=synthesize_adapter,
+        intent="light_web_answer",
+        path_label="light_web_qa",
+    )
 
-    This is the product-default web path.  It searches, bounds candidates,
-    reads selected pages, keeps summary fallback, and skips legacy evidence
-    critic/repair stages.
-    """
+
+def _web_assist_answer_impl(
+    *,
+    query: str,
+    mode: str,
+    article_context: dict[str, Any] | None,
+    selection_context: dict[str, Any] | None,
+    export_file: bool,
+    search_adapter: ResearchSearchAdapter | None,
+    extract_adapter: ResearchExtractAdapter | None,
+    synthesize_adapter: ResearchSynthesizeAdapter | None,
+    intent: str,
+    path_label: str,
+) -> dict[str, Any]:
     normalized_mode = _normalize_mode(mode)
     clean_query = (query or "").strip()
     if not clean_query:
         return success_envelope(
             agent="research",
-            intent="light_web_answer",
+            intent=intent,
             chat_preview="请先输入要研究的问题。",
-            meta={"query": query, "mode": normalized_mode, "path": "light_web_qa"},
+            meta={"query": query, "mode": normalized_mode, "path": path_label},
         )
     _start_research_budget()
 
@@ -487,7 +540,7 @@ def light_web_answer(
     )
     research_plan = {
         **research_plan,
-        "path": "light_web_qa",
+        "path": path_label,
         "legacy_research": False,
     }
     use_article = bool(article_context)
@@ -515,6 +568,7 @@ def light_web_answer(
             search_adapter=search_adapter or _default_web_search,
             extract_adapter=extract_adapter or _default_web_extract,
             promote_mentioned_urls=search_adapter is None,
+            path_label=path_label,
         )
         web_sources = web_research["sources"]
 
@@ -534,11 +588,39 @@ def light_web_answer(
         warnings=warnings,
         export_file=export_file,
         synthesize_adapter=synthesize_adapter,
-        intent="light_web_answer",
+        intent=intent,
     )
-    result["meta"]["path"] = "light_web_qa"
+    result["meta"]["path"] = path_label
     result["meta"]["legacy_research"] = False
     return result
+
+
+async def async_web_assist_answer(
+    *,
+    query: str,
+    mode: str = "local_web",
+    article_context: dict[str, Any] | None = None,
+    selection_context: dict[str, Any] | None = None,
+    export_file: bool = False,
+    search_adapter: ResearchSearchAdapter | None = None,
+    extract_adapter: ResearchExtractAdapter | None = None,
+    synthesize_adapter: ResearchSynthesizeAdapter | None = None,
+    event_callback: ResearchEventCallback | None = None,
+) -> dict[str, Any]:
+    """Async product-default web assist answer for dashboard callers."""
+    return await _async_web_assist_answer_impl(
+        query=query,
+        mode=mode,
+        article_context=article_context,
+        selection_context=selection_context,
+        export_file=export_file,
+        search_adapter=search_adapter,
+        extract_adapter=extract_adapter,
+        synthesize_adapter=synthesize_adapter,
+        event_callback=event_callback,
+        intent="web_assist_answer",
+        path_label="web_assist",
+    )
 
 
 async def async_light_web_answer(
@@ -553,15 +635,44 @@ async def async_light_web_answer(
     synthesize_adapter: ResearchSynthesizeAdapter | None = None,
     event_callback: ResearchEventCallback | None = None,
 ) -> dict[str, Any]:
-    """Async lightweight web QA answer for dashboard/streaming callers."""
+    """Backward-compatible async lightweight web QA answer."""
+    return await _async_web_assist_answer_impl(
+        query=query,
+        mode=mode,
+        article_context=article_context,
+        selection_context=selection_context,
+        export_file=export_file,
+        search_adapter=search_adapter,
+        extract_adapter=extract_adapter,
+        synthesize_adapter=synthesize_adapter,
+        event_callback=event_callback,
+        intent="light_web_answer",
+        path_label="light_web_qa",
+    )
+
+
+async def _async_web_assist_answer_impl(
+    *,
+    query: str,
+    mode: str,
+    article_context: dict[str, Any] | None,
+    selection_context: dict[str, Any] | None,
+    export_file: bool,
+    search_adapter: ResearchSearchAdapter | None,
+    extract_adapter: ResearchExtractAdapter | None,
+    synthesize_adapter: ResearchSynthesizeAdapter | None,
+    event_callback: ResearchEventCallback | None,
+    intent: str,
+    path_label: str,
+) -> dict[str, Any]:
     normalized_mode = _normalize_mode(mode)
     clean_query = (query or "").strip()
     if not clean_query:
         return success_envelope(
             agent="research",
-            intent="light_web_answer",
+            intent=intent,
             chat_preview="请先输入要研究的问题。",
-            meta={"query": query, "mode": normalized_mode, "path": "light_web_qa"},
+            meta={"query": query, "mode": normalized_mode, "path": path_label},
         )
     _start_research_budget()
 
@@ -576,7 +687,7 @@ async def async_light_web_answer(
     )
     research_plan = {
         **research_plan,
-        "path": "light_web_qa",
+        "path": path_label,
         "legacy_research": False,
     }
     await _emit_research_event_async(
@@ -587,7 +698,7 @@ async def async_light_web_answer(
         needs_web=bool(research_plan.get("needs_web")),
         queries=list(research_plan.get("queries") or []),
         intent_label=research_plan.get("intent_label") or "",
-        path="light_web_qa",
+        path=path_label,
     )
     use_article = bool(article_context)
     use_local = normalized_mode in {"local_only", "local_web"}
@@ -617,7 +728,7 @@ async def async_light_web_answer(
             event_callback,
             "web_search_start",
             queries=list(research_plan.get("queries") or []),
-            path="light_web_qa",
+            path=path_label,
         )
         web_research = await run_light_web_qa_async(
             clean_query,
@@ -627,10 +738,11 @@ async def async_light_web_answer(
             extract_adapter=extract_adapter or _default_web_extract,
             event_callback=event_callback,
             promote_mentioned_urls=search_adapter is None,
+            path_label=path_label,
         )
         web_sources = web_research["sources"]
 
-    await _emit_research_event_async(event_callback, "synthesis_start", path="light_web_qa")
+    await _emit_research_event_async(event_callback, "synthesis_start", path=path_label)
     result = await asyncio.to_thread(
         _finalize_research_answer,
         clean_query=clean_query,
@@ -648,9 +760,9 @@ async def async_light_web_answer(
         warnings=warnings,
         export_file=export_file,
         synthesize_adapter=synthesize_adapter,
-        intent="light_web_answer",
+        intent=intent,
     )
-    result["meta"]["path"] = "light_web_qa"
+    result["meta"]["path"] = path_label
     result["meta"]["legacy_research"] = False
     if warnings:
         await _emit_research_event_async(event_callback, "warnings", warnings=_unique(warnings))
@@ -710,7 +822,7 @@ def _finalize_research_answer(
                 warnings,
                 timeout_seconds=(
                     LIGHT_SYNTHESIS_LLM_TIMEOUT_SECONDS
-                    if research_plan.get("path") == "light_web_qa"
+                    if research_plan.get("path") in {"light_web_qa", "web_assist"}
                     else SYNTHESIS_LLM_TIMEOUT_SECONDS
                 ),
             )
@@ -1060,7 +1172,7 @@ async def async_research_answer(
                 warnings,
                 timeout_seconds=(
                     LIGHT_SYNTHESIS_LLM_TIMEOUT_SECONDS
-                    if research_plan.get("path") == "light_web_qa"
+                    if research_plan.get("path") in {"light_web_qa", "web_assist"}
                     else SYNTHESIS_LLM_TIMEOUT_SECONDS
                 ),
             )

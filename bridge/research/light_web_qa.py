@@ -53,7 +53,9 @@ from bridge.research.utils import (
 
 LIGHT_MAX_CANDIDATES = 20
 LIGHT_SIMPLE_CANDIDATES = 10
+WEB_ASSIST_MAX_CANDIDATES = 12
 LIGHT_RESULTS_PER_QUERY = 8
+WEB_ASSIST_RESULTS_PER_QUERY = 6
 LIGHT_SYNTHESIS_SOURCE_LIMIT = 8
 LIGHT_EXTRACT_TIMEOUT_SECONDS = 12.0
 LIGHT_RICH_SUMMARY_CHARS = 40
@@ -67,6 +69,7 @@ def run_light_web_qa(
     search_adapter: ResearchSearchAdapter,
     extract_adapter: ResearchExtractAdapter,
     promote_mentioned_urls: bool = False,
+    path_label: str = "light_web_qa",
 ) -> dict[str, Any]:
     """Run the synchronous lightweight web QA retrieval path."""
     started = time.monotonic()
@@ -76,10 +79,10 @@ def run_light_web_qa(
     search_started = time.monotonic()
     results = collect_web_search_results(
         queries,
-        search_adapter=_limit_wrapped_search_adapter(search_adapter),
+        search_adapter=_limit_wrapped_search_adapter(search_adapter, path_label=path_label),
         warnings=warnings,
         backend_label=_default_search_backend(),
-        max_queries=min(len(queries), MAX_WEB_QUERIES),
+        max_queries=min(len(queries), _light_query_limit(path_label)),
     )
     if promote_mentioned_urls:
         results = _promote_mentioned_url_candidates(query, results, research_plan)
@@ -94,6 +97,7 @@ def run_light_web_qa(
         started=started,
         warning_start=warning_start,
         stage_timings=stage_timings,
+        path_label=path_label,
     )
 
 
@@ -106,6 +110,7 @@ async def run_light_web_qa_async(
     extract_adapter: ResearchExtractAdapter,
     event_callback: ResearchEventCallback | None = None,
     promote_mentioned_urls: bool = False,
+    path_label: str = "light_web_qa",
 ) -> dict[str, Any]:
     """Run the async lightweight web QA retrieval path."""
     started = time.monotonic()
@@ -115,11 +120,11 @@ async def run_light_web_qa_async(
     search_started = time.monotonic()
     results = await collect_web_search_results_async(
         queries,
-        search_adapter=_limit_wrapped_search_adapter(search_adapter),
+        search_adapter=_limit_wrapped_search_adapter(search_adapter, path_label=path_label),
         warnings=warnings,
         event_callback=event_callback,
         backend_label=_default_search_backend(),
-        max_queries=min(len(queries), MAX_WEB_QUERIES),
+        max_queries=min(len(queries), _light_query_limit(path_label)),
     )
     if promote_mentioned_urls:
         results = await asyncio.to_thread(_promote_mentioned_url_candidates, query, results, research_plan)
@@ -135,6 +140,7 @@ async def run_light_web_qa_async(
         warning_start=warning_start,
         stage_timings=stage_timings,
         event_callback=event_callback,
+        path_label=path_label,
     )
 
 
@@ -150,8 +156,9 @@ async def _finish_light_web_qa_async(
     warning_start: int,
     stage_timings: dict[str, Any],
     event_callback: ResearchEventCallback | None = None,
+    path_label: str = "light_web_qa",
 ) -> dict[str, Any]:
-    candidate_limit = _light_candidate_limit(research_plan)
+    candidate_limit = _light_candidate_limit(research_plan, path_label=path_label)
     candidates = _light_candidates(query, raw_results, research_plan, limit=candidate_limit)
     quality = _light_search_quality(candidates, research_plan)
     await _emit_research_event_async(
@@ -160,8 +167,15 @@ async def _finish_light_web_qa_async(
         search_quality=quality,
         web_sources=_trace_sources(candidates),
     )
-    selected, need_extract_refs = await asyncio.to_thread(_select_candidates, query, candidates, research_plan, warnings)
-    selected = selected[:_light_extract_limit(research_plan)]
+    selected, need_extract_refs = await asyncio.to_thread(
+        _select_candidates,
+        query,
+        candidates,
+        research_plan,
+        warnings,
+        path_label,
+    )
+    selected = selected[:_light_extract_limit(research_plan, path_label=path_label)]
     urls = _extract_urls_for_selected(query, selected, research_plan, need_extract_refs)
     extracted_by_url: dict[str, str] = {}
     extract_failures: list[str] = []
@@ -199,6 +213,7 @@ async def _finish_light_web_qa_async(
         warning_start=warning_start,
         stage_timings=stage_timings,
         read_pages=len(urls),
+        path_label=path_label,
     )
 
 
@@ -214,8 +229,9 @@ def _finish_light_web_qa(
     warning_start: int,
     stage_timings: dict[str, Any],
     event_callback: ResearchEventCallback | None = None,
+    path_label: str = "light_web_qa",
 ) -> dict[str, Any]:
-    candidate_limit = _light_candidate_limit(research_plan)
+    candidate_limit = _light_candidate_limit(research_plan, path_label=path_label)
     candidates = _light_candidates(query, raw_results, research_plan, limit=candidate_limit)
     quality = _light_search_quality(candidates, research_plan)
     _emit_from_thread(
@@ -224,8 +240,8 @@ def _finish_light_web_qa(
         search_quality=quality,
         web_sources=_trace_sources(candidates),
     )
-    selected, need_extract_refs = _select_candidates(query, candidates, research_plan, warnings)
-    read_limit = _light_extract_limit(research_plan)
+    selected, need_extract_refs = _select_candidates(query, candidates, research_plan, warnings, path_label)
+    read_limit = _light_extract_limit(research_plan, path_label=path_label)
     selected = selected[:read_limit]
     extracted_by_url: dict[str, str] = {}
     extract_failures: list[str] = []
@@ -262,6 +278,7 @@ def _finish_light_web_qa(
         warning_start=warning_start,
         stage_timings=stage_timings,
         read_pages=len(urls),
+        path_label=path_label,
     )
 
 
@@ -279,6 +296,7 @@ def _assemble_light_web_result(
     warning_start: int,
     stage_timings: dict[str, Any],
     read_pages: int,
+    path_label: str = "light_web_qa",
 ) -> dict[str, Any]:
     if raw_results and not sources:
         summary_candidates = _summary_fallback_candidates(query, candidates, research_plan)
@@ -299,7 +317,7 @@ def _assemble_light_web_result(
         sources=sources,
         stage_timings=stage_timings,
     )
-    provider_status["path"] = "light_web_qa"
+    provider_status["path"] = path_label
     provider_status["candidate_count"] = len(candidates)
     provider_status["read_pages"] = read_pages
     provider_status["used_sources"] = len(sources)
@@ -326,9 +344,20 @@ def _light_queries(query: str, research_plan: dict[str, Any]) -> list[str]:
     return queries[:MAX_WEB_QUERIES] or [query]
 
 
-def _limit_wrapped_search_adapter(search_adapter: ResearchSearchAdapter) -> ResearchSearchAdapter:
+def _light_query_limit(path_label: str = "light_web_qa") -> int:
+    if path_label == "web_assist":
+        return min(3, MAX_WEB_QUERIES)
+    return MAX_WEB_QUERIES
+
+
+def _limit_wrapped_search_adapter(
+    search_adapter: ResearchSearchAdapter,
+    *,
+    path_label: str = "light_web_qa",
+) -> ResearchSearchAdapter:
     def _wrapped(search_query: str, limit: int) -> str | dict[str, Any]:
-        return search_adapter(search_query, min(max(int(limit or LIGHT_RESULTS_PER_QUERY), 1), LIGHT_RESULTS_PER_QUERY))
+        per_query = WEB_ASSIST_RESULTS_PER_QUERY if path_label == "web_assist" else LIGHT_RESULTS_PER_QUERY
+        return search_adapter(search_query, min(max(int(limit or per_query), 1), per_query))
 
     return _wrapped
 
@@ -344,13 +373,21 @@ def _promote_mentioned_url_candidates(
     return _dedupe_web_results(mentioned + results)[:MAX_WEB_CANDIDATES]
 
 
-def _light_candidate_limit(research_plan: dict[str, Any]) -> int:
+def _light_candidate_limit(research_plan: dict[str, Any], *, path_label: str = "light_web_qa") -> int:
+    if path_label == "web_assist":
+        return WEB_ASSIST_MAX_CANDIDATES
     if research_plan.get("answer_depth") == "brief" and not research_plan.get("freshness_sensitive"):
         return LIGHT_SIMPLE_CANDIDATES
     return LIGHT_MAX_CANDIDATES
 
 
-def _light_extract_limit(research_plan: dict[str, Any]) -> int:
+def _light_extract_limit(research_plan: dict[str, Any], *, path_label: str = "light_web_qa") -> int:
+    if path_label == "web_assist":
+        if research_plan.get("risk_level") == "high" or research_plan.get("freshness_sensitive"):
+            return 2
+        if research_plan.get("answer_depth") == "detailed":
+            return 2
+        return 1
     if research_plan.get("answer_depth") == "brief" and not research_plan.get("freshness_sensitive"):
         return 3
     if research_plan.get("answer_depth") == "detailed" or research_plan.get("freshness_sensitive") or research_plan.get("risk_level") == "high":
@@ -517,10 +554,11 @@ def _select_candidates(
     candidates: list[dict[str, Any]],
     research_plan: dict[str, Any],
     warnings: list[str],
+    path_label: str = "light_web_qa",
 ) -> tuple[list[dict[str, Any]], set[str]]:
     if not candidates:
         return [], set()
-    read_limit = _light_extract_limit(research_plan)
+    read_limit = _light_extract_limit(research_plan, path_label=path_label)
     selection = _candidate_selection_plan(query, candidates, research_plan, read_limit)
     selected_refs = selection["selected_refs"]
     if selected_refs:
@@ -610,7 +648,7 @@ def _weak_sources_can_answer(query: str, research_plan: dict[str, Any]) -> bool:
     if not contract.get("allow_summary_only", True):
         return False
     text = f"{query} {research_plan.get('intent_label') or ''}"
-    return bool(re.search(r"什么是|是什么|什么意思|关系|区别|差异|介绍|who\\s+is|what\\s+is|relationship|difference", text, re.I))
+    return bool(re.search(r"什么是|是什么|什么意思|关系|区别|差异|介绍|解释|who\\s+is|what\\s+is|relationship|difference|explain", text, re.I))
 
 
 def _is_light_weak_source(source: dict[str, Any]) -> bool:

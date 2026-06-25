@@ -204,7 +204,12 @@ def run_case(
             search_adapter = _capture_call("search", fixture_search, io_capture) if capture_io else fixture_search
             extract_adapter = _capture_call("extract", fixture_extract, io_capture) if capture_io else fixture_extract
             synthesize_adapter = _capture_call("synthesis", fixture_synth, io_capture) if capture_io else fixture_synth
-            answer_func = research_bridge.light_web_answer if path == "light" else research_bridge.research_answer
+            if path == "assist":
+                answer_func = research_bridge.web_assist_answer
+            elif path == "light":
+                answer_func = research_bridge.light_web_answer
+            else:
+                answer_func = research_bridge.research_answer
             result = answer_func(
                 query=case["query"],
                 mode=case.get("mode") or "local_web",
@@ -222,7 +227,12 @@ def run_case(
                 research_bridge._search_local = _capture_call("local", original_local, io_capture)
                 research_bridge._default_web_search = _capture_call("search", original_search, io_capture)
                 research_bridge._default_web_extract = _capture_call("extract", original_extract, io_capture)
-            answer_func = research_bridge.light_web_answer if path == "light" else research_bridge.research_answer
+            if path == "assist":
+                answer_func = research_bridge.web_assist_answer
+            elif path == "light":
+                answer_func = research_bridge.light_web_answer
+            else:
+                answer_func = research_bridge.research_answer
             result = answer_func(
                 query=case["query"],
                 mode=case.get("mode") or "local_web",
@@ -753,7 +763,7 @@ def grade_case(case: dict[str, Any], result: dict[str, Any], *, live: bool = Fal
     rejected_titles = [str(item.get("title") or "") for item in rejected]
     candidate_titles = adopted_titles + clue_titles + rejected_titles
     research_trace = meta.get("research_trace") if isinstance(meta.get("research_trace"), dict) else {}
-    is_light_path = meta.get("path") == "light_web_qa" or research_trace.get("path") == "light_web_qa"
+    is_light_path = meta.get("path") in {"light_web_qa", "web_assist"} or research_trace.get("path") in {"light_web_qa", "web_assist"}
     source_counts = research_trace.get("source_counts") if isinstance(research_trace.get("source_counts"), dict) else {}
     attempted_domains = _attempted_domains(meta)
     allowed_refusal = bool(expect.get("allow_refusal_with_rejected_sources") and not adopted and rejected)
@@ -1015,9 +1025,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--live", action="store_true", help="Run against configured live search/LLM instead of fixtures")
     parser.add_argument(
         "--path",
-        choices=("auto", "legacy", "light"),
+        choices=("auto", "legacy", "light", "assist"),
         default="auto",
-        help="Research path to evaluate; auto uses light for live canaries and legacy for offline fixtures.",
+        help="Research path to evaluate; auto uses assist for live canaries and legacy for offline fixtures.",
     )
     parser.add_argument("--canary", action="store_true", help="Run the fixed low-cost canary suite")
     parser.add_argument("--ids", nargs="*", default=[], help="Run only the listed case ids")
@@ -1066,7 +1076,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     eval_path = args.path
     if eval_path == "auto":
-        eval_path = "light" if args.live else "legacy"
+        eval_path = "assist" if args.live else "legacy"
     suite = "canary" if args.canary else ("ids" if args.ids else "all")
     results: list[dict[str, Any]] = []
     for index, case in enumerate(cases, 1):

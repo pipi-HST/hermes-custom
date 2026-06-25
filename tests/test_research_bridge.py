@@ -4807,6 +4807,64 @@ def test_light_web_answer_skips_evidence_critic_and_reads_selected_candidates(mo
     assert seen_limits and max(seen_limits) == 8
 
 
+def test_web_assist_answer_uses_assist_budget_and_skips_default_extract(monkeypatch):
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_query_planner",
+        lambda payload: {
+            "intent_label": "concept explainer",
+            "needs_web": True,
+            "mode": "local_web",
+            "subject": {"name": "RAG", "type_hint": "concept"},
+            "queries": ["RAG retrieval augmented generation", "RAG concept", "RAG examples", "RAG architecture"],
+            "evidence_contract": {"allow_summary_only": True, "minimum_independent_sources": 1},
+        },
+    )
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_evidence_critic",
+        lambda _payload: (_ for _ in ()).throw(AssertionError("web assist must not call evidence critic")),
+    )
+    seen_queries: list[str] = []
+    seen_limits: list[int] = []
+
+    def fake_search(query, limit):
+        seen_queries.append(query)
+        seen_limits.append(limit)
+        return {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": f"RAG material {index}",
+                        "url": f"https://example{index}.com/rag",
+                        "description": "RAG combines retrieval with generation so answers can use relevant documents.",
+                    }
+                    for index in range(1, 9)
+                ]
+            },
+        }
+
+    result = research_bridge.web_assist_answer(
+        query="结合我的笔记和公开资料解释 RAG",
+        mode="local_web",
+        search_adapter=fake_search,
+        extract_adapter=lambda urls: (_ for _ in ()).throw(AssertionError("web assist should not extract this concept answer")),
+        synthesize_adapter=lambda payload: "RAG 是把检索材料交给模型生成答案的方法 [W1]",
+    )
+
+    trace = result["meta"]["research_trace"]
+    assert result["meta"]["path"] == "web_assist"
+    assert trace["path"] == "web_assist"
+    assert trace["legacy_research"] is False
+    assert trace["stage_timings"]["critic_ms"] == 0
+    assert trace["read_pages"] == 0
+    assert len(seen_queries) <= 3
+    assert seen_limits and max(seen_limits) == 6
+    assert result["meta"]["provider_status"]["candidate_count"] <= 12
+    assert all(source["extract_status"] == "summary" for source in result["meta"]["web_sources"])
+
+
 def test_light_web_answer_keeps_summary_sources_when_extract_fails(monkeypatch):
     monkeypatch.setattr(
         research_bridge,
