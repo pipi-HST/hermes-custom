@@ -172,6 +172,50 @@ def test_async_web_context_answer_emits_candidate_trace(monkeypatch):
     assert ranked[0]["web_sources"][0]["title"] == "什么是 Harness Engineering"
 
 
+def test_async_web_context_answer_streams_answer_delta(monkeypatch):
+    events = []
+
+    def fake_llm_json(prompt, *, timeout_seconds):
+        if "生成网页搜索词" in prompt:
+            return {"queries": ["Coding agent"]}
+        if "选择网页材料" in prompt:
+            return {"selected_refs": ["W1"], "open_refs": []}
+        return {}
+
+    def fake_search(_query, _limit):
+        return {
+            "results": [
+                {
+                    "title": "Coding agent guide",
+                    "url": "https://example.com/coding-agent",
+                    "description": "Coding agent 能规划、修改代码并运行检查。",
+                }
+            ]
+        }
+
+    def fake_call_text_llm_stream(_prompt, *, answer_delta_callback, **_kwargs):
+        answer_delta_callback("Coding agent")
+        answer_delta_callback(" 是能处理代码任务的 AI 系统 [W1]")
+        return "Coding agent 是能处理代码任务的 AI 系统 [W1]"
+
+    monkeypatch.setattr(web_context_answer, "_llm_json", fake_llm_json)
+    monkeypatch.setattr(web_context_answer, "_call_text_llm_stream", fake_call_text_llm_stream)
+
+    result = asyncio.run(
+        web_context_answer.async_web_context_answer(
+            query="什么是 Coding agent",
+            mode="web_only",
+            search_adapter=fake_search,
+            extract_adapter=lambda _urls: {"results": []},
+            event_callback=lambda event: events.append(event),
+        )
+    )
+
+    deltas = [event["delta"] for event in events if event["type"] == "answer_delta"]
+    assert deltas == ["Coding agent", " 是能处理代码任务的 AI 系统 [W1]"]
+    assert result["chat_preview"] == "Coding agent 是能处理代码任务的 AI 系统 [W1]"
+
+
 def test_web_context_answer_prompt_uses_generic_answer_contract(monkeypatch):
     prompts = []
 

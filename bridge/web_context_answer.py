@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Awaitable
 
+import httpx
+
 from agents.capture_agent import load_config
 
 from bridge.result_envelope import success_envelope
@@ -44,6 +46,7 @@ WEB_CONTEXT_SELECTION_TIMEOUT_SECONDS = 8
 WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS = 35
 
 LocalSearchAdapter = Callable[[str, list[str]], tuple[str, list[dict[str, Any]]]]
+AnswerDeltaCallback = Callable[[str], None]
 
 PROCESS_LANGUAGE_PREFIX_RE = re.compile(
     r"^\s*(?:"
@@ -72,6 +75,7 @@ def web_context_answer(
     extract_adapter: ResearchExtractAdapter,
     local_search_adapter: LocalSearchAdapter | None = None,
     synthesize_adapter: ResearchSynthesizeAdapter | None = None,
+    answer_delta_callback: AnswerDeltaCallback | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     clean_query = (query or "").strip()
@@ -147,7 +151,7 @@ def web_context_answer(
     answer = (
         synthesize_adapter(synthesis_input)
         if synthesize_adapter
-        else _generate_answer(synthesis_input, warnings)
+        else _generate_answer(synthesis_input, warnings, answer_delta_callback=answer_delta_callback)
     )
     _add_stage_timing(stage_timings, "synthesis_ms", synthesis_started)
     answer = _repair_answer_refs(answer, knowledge_sources, web_sources)
@@ -238,6 +242,30 @@ async def async_web_context_answer(
     clean_query = (query or "").strip()
     await _emit(event_callback, "plan", path="web_context", mode=_normalize_mode(mode), needs_web=mode in {"web_only", "local_web"})
     await _emit(event_callback, "web_search_start", path="web_context")
+    loop = asyncio.get_running_loop()
+    streaming_started = False
+
+    def emit_from_thread(event: str, **kwargs: Any) -> None:
+        if event_callback is None:
+            return
+        future = asyncio.run_coroutine_threadsafe(
+            _emit(event_callback, event, path="web_context", **kwargs),
+            loop,
+        )
+        try:
+            future.result(timeout=2.0)
+        except Exception:
+            return
+
+    def answer_delta_callback(delta: str) -> None:
+        nonlocal streaming_started
+        if not delta:
+            return
+        if not streaming_started:
+            streaming_started = True
+            emit_from_thread("synthesis_start")
+        emit_from_thread("answer_delta", delta=delta)
+
     result = await asyncio.to_thread(
         web_context_answer,
         query=clean_query,
@@ -248,6 +276,7 @@ async def async_web_context_answer(
         extract_adapter=extract_adapter,
         local_search_adapter=local_search_adapter,
         synthesize_adapter=synthesize_adapter,
+        answer_delta_callback=None if synthesize_adapter else answer_delta_callback,
     )
     meta = result.get("meta") or {}
     await _emit(
@@ -257,7 +286,8 @@ async def async_web_context_answer(
         search_quality=meta.get("search_quality") or {},
         web_sources=(meta.get("research_trace") or {}).get("candidate_sources") or [],
     )
-    await _emit(event_callback, "synthesis_start", path="web_context")
+    if not streaming_started:
+        await _emit(event_callback, "synthesis_start", path="web_context")
     return result
 
 
@@ -436,7 +466,12 @@ def _synthesis_payload(
     }
 
 
-def _generate_answer(payload: dict[str, Any], warnings: list[str]) -> str:
+def _generate_answer(
+    payload: dict[str, Any],
+    warnings: list[str],
+    *,
+    answer_delta_callback: AnswerDeltaCallback | None = None,
+) -> str:
     source_rows = [
         {
             "ref": source.get("ref"),
@@ -475,6 +510,12 @@ def _generate_answer(payload: dict[str, Any], warnings: list[str]) -> str:
         ]
     )
     try:
+        if answer_delta_callback is not None:
+            return _call_text_llm_stream(
+                prompt,
+                timeout_seconds=WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS,
+                answer_delta_callback=answer_delta_callback,
+            )
         return _call_text_llm(prompt, timeout_seconds=WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS)
     except Exception as exc:
         warnings.append(f"回答生成失败，已使用材料摘要：{exc}")
@@ -521,6 +562,60 @@ def _call_text_llm(
         timeout_seconds=timeout_seconds,
         reserve_seconds=0,
     )
+
+
+def _call_text_llm_stream(
+    prompt: str,
+    *,
+    timeout_seconds: float,
+    answer_delta_callback: AnswerDeltaCallback,
+    max_tokens: int = 1600,
+) -> str:
+    config = load_config(str(Path(__file__).resolve().parent.parent / "config.yaml"))
+    if not config.llm_api_key:
+        raise RuntimeError("LLM API key is not configured")
+    headers = {
+        "Authorization": f"Bearer {config.llm_api_key}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "model": config.llm_model,
+        "messages": [
+            {"role": "system", "content": "你是 Hermes Knowledge 的联网辅助理解模块。"},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+        "max_tokens": max(1200, min(int(max_tokens or 1600), 6000)),
+        "stream": True,
+    }
+    pieces: list[str] = []
+    with httpx.Client(timeout=max(1.0, float(timeout_seconds or WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS))) as client:
+        with client.stream(
+            "POST",
+            f"{config.llm_base_url or 'https://api.deepseek.com'}/chat/completions",
+            headers=headers,
+            json=body,
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                data = line.removeprefix("data:").strip()
+                if not data or data == "[DONE]":
+                    if data == "[DONE]":
+                        break
+                    continue
+                payload = json.loads(data)
+                choice = (payload.get("choices") or [{}])[0]
+                delta = (choice.get("delta") or {}).get("content") or ""
+                if not delta:
+                    continue
+                pieces.append(str(delta))
+                answer_delta_callback(str(delta))
+    answer = "".join(pieces).strip()
+    if not answer:
+        raise RuntimeError("empty streamed response")
+    return answer
 
 
 def _normalized_extract_map(extracted: dict[str, str]) -> dict[str, str]:
