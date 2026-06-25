@@ -4706,6 +4706,126 @@ def test_research_stage_timings_split_provider_trace(monkeypatch):
     assert result["meta"]["research_trace"]["stage_timings"] == stage_timings
 
 
+def test_light_web_answer_skips_evidence_critic_and_reads_selected_candidates(monkeypatch):
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_query_planner",
+        lambda payload: {
+            "intent_label": "concept explainer",
+            "needs_web": True,
+            "mode": "web_only",
+            "subject": {"name": "Palantir 本体论", "type_hint": "concept"},
+            "queries": ["Palantir 本体论", "Palantir ontology"],
+            "answer_depth": "detailed",
+            "evidence_contract": {"allow_summary_only": True, "minimum_independent_sources": 1},
+        },
+    )
+    monkeypatch.setattr(
+        "bridge.research.light_web_qa._llm_selected_refs",
+        lambda *_args, **_kwargs: ["W2", "W4", "W6", "W8"],
+    )
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_evidence_critic",
+        lambda _payload: (_ for _ in ()).throw(AssertionError("light path must not call evidence critic")),
+    )
+    seen_limits: list[int] = []
+
+    def fake_search(query, limit):
+        seen_limits.append(limit)
+        return {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": f"{query} source {index}",
+                        "url": f"https://example{index}.com/palantir-ontology",
+                        "description": f"Palantir ontology material {index}",
+                    }
+                    for index in range(1, 10)
+                ]
+            },
+        }
+
+    def fake_extract(urls):
+        return {
+            "results": [
+                {"url": url, "content": f"正文材料 {index}: Palantir 本体论解释"}
+                for index, url in enumerate(urls, 1)
+            ]
+        }
+
+    result = research_bridge.light_web_answer(
+        query="什么是 Palantir 的本体论？",
+        mode="web_only",
+        search_adapter=fake_search,
+        extract_adapter=fake_extract,
+        synthesize_adapter=lambda payload: "Palantir 本体论是数据语义建模方法 [W1][W2][W3][W4]",
+    )
+
+    trace = result["meta"]["research_trace"]
+    assert result["meta"]["path"] == "light_web_qa"
+    assert trace["path"] == "light_web_qa"
+    assert trace["legacy_research"] is False
+    assert trace["fallback_search"] is False
+    assert trace["stage_timings"]["critic_ms"] == 0
+    assert trace["candidate_count"] <= 20
+    assert trace["read_pages"] == 4
+    assert [source["extract_status"] for source in result["meta"]["web_sources"]] == ["full", "full", "full", "full"]
+    assert seen_limits and max(seen_limits) == 8
+
+
+def test_light_web_answer_keeps_summary_sources_when_extract_fails(monkeypatch):
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_query_planner",
+        lambda payload: {
+            "intent_label": "relationship explainer",
+            "needs_web": True,
+            "mode": "web_only",
+            "subject": {"name": "人工智能和深度学习", "type_hint": "concept"},
+            "queries": ["人工智能和深度学习的关系"],
+            "evidence_contract": {"allow_summary_only": True, "minimum_independent_sources": 1},
+        },
+    )
+    monkeypatch.setattr("bridge.research.light_web_qa._llm_selected_refs", lambda *_args, **_kwargs: ["W1", "W2", "W3"])
+
+    result = research_bridge.light_web_answer(
+        query="人工智能和深度学习的关系是什么？",
+        mode="web_only",
+        search_adapter=lambda *_args: {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "人工智能、机器学习、深度学习的关系",
+                        "url": "https://example.com/ai-ml-dl",
+                        "description": "深度学习是机器学习的一种，也是人工智能的重要技术路径。",
+                    },
+                    {
+                        "title": "AI and deep learning",
+                        "url": "https://example.org/deep-learning",
+                        "description": "AI is the broader field; deep learning is a machine-learning approach.",
+                    },
+                    {
+                        "title": "深度学习简介",
+                        "url": "https://example.net/dl",
+                        "description": "深度学习使用多层神经网络学习表示。",
+                    },
+                ]
+            },
+        },
+        extract_adapter=lambda urls: {"results": [{"url": url, "content": "", "error": "timeout"} for url in urls]},
+        synthesize_adapter=lambda payload: "深度学习是人工智能领域内的重要技术路径 [W1][W2]",
+    )
+
+    assert result["meta"]["used_web"] is True
+    assert result["meta"]["research_trace"]["path"] == "light_web_qa"
+    assert result["meta"]["research_trace"]["stage_timings"]["critic_ms"] == 0
+    assert result["meta"]["provider_status"]["summary_only_pages"] >= 2
+    assert all(source["extract_status"] == "summary" for source in result["meta"]["web_sources"])
+
+
 def test_default_web_extract_falls_back_to_local_for_search_only_backend(monkeypatch):
     fake_tools_pkg = types.ModuleType("tools")
     fake_tools = types.ModuleType("tools.web_tools")
@@ -4735,22 +4855,28 @@ def test_default_web_extract_falls_back_to_local_for_search_only_backend(monkeyp
     assert result["meta"]["fallback_extract_backend"] == "local_http"
 
 
-def test_default_web_extract_falls_back_to_local_for_dashscope_source_card_backend(monkeypatch):
+def test_default_web_extract_uses_dashscope_extract_backend(monkeypatch):
     fake_tools_pkg = types.ModuleType("tools")
     fake_tools = types.ModuleType("tools.web_tools")
     fake_tools._get_extract_backend = lambda: "dashscope"
-    fake_tools.web_extract_tool = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-        AssertionError("dashscope returns source cards and should not be called for extract")
-    )
+    calls = []
+
+    def fake_web_extract_tool(urls, **kwargs):
+        calls.append((urls, kwargs))
+        return {
+            "success": True,
+            "results": [{"url": urls[0], "content": "DashScope 抽取正文"}],
+            "meta": {"extract_backend": "dashscope"},
+        }
+
+    fake_tools.web_extract_tool = fake_web_extract_tool
     fake_tools_pkg.web_tools = fake_tools
     monkeypatch.setattr(
         research_bridge,
         "_local_web_extract",
-        lambda urls, extract_backend="": {
-            "success": True,
-            "results": [{"url": urls[0], "content": "本地抽取正文"}],
-            "meta": {"extract_backend": extract_backend, "fallback_extract_backend": "local_http"},
-        },
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dashscope should use web_extract_tool")
+        ),
     )
     monkeypatch.setattr(research_bridge, "_ensure_main_repo_on_path", lambda: None)
     monkeypatch.setitem(sys.modules, "tools", fake_tools_pkg)
@@ -4759,9 +4885,9 @@ def test_default_web_extract_falls_back_to_local_for_dashscope_source_card_backe
     result = research_bridge._default_web_extract(["https://example.com"])
 
     assert result["success"] is True
-    assert result["results"][0]["content"] == "本地抽取正文"
+    assert result["results"][0]["content"] == "DashScope 抽取正文"
     assert result["meta"]["extract_backend"] == "dashscope"
-    assert result["meta"]["fallback_extract_backend"] == "local_http"
+    assert calls == [(["https://example.com"], {"format": "markdown", "use_llm_processing": False})]
 
 
 def test_default_web_extract_falls_back_to_local_for_missing_extract_backend(monkeypatch):

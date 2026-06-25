@@ -19,11 +19,11 @@ ResearchEvidenceCriticAdapter = Callable[[dict[str, Any]], str | dict[str, Any]]
 VALID_MODES = {"current_article_only", "local_only", "local_web", "web_only"}
 
 # Search and extraction limits
-MAX_WEB_RESULTS = 5
+MAX_WEB_RESULTS = 8
 MAX_EXTRACT_URLS = 3
-MAX_DYNAMIC_EXTRACT_URLS = 6
+MAX_DYNAMIC_EXTRACT_URLS = 8
 MAX_WEB_QUERIES = 4
-MAX_WEB_CANDIDATES = 12
+MAX_WEB_CANDIDATES = 20
 
 # Timeout configuration (seconds)
 WEB_SEARCH_TIMEOUT_SECONDS = float(os.environ.get("HERMES_WEB_SEARCH_TIMEOUT_SECONDS", "35"))
@@ -44,7 +44,7 @@ LOCAL_EXTRACT_TIMEOUT_SECONDS = float(os.environ.get("HERMES_LOCAL_EXTRACT_TIMEO
 LOCAL_EXTRACT_MAX_WORKERS = int(os.environ.get("HERMES_LOCAL_EXTRACT_MAX_WORKERS", "4"))
 
 # Search backend configuration
-SEARCH_ONLY_EXTRACT_BACKENDS = {"brave-free", "dashscope", "ddgs", "searxng"}
+SEARCH_ONLY_EXTRACT_BACKENDS = {"brave-free", "ddgs", "searxng"}
 FALLBACK_SEARCH_BACKENDS = ("brave-free", "ddgs", "searxng", "tavily", "exa", "parallel", "firecrawl")
 MAX_FALLBACK_SEARCH_BACKENDS = 2
 

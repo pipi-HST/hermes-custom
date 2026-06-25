@@ -308,6 +308,10 @@ from bridge.research.orchestration import (
     run_web_research,
     run_web_research_async,
 )
+from bridge.research.light_web_qa import (
+    run_light_web_qa,
+    run_light_web_qa_async,
+)
 from bridge.research.results import web_research_result
 from bridge.research.adapters import (
     _legacy_search_web as _adapter_legacy_search_web,
@@ -441,6 +445,327 @@ _search_infra_module._fetch_url_summary = _fetch_url_summary
 
 # Domain scoring data moved to config/source_preferences.yaml —
 # access via ``agents.source_registry.get_registry()``.
+
+
+def light_web_answer(
+    *,
+    query: str,
+    mode: str = "local_web",
+    article_context: dict[str, Any] | None = None,
+    selection_context: dict[str, Any] | None = None,
+    export_file: bool = False,
+    search_adapter: ResearchSearchAdapter | None = None,
+    extract_adapter: ResearchExtractAdapter | None = None,
+    synthesize_adapter: ResearchSynthesizeAdapter | None = None,
+) -> dict[str, Any]:
+    """Answer with the lightweight web QA path.
+
+    This is the product-default web path.  It searches, bounds candidates,
+    reads selected pages, keeps summary fallback, and skips legacy evidence
+    critic/repair stages.
+    """
+    normalized_mode = _normalize_mode(mode)
+    clean_query = (query or "").strip()
+    if not clean_query:
+        return success_envelope(
+            agent="research",
+            intent="light_web_answer",
+            chat_preview="请先输入要研究的问题。",
+            meta={"query": query, "mode": normalized_mode, "path": "light_web_qa"},
+        )
+    _start_research_budget()
+
+    article_context = article_context or {}
+    selection_context = selection_context or {}
+    research_plan = plan_research(
+        clean_query,
+        mode=normalized_mode,
+        article_context=article_context,
+        selection_context=selection_context,
+    )
+    research_plan = {
+        **research_plan,
+        "path": "light_web_qa",
+        "legacy_research": False,
+    }
+    use_article = bool(article_context)
+    use_local = normalized_mode in {"local_only", "local_web"}
+    use_web = normalized_mode in {"web_only", "local_web"} and bool(research_plan.get("needs_web"))
+
+    warnings: list[str] = []
+    local_answer = ""
+    knowledge_sources: list[dict[str, Any]] = []
+    if use_local:
+        local_answer, knowledge_sources = _search_local(clean_query, warnings)
+
+    web_sources: list[dict[str, Any]] = []
+    web_research: dict[str, Any] = _empty_web_research(
+        clean_query,
+        article_context,
+        selection_context,
+        research_plan=research_plan,
+    )
+    if use_web:
+        web_research = run_light_web_qa(
+            clean_query,
+            warnings,
+            research_plan=research_plan,
+            search_adapter=search_adapter or _default_web_search,
+            extract_adapter=extract_adapter or _default_web_extract,
+        )
+        web_sources = web_research["sources"]
+
+    result = _finalize_research_answer(
+        clean_query=clean_query,
+        normalized_mode=normalized_mode,
+        article_context=article_context,
+        selection_context=selection_context,
+        local_answer=local_answer,
+        knowledge_sources=knowledge_sources,
+        web_sources=web_sources,
+        web_research=web_research,
+        research_plan=research_plan,
+        use_article=use_article,
+        use_local=use_local,
+        use_web=use_web,
+        warnings=warnings,
+        export_file=export_file,
+        synthesize_adapter=synthesize_adapter,
+        intent="light_web_answer",
+    )
+    result["meta"]["path"] = "light_web_qa"
+    result["meta"]["legacy_research"] = False
+    return result
+
+
+async def async_light_web_answer(
+    *,
+    query: str,
+    mode: str = "local_web",
+    article_context: dict[str, Any] | None = None,
+    selection_context: dict[str, Any] | None = None,
+    export_file: bool = False,
+    search_adapter: ResearchSearchAdapter | None = None,
+    extract_adapter: ResearchExtractAdapter | None = None,
+    synthesize_adapter: ResearchSynthesizeAdapter | None = None,
+    event_callback: ResearchEventCallback | None = None,
+) -> dict[str, Any]:
+    """Async lightweight web QA answer for dashboard/streaming callers."""
+    normalized_mode = _normalize_mode(mode)
+    clean_query = (query or "").strip()
+    if not clean_query:
+        return success_envelope(
+            agent="research",
+            intent="light_web_answer",
+            chat_preview="请先输入要研究的问题。",
+            meta={"query": query, "mode": normalized_mode, "path": "light_web_qa"},
+        )
+    _start_research_budget()
+
+    article_context = article_context or {}
+    selection_context = selection_context or {}
+    await _emit_research_event_async(event_callback, "planning_start", mode=normalized_mode)
+    research_plan = plan_research(
+        clean_query,
+        mode=normalized_mode,
+        article_context=article_context,
+        selection_context=selection_context,
+    )
+    research_plan = {
+        **research_plan,
+        "path": "light_web_qa",
+        "legacy_research": False,
+    }
+    await _emit_research_event_async(
+        event_callback,
+        "plan",
+        mode=normalized_mode,
+        plan_status=research_plan.get("plan_status"),
+        needs_web=bool(research_plan.get("needs_web")),
+        queries=list(research_plan.get("queries") or []),
+        intent_label=research_plan.get("intent_label") or "",
+        path="light_web_qa",
+    )
+    use_article = bool(article_context)
+    use_local = normalized_mode in {"local_only", "local_web"}
+    use_web = normalized_mode in {"web_only", "local_web"} and bool(research_plan.get("needs_web"))
+
+    warnings: list[str] = []
+    local_answer = ""
+    knowledge_sources: list[dict[str, Any]] = []
+    if use_local:
+        await _emit_research_event_async(event_callback, "local_search_start")
+        local_answer, knowledge_sources = await asyncio.to_thread(_search_local, clean_query, warnings)
+        await _emit_research_event_async(
+            event_callback,
+            "local_search_done",
+            knowledge_sources=_trace_sources(knowledge_sources),
+        )
+
+    web_sources: list[dict[str, Any]] = []
+    web_research: dict[str, Any] = _empty_web_research(
+        clean_query,
+        article_context,
+        selection_context,
+        research_plan=research_plan,
+    )
+    if use_web:
+        await _emit_research_event_async(
+            event_callback,
+            "web_search_start",
+            queries=list(research_plan.get("queries") or []),
+            path="light_web_qa",
+        )
+        web_research = await run_light_web_qa_async(
+            clean_query,
+            warnings,
+            research_plan=research_plan,
+            search_adapter=search_adapter or _default_web_search,
+            extract_adapter=extract_adapter or _default_web_extract,
+            event_callback=event_callback,
+        )
+        web_sources = web_research["sources"]
+
+    await _emit_research_event_async(event_callback, "synthesis_start", path="light_web_qa")
+    result = await asyncio.to_thread(
+        _finalize_research_answer,
+        clean_query=clean_query,
+        normalized_mode=normalized_mode,
+        article_context=article_context,
+        selection_context=selection_context,
+        local_answer=local_answer,
+        knowledge_sources=knowledge_sources,
+        web_sources=web_sources,
+        web_research=web_research,
+        research_plan=research_plan,
+        use_article=use_article,
+        use_local=use_local,
+        use_web=use_web,
+        warnings=warnings,
+        export_file=export_file,
+        synthesize_adapter=synthesize_adapter,
+        intent="light_web_answer",
+    )
+    result["meta"]["path"] = "light_web_qa"
+    result["meta"]["legacy_research"] = False
+    if warnings:
+        await _emit_research_event_async(event_callback, "warnings", warnings=_unique(warnings))
+    return result
+
+
+def _finalize_research_answer(
+    *,
+    clean_query: str,
+    normalized_mode: str,
+    article_context: dict[str, Any],
+    selection_context: dict[str, Any],
+    local_answer: str,
+    knowledge_sources: list[dict[str, Any]],
+    web_sources: list[dict[str, Any]],
+    web_research: dict[str, Any],
+    research_plan: dict[str, Any],
+    use_article: bool,
+    use_local: bool,
+    use_web: bool,
+    warnings: list[str],
+    export_file: bool,
+    synthesize_adapter: ResearchSynthesizeAdapter | None,
+    intent: str,
+) -> dict[str, Any]:
+    synthesis_input = {
+        "query": clean_query,
+        "mode": normalized_mode,
+        "article_context": article_context,
+        "selection_context": selection_context,
+        "local_answer": local_answer,
+        "knowledge_sources": knowledge_sources,
+        "web_sources": web_sources,
+        "web_queries": web_research["queries"],
+        "research_plan": research_plan,
+        "plan_status": research_plan.get("plan_status"),
+        "search_quality": web_research["search_quality"],
+        "rewritten_web_queries": web_research["rewritten_queries"],
+        "provider_status": web_research["provider_status"],
+        "retrieved_web_sources": web_research["retrieved_sources"],
+        "clue_sources": web_research["clue_sources"],
+        "rejected_sources": web_research["rejected_sources"],
+        "used_article": use_article,
+        "used_local": use_local,
+        "used_web": bool(web_sources),
+    }
+    stage_timings = _ensure_stage_timings(synthesis_input["provider_status"])
+    synthesis_started = time.monotonic()
+    if _should_use_low_quality_fallback(synthesis_input):
+        answer = _low_quality_fallback_answer(synthesis_input)
+    else:
+        answer = (
+            synthesize_adapter(synthesis_input)
+            if synthesize_adapter
+            else _synthesize_answer(synthesis_input, warnings)
+        )
+    _add_stage_timing(stage_timings, "synthesis_ms", synthesis_started)
+    answer = _ensure_valid_citations(answer, synthesis_input, warnings)
+    answer = _ensure_preferred_domain_citation(answer, synthesis_input)
+    answer = _ensure_no_unavailable_source_mentions(answer, synthesis_input, warnings)
+    answer = _ensure_no_unsupported_metric_values(answer, synthesis_input, warnings)
+    if use_web and not web_sources:
+        warnings.append(_no_web_sources_warning(use_local=use_local, use_article=use_article))
+    if research_plan.get("risk_level") == "high":
+        warnings.append("该问题涉及高风险或强时效判断，请优先核对官方公告、原始报告或主流可靠来源；AI 综合不构成投资、法律或医疗建议。")
+
+    answer, cited_knowledge_sources, cited_web_sources = _normalize_cited_sources_and_answer(
+        answer,
+        knowledge_sources,
+        web_sources,
+    )
+    answer, cited_knowledge_sources, cited_web_sources = _ensure_source_backed_final_answer(
+        answer,
+        synthesis_input,
+        cited_knowledge_sources,
+        cited_web_sources,
+        warnings,
+    )
+    synthesis_input["knowledge_sources"] = cited_knowledge_sources
+    synthesis_input["web_sources"] = cited_web_sources
+    synthesis_input["used_web"] = bool(cited_web_sources)
+    source_map = [
+        _source_map_item(source, "knowledge", index)
+        for index, source in enumerate(cited_knowledge_sources, 1)
+    ] + [
+        _source_map_item(source, "web", index)
+        for index, source in enumerate(cited_web_sources, 1)
+    ]
+    return success_envelope(
+        agent="research",
+        intent=intent,
+        chat_preview=answer,
+        source_map=source_map,
+        warnings=_unique(warnings),
+        meta={
+            "query": clean_query,
+            "mode": normalized_mode,
+            "answer": answer,
+            "knowledge_sources": cited_knowledge_sources,
+            "web_sources": cited_web_sources,
+            "retrieved_knowledge_sources": knowledge_sources,
+            "retrieved_web_sources": web_research["retrieved_sources"],
+            "clue_sources": web_research["clue_sources"],
+            "rejected_sources": web_research["rejected_sources"],
+            "web_queries": synthesis_input["web_queries"],
+            "query_intent": research_plan.get("intent_label") or "",
+            "research_plan": research_plan,
+            "plan_status": synthesis_input["plan_status"],
+            "search_quality": synthesis_input["search_quality"],
+            "rewritten_web_queries": synthesis_input["rewritten_web_queries"],
+            "provider_status": synthesis_input["provider_status"],
+            "research_trace": _build_research_trace(synthesis_input, warnings),
+            "used_article": use_article,
+            "used_local": use_local,
+            "used_web": bool(cited_web_sources),
+            "web_search_attempted": use_web,
+            "export_file": export_file,
+        },
+    )
 
 
 def research_answer(

@@ -100,6 +100,7 @@ def _build_synthesis_prompt(payload: dict[str, Any]) -> str:
     article = payload.get("article_context") or {}
     selection = payload.get("selection_context") or {}
     plan = payload.get("research_plan") or {}
+    light_path = plan.get("path") == "light_web_qa"
     answer_contract = _sanitize_answer_contract(plan.get("answer_contract") or {})
     evidence_contract = _sanitize_evidence_contract(plan.get("evidence_contract") or {})
     parts = [
@@ -121,14 +122,27 @@ def _build_synthesis_prompt(payload: dict[str, Any]) -> str:
         "- 需要引用联网资料时，只能使用提供的 [W1] [W2] ... 编号。",
         "- 方括号来源标记只允许使用上述 [K数字]/[W数字]；不要写 [文档目录：...]、[来源：...] 或其他自定义来源标签。",
         "- 不要编造来源；没有依据时明确说不确定。",
-        "- 只能使用通过证据合同的 K/W 来源回答；不要引用候选、线索或被拒绝来源。",
-        "- 不要补充 K/W 来源没有直接支持的排名、指标、现任职位、最新事实或精确数值。",
-        "- 如果联网来源带有 supports_claims，只能用该来源支撑这些列出的 claim；未列出的 claim 必须说未确认或不写。",
         "- 如果官方/原始来源与媒体、百科、博客等二手来源冲突，必须以官方/原始来源为准；除非有更新的官方来源证明变更，不能用二手报道覆盖官方来源。",
         '- 回答"现任/当前/现在"类职位问题时，官方机构页面、任命公告、政府公告优先级最高；媒体报道只能作为补充，不能推翻官方来源。',
         '- 不要在回答正文末尾生成"参考来源"或来源清单；来源由界面统一展示在最底部。',
         "- 当前文章和选区用于理解用户指代；除非用户明确要求比较文章内容，否则不要展开文章里的旁支主题。",
     ]
+    if light_path:
+        parts.extend(
+            [
+                "- 当前是轻量联网答疑路径：可以综合已提供的网页正文和搜索摘要，但必须引用实际提供的 [W] 来源。",
+                "- 搜索摘要可以作为有限材料使用；如果来源主要是摘要或二手解读，需要在回答中说明证据限制。",
+                "- 不要因为来源不是审计级证据就拒绝回答普通解释题；但不要把医疗、法律、金融等高风险问题包装成确定建议。",
+            ]
+        )
+    else:
+        parts.extend(
+            [
+                "- 只能使用通过证据合同的 K/W 来源回答；不要引用候选、线索或被拒绝来源。",
+                "- 不要补充 K/W 来源没有直接支持的排名、指标、现任职位、最新事实或精确数值。",
+                "- 如果联网来源带有 supports_claims，只能用该来源支撑这些列出的 claim；未列出的 claim 必须说未确认或不写。",
+            ]
+        )
     if payload.get("mode") == "web_only":
         parts.append("- 当前是纯联网模式：主要依据必须来自联网资料，不要把当前文章正文当作主依据。")
     if plan.get("risk_level") == "high" or plan.get("freshness_sensitive"):
@@ -318,6 +332,8 @@ def _build_research_trace(payload: dict[str, Any], warnings: list[str]) -> dict[
     clue_sources = _trace_sources(payload.get("clue_sources") or [])
     rejected_sources = _trace_sources(payload.get("rejected_sources") or [])
     return {
+        "path": plan.get("path") or provider_status.get("path") or "legacy_research",
+        "legacy_research": bool(plan.get("legacy_research", True)),
         "mode": payload.get("mode"),
         "subject": plan.get("subject") or {},
         "evidence_contract": plan.get("evidence_contract") or {},
@@ -343,6 +359,7 @@ def _build_research_trace(payload: dict[str, Any], warnings: list[str]) -> dict[
         "stage_timings": stage_timings,
         "retrieval_health": retrieval_health,
         "fallback_attempts": provider_status.get("fallback_attempts") or [],
+        "fallback_search": bool(provider_status.get("fallback_search") or provider_status.get("fallback_attempts")),
         "search_quality": quality,
         "sources": web_source_trace,
         "web_sources": web_source_trace,
@@ -363,6 +380,10 @@ def _build_research_trace(payload: dict[str, Any], warnings: list[str]) -> dict[
             "retrieval_candidate": int((retrieval_health or {}).get("candidate_count") or 0),
             "retrieval_independent_domains": int((retrieval_health or {}).get("independent_domain_count") or 0),
         },
+        "candidate_count": int(provider_status.get("candidate_count") or len(candidate_sources)),
+        "read_pages": int(provider_status.get("read_pages") or 0),
+        "summary_sources": int(provider_status.get("summary_only_pages") or 0),
+        "used_sources": int(provider_status.get("used_sources") or len(web_source_trace)),
         "evidence_status": quality.get("evidence_status") or ("sufficient" if quality.get("passed") else "insufficient"),
         "warnings": _unique(list(provider_status.get("warnings") or []) + list(warnings)),
     }
