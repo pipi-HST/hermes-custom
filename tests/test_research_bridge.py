@@ -2,6 +2,7 @@ import asyncio
 import sys
 import time
 import types
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,36 @@ from bridge import research_bridge
 @pytest.fixture(autouse=True)
 def disable_default_query_planner(monkeypatch):
     monkeypatch.setattr(research_bridge, "_default_query_planner", lambda payload: [])
+
+
+def test_default_query_planner_loads_repo_root_config(monkeypatch):
+    recorded = {}
+
+    def fake_load_config(path):
+        recorded["config_path"] = path
+        return types.SimpleNamespace(
+            llm_api_key="test-key",
+            llm_model="test-model",
+            llm_base_url="https://llm.example",
+        )
+
+    import agents.capture_agent as capture_agent
+    monkeypatch.setattr(capture_agent, "load_config", fake_load_config)
+
+    import bridge.research.synthesis as synthesis
+
+    def fake_call_llm(**kwargs):
+        recorded["llm_kwargs"] = kwargs
+        return '{"needs_web":true,"queries":["OpenAI official"],"subject":{"name":"OpenAI"}}'
+
+    monkeypatch.setattr(synthesis, "_call_llm", fake_call_llm)
+
+    raw = research_bridge._original_default_query_planner({"query": "OpenAI 是什么", "mode": "web_only"})
+
+    expected = Path(research_bridge.__file__).resolve().parent.parent / "config.yaml"
+    assert recorded["config_path"] == str(expected)
+    assert raw
+    assert recorded["llm_kwargs"]["api_key"] == "test-key"
 
 
 def test_research_planner_accepts_structured_plan():
@@ -60,8 +91,9 @@ def test_research_planner_accepts_structured_plan():
 
 
 def test_research_planner_rejects_invalid_json_and_uses_mechanical_fallback():
-    queries = research_bridge.plan_web_queries(
+    plan = research_bridge.plan_research(
         "什么是τ定律",
+        mode="web_only",
         selection_context={
             "selected_text": "τ定律",
             "surrounding_after": "这是一段不应被 fallback 拼进搜索词的私有上下文。",
@@ -69,17 +101,66 @@ def test_research_planner_rejects_invalid_json_and_uses_mechanical_fallback():
         query_planner_adapter=lambda payload: "not-json",
     )
 
-    assert queries == ["什么是τ定律", "什么是tau定律"]
-    assert all("私有上下文" not in query for query in queries)
+    assert plan["queries"] == ["什么是τ定律", "什么是tau定律"]
+    assert all("私有上下文" not in query for query in plan["queries"])
+    assert plan["planner_fallback_reason"] == "invalid_json"
+    assert plan["planner_raw_preview"] == "not-json"
+    assert plan["planner_parse_error"]
 
 
 def test_research_planner_handles_adapter_timeout_with_fallback():
-    queries = research_bridge.plan_web_queries(
+    plan = research_bridge.plan_research(
         "Explain λ calculus",
+        mode="web_only",
         query_planner_adapter=lambda payload: (_ for _ in ()).throw(TimeoutError("planner timeout")),
     )
 
-    assert queries == ["Explain λ calculus", "Explain lambda calculus"]
+    assert plan["queries"] == ["Explain λ calculus", "Explain lambda calculus"]
+    assert plan["planner_fallback_reason"] == "planner_timeout"
+    assert "TimeoutError" in plan["planner_error"]
+    assert isinstance(plan["planner_elapsed_ms"], int)
+
+
+def test_research_planner_records_schema_rejected_payload():
+    plan = research_bridge.plan_research(
+        "这是什么",
+        mode="web_only",
+        query_planner_adapter=lambda payload: {
+            "needs_web": True,
+            "queries": [],
+            "subject": {"name": ""},
+        },
+    )
+
+    assert plan["plan_status"] == "fallback"
+    assert plan["planner_fallback_reason"] == "schema_rejected"
+    assert plan["planner_parse_error"] == "schema rejected planner payload"
+    assert "needs_web" in plan["planner_raw_preview"]
+
+
+def test_research_trace_exposes_planner_diagnostics():
+    plan = research_bridge.plan_research(
+        "OpenAI 是什么",
+        mode="web_only",
+        query_planner_adapter=lambda payload: "not-json",
+    )
+
+    trace = research_bridge._build_research_trace(
+        {
+            "mode": "web_only",
+            "research_plan": plan,
+            "plan_status": plan["plan_status"],
+            "provider_status": {},
+            "search_quality": {},
+            "web_queries": [],
+            "rewritten_web_queries": [],
+        },
+        [],
+    )
+
+    assert trace["planner_fallback_reason"] == "invalid_json"
+    assert trace["planner_raw_preview"] == "not-json"
+    assert trace["planner_parse_error"]
 
 
 def test_research_planner_fallback_extracts_subject_before_followup_instruction():

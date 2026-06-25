@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -69,7 +70,7 @@ def plan_research(
     """Plan research: determine queries, source preferences, and evidence requirements."""
     raw_query = (query or "").strip()
     normalized_mode = _normalize_mode(mode)
-    plan = _planned_research_plan(
+    plan, planner_diagnostics = _planned_research_plan_with_diagnostics(
         raw_query,
         mode=normalized_mode,
         article_context=article_context,
@@ -77,8 +78,14 @@ def plan_research(
         query_planner_adapter=query_planner_adapter,
     )
     if plan:
-        return _apply_mode_contract_to_plan(plan, raw_query, normalized_mode, selection_context=selection_context)
-    return _fallback_research_plan(raw_query, normalized_mode, selection_context=selection_context)
+        adjusted = _apply_mode_contract_to_plan(plan, raw_query, normalized_mode, selection_context=selection_context)
+        return _with_planner_diagnostics(adjusted, planner_diagnostics)
+    return _fallback_research_plan(
+        raw_query,
+        normalized_mode,
+        selection_context=selection_context,
+        planner_diagnostics=planner_diagnostics,
+    )
 
 
 def _is_high_risk_query(query: str) -> bool:
@@ -198,15 +205,90 @@ def _planned_research_plan(
     selection_context: dict[str, Any] | None = None,
     query_planner_adapter: ResearchQueryPlannerAdapter | None = None,
 ) -> dict[str, Any] | None:
+    plan, _diagnostics = _planned_research_plan_with_diagnostics(
+        query,
+        mode=mode,
+        article_context=article_context,
+        selection_context=selection_context,
+        query_planner_adapter=query_planner_adapter,
+    )
+    return plan
+
+
+def _planned_research_plan_with_diagnostics(
+    query: str,
+    *,
+    mode: str,
+    article_context: dict[str, Any] | None = None,
+    selection_context: dict[str, Any] | None = None,
+    query_planner_adapter: ResearchQueryPlannerAdapter | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     import sys
     # Look up _default_query_planner from module globals to allow patching
     planner_module = sys.modules[__name__]
     adapter = query_planner_adapter or getattr(planner_module, "_default_query_planner", _default_query_planner)
+    diagnostics = _empty_planner_diagnostics()
+    started = time.monotonic()
     try:
         raw = adapter(_query_planner_payload(query, mode, article_context, selection_context))
-    except Exception:
-        return None
-    return _parse_research_plan(raw, query=query, mode=mode, selection_context=selection_context)
+    except Exception as exc:
+        diagnostics["planner_elapsed_ms"] = _elapsed_ms(started)
+        diagnostics["planner_error"] = _planner_error_message(exc)
+        diagnostics["planner_fallback_reason"] = _planner_exception_reason(exc)
+        return None, diagnostics
+    diagnostics["planner_elapsed_ms"] = _elapsed_ms(started)
+    diagnostics["planner_raw_preview"] = _planner_raw_preview(raw)
+    plan, parse_diagnostics = _parse_research_plan_with_diagnostics(
+        raw,
+        query=query,
+        mode=mode,
+        selection_context=selection_context,
+    )
+    diagnostics.update({key: value for key, value in parse_diagnostics.items() if value not in ("", 0)})
+    return plan, diagnostics
+
+
+def _empty_planner_diagnostics() -> dict[str, Any]:
+    return {
+        "planner_error": "",
+        "planner_elapsed_ms": 0,
+        "planner_raw_preview": "",
+        "planner_parse_error": "",
+        "planner_fallback_reason": "",
+    }
+
+
+def _with_planner_diagnostics(plan: dict[str, Any], diagnostics: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(plan)
+    for key, value in _empty_planner_diagnostics().items():
+        updated[key] = diagnostics.get(key, value)
+    return updated
+
+
+def _elapsed_ms(started: float) -> int:
+    return max(0, int((time.monotonic() - started) * 1000))
+
+
+def _planner_error_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    return _clip_text(f"{type(exc).__name__}: {message}" if message else type(exc).__name__, 300)
+
+
+def _planner_exception_reason(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return "planner_timeout"
+    return "planner_exception"
+
+
+def _planner_raw_preview(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return _clip_text(raw, 500)
+    try:
+        return _clip_text(json.dumps(raw, ensure_ascii=False), 500)
+    except (TypeError, ValueError):
+        return _clip_text(str(raw), 500)
 
 
 def _query_planner_payload(
@@ -231,10 +313,10 @@ def _query_planner_payload(
 
 
 def _default_query_planner(payload: dict[str, Any]) -> str | list[str] | dict[str, Any]:
-    from config import load_config
+    from agents.capture_agent import load_config
     from bridge.research.synthesis import _call_llm
 
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    config = load_config(str(Path(__file__).parent.parent.parent / "config.yaml"))
     if not config.llm_api_key:
         return []
     prompt = _build_query_planner_prompt(payload)
@@ -305,27 +387,66 @@ def _parse_research_plan(
     mode: str,
     selection_context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    plan, _diagnostics = _parse_research_plan_with_diagnostics(
+        raw,
+        query=query,
+        mode=mode,
+        selection_context=selection_context,
+    )
+    return plan
+
+
+def _parse_research_plan_with_diagnostics(
+    raw: str | list[str] | dict[str, Any],
+    *,
+    query: str,
+    mode: str,
+    selection_context: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    diagnostics = _empty_planner_diagnostics()
     if isinstance(raw, list):
         if not raw:
-            return None
+            diagnostics["planner_fallback_reason"] = "empty_planner_result"
+            return None, diagnostics
         privacy = _sanitize_privacy({"may_use_selection_text": False, "allowed_context_terms": []})
         queries = _sanitize_planned_queries(raw, query=query, selection_context=selection_context, privacy=privacy)
         if not queries:
-            return None
-        return _research_plan_from_payload({"queries": queries, "needs_web": True}, query=query, mode=mode, selection_context=selection_context)
+            diagnostics["planner_fallback_reason"] = "empty_planner_queries"
+            return None, diagnostics
+        plan = _research_plan_from_payload({"queries": queries, "needs_web": True}, query=query, mode=mode, selection_context=selection_context)
+        if not plan:
+            diagnostics["planner_parse_error"] = "schema rejected planner list"
+            diagnostics["planner_fallback_reason"] = "schema_rejected"
+            return None, diagnostics
+        return plan, diagnostics
     if isinstance(raw, dict):
-        return _research_plan_from_payload(raw, query=query, mode=mode, selection_context=selection_context)
+        plan = _research_plan_from_payload(raw, query=query, mode=mode, selection_context=selection_context)
+        if not plan:
+            diagnostics["planner_parse_error"] = "schema rejected planner payload"
+            diagnostics["planner_fallback_reason"] = "schema_rejected"
+            return None, diagnostics
+        return plan, diagnostics
     text = (raw or "").strip()
     if not text:
-        return None
+        diagnostics["planner_fallback_reason"] = "empty_planner_result"
+        return None, diagnostics
     fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.S | re.I)
     if fenced:
         text = fenced.group(1).strip()
     try:
         payload = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    return _parse_research_plan(payload, query=query, mode=mode, selection_context=selection_context)
+    except json.JSONDecodeError as exc:
+        diagnostics["planner_parse_error"] = _clip_text(str(exc), 300)
+        diagnostics["planner_fallback_reason"] = "invalid_json"
+        return None, diagnostics
+    plan, nested_diagnostics = _parse_research_plan_with_diagnostics(
+        payload,
+        query=query,
+        mode=mode,
+        selection_context=selection_context,
+    )
+    diagnostics.update({key: value for key, value in nested_diagnostics.items() if value not in ("", 0)})
+    return plan, diagnostics
 
 
 def _research_plan_from_payload(
@@ -402,8 +523,13 @@ def _fallback_research_plan(
     mode: str,
     *,
     selection_context: dict[str, Any] | None = None,
+    planner_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     subject = _fallback_subject_from_selection(query, selection_context)
+    diagnostics = dict(_empty_planner_diagnostics())
+    diagnostics.update(planner_diagnostics or {})
+    if not diagnostics.get("planner_fallback_reason"):
+        diagnostics["planner_fallback_reason"] = "no_planner_result"
     return {
         "intent_label": "fallback",
         "needs_web": mode in {"local_web", "web_only"},
@@ -421,6 +547,7 @@ def _fallback_research_plan(
         "answer_contract": _sanitize_answer_contract({}),
         "privacy": _sanitize_privacy({"may_use_selection_text": False, "allowed_context_terms": []}),
         "plan_status": "fallback",
+        **diagnostics,
     }
 
 
