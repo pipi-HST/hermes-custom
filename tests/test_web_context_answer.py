@@ -217,5 +217,8 @@ def test_web_context_answer_prompt_uses_generic_answer_contract(monkeypatch):
     answer_prompt = prompts[-1]
     assert "自行判断用户真正想知道什么" in answer_prompt
     assert "不要套固定题型模板" in answer_prompt
-    assert "如果问题天然适合比较，可以用表格" in answer_prompt
+    assert "回答应以解决用户问题为第一目标" in answer_prompt
+    assert "表格只能辅助理解，不能替代回答" in answer_prompt
+    assert "不要为了形式整齐而省略关键解释" in answer_prompt
+    assert "1-3" not in answer_prompt
     assert "产品对比题" not in answer_prompt
