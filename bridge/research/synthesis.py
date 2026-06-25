@@ -287,6 +287,7 @@ def _build_research_trace(payload: dict[str, Any], warnings: list[str]) -> dict[
     """Build comprehensive research trace for response metadata."""
     plan = payload.get("research_plan") or {}
     provider_status = payload.get("provider_status") or {}
+    stage_timings = provider_status.get("stage_timings") or {}
     quality = payload.get("search_quality") or {}
     retrieval_health = provider_status.get("retrieval_health") or quality.get("retrieval_health") or {}
     web_queries = payload.get("web_queries") or []
@@ -334,6 +335,7 @@ def _build_research_trace(payload: dict[str, Any], warnings: list[str]) -> dict[
         "search_backend": provider_status.get("search_backend") or "",
         "extract_backend": provider_status.get("extract_backend") or "",
         "provider_status": provider_status,
+        "stage_timings": stage_timings,
         "retrieval_health": retrieval_health,
         "fallback_attempts": provider_status.get("fallback_attempts") or [],
         "search_quality": quality,

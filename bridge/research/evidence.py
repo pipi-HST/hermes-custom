@@ -9,6 +9,7 @@ from bridge.research.types import (
     EVIDENCE_RETRY_MIN_REMAINING_SECONDS,
     ResearchEvidenceCriticAdapter,
 )
+from bridge.research.timing import _normalized_stage_timings
 from bridge.research.utils import (
     _string_list,
     _clip_text,
@@ -160,6 +161,7 @@ def _web_provider_status(
     sources: list[dict[str, Any]] | None = None,
     retrieval_health: dict[str, Any] | None = None,
     fallback_attempts: list[dict[str, Any]] | None = None,
+    stage_timings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     search_backend = ""
     extract_backend = ""
@@ -172,10 +174,12 @@ def _web_provider_status(
     except Exception:
         pass
     extracted = sources or []
+    elapsed_ms = int((time.monotonic() - started) * 1000)
     return {
         "search_backend": search_backend,
         "extract_backend": extract_backend,
-        "search_elapsed_ms": int((time.monotonic() - started) * 1000),
+        "search_elapsed_ms": elapsed_ms,
+        "stage_timings": _normalized_stage_timings(stage_timings),
         "warnings": warnings[warning_start:],
         "extracted_pages": sum(1 for source in extracted if source.get("extract_status") == "full"),
         "summary_only_pages": sum(1 for source in extracted if source.get("extract_status") == "summary"),

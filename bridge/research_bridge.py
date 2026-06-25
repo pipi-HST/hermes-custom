@@ -139,6 +139,7 @@ from bridge.research.synthesis import (
     _rewrite_answer_refs,
     _source_map_item,
 )
+from bridge.research.timing import _add_stage_timing, _ensure_stage_timings
 from bridge.research.search import (
     _normalize_mode,
     _no_web_sources_warning,
@@ -523,6 +524,8 @@ def research_answer(
         "used_local": use_local,
         "used_web": bool(web_sources),
     }
+    stage_timings = _ensure_stage_timings(synthesis_input["provider_status"])
+    synthesis_started = time.monotonic()
     if _should_use_low_quality_fallback(synthesis_input):
         answer = _low_quality_fallback_answer(synthesis_input)
     else:
@@ -531,6 +534,7 @@ def research_answer(
             if synthesize_adapter
             else _synthesize_answer(synthesis_input, warnings)
         )
+    _add_stage_timing(stage_timings, "synthesis_ms", synthesis_started)
     answer = _ensure_valid_citations(answer, synthesis_input, warnings)
     answer = _ensure_preferred_domain_citation(answer, synthesis_input)
     answer = _ensure_no_unavailable_source_mentions(answer, synthesis_input, warnings)
@@ -704,6 +708,8 @@ async def async_research_answer(
         "used_local": use_local,
         "used_web": bool(web_sources),
     }
+    stage_timings = _ensure_stage_timings(synthesis_input["provider_status"])
+    synthesis_started = time.monotonic()
     if _should_use_low_quality_fallback(synthesis_input):
         answer = _low_quality_fallback_answer(synthesis_input)
     else:
@@ -713,6 +719,7 @@ async def async_research_answer(
             if synthesize_adapter
             else await asyncio.to_thread(_synthesize_answer, synthesis_input, warnings)
         )
+    _add_stage_timing(stage_timings, "synthesis_ms", synthesis_started)
     answer = _ensure_valid_citations(answer, synthesis_input, warnings)
     answer = _ensure_preferred_domain_citation(answer, synthesis_input)
     answer = _ensure_no_unavailable_source_mentions(answer, synthesis_input, warnings)

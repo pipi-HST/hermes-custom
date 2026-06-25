@@ -58,6 +58,7 @@ from bridge.research.search_infra import (
 )
 from bridge.research.evidence import _classify_ranked_sources
 from bridge.research.synthesis import _trace_sources
+from bridge.research.timing import _add_stage_timing, _empty_stage_timings
 
 
 @dataclass(frozen=True)
@@ -99,7 +100,7 @@ def empty_web_research(
         "research_plan": research_plan,
         "search_quality": _empty_search_quality("not_searched"),
         "rewritten_queries": [],
-        "provider_status": {"search_elapsed_ms": 0, "warnings": []},
+        "provider_status": {"search_elapsed_ms": 0, "stage_timings": _empty_stage_timings(), "warnings": []},
     }
 
 
@@ -136,8 +137,10 @@ async def run_web_research_async(
     )
     warning_start = len(warnings)
     started = time.monotonic()
+    stage_timings = _empty_stage_timings()
     fallback_attempts: list[dict[str, Any]] = []
     primary_backend = deps.default_search_backend() if using_default_search else ""
+    search_started = time.monotonic()
     direct_candidates = (
         await asyncio.to_thread(_direct_retrieval_candidates, query, research_plan, existing_results=[])
         if using_default_search
@@ -156,6 +159,8 @@ async def run_web_research_async(
         mentioned_url_candidates = await asyncio.to_thread(_direct_mentioned_url_candidates, results, research_plan)
         if mentioned_url_candidates:
             results = _dedupe_web_results(mentioned_url_candidates + results)[:MAX_WEB_CANDIDATES]
+    _add_stage_timing(stage_timings, "search_ms", search_started)
+    if using_default_search:
         preferred_domain_queries = _preferred_domain_limited_queries(queries, research_plan.get("source_preferences") or {})
         if (
             preferred_domain_queries
@@ -174,6 +179,7 @@ async def run_web_research_async(
                     queries=preferred_domain_queries,
                 )
                 before_count = len(results)
+                fallback_started = time.monotonic()
                 try:
                     preferred_results = await collect_web_search_results_async(
                         preferred_domain_queries,
@@ -187,6 +193,8 @@ async def run_web_research_async(
                 except Exception as exc:
                     preferred_results = []
                     warnings.append(f"优先域名补充搜索失败（{backend}）：{_friendly_search_error(exc)}")
+                finally:
+                    _add_stage_timing(stage_timings, "fallback_ms", fallback_started)
                 results = _dedupe_web_results(preferred_results + results)[:MAX_WEB_CANDIDATES]
                 attempt = fallback_attempt(
                     backend=backend,
@@ -226,6 +234,7 @@ async def run_web_research_async(
         )
         if rewritten_queries:
             await _emit_research_event_async(event_callback, "web_rewrite_start", queries=rewritten_queries)
+            search_started = time.monotonic()
             rewritten_results = await collect_web_search_results_async(
                 rewritten_queries,
                 search_adapter=search_adapter,
@@ -234,6 +243,7 @@ async def run_web_research_async(
                 backend_label=primary_backend,
                 max_queries=repair_query_limit,
             )
+            _add_stage_timing(stage_timings, "search_ms", search_started)
             results = _dedupe_web_results(rewritten_results + results)
             ranked, quality = _rank_and_evaluate_results(query, results, research_plan)
             quality["rewrite_attempted"] = True
@@ -261,6 +271,7 @@ async def run_web_research_async(
                 queries=fallback_queries,
             )
             before_count = len(results)
+            fallback_started = time.monotonic()
             try:
                 fallback_results = await collect_web_search_results_async(
                     fallback_queries,
@@ -274,6 +285,8 @@ async def run_web_research_async(
             except Exception as exc:
                 fallback_results = []
                 warnings.append(f"补充搜索失败（{backend}）：{_friendly_search_error(exc)}")
+            finally:
+                _add_stage_timing(stage_timings, "fallback_ms", fallback_started)
             results = _dedupe_web_results(fallback_results + results)[:MAX_WEB_CANDIDATES]
             ranked, quality = _rank_and_evaluate_results(query, results, research_plan)
             attempt = fallback_attempt(
@@ -301,6 +314,7 @@ async def run_web_research_async(
         warning_start,
         quality,
         fallback_attempts,
+        stage_timings=stage_timings,
     )
     classified = _classify_ranked_sources(
         query,
@@ -330,6 +344,7 @@ async def run_web_research_async(
             warning_start,
             quality,
             fallback_attempts,
+            stage_timings=stage_timings,
         )
         return web_research_result(
             [],
@@ -354,6 +369,7 @@ async def run_web_research_async(
         warnings,
         extract_limit=extract_limit,
         event_callback=event_callback,
+        stage_timings=stage_timings,
     )
     if (
         using_default_search
@@ -374,6 +390,7 @@ async def run_web_research_async(
                 queries=fallback_queries,
             )
             before_count = len(results)
+            fallback_started = time.monotonic()
             try:
                 fallback_results = await collect_web_search_results_async(
                     fallback_queries,
@@ -387,6 +404,8 @@ async def run_web_research_async(
             except Exception as exc:
                 fallback_results = []
                 warnings.append(f"补充搜索失败（{backend}）：{_friendly_search_error(exc)}")
+            finally:
+                _add_stage_timing(stage_timings, "fallback_ms", fallback_started)
             results = _dedupe_web_results(fallback_results + results)[:MAX_WEB_CANDIDATES]
             ranked, quality = _rank_and_evaluate_results(query, results, research_plan)
             attempt = fallback_attempt(
@@ -414,6 +433,7 @@ async def run_web_research_async(
                 warnings=warnings,
                 extract_limit=extract_limit,
                 event_callback=event_callback,
+                stage_timings=stage_timings,
             )
             if sources:
                 warnings.append("首轮来源未通过证据裁判，已通过补充搜索取得可采用来源。")
@@ -429,6 +449,7 @@ async def run_web_research_async(
                     queries=repair_queries,
                 )
                 before_count = len(results)
+                fallback_started = time.monotonic()
                 try:
                     fallback_results = await collect_web_search_results_async(
                         repair_queries,
@@ -442,6 +463,8 @@ async def run_web_research_async(
                 except Exception as exc:
                     fallback_results = []
                     warnings.append(f"补充搜索失败（{primary_backend or 'primary'}）：{_friendly_search_error(exc)}")
+                finally:
+                    _add_stage_timing(stage_timings, "fallback_ms", fallback_started)
                 results = _dedupe_web_results(fallback_results + results)[:MAX_WEB_CANDIDATES]
                 ranked, quality = _rank_and_evaluate_results(query, results, research_plan)
                 attempt = fallback_attempt(
@@ -469,6 +492,7 @@ async def run_web_research_async(
                     warnings=warnings,
                     extract_limit=extract_limit,
                     event_callback=event_callback,
+                    stage_timings=stage_timings,
                 )
                 if sources:
                     warnings.append("首轮来源未通过证据裁判，已用同后端修复查询取得可采用来源。")
@@ -479,6 +503,7 @@ async def run_web_research_async(
         quality,
         fallback_attempts,
         sources=sources,
+        stage_timings=stage_timings,
     )
     await _emit_research_event_async(
         event_callback,
@@ -506,6 +531,7 @@ async def run_web_research_async(
         warnings=warnings,
         warning_start=warning_start,
         fallback_attempts=fallback_attempts,
+        stage_timings=stage_timings,
     )
     if missing_required:
         await _emit_research_event_async(
@@ -536,6 +562,7 @@ async def run_web_research_async(
                 queries=fallback_queries,
             )
             before_count = len(results)
+            fallback_started = time.monotonic()
             try:
                 fallback_results = await collect_web_search_results_async(
                     fallback_queries,
@@ -549,6 +576,8 @@ async def run_web_research_async(
             except Exception as exc:
                 fallback_results = []
                 warnings.append(f"补充搜索失败（{backend}）：{_friendly_search_error(exc)}")
+            finally:
+                _add_stage_timing(stage_timings, "fallback_ms", fallback_started)
             results = _dedupe_web_results(fallback_results + results)[:MAX_WEB_CANDIDATES]
             ranked, quality = _rank_and_evaluate_results(query, results, research_plan)
             attempt = fallback_attempt(
@@ -576,6 +605,7 @@ async def run_web_research_async(
                 warnings=warnings,
                 extract_limit=extract_limit,
                 event_callback=event_callback,
+                stage_timings=stage_timings,
             )
             if _independent_source_count(repaired_sources) > _independent_source_count(sources):
                 sources = repaired_sources
@@ -588,6 +618,7 @@ async def run_web_research_async(
             quality,
             fallback_attempts,
             sources=sources,
+            stage_timings=stage_timings,
         )
     mark_sufficient_evidence_status(sources, research_plan, quality)
     mark_limited_evidence_status(sources, research_plan, quality, warnings)

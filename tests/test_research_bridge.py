@@ -4336,6 +4336,93 @@ def test_research_result_meta_exposes_trace_for_ui():
     assert trace["sources"][0]["ref"] == "W1"
     assert trace["web_sources"][0]["ref"] == "W1"
     assert trace["sources"][0]["extract_status"] == "full"
+    provider_status = result["meta"]["provider_status"]
+    stage_timings = provider_status["stage_timings"]
+    assert "search_elapsed_ms" in provider_status
+    assert set(stage_timings) == {"search_ms", "extract_ms", "critic_ms", "fallback_ms", "synthesis_ms"}
+    assert trace["stage_timings"] == stage_timings
+    assert trace["provider_status"]["stage_timings"] == stage_timings
+
+
+def test_research_stage_timings_split_provider_trace(monkeypatch):
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_query_planner",
+        lambda payload: {
+            "intent_label": "definition",
+            "needs_web": True,
+            "mode": "web_only",
+            "subject": {"name": "Example", "aliases": [], "type_hint": "concept"},
+            "queries": ["Example concept"],
+            "answer_claims_needed": ["answer_user_question"],
+            "evidence_contract": {
+                "minimum_independent_sources": 1,
+                "allow_summary_only": True,
+            },
+        },
+    )
+
+    def fake_search(query, limit):
+        time.sleep(0.005)
+        return {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "Example concept",
+                        "url": "https://example.com/concept",
+                        "description": "Example is a documented concept.",
+                    }
+                ]
+            },
+        }
+
+    def fake_extract(urls):
+        time.sleep(0.005)
+        return {"results": [{"url": urls[0], "content": "Example is a documented concept with readable evidence."}]}
+
+    def fake_critic(payload):
+        time.sleep(0.005)
+        return {
+            "decisions": [
+                {
+                    "source_id": source["source_id"],
+                    "subject_match": "yes",
+                    "source_authority": "reputable_secondary",
+                    "source_role": "supporting_evidence",
+                    "allowed_usage": ["fact"],
+                    "confidence": "medium",
+                    "claim_support": [
+                        {"claim_id": "answer_user_question", "support": "yes", "reason": "relevant"}
+                    ],
+                    "adoption": "adopt",
+                    "reason": "relevant source",
+                }
+                for source in payload["sources"]
+            ]
+        }
+
+    def fake_synthesize(payload):
+        time.sleep(0.005)
+        return "Example 是一个有公开证据支持的概念 [W1]"
+
+    monkeypatch.setattr(research_bridge, "_default_evidence_critic", fake_critic)
+
+    result = research_bridge.research_answer(
+        query="Example 是什么",
+        mode="web_only",
+        search_adapter=fake_search,
+        extract_adapter=fake_extract,
+        synthesize_adapter=fake_synthesize,
+    )
+
+    stage_timings = result["meta"]["provider_status"]["stage_timings"]
+    assert stage_timings["search_ms"] > 0
+    assert stage_timings["extract_ms"] > 0
+    assert stage_timings["critic_ms"] > 0
+    assert stage_timings["fallback_ms"] == 0
+    assert stage_timings["synthesis_ms"] > 0
+    assert result["meta"]["research_trace"]["stage_timings"] == stage_timings
 
 
 def test_default_web_extract_falls_back_to_local_for_search_only_backend(monkeypatch):
