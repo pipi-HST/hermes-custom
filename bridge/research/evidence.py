@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from bridge.research.types import (
+    ENTITY_EXPLAINER_RE,
     EVIDENCE_RETRY_MIN_REMAINING_SECONDS,
     ResearchEvidenceCriticAdapter,
 )
@@ -239,6 +240,10 @@ def _apply_evidence_critic(
             if decisions:
                 warnings.append(f"证据裁判首轮失败，已分批复核候选来源：{exc}")
             else:
+                adopted, rejected = _limited_summary_adoption_for_uncertified_critic(query, research_plan, sources, claims)
+                if adopted:
+                    warnings.append(f"证据裁判失败，已按低风险摘要证据合同有限采用直接匹配来源：{exc}")
+                    return adopted, rejected
                 warnings.append(f"证据裁判失败，已拒绝采用未经裁判的网页证据：{exc}")
                 return [], [_source_rejected_by_contract(source, "evidence_critic_failed") for source in sources]
     if not decisions:
@@ -250,6 +255,10 @@ def _apply_evidence_critic(
             if decisions:
                 warnings.append("证据裁判首轮未返回有效决策，已分批复核候选来源。")
             else:
+                adopted, rejected = _limited_summary_adoption_for_uncertified_critic(query, research_plan, sources, claims)
+                if adopted:
+                    warnings.append("证据裁判未返回有效决策，已按低风险摘要证据合同有限采用直接匹配来源。")
+                    return adopted, rejected
                 warnings.append("证据裁判未返回有效决策，已拒绝采用未经裁判的网页证据。")
                 return [], [_source_rejected_by_contract(source, "evidence_critic_empty") for source in sources]
 
@@ -299,6 +308,176 @@ def _apply_evidence_critic(
     if rejected:
         warnings.append("部分联网来源未通过证据裁判，已从可引用依据中移除。")
     return adopted, rejected
+
+
+def _limited_summary_adoption_for_uncertified_critic(
+    query: str,
+    research_plan: dict[str, Any],
+    sources: list[dict[str, Any]],
+    claims: list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not _allows_limited_summary_adoption(query, research_plan, claims):
+        return [], []
+    decisions = [
+        decision
+        for source in sources
+        if (decision := _limited_summary_decision_for_source(query, research_plan, source, claims))
+    ]
+    if not decisions:
+        return [], []
+    adopted, rejected = _apply_evidence_decisions_to_sources(research_plan, sources, decisions)
+    if not adopted:
+        return [], []
+    contract = _sanitize_evidence_contract(research_plan.get("evidence_contract") or {})
+    limit = min(max(int(contract.get("minimum_independent_sources") or 1), 1), 3)
+    adopted = adopted[:limit]
+    adopted_urls = {str(source.get("url") or "") for source in adopted if source.get("url")}
+    adopted = [
+        {
+            **source,
+            "quality_reason": "limited_summary_after_uncertified_critic",
+            "evidence_critic_reason": source.get("evidence_critic_reason")
+            or "limited low-risk summary adoption after empty evidence critic",
+        }
+        for source in adopted
+    ]
+    rejected = [
+        source
+        for source in rejected
+        if str(source.get("url") or "") not in adopted_urls
+    ]
+    return adopted, rejected
+
+
+def _allows_limited_summary_adoption(query: str, research_plan: dict[str, Any], claims: list[str]) -> bool:
+    if research_plan.get("mode") != "web_only":
+        return False
+    if not _allows_failed_extract_summary_fallback(research_plan):
+        return False
+    subject = research_plan.get("subject") if isinstance(research_plan.get("subject"), dict) else {}
+    type_hint = str(subject.get("type_hint") or "").strip().lower()
+    if type_hint in {
+        "current_role",
+        "metric",
+        "market_metric",
+        "finance_term",
+        "financial_term",
+        "medical_term",
+        "legal_term",
+        "academic_term",
+    }:
+        return False
+    normalized_claims = _normalized_evidence_claim_ids(_string_list(claims)[:8])
+    if not normalized_claims:
+        normalized_claims = ["answer_user_question"]
+    if not all(_claim_is_stable_overview_claim(claim) for claim in normalized_claims):
+        return False
+    intent = str(research_plan.get("intent_label") or "").lower()
+    fallback_explainer = bool(
+        research_plan.get("plan_status") == "fallback"
+        and subject.get("name")
+        and ENTITY_EXPLAINER_RE.search(query or "")
+        and not re.search(
+            r"现任|当前|最新|今天|现在|主席|总统|CEO|首席执行官|负责人|多少|价格|市值|排名|指标|current|latest|today|chair|president|price|market\s*cap|rank|metric",
+            query or "",
+            re.I,
+        )
+    )
+    return bool(
+        _plan_is_definition_like(research_plan)
+        or type_hint in {"company", "organization", "person", "concept", "term", "topic", "entity"}
+        or any(marker in intent for marker in ("overview", "profile", "background", "definition", "简介", "是什么"))
+        or fallback_explainer
+    )
+
+
+def _claim_is_stable_overview_claim(claim: str) -> bool:
+    value = str(claim or "").strip().lower()
+    if not value:
+        return False
+    if value == "answer_user_question":
+        return True
+    unsafe_markers = (
+        "current",
+        "latest",
+        "metric",
+        "rank",
+        "ranking",
+        "price",
+        "value",
+        "score",
+        "factor",
+        "chair",
+        "contraindication",
+        "indication",
+        "现任",
+        "最新",
+        "指标",
+        "排名",
+        "数值",
+    )
+    if any(marker in value for marker in unsafe_markers):
+        return False
+    stable_markers = ("identity", "overview", "definition", "profile", "background", "scope", "简介", "定义")
+    return any(marker in value for marker in stable_markers)
+
+
+def _limited_summary_decision_for_source(
+    query: str,
+    research_plan: dict[str, Any],
+    source: dict[str, Any],
+    claims: list[str],
+) -> dict[str, Any] | None:
+    if not _source_matches_subject(query, source):
+        return None
+    if _source_title_conflicts_with_subject(source, research_plan):
+        return None
+    if _source_is_adjacent_for_definition_claim(research_plan, source):
+        return None
+    tags = set(source.get("quality_tags") or [])
+    if {"source_identity_mismatch", "low_quality_domain", "low_quality_format", "weak_secondary_source"} & tags:
+        return None
+    if _is_low_quality_source(source) or _is_weak_secondary_source(source):
+        return None
+    evidence_text = " ".join(
+        str(source.get(key) or "")
+        for key in ("title", "description", "excerpt", "content")
+    ).strip()
+    if not evidence_text:
+        return None
+    subject = research_plan.get("subject") if isinstance(research_plan.get("subject"), dict) else {}
+    preferences = _sanitize_source_preferences(research_plan.get("source_preferences") or {})
+    domain = _domain(source.get("url") or "")
+    preferred_domains = {str(item or "").lower().removeprefix("www.") for item in preferences.get("preferred_domains") or []}
+    preferred_domain = bool(
+        domain
+        and any(domain == preferred or domain.endswith(f".{preferred}") for preferred in preferred_domains if preferred)
+    )
+    title_priority = _subject_title_priority(source, subject)
+    preferred_or_trusted = bool(
+        preferred_domain
+        or {"planner_preferred_domain", "planner_primary_source"} & tags
+        or source.get("trusted_source")
+    )
+    if title_priority < 2 and not preferred_or_trusted:
+        return None
+    supported_claims = _normalized_evidence_claim_ids(_string_list(claims)[:8]) or ["answer_user_question"]
+    source_authority = "official" if preferred_or_trusted else "reputable_secondary"
+    return {
+        "source_id": source.get("url") or source.get("id") or source.get("ref") or "",
+        "subject_match": "yes",
+        "source_authority": source_authority,
+        "source_role": "supporting_evidence",
+        "allowed_usage": ["fact", "background"],
+        "confidence": "low",
+        "supports_claims": supported_claims,
+        "claim_support": [
+            {"claim_id": claim, "support": "yes", "reason": "direct low-risk overview evidence"}
+            for claim in supported_claims
+        ],
+        "adoption": "partial",
+        "reason": "limited low-risk summary adoption after empty evidence critic",
+    }
 
 
 def _repair_insufficient_adoption_with_critic(

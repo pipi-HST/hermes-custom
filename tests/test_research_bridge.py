@@ -82,6 +82,18 @@ def test_research_planner_handles_adapter_timeout_with_fallback():
     assert queries == ["Explain λ calculus", "Explain lambda calculus"]
 
 
+def test_research_planner_fallback_extracts_subject_before_followup_instruction():
+    plan = research_bridge.plan_research(
+        "OpenAI 是什么？请用联网证据简短回答，并保留引用编号。",
+        mode="web_only",
+        query_planner_adapter=lambda payload: [],
+    )
+
+    assert plan["plan_status"] == "fallback"
+    assert plan["subject"]["name"] == "OpenAI"
+    assert plan["queries"] == ["OpenAI 是什么？请用联网证据简短回答，并保留引用编号"]
+
+
 def test_search_contract_stops_before_calling_backend_when_budget_exhausted():
     warnings = []
     token = research_bridge._RESEARCH_DEADLINE.set(time.monotonic() - 1)
@@ -3432,6 +3444,54 @@ def test_evidence_critic_failure_rejects_uncertified_web_sources(monkeypatch):
         research_bridge,
         "_default_query_planner",
         lambda payload: {
+            "intent_label": "current valuation",
+            "needs_web": True,
+            "mode": "web_only",
+            "subject": {"name": "OpenAI", "aliases": [], "type_hint": "company"},
+            "queries": ["OpenAI latest valuation official"],
+            "answer_claims_needed": ["current_valuation"],
+            "claim_requirements": [{"claim_id": "current_valuation", "required_authority": "primary_or_index"}],
+            "risk_level": "high",
+            "freshness_sensitive": True,
+            "evidence_contract": {
+                "must_cover_subject": True,
+                "minimum_independent_sources": 1,
+                "prefer_authoritative_sources": True,
+                "must_use_primary_source": True,
+                "allow_summary_only": False,
+                "answer_policy": "answer_only_supported",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_evidence_critic",
+        lambda payload: "not json",
+    )
+
+    result = research_bridge.research_answer(
+        query="OpenAI 最新估值是多少",
+        mode="web_only",
+        search_adapter=lambda *_args: {
+            "success": True,
+            "data": {"web": [{"title": "OpenAI valuation", "url": "https://example.com/openai", "description": "OpenAI valuation"}]},
+        },
+        extract_adapter=lambda urls: {"results": [{"url": urls[0], "content": "OpenAI valuation."}]},
+        synthesize_adapter=lambda payload: "不应采用未裁判来源 [W1]",
+    )
+
+    assert result["meta"]["used_web"] is False
+    assert result["meta"]["web_sources"] == []
+    assert result["meta"]["rejected_sources"][0]["quality_reason"] == "evidence_critic_failed"
+    assert "不应采用未裁判来源" not in result["chat_preview"]
+    assert any("证据裁判失败" in warning for warning in result["warnings"])
+
+
+def test_empty_evidence_critic_limited_adopts_low_risk_overview_source(monkeypatch):
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_query_planner",
+        lambda payload: {
             "intent_label": "company overview",
             "needs_web": True,
             "mode": "web_only",
@@ -3446,30 +3506,144 @@ def test_evidence_critic_failure_rejects_uncertified_web_sources(monkeypatch):
                 "allow_summary_only": True,
                 "answer_policy": "answer_only_supported",
             },
+            "source_preferences": {
+                "preferred_domains": ["openai.com"],
+                "preferred_source_kinds": ["official"],
+            },
         },
     )
-    monkeypatch.setattr(
-        research_bridge,
-        "_default_evidence_critic",
-        lambda payload: "not json",
-    )
+    monkeypatch.setattr(research_bridge, "_default_evidence_critic", lambda payload: {"decisions": []})
 
     result = research_bridge.research_answer(
         query="OpenAI 是什么",
         mode="web_only",
         search_adapter=lambda *_args: {
             "success": True,
-            "data": {"web": [{"title": "OpenAI", "url": "https://example.com/openai", "description": "OpenAI profile"}]},
+            "data": {
+                "web": [
+                    {
+                        "title": "OpenAI",
+                        "url": "https://openai.com/about/",
+                        "description": "OpenAI is an AI research and deployment company.",
+                    }
+                ]
+            },
         },
-        extract_adapter=lambda urls: {"results": [{"url": urls[0], "content": "OpenAI profile."}]},
-        synthesize_adapter=lambda payload: "不应采用未裁判来源 [W1]",
+        extract_adapter=lambda urls: {
+            "results": [
+                {
+                    "url": urls[0],
+                    "content": "OpenAI is an AI research and deployment company.",
+                }
+            ]
+        },
+        synthesize_adapter=lambda payload: "OpenAI 是一家人工智能研究和部署公司 [W1]",
     )
 
-    assert result["meta"]["used_web"] is False
-    assert result["meta"]["web_sources"] == []
-    assert result["meta"]["rejected_sources"][0]["quality_reason"] == "evidence_critic_failed"
-    assert "不应采用未裁判来源" not in result["chat_preview"]
-    assert any("证据裁判失败" in warning for warning in result["warnings"])
+    assert result["meta"]["used_web"] is True
+    assert result["meta"]["web_sources"][0]["quality_reason"] == "limited_summary_after_uncertified_critic"
+    assert result["meta"]["web_sources"][0]["source_authority"] == "official"
+    assert "OpenAI 是一家人工智能研究和部署公司" in result["chat_preview"]
+    assert "有限采用直接匹配来源" in " ".join(result["warnings"])
+
+
+def test_fallback_plan_empty_critic_limited_adopts_direct_overview_source(monkeypatch):
+    monkeypatch.setattr(research_bridge, "_default_query_planner", lambda payload: [])
+    monkeypatch.setattr(research_bridge, "_default_evidence_critic", lambda payload: {"decisions": []})
+
+    result = research_bridge.research_answer(
+        query="OpenAI 是什么？请用联网证据简短回答，并保留引用编号。",
+        mode="web_only",
+        search_adapter=lambda *_args: {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "openai公司是什么",
+                        "url": "https://aiqicha.baidu.com/details/ugknowledge?id=266c965280acc244633d0593fc80ff2a",
+                        "description": "openai公司是什么",
+                    },
+                    {
+                        "title": "OpenAI简介-OpenAI官网-出海网",
+                        "url": "https://www.chwang.com/baike/openai",
+                        "description": "OpenAI 是一家人工智能研究和部署公司。",
+                    }
+                ]
+            },
+        },
+        extract_adapter=lambda urls: {
+            "results": [
+                {
+                    "url": url,
+                    "content": "OpenAI 是一家人工智能研究和部署公司。"
+                    if "chwang.com" in url
+                    else "",
+                }
+                for url in urls
+            ]
+        },
+        synthesize_adapter=lambda payload: "OpenAI 是一家人工智能研究和部署公司 [W1]",
+    )
+
+    assert result["meta"]["research_plan"]["plan_status"] == "fallback"
+    assert result["meta"]["research_plan"]["subject"]["name"] == "OpenAI"
+    assert result["meta"]["used_web"] is True
+    assert result["meta"]["web_sources"][0]["quality_reason"] == "limited_summary_after_uncertified_critic"
+    assert result["meta"]["web_sources"][0]["source_authority"] == "reputable_secondary"
+    assert "有限采用直接匹配来源" in " ".join(result["warnings"])
+
+
+def test_low_risk_overview_critic_failure_limited_adopts_direct_source():
+    warnings = []
+
+    def broken_critic(payload):
+        raise ValueError("malformed critic json")
+
+    adopted, rejected = research_bridge._apply_evidence_critic(
+        "OpenAI 是什么？请用联网证据简短回答，并保留引用编号。",
+        {
+            "mode": "web_only",
+            "plan_status": "fallback",
+            "risk_level": "low",
+            "freshness_sensitive": False,
+            "subject": {"name": "OpenAI", "aliases": [], "type_hint": ""},
+            "answer_claims_needed": [],
+            "evidence_contract": {
+                "must_cover_subject": True,
+                "minimum_independent_sources": 1,
+                "prefer_authoritative_sources": True,
+                "must_use_primary_source": False,
+                "allow_summary_only": True,
+            },
+        },
+        [
+            {
+                "ref": "W1",
+                "title": "openai公司是什么",
+                "url": "https://aiqicha.baidu.com/details/ugknowledge?id=266c965280acc244633d0593fc80ff2a",
+                "domain": "aiqicha.baidu.com",
+                "excerpt": "openai公司是什么",
+                "extract_status": "summary",
+                "quality_tags": ["low_quality_domain", "extract_failed_summary_fallback"],
+            },
+            {
+                "ref": "W2",
+                "title": "OpenAI简介-OpenAI官网-出海网",
+                "url": "https://www.chwang.com/baike/openai",
+                "domain": "chwang.com",
+                "excerpt": "OpenAI 是一家人工智能研究和部署公司。",
+                "extract_status": "full",
+                "quality_tags": [],
+            },
+        ],
+        warnings,
+        critic_adapter=broken_critic,
+    )
+
+    assert [source["domain"] for source in adopted] == ["chwang.com"]
+    assert adopted[0]["quality_reason"] == "limited_summary_after_uncertified_critic"
+    assert rejected[0]["domain"] == "aiqicha.baidu.com"
+    assert "有限采用直接匹配来源" in " ".join(warnings)
 
 
 def test_empty_evidence_critic_decisions_reject_uncertified_web_sources(monkeypatch):

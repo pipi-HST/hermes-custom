@@ -306,6 +306,8 @@ def _parse_research_plan(
     selection_context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if isinstance(raw, list):
+        if not raw:
+            return None
         privacy = _sanitize_privacy({"may_use_selection_text": False, "allowed_context_terms": []})
         queries = _sanitize_planned_queries(raw, query=query, selection_context=selection_context, privacy=privacy)
         if not queries:
@@ -754,10 +756,12 @@ def _required_query_terms(query: str) -> list[str]:
         r"^为什么说\s*(.+?)\s*(?:是|会|成了|成为|属于|叫做).+$",
         r"^为什么\s*(.+?)\s*(?:是|会|成了|成为|属于).+$",
     ]
-    for pattern in patterns:
-        match = re.match(pattern, text, flags=re.I)
-        if match:
-            candidates.append(match.group(1).strip(" ?？。！!,，"))
+    texts = _unique_queries([text, re.split(r"[?？。！!]", text, maxsplit=1)[0].strip()])
+    for candidate_text in texts:
+        for pattern in patterns:
+            match = re.match(pattern, candidate_text, flags=re.I)
+            if match:
+                candidates.append(match.group(1).strip(" ?？。！!,，"))
     terms: list[str] = []
     context_only_terms = {"这", "这个", "该", "此", "它", "其", "this", "it"}
     for candidate in candidates:
