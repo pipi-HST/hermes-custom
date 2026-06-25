@@ -29,6 +29,7 @@ from bridge.research.types import (
     EVIDENCE_CRITIC_TIMEOUT_SECONDS,
     MINIMAL_EVIDENCE_CRITIC_TIMEOUT_SECONDS,
     SYNTHESIS_LLM_TIMEOUT_SECONDS,
+    LIGHT_SYNTHESIS_LLM_TIMEOUT_SECONDS,
     RESEARCH_ANSWER_TIMEOUT_SECONDS,
     WEB_FALLBACK_MIN_REMAINING_SECONDS,
     EVIDENCE_RETRY_MIN_REMAINING_SECONDS,
@@ -40,6 +41,7 @@ from bridge.research.types import (
     DIRECT_PROBE_MIN_REMAINING_SECONDS,
     LOCAL_EXTRACT_TIMEOUT_SECONDS,
     LOCAL_EXTRACT_MAX_WORKERS,
+    EXTRACT_STAGE_TIMEOUT_SECONDS,
     SEARCH_ONLY_EXTRACT_BACKENDS,
     FALLBACK_SEARCH_BACKENDS,
     MAX_FALLBACK_SEARCH_BACKENDS,
@@ -512,6 +514,7 @@ def light_web_answer(
             research_plan=research_plan,
             search_adapter=search_adapter or _default_web_search,
             extract_adapter=extract_adapter or _default_web_extract,
+            promote_mentioned_urls=search_adapter is None,
         )
         web_sources = web_research["sources"]
 
@@ -623,6 +626,7 @@ async def async_light_web_answer(
             search_adapter=search_adapter or _default_web_search,
             extract_adapter=extract_adapter or _default_web_extract,
             event_callback=event_callback,
+            promote_mentioned_urls=search_adapter is None,
         )
         web_sources = web_research["sources"]
 
@@ -701,7 +705,15 @@ def _finalize_research_answer(
         answer = (
             synthesize_adapter(synthesis_input)
             if synthesize_adapter
-            else _synthesize_answer(synthesis_input, warnings)
+            else _synthesize_answer(
+                synthesis_input,
+                warnings,
+                timeout_seconds=(
+                    LIGHT_SYNTHESIS_LLM_TIMEOUT_SECONDS
+                    if research_plan.get("path") == "light_web_qa"
+                    else SYNTHESIS_LLM_TIMEOUT_SECONDS
+                ),
+            )
         )
     _add_stage_timing(stage_timings, "synthesis_ms", synthesis_started)
     answer = _ensure_valid_citations(answer, synthesis_input, warnings)
@@ -1042,7 +1054,16 @@ async def async_research_answer(
         answer = (
             synthesize_adapter(synthesis_input)
             if synthesize_adapter
-            else await asyncio.to_thread(_synthesize_answer, synthesis_input, warnings)
+            else await asyncio.to_thread(
+                _synthesize_answer,
+                synthesis_input,
+                warnings,
+                timeout_seconds=(
+                    LIGHT_SYNTHESIS_LLM_TIMEOUT_SECONDS
+                    if research_plan.get("path") == "light_web_qa"
+                    else SYNTHESIS_LLM_TIMEOUT_SECONDS
+                ),
+            )
         )
     _add_stage_timing(stage_timings, "synthesis_ms", synthesis_started)
     answer = _ensure_valid_citations(answer, synthesis_input, warnings)

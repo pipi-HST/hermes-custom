@@ -4858,6 +4858,231 @@ def test_light_web_answer_keeps_summary_sources_when_extract_fails(monkeypatch):
     assert all(source["extract_status"] == "summary" for source in result["meta"]["web_sources"])
 
 
+def test_light_web_answer_times_out_extract_and_keeps_summaries(monkeypatch):
+    from bridge.research import light_web_qa
+
+    monkeypatch.setattr(light_web_qa, "LIGHT_EXTRACT_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_query_planner",
+        lambda payload: {
+            "intent_label": "fact verification",
+            "needs_web": True,
+            "mode": "web_only",
+            "subject": {"name": "ExampleCo", "type_hint": "company"},
+            "queries": ["ExampleCo official status"],
+            "risk_level": "low",
+            "freshness_sensitive": True,
+            "evidence_contract": {"allow_summary_only": True, "minimum_independent_sources": 1},
+        },
+    )
+    monkeypatch.setattr(
+        light_web_qa,
+        "_llm_selected_refs",
+        lambda *_args, **_kwargs: {"selected_refs": ["W1"], "need_extract_refs": ["W1"]},
+    )
+
+    def slow_extract(urls):
+        time.sleep(2)
+        return {"results": [{"url": urls[0], "content": "late content"}]}
+
+    result = research_bridge.light_web_answer(
+        query="ExampleCo 是否仍在运营？",
+        mode="web_only",
+        search_adapter=lambda *_args: {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "ExampleCo official update",
+                        "url": "https://example.com/status",
+                        "description": "ExampleCo says its product remains available for customers.",
+                    }
+                ]
+            },
+        },
+        extract_adapter=slow_extract,
+        synthesize_adapter=lambda payload: "ExampleCo 仍在运营 [W1]",
+    )
+
+    assert result["meta"]["used_web"] is True
+    assert result["meta"]["web_sources"][0]["extract_status"] == "summary"
+    assert "抽取失败" in "；".join(result["meta"]["research_trace"]["warnings"])
+
+
+def test_light_web_strong_fact_keeps_weak_sources_as_clues(monkeypatch):
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_query_planner",
+        lambda payload: {
+            "intent_label": "fact verification",
+            "needs_web": True,
+            "mode": "web_only",
+            "subject": {"name": "DeepSeek training hardware", "type_hint": "claim"},
+            "queries": ["DeepSeek 华为芯片 训练"],
+            "risk_level": "high",
+            "evidence_contract": {"allow_summary_only": False, "minimum_independent_sources": 1},
+        },
+    )
+
+    extracted_urls: list[str] = []
+
+    result = research_bridge.light_web_answer(
+        query="DeepSeek 是基于华为芯片训练的吗？",
+        mode="web_only",
+        search_adapter=lambda *_args: {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "DeepSeek 训练硬件解读",
+                        "url": "https://blog.csdn.net/example",
+                        "description": "一篇关于 DeepSeek 和训练硬件的二手解读。",
+                    }
+                ]
+            },
+        },
+        extract_adapter=lambda urls: extracted_urls.extend(urls) or {"results": []},
+        synthesize_adapter=lambda payload: "不能确认该说法。",
+    )
+
+    assert result["meta"]["web_sources"] == []
+    assert result["meta"]["clue_sources"]
+    assert extracted_urls == []
+    assert "没有足够可靠的公开资料" in result["chat_preview"]
+    assert "已尝试的搜索词" not in result["chat_preview"]
+
+
+def test_light_candidate_selection_contract_separates_extract_and_summary(monkeypatch):
+    from bridge.research import light_web_qa
+
+    monkeypatch.setattr(
+        light_web_qa,
+        "_llm_selected_refs",
+        lambda *_args, **_kwargs: {
+            "selected_refs": ["W1", "W2"],
+            "need_extract_refs": ["W1"],
+            "answerable_from_summary_refs": ["W2"],
+        },
+    )
+
+    selection = light_web_qa._candidate_selection_plan(
+        "什么是 RAG？",
+        [{"ref": "W1"}, {"ref": "W2"}],
+        {"evidence_contract": {"allow_summary_only": True}},
+        3,
+    )
+
+    assert selection["selected_refs"] == ["W1", "W2"]
+    assert selection["need_extract_refs"] == ["W1"]
+    assert selection["answerable_from_summary_refs"] == ["W2"]
+
+
+def test_light_extract_urls_skip_llm_extract_when_low_risk_summaries_are_enough():
+    from bridge.research import light_web_qa
+
+    selected = [
+        {
+            "ref": "W1",
+            "url": "https://example.com/rag-1",
+            "description": "RAG 是检索增强生成，将外部知识检索结果提供给语言模型，再由模型结合检索材料生成更准确、可追溯的回答，常用于问答系统、企业知识库和文档助手。",
+            "source_authority": "web",
+        },
+        {
+            "ref": "W2",
+            "url": "https://example.org/rag-2",
+            "description": "Retrieval augmented generation combines search or retrieval with generation so answers can use relevant documents.",
+            "source_authority": "web",
+        },
+    ]
+
+    urls = light_web_qa._extract_urls_for_selected(
+        "什么是 RAG？",
+        selected,
+        {"risk_level": "low", "freshness_sensitive": False, "answer_depth": "normal"},
+        {"W1", "W2"},
+    )
+
+    assert urls == []
+
+
+def test_light_extract_urls_keep_llm_extract_for_fresh_fact_even_with_summaries():
+    from bridge.research import light_web_qa
+
+    selected = [
+        {
+            "ref": "W1",
+            "url": "https://example.com/news",
+            "description": "ExampleCo today announced a new product update with several details in the summary.",
+            "source_authority": "web",
+        }
+    ]
+
+    urls = light_web_qa._extract_urls_for_selected(
+        "ExampleCo 今天发布了什么？",
+        selected,
+        {"risk_level": "low", "freshness_sensitive": True, "answer_depth": "normal"},
+        {"W1"},
+    )
+
+    assert urls == ["https://example.com/news"]
+
+
+def test_light_extract_urls_skip_extract_for_single_summary_concept_explainer():
+    from bridge.research import light_web_qa
+
+    selected = [
+        {
+            "ref": "W1",
+            "url": "https://example.com/rag",
+            "description": "RAG combines retrieval with generation so answers can use relevant documents.",
+            "source_authority": "web",
+        }
+    ]
+
+    urls = light_web_qa._extract_urls_for_selected(
+        "结合我的笔记和公开资料解释 RAG",
+        selected,
+        {
+            "risk_level": "low",
+            "freshness_sensitive": False,
+            "answer_depth": "normal",
+            "evidence_contract": {"allow_summary_only": True, "minimum_independent_sources": 1},
+        },
+        {"W1"},
+    )
+
+    assert urls == []
+
+
+def test_light_path_promotes_url_mentioned_in_search_summary(monkeypatch):
+    from bridge.research import light_web_qa
+    import bridge.research.search_infra as search_infra
+
+    monkeypatch.setattr(
+        search_infra,
+        "_fetch_url_summary",
+        lambda url: {"title": "OpenAI About", "url": url, "description": "OpenAI official about page."},
+    )
+    results = light_web_qa._promote_mentioned_url_candidates(
+        "OpenAI 是什么",
+        [
+            {
+                "title": "openai公司是什么",
+                "url": "https://aiqicha.baidu.com/details/ugknowledge?id=266",
+                "description": "联网搜索结果：https://openai.com/about（OpenAI 官网 About 页面）",
+            }
+        ],
+        {
+            "subject": {"name": "OpenAI", "aliases": [], "type_hint": "company"},
+            "source_preferences": {},
+        },
+    )
+
+    assert results[0]["url"] == "https://openai.com/about"
+    assert results[0]["query"] == "direct:mentioned-url"
+
+
 def test_default_web_extract_falls_back_to_local_for_search_only_backend(monkeypatch):
     fake_tools_pkg = types.ModuleType("tools")
     fake_tools = types.ModuleType("tools.web_tools")
@@ -4920,6 +5145,34 @@ def test_default_web_extract_uses_dashscope_extract_backend(monkeypatch):
     assert result["results"][0]["content"] == "DashScope 抽取正文"
     assert result["meta"]["extract_backend"] == "dashscope"
     assert calls == [(["https://example.com"], {"format": "markdown", "use_llm_processing": False})]
+
+
+def test_default_web_extract_times_out_provider_and_allows_summary_fallback(monkeypatch):
+    from bridge.research import adapters
+
+    fake_tools_pkg = types.ModuleType("tools")
+    fake_tools = types.ModuleType("tools.web_tools")
+    fake_tools._get_extract_backend = lambda: "dashscope"
+
+    def slow_web_extract_tool(urls, **kwargs):
+        time.sleep(2)
+        return {"success": True, "results": [{"url": urls[0], "content": "late content"}]}
+
+    fake_tools.web_extract_tool = slow_web_extract_tool
+    fake_tools_pkg.web_tools = fake_tools
+    monkeypatch.setattr(adapters, "EXTRACT_STAGE_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(research_bridge, "_ensure_main_repo_on_path", lambda: None)
+    monkeypatch.setitem(sys.modules, "tools", fake_tools_pkg)
+    monkeypatch.setitem(sys.modules, "tools.web_tools", fake_tools)
+
+    result = research_bridge._default_web_extract(["https://example.com/slow"])
+
+    assert result["success"] is True
+    assert result["results"][0]["url"] == "https://example.com/slow"
+    assert result["results"][0]["content"] == ""
+    assert "timed out" in result["results"][0]["error"]
+    assert result["meta"]["extract_backend"] == "dashscope"
+    assert result["meta"]["allow_summary_fallback"] is True
 
 
 def test_default_web_extract_falls_back_to_local_for_missing_extract_backend(monkeypatch):
@@ -5613,7 +5866,7 @@ def test_mentioned_official_url_is_promoted_to_direct_candidate(monkeypatch):
             "url": "https://openai.com/",
             "description": "OpenAI official website is https://openai.com/.",
             "query": "direct:mentioned-url",
-            "quality_tags": ["mentioned_url_candidate"],
+            "quality_tags": ["mentioned_url_candidate", "mentioned_subject_domain"],
         }
     ]
 
@@ -5641,7 +5894,7 @@ def test_mentioned_url_candidate_strips_chinese_parenthetical_tail(monkeypatch):
             "url": "https://www.openai.com/",
             "description": "来源：https://www.openai.com/（依据联网搜索 `OpenAI 是什么 site:openai.com`）",
             "query": "direct:mentioned-url",
-            "quality_tags": ["mentioned_url_candidate"],
+            "quality_tags": ["mentioned_url_candidate", "mentioned_subject_domain"],
         }
     ]
 
@@ -6159,8 +6412,9 @@ def test_uncited_web_refusal_uses_source_backed_fallback():
         synthesize_adapter=lambda payload: "本次联网搜索没有找到足够可靠的公开资料来回答这个问题。",
     )
 
-    assert "结论：根据可验证材料" in result["chat_preview"]
+    assert "可确认的是" in result["chat_preview"]
     assert "[W1]" in result["chat_preview"]
+    assert "本次联网搜索" not in result["chat_preview"]
     assert result["meta"]["web_sources"][0]["url"] == "https://example.com/volatility"
 
 
@@ -6811,7 +7065,9 @@ def test_fallback_backend_sources_cannot_bypass_evidence_critic(monkeypatch):
     assert result["meta"]["web_sources"] == []
     assert result["meta"]["provider_status"]["fallback_attempts"][0]["backend"] == "ddgs"
     assert result["meta"]["search_quality"]["reason"] == "evidence_critic_rejected_all"
-    assert "没有找到足够可靠的公开资料" in result["chat_preview"]
+    assert "没有足够可靠的公开资料" in result["chat_preview"]
+    assert "已尝试的搜索词" not in result["chat_preview"]
+    assert "搜索结果主要问题" not in result["chat_preview"]
 
 
 def test_critic_rejected_primary_results_trigger_post_critic_fallback(monkeypatch):

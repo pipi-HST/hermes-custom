@@ -13,6 +13,7 @@ import json
 import multiprocessing
 import os
 from pathlib import Path
+import re
 import sys
 import time
 from typing import Any
@@ -174,6 +175,7 @@ def run_case(
     live: bool = False,
     capture_io: bool = False,
     io_records=None,
+    path: str = "legacy",
 ) -> dict[str, Any]:
     original_planner = research_bridge._default_query_planner
     original_critic = research_bridge._default_evidence_critic
@@ -202,7 +204,8 @@ def run_case(
             search_adapter = _capture_call("search", fixture_search, io_capture) if capture_io else fixture_search
             extract_adapter = _capture_call("extract", fixture_extract, io_capture) if capture_io else fixture_extract
             synthesize_adapter = _capture_call("synthesis", fixture_synth, io_capture) if capture_io else fixture_synth
-            result = research_bridge.research_answer(
+            answer_func = research_bridge.light_web_answer if path == "light" else research_bridge.research_answer
+            result = answer_func(
                 query=case["query"],
                 mode=case.get("mode") or "local_web",
                 selection_context=case.get("selection_context") or {},
@@ -219,7 +222,8 @@ def run_case(
                 research_bridge._search_local = _capture_call("local", original_local, io_capture)
                 research_bridge._default_web_search = _capture_call("search", original_search, io_capture)
                 research_bridge._default_web_extract = _capture_call("extract", original_extract, io_capture)
-            result = research_bridge.research_answer(
+            answer_func = research_bridge.light_web_answer if path == "light" else research_bridge.research_answer
+            result = answer_func(
                 query=case["query"],
                 mode=case.get("mode") or "local_web",
                 selection_context=case.get("selection_context") or {},
@@ -237,6 +241,7 @@ def run_case(
     case_result = {
         "id": case["id"],
         "category": case.get("category") or "",
+        "path": path,
         "passed": not failures,
         "failures": failures,
         "summary": summarize_result(result, failures=failures, elapsed_ms=elapsed_ms),
@@ -291,9 +296,10 @@ def run_case_with_timeout(
     live: bool,
     timeout_seconds: int,
     capture_io: bool = False,
+    path: str = "legacy",
 ) -> dict[str, Any]:
     if timeout_seconds <= 0:
-        return run_case(case, live=live, capture_io=capture_io)
+        return run_case(case, live=live, capture_io=capture_io, path=path)
     context = multiprocessing.get_context("spawn")
     queue: multiprocessing.Queue[dict[str, Any]] = context.Queue()
     manager = multiprocessing.Manager() if capture_io else None
@@ -305,7 +311,7 @@ def run_case_with_timeout(
         return result
 
     try:
-        process = context.Process(target=_run_case_worker, args=(case, live, capture_io, queue, shared_io))
+        process = context.Process(target=_run_case_worker, args=(case, live, capture_io, path, queue, shared_io))
         process.start()
         deadline = time.monotonic() + timeout_seconds
         while process.is_alive() and time.monotonic() < deadline:
@@ -347,9 +353,16 @@ def run_case_with_timeout(
             manager.shutdown()
 
 
-def _run_case_worker(case: dict[str, Any], live: bool, capture_io: bool, queue: multiprocessing.Queue, shared_io=None) -> None:
+def _run_case_worker(
+    case: dict[str, Any],
+    live: bool,
+    capture_io: bool,
+    path: str,
+    queue: multiprocessing.Queue,
+    shared_io=None,
+) -> None:
     try:
-        queue.put(run_case(case, live=live, capture_io=capture_io, io_records=shared_io))
+        queue.put(run_case(case, live=live, capture_io=capture_io, io_records=shared_io, path=path))
     except BaseException as exc:
         result = {
             "id": case["id"],
@@ -740,9 +753,11 @@ def grade_case(case: dict[str, Any], result: dict[str, Any], *, live: bool = Fal
     rejected_titles = [str(item.get("title") or "") for item in rejected]
     candidate_titles = adopted_titles + clue_titles + rejected_titles
     research_trace = meta.get("research_trace") if isinstance(meta.get("research_trace"), dict) else {}
+    is_light_path = meta.get("path") == "light_web_qa" or research_trace.get("path") == "light_web_qa"
     source_counts = research_trace.get("source_counts") if isinstance(research_trace.get("source_counts"), dict) else {}
     attempted_domains = _attempted_domains(meta)
     allowed_refusal = bool(expect.get("allow_refusal_with_rejected_sources") and not adopted and rejected)
+    failures.extend(_grade_answer_presentation(answer, result, meta))
 
     if "web_search_attempted" in expect and expect["web_search_attempted"] is not None and meta.get("web_search_attempted") is not expect["web_search_attempted"]:
         failures.append(f"web_search_attempted expected {expect['web_search_attempted']} got {meta.get('web_search_attempted')}")
@@ -754,7 +769,7 @@ def grade_case(case: dict[str, Any], result: dict[str, Any], *, live: bool = Fal
         failures.append(f"adopted web sources below minimum: {len(adopted)} < {expect.get('min_adopted_web')}")
     if "max_adopted_web" in expect and (not live or int(expect["max_adopted_web"]) <= 0) and len(adopted) > int(expect["max_adopted_web"]):
         failures.append(f"adopted web sources above maximum: {len(adopted)} > {expect['max_adopted_web']}")
-    if "min_rejected_web" in expect and len(rejected) < int(expect["min_rejected_web"]):
+    if "min_rejected_web" in expect and not is_light_path and len(rejected) < int(expect["min_rejected_web"]):
         failures.append(f"rejected web sources below minimum: {len(rejected)} < {expect['min_rejected_web']}")
     enforce_clue_minimum = True
     min_clue_web = int(expect.get("min_clue_web") or 0)
@@ -869,6 +884,57 @@ def grade_case(case: dict[str, Any], result: dict[str, Any], *, live: bool = Fal
     return failures
 
 
+PROCESS_META_PATTERNS = (
+    r"从(?:目前|当前)?搜索结果看",
+    r"本次搜索(?:显示|没有|未能|结果)",
+    r"目前检索到",
+    r"搜索摘要显示",
+    r"以上信息(?:完全)?来自",
+    r"已尝试的搜索词",
+    r"搜索结果主要问题",
+)
+
+STANDALONE_DISCLAIMER_RE = re.compile(
+    r"(?m)^\s*(?:注意|免责声明|建议进一步查阅|若需精确信息请进一步(?:查阅|查询))[:：]",
+)
+
+REFERENCE_SECTION_RE = re.compile(
+    r"(?im)^\s*#{0,6}\s*(?:参考来源|来源|联网资料)\s*[:：]?\s*$",
+)
+
+
+def _grade_answer_presentation(answer: str, result: dict[str, Any], meta: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    for pattern in PROCESS_META_PATTERNS:
+        if re.search(pattern, answer):
+            failures.append(f"answer exposes search process text: {pattern}")
+    if STANDALONE_DISCLAIMER_RE.search(answer):
+        failures.append("answer contains standalone disclaimer block")
+    if REFERENCE_SECTION_RE.search(answer):
+        failures.append("answer contains default long reference/source section")
+    invalid_refs = _invalid_answer_refs(answer, result, meta)
+    if invalid_refs:
+        failures.append(f"answer cites unavailable refs: {', '.join(invalid_refs)}")
+    return failures
+
+
+def _invalid_answer_refs(answer: str, result: dict[str, Any], meta: dict[str, Any]) -> list[str]:
+    refs = {match.upper() for match in re.findall(r"\[([KW]\d+)\]", answer or "", flags=re.I)}
+    if not refs:
+        return []
+    available: set[str] = set()
+    for source in result.get("source_map") or []:
+        if isinstance(source, dict) and source.get("ref"):
+            available.add(str(source["ref"]).upper())
+    for key in ("web_sources", "knowledge_sources"):
+        for source in meta.get(key) or []:
+            if isinstance(source, dict) and source.get("ref"):
+                available.add(str(source["ref"]).upper())
+    if not available:
+        return sorted(refs)
+    return sorted(refs - available)
+
+
 def _domain_present(expected: str, domains: list[str]) -> bool:
     expected = str(expected or "").lower().removeprefix("www.")
     for domain in domains:
@@ -947,6 +1013,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
     parser.add_argument("--live", action="store_true", help="Run against configured live search/LLM instead of fixtures")
+    parser.add_argument(
+        "--path",
+        choices=("auto", "legacy", "light"),
+        default="auto",
+        help="Research path to evaluate; auto uses light for live canaries and legacy for offline fixtures.",
+    )
     parser.add_argument("--canary", action="store_true", help="Run the fixed low-cost canary suite")
     parser.add_argument("--ids", nargs="*", default=[], help="Run only the listed case ids")
     parser.add_argument("--limit", type=int, default=0)
@@ -992,16 +1064,20 @@ def main(argv: list[str] | None = None) -> int:
     if budget_error:
         print(f"error: {budget_error}", file=sys.stderr)
         return 2
+    eval_path = args.path
+    if eval_path == "auto":
+        eval_path = "light" if args.live else "legacy"
     suite = "canary" if args.canary else ("ids" if args.ids else "all")
     results: list[dict[str, Any]] = []
     for index, case in enumerate(cases, 1):
         if args.live:
-            print(f"[live-eval] {index}/{len(cases)} start {case.get('id')}", file=sys.stderr, flush=True)
+            print(f"[live-eval] {index}/{len(cases)} start {case.get('id')} path={eval_path}", file=sys.stderr, flush=True)
         result = run_case_with_timeout(
             case,
             live=args.live,
             timeout_seconds=args.case_timeout if args.live else 0,
             capture_io=bool(args.capture_failures_dir),
+            path=eval_path,
         )
         if args.capture_failures_dir and not result.get("passed"):
             result["capture_files"] = write_failure_capture(args.capture_failures_dir, case, result)

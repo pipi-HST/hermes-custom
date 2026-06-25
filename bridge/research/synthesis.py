@@ -73,7 +73,12 @@ from bridge.research.synthesis_guard import (
 )
 
 
-def _synthesize_answer(payload: dict[str, Any], warnings: list[str]) -> str:
+def _synthesize_answer(
+    payload: dict[str, Any],
+    warnings: list[str],
+    *,
+    timeout_seconds: float | None = None,
+) -> str:
     """Generate answer using LLM or fallback to structured summary."""
     config = load_config(str(Path(__file__).parent.parent.parent / "config.yaml"))
     if not config.llm_api_key:
@@ -87,7 +92,7 @@ def _synthesize_answer(payload: dict[str, Any], warnings: list[str]) -> str:
             base_url=config.llm_base_url or "https://api.deepseek.com",
             prompt=prompt,
             max_tokens=_synthesis_max_tokens(payload),
-            timeout_seconds=SYNTHESIS_LLM_TIMEOUT_SECONDS,
+            timeout_seconds=timeout_seconds or SYNTHESIS_LLM_TIMEOUT_SECONDS,
             reserve_seconds=0,
         )
     except Exception as exc:

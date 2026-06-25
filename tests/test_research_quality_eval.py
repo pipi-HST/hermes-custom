@@ -231,11 +231,12 @@ def test_live_clue_title_expectations_only_apply_to_seen_candidates():
     }
     result = {
         "meta": {
-            "web_sources": [
-                {
-                    "title": "联网搜索结果：",
-                    "domain": "investopedia.com",
-                    "supports_claims": ["answer_user_question"],
+                "web_sources": [
+                    {
+                        "ref": "W1",
+                        "title": "联网搜索结果：",
+                        "domain": "investopedia.com",
+                        "supports_claims": ["answer_user_question"],
                 }
             ],
             "rejected_sources": [
@@ -260,7 +261,7 @@ def test_live_clue_minimum_is_capped_by_seen_target_titles():
     }
     result = {
         "meta": {
-            "web_sources": [{"title": "波动率", "domain": "baike.baidu.com"}],
+                "web_sources": [{"ref": "W1", "title": "波动率", "domain": "baike.baidu.com"}],
             "rejected_sources": [],
             "clue_sources": [
                 {"title": "金融波动", "domain": "baike.baidu.com"},
@@ -286,11 +287,12 @@ def test_live_sufficient_evidence_can_exceed_fixture_limited_upper_bounds():
     }
     result = {
         "meta": {
-            "web_sources": [
-                {"title": "波动率", "domain": "baike.baidu.com", "source_authority": "reputable_secondary"},
-                {
-                    "title": "Volatility - Overview",
-                    "domain": "corporatefinanceinstitute.com",
+                "web_sources": [
+                    {"ref": "W1", "title": "波动率", "domain": "baike.baidu.com", "source_authority": "reputable_secondary"},
+                    {
+                        "ref": "W2",
+                        "title": "Volatility - Overview",
+                        "domain": "corporatefinanceinstitute.com",
                     "source_authority": "reputable_secondary",
                 },
             ],
@@ -304,3 +306,30 @@ def test_live_sufficient_evidence_can_exceed_fixture_limited_upper_bounds():
     }
 
     assert eval_research_quality.grade_case(case, result, live=True) == []
+
+
+def test_grade_case_rejects_search_process_text_in_answer():
+    result = {
+        "meta": {"web_sources": [{"ref": "W1", "domain": "example.com"}]},
+        "source_map": [{"ref": "W1", "url": "https://example.com"}],
+        "chat_preview": "从搜索结果看，这个说法可以成立 [W1]",
+        "warnings": [],
+    }
+
+    failures = eval_research_quality.grade_case({}, result)
+
+    assert any("search process" in failure for failure in failures)
+
+
+def test_grade_case_rejects_default_reference_section_and_invalid_refs():
+    result = {
+        "meta": {"web_sources": [{"ref": "W1", "domain": "example.com"}]},
+        "source_map": [{"ref": "W1", "url": "https://example.com"}],
+        "chat_preview": "答案正文 [W2]\n\n参考来源\n[W1] Example https://example.com",
+        "warnings": [],
+    }
+
+    failures = eval_research_quality.grade_case({}, result)
+
+    assert any("reference/source section" in failure for failure in failures)
+    assert any("unavailable refs: W2" in failure for failure in failures)

@@ -16,6 +16,7 @@ from bridge.research.types import (
     MAX_EXTRACT_URLS,
     LOCAL_EXTRACT_TIMEOUT_SECONDS,
     LOCAL_EXTRACT_MAX_WORKERS,
+    EXTRACT_STAGE_TIMEOUT_SECONDS,
     SEARCH_ONLY_EXTRACT_BACKENDS,
     FALLBACK_SEARCH_BACKENDS,
     MAX_FALLBACK_SEARCH_BACKENDS,
@@ -145,14 +146,31 @@ def _default_web_extract(
         local_extract = local_extract or _local_web_extract
         return local_extract(urls, extract_backend=extract_backend)
 
-    result = web_tools.web_extract_tool(urls, format="markdown", use_llm_processing=False)
-    if asyncio.iscoroutine(result):
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(result)
-        return _run_coroutine_in_thread(result)
-    return result
+    selected_urls = [url for url in urls[:MAX_EXTRACT_URLS] if url]
+    if not selected_urls:
+        return _web_extract_failure_result([], extract_backend=extract_backend, error="")
+    timeout_seconds = _stage_timeout(EXTRACT_STAGE_TIMEOUT_SECONDS)
+    if timeout_seconds < 1.0:
+        return _web_extract_failure_result(
+            selected_urls,
+            extract_backend=extract_backend,
+            error="research budget exhausted before extraction",
+        )
+    try:
+        result = _run_callable_with_timeout(
+            lambda: web_tools.web_extract_tool(selected_urls, format="markdown", use_llm_processing=False),
+            timeout_seconds=timeout_seconds,
+            label="web extract",
+        )
+        if asyncio.iscoroutine(result):
+            result = _run_coroutine_with_timeout(result, timeout_seconds=timeout_seconds)
+        return result
+    except Exception as exc:
+        return _web_extract_failure_result(
+            selected_urls,
+            extract_backend=extract_backend,
+            error=str(exc),
+        )
 
 
 def _local_web_extract(urls: list[str], *, extract_backend: str = "") -> dict[str, Any]:
@@ -248,7 +266,65 @@ def _extract_readable_text(html: str, *, url: str) -> str:
     return text[:12000]
 
 
-def _run_coroutine_in_thread(coro: Awaitable[str | dict[str, Any]]) -> str | dict[str, Any]:
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(asyncio.run, coro)
-        return future.result()
+def _run_callable_with_timeout(
+    func: Callable[[], str | dict[str, Any] | Awaitable[str | dict[str, Any]]],
+    *,
+    timeout_seconds: float,
+    label: str,
+) -> str | dict[str, Any] | Awaitable[str | dict[str, Any]]:
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(func)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FuturesTimeoutError as exc:
+        future.cancel()
+        raise TimeoutError(f"{label} timed out after {timeout_seconds:.1f}s") from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _run_coroutine_with_timeout(
+    coro: Awaitable[str | dict[str, Any]],
+    *,
+    timeout_seconds: float,
+) -> str | dict[str, Any]:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(asyncio.wait_for(coro, timeout=timeout_seconds))
+    return _run_coroutine_in_thread(coro, timeout_seconds=timeout_seconds)
+
+
+def _run_coroutine_in_thread(
+    coro: Awaitable[str | dict[str, Any]],
+    *,
+    timeout_seconds: float,
+) -> str | dict[str, Any]:
+    return _run_callable_with_timeout(
+        lambda: asyncio.run(asyncio.wait_for(coro, timeout=timeout_seconds)),
+        timeout_seconds=timeout_seconds,
+        label="web extract coroutine",
+    )
+
+
+def _web_extract_failure_result(
+    urls: list[str],
+    *,
+    extract_backend: str,
+    error: str,
+) -> dict[str, Any]:
+    return {
+        "success": True,
+        "results": [
+            {
+                "url": url,
+                "content": "",
+                "error": error or "web extraction unavailable",
+            }
+            for url in urls
+        ],
+        "meta": {
+            "extract_backend": extract_backend,
+            "allow_summary_fallback": True,
+        },
+    }

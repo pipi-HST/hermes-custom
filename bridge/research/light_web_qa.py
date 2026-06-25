@@ -11,6 +11,7 @@ import asyncio
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +23,14 @@ from bridge.research.search import _independent_source_count
 from bridge.research.search_infra import (
     collect_web_search_results,
     collect_web_search_results_async,
+    _direct_mentioned_url_candidates,
     prefilter_web_sources,
 )
 from bridge.research.synthesis import _call_llm, _trace_sources
 from bridge.research.timing import _add_stage_timing, _empty_stage_timings
 from bridge.research.types import (
     MAX_WEB_QUERIES,
+    MAX_WEB_CANDIDATES,
     ResearchEventCallback,
     ResearchExtractAdapter,
     ResearchSearchAdapter,
@@ -52,6 +55,8 @@ LIGHT_MAX_CANDIDATES = 20
 LIGHT_SIMPLE_CANDIDATES = 10
 LIGHT_RESULTS_PER_QUERY = 8
 LIGHT_SYNTHESIS_SOURCE_LIMIT = 8
+LIGHT_EXTRACT_TIMEOUT_SECONDS = 12.0
+LIGHT_RICH_SUMMARY_CHARS = 40
 
 
 def run_light_web_qa(
@@ -61,6 +66,7 @@ def run_light_web_qa(
     research_plan: dict[str, Any],
     search_adapter: ResearchSearchAdapter,
     extract_adapter: ResearchExtractAdapter,
+    promote_mentioned_urls: bool = False,
 ) -> dict[str, Any]:
     """Run the synchronous lightweight web QA retrieval path."""
     started = time.monotonic()
@@ -75,6 +81,8 @@ def run_light_web_qa(
         backend_label=_default_search_backend(),
         max_queries=min(len(queries), MAX_WEB_QUERIES),
     )
+    if promote_mentioned_urls:
+        results = _promote_mentioned_url_candidates(query, results, research_plan)
     _add_stage_timing(stage_timings, "search_ms", search_started)
     return _finish_light_web_qa(
         query,
@@ -97,6 +105,7 @@ async def run_light_web_qa_async(
     search_adapter: ResearchSearchAdapter,
     extract_adapter: ResearchExtractAdapter,
     event_callback: ResearchEventCallback | None = None,
+    promote_mentioned_urls: bool = False,
 ) -> dict[str, Any]:
     """Run the async lightweight web QA retrieval path."""
     started = time.monotonic()
@@ -112,6 +121,8 @@ async def run_light_web_qa_async(
         backend_label=_default_search_backend(),
         max_queries=min(len(queries), MAX_WEB_QUERIES),
     )
+    if promote_mentioned_urls:
+        results = await asyncio.to_thread(_promote_mentioned_url_candidates, query, results, research_plan)
     _add_stage_timing(stage_timings, "search_ms", search_started)
     return await _finish_light_web_qa_async(
         query,
@@ -149,21 +160,16 @@ async def _finish_light_web_qa_async(
         search_quality=quality,
         web_sources=_trace_sources(candidates),
     )
-    selected = await asyncio.to_thread(_select_candidates, query, candidates, research_plan, warnings)
+    selected, need_extract_refs = await asyncio.to_thread(_select_candidates, query, candidates, research_plan, warnings)
     selected = selected[:_light_extract_limit(research_plan)]
-    skip_extract = _summary_only_is_enough(query, selected, research_plan)
-    urls = [str(item.get("url") or "") for item in selected if item.get("url")]
-    if skip_extract:
-        urls = []
+    urls = _extract_urls_for_selected(query, selected, research_plan, need_extract_refs)
     extracted_by_url: dict[str, str] = {}
     extract_failures: list[str] = []
     if urls and _research_budget_available(3.0):
         await _emit_research_event_async(event_callback, "web_extract_start", urls=urls, web_sources=_trace_sources(selected))
         extract_started = time.monotonic()
         try:
-            raw_extract = await asyncio.to_thread(extract_adapter, urls)
-            if asyncio.iscoroutine(raw_extract):
-                raw_extract = await raw_extract
+            raw_extract = await _call_extract_adapter_async(extract_adapter, urls)
             extracted_by_url = _normalized_extract_map(_parse_web_extract(raw_extract))
             extract_failures = _extract_failure_urls(raw_extract)
         except Exception as exc:
@@ -218,22 +224,17 @@ def _finish_light_web_qa(
         search_quality=quality,
         web_sources=_trace_sources(candidates),
     )
-    selected = _select_candidates(query, candidates, research_plan, warnings)
+    selected, need_extract_refs = _select_candidates(query, candidates, research_plan, warnings)
     read_limit = _light_extract_limit(research_plan)
     selected = selected[:read_limit]
-    skip_extract = _summary_only_is_enough(query, selected, research_plan)
     extracted_by_url: dict[str, str] = {}
     extract_failures: list[str] = []
-    urls = [str(item.get("url") or "") for item in selected if item.get("url")]
-    if skip_extract:
-        urls = []
+    urls = _extract_urls_for_selected(query, selected, research_plan, need_extract_refs)
     if urls and _research_budget_available(3.0):
         _emit_from_thread(event_callback, "web_extract_start", urls=urls)
         extract_started = time.monotonic()
         try:
-            raw_extract = extract_adapter(urls)
-            if asyncio.iscoroutine(raw_extract):
-                raw_extract = _run_coro_sync(raw_extract)
+            raw_extract = _call_extract_adapter_sync(extract_adapter, urls)
             extracted_by_url = _normalized_extract_map(_parse_web_extract(raw_extract))
             extract_failures = _extract_failure_urls(raw_extract)
         except Exception as exc:
@@ -280,10 +281,15 @@ def _assemble_light_web_result(
     read_pages: int,
 ) -> dict[str, Any]:
     if raw_results and not sources:
-        warnings.append("联网搜索已有候选结果，但页面正文不可用；已保留搜索摘要作为有限材料。")
-        sources = _build_light_sources(candidates[: min(3, len(candidates))], {}, [])
-        quality["evidence_status"] = "limited"
-        quality["reason"] = "summary_only_sources"
+        summary_candidates = _summary_fallback_candidates(query, candidates, research_plan)
+        if summary_candidates:
+            warnings.append("联网搜索已有候选结果，但页面正文不可用；已保留搜索摘要作为有限材料。")
+            sources = _build_light_sources(summary_candidates, {}, [])
+            quality["evidence_status"] = "limited"
+            quality["reason"] = "summary_only_sources"
+        else:
+            quality["evidence_status"] = "insufficient"
+            quality["reason"] = "weak_or_unusable_summary_sources"
     provider_status = research_provider_status(
         started,
         warnings,
@@ -327,6 +333,17 @@ def _limit_wrapped_search_adapter(search_adapter: ResearchSearchAdapter) -> Rese
     return _wrapped
 
 
+def _promote_mentioned_url_candidates(
+    query: str,
+    results: list[dict[str, Any]],
+    research_plan: dict[str, Any],
+) -> list[dict[str, Any]]:
+    mentioned = _direct_mentioned_url_candidates(results, research_plan)
+    if not mentioned:
+        return results
+    return _dedupe_web_results(mentioned + results)[:MAX_WEB_CANDIDATES]
+
+
 def _light_candidate_limit(research_plan: dict[str, Any]) -> int:
     if research_plan.get("answer_depth") == "brief" and not research_plan.get("freshness_sensitive"):
         return LIGHT_SIMPLE_CANDIDATES
@@ -341,20 +358,107 @@ def _light_extract_limit(research_plan: dict[str, Any]) -> int:
     return 3
 
 
+def _extract_urls_for_selected(
+    query: str,
+    selected: list[dict[str, Any]],
+    research_plan: dict[str, Any],
+    need_extract_refs: set[str],
+) -> list[str]:
+    if not selected:
+        return []
+    if _local_concept_summary_mode(query, research_plan):
+        return []
+    if _summary_only_is_enough(query, selected, research_plan):
+        return []
+    if need_extract_refs:
+        return [
+            str(item.get("url") or "")
+            for item in selected
+            if item.get("url") and str(item.get("ref") or "").upper() in need_extract_refs
+        ]
+    if _summary_only_is_enough(query, selected, research_plan):
+        return []
+    return [str(item.get("url") or "") for item in selected if item.get("url")]
+
+
+def _local_concept_summary_mode(query: str, research_plan: dict[str, Any]) -> bool:
+    if research_plan.get("mode") != "local_web":
+        return False
+    if research_plan.get("risk_level") == "high" or research_plan.get("freshness_sensitive"):
+        return False
+    if research_plan.get("answer_depth") == "detailed":
+        return False
+    contract = _sanitize_evidence_contract(research_plan.get("evidence_contract") or {})
+    if not contract.get("allow_summary_only", True):
+        return False
+    text = f"{query} {research_plan.get('intent_label') or ''} {(research_plan.get('subject') or {}).get('type_hint') or ''}"
+    return bool(
+        re.search(
+            r"什么是|是什么|什么意思|关系|区别|差异|介绍|解释|concept|explainer|who\\s+is|what\\s+is|explain",
+            text,
+            re.I,
+        )
+    )
+
+
+async def _call_extract_adapter_async(
+    extract_adapter: ResearchExtractAdapter,
+    urls: list[str],
+) -> str | dict[str, Any]:
+    timeout_seconds = _light_extract_timeout()
+    raw_extract = await asyncio.wait_for(asyncio.to_thread(extract_adapter, urls), timeout=timeout_seconds)
+    if asyncio.iscoroutine(raw_extract):
+        raw_extract = await asyncio.wait_for(raw_extract, timeout=timeout_seconds)
+    return raw_extract
+
+
+def _call_extract_adapter_sync(
+    extract_adapter: ResearchExtractAdapter,
+    urls: list[str],
+) -> str | dict[str, Any]:
+    timeout_seconds = _light_extract_timeout()
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(extract_adapter, urls)
+    try:
+        raw_extract = future.result(timeout=timeout_seconds)
+    except FuturesTimeoutError as exc:
+        future.cancel()
+        raise TimeoutError(f"web extract timed out after {timeout_seconds:.1f}s") from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    if asyncio.iscoroutine(raw_extract):
+        raw_extract = _run_coro_sync(asyncio.wait_for(raw_extract, timeout=timeout_seconds))
+    return raw_extract
+
+
+def _light_extract_timeout() -> float:
+    return max(1.0, _stage_timeout(LIGHT_EXTRACT_TIMEOUT_SECONDS, reserve_seconds=5.0))
+
+
 def _summary_only_is_enough(query: str, selected: list[dict[str, Any]], research_plan: dict[str, Any]) -> bool:
     if research_plan.get("risk_level") == "high" or research_plan.get("freshness_sensitive"):
         return False
     if research_plan.get("answer_depth") == "detailed":
         return False
     text = f"{query} {research_plan.get('intent_label') or ''}"
-    if not re.search(r"什么是|是什么|什么意思|关系|区别|差异|介绍|who\\s+is|what\\s+is|relationship|difference", text, re.I):
+    if not re.search(r"什么是|是什么|什么意思|关系|区别|差异|介绍|解释|who\\s+is|what\\s+is|relationship|difference|explain", text, re.I):
         return False
     rich_summaries = [
         str(item.get("description") or item.get("excerpt") or "").strip()
         for item in selected
-        if len(str(item.get("description") or item.get("excerpt") or "").strip()) >= 60
+        if len(str(item.get("description") or item.get("excerpt") or "").strip()) >= LIGHT_RICH_SUMMARY_CHARS
     ]
-    return len(rich_summaries) >= 2
+    if len(rich_summaries) >= 2:
+        return True
+    contract = _sanitize_evidence_contract(research_plan.get("evidence_contract") or {})
+    if int(contract.get("minimum_independent_sources") or 1) <= 1 and rich_summaries:
+        return True
+    return any(
+        len(str(item.get("description") or item.get("excerpt") or "").strip()) >= LIGHT_RICH_SUMMARY_CHARS
+        and not _is_light_weak_source(item)
+        and str(item.get("source_authority") or "") in {"official", "preferred", "trusted"}
+        for item in selected
+    )
 
 
 def _light_candidates(
@@ -397,6 +501,8 @@ def _light_candidates(
 
 def _light_source_authority(source: dict[str, Any]) -> str:
     tags = set(str(item) for item in source.get("quality_tags") or [])
+    if "mentioned_subject_domain" in tags:
+        return "official"
     if "planner_primary_source" in tags or "planner_preferred_domain" in tags:
         return "preferred"
     if "trusted_domain" in tags:
@@ -411,17 +517,105 @@ def _select_candidates(
     candidates: list[dict[str, Any]],
     research_plan: dict[str, Any],
     warnings: list[str],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], set[str]]:
     if not candidates:
-        return []
+        return [], set()
     read_limit = _light_extract_limit(research_plan)
-    selected_refs = _llm_selected_refs(query, candidates, research_plan, read_limit)
+    selection = _candidate_selection_plan(query, candidates, research_plan, read_limit)
+    selected_refs = selection["selected_refs"]
     if selected_refs:
         by_ref = {str(item.get("ref") or "").upper(): item for item in candidates}
         selected = [by_ref[ref] for ref in selected_refs if ref in by_ref]
         if selected:
-            return selected
-    return candidates[:read_limit]
+            selected = _apply_weak_source_policy(query, selected, candidates, research_plan)
+            return selected, set(selection["need_extract_refs"])
+    selected = _apply_weak_source_policy(query, candidates[:read_limit], candidates, research_plan)
+    return selected, set()
+
+
+def _candidate_selection_plan(
+    query: str,
+    candidates: list[dict[str, Any]],
+    research_plan: dict[str, Any],
+    read_limit: int,
+) -> dict[str, list[str]]:
+    raw = _llm_selected_refs(query, candidates, research_plan, read_limit)
+    if isinstance(raw, dict):
+        selected = _normalize_ref_list(raw.get("selected_refs") or raw.get("selected") or [], read_limit)
+        need_extract = _normalize_ref_list(raw.get("need_extract_refs") or [], read_limit)
+        summary_only = _normalize_ref_list(raw.get("answerable_from_summary_refs") or [], read_limit)
+        if not selected:
+            selected = _unique([*need_extract, *summary_only])[:read_limit]
+        return {
+            "selected_refs": selected,
+            "need_extract_refs": [ref for ref in need_extract if ref in set(selected)],
+            "answerable_from_summary_refs": [ref for ref in summary_only if ref in set(selected)],
+        }
+    selected = _normalize_ref_list(raw or [], read_limit)
+    return {
+        "selected_refs": selected,
+        "need_extract_refs": selected,
+        "answerable_from_summary_refs": [],
+    }
+
+
+def _normalize_ref_list(value: Any, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized = []
+    for item in value:
+        ref = str(item or "").strip().upper()
+        if re.fullmatch(r"W\d+", ref):
+            normalized.append(ref)
+        elif str(item).isdigit():
+            normalized.append(f"W{int(item)}")
+    return _unique(normalized)[:limit]
+
+
+def _apply_weak_source_policy(
+    query: str,
+    selected: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    research_plan: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if _weak_sources_can_answer(query, research_plan):
+        return selected
+    stronger_selected = [item for item in selected if not _is_light_weak_source(item)]
+    if stronger_selected:
+        return stronger_selected
+    stronger_candidates = [item for item in candidates if not _is_light_weak_source(item)]
+    return stronger_candidates[:_light_extract_limit(research_plan)]
+
+
+def _summary_fallback_candidates(
+    query: str,
+    candidates: list[dict[str, Any]],
+    research_plan: dict[str, Any],
+) -> list[dict[str, Any]]:
+    limit = min(3, len(candidates))
+    if not candidates:
+        return []
+    stronger = [item for item in candidates if not _is_light_weak_source(item)]
+    if stronger:
+        return stronger[:limit]
+    if _weak_sources_can_answer(query, research_plan):
+        return candidates[:limit]
+    return []
+
+
+def _weak_sources_can_answer(query: str, research_plan: dict[str, Any]) -> bool:
+    if research_plan.get("risk_level") == "high" or research_plan.get("freshness_sensitive"):
+        return False
+    contract = _sanitize_evidence_contract(research_plan.get("evidence_contract") or {})
+    if not contract.get("allow_summary_only", True):
+        return False
+    text = f"{query} {research_plan.get('intent_label') or ''}"
+    return bool(re.search(r"什么是|是什么|什么意思|关系|区别|差异|介绍|who\\s+is|what\\s+is|relationship|difference", text, re.I))
+
+
+def _is_light_weak_source(source: dict[str, Any]) -> bool:
+    tags = set(str(item) for item in source.get("quality_tags") or [])
+    return bool(tags & {"weak_secondary_source", "low_quality_domain", "generic_homepage"})
 
 
 def _llm_selected_refs(
@@ -429,7 +623,7 @@ def _llm_selected_refs(
     candidates: list[dict[str, Any]],
     research_plan: dict[str, Any],
     read_limit: int,
-) -> list[str]:
+) -> list[str] | dict[str, list[str]]:
     try:
         config = load_config(str(Path(__file__).parent.parent.parent / "config.yaml"))
         if not config.llm_api_key:
@@ -448,17 +642,16 @@ def _llm_selected_refs(
         payload = _json_payload(raw)
     except Exception:
         return []
-    refs = payload.get("selected_refs") or payload.get("selected") or []
-    if not isinstance(refs, list):
-        return []
-    normalized = []
-    for item in refs:
-        ref = str(item or "").strip().upper()
-        if re.fullmatch(r"W\d+", ref):
-            normalized.append(ref)
-        elif str(item).isdigit():
-            normalized.append(f"W{int(item)}")
-    return _unique(normalized)[:read_limit]
+    selected = _normalize_ref_list(payload.get("selected_refs") or payload.get("selected") or [], read_limit)
+    need_extract = _normalize_ref_list(payload.get("need_extract_refs") or [], read_limit)
+    summary_only = _normalize_ref_list(payload.get("answerable_from_summary_refs") or [], read_limit)
+    if need_extract or summary_only:
+        return {
+            "selected_refs": selected or _unique([*need_extract, *summary_only])[:read_limit],
+            "need_extract_refs": need_extract,
+            "answerable_from_summary_refs": summary_only,
+        }
+    return selected
 
 
 def _build_candidate_selection_prompt(
@@ -480,14 +673,16 @@ def _build_candidate_selection_prompt(
         )
     return "\n".join(
         [
-            "你负责为轻量联网答疑选择值得阅读全文的网页。",
+            "你负责为轻量联网答疑选择候选来源，并判断哪些需要阅读全文、哪些摘要已足够。",
             "只在给定候选里选择，不要新增 URL。",
             f"用户问题：{query}",
             f"最多选择 {read_limit} 个，覆盖面优先于重复来源。",
+            "弱来源（博客、知乎、CSDN、公众号、SEO 聚合站）默认只作为线索；优先选择官方、技术报告、论文、GitHub、主流媒体或行业媒体。",
+            "只有低风险概念解释、摘要已经能直接回答时，弱来源才可放入 answerable_from_summary_refs；不要为了弱来源本身要求全文读取。",
             f"问题属性：{json.dumps({'intent': research_plan.get('intent_label'), 'subject': research_plan.get('subject') or {}, 'answer_policy': research_plan.get('answer_policy') or {}}, ensure_ascii=False)}",
             "候选：",
             json.dumps(rows, ensure_ascii=False),
-            '只返回 JSON：{"selected_refs":["W1","W3"],"reason":"简短理由"}',
+            '只返回 JSON：{"selected_refs":["W1","W3"],"need_extract_refs":["W1"],"answerable_from_summary_refs":["W3"],"reason":"简短理由"}',
         ]
     )
 

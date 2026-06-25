@@ -23,21 +23,26 @@ def _fallback_answer(payload: dict[str, Any]) -> str:
     """Generate fallback answer when LLM synthesis fails."""
     refs = _fallback_evidence_refs(payload)
     if refs:
-        lines = [f"结论：根据可验证材料，本次能直接依据的是：{_fallback_evidence_sentence(refs)}"]
+        lines = [f"可确认的是：{_fallback_evidence_sentence(refs)}"]
     else:
-        lines = ["结论：本次联网搜索没有找到足够可靠的公开资料，无法给出有来源支撑的确定回答。"]
+        lines = ["无法确认：没有足够可靠的公开资料支撑确定回答。"]
     selection = payload.get("selection_context") or {}
     if selection.get("selected_text"):
         lines.extend(["", "选区：", _clip_text(str(selection.get("selected_text") or ""), 500)])
     if payload.get("local_answer"):
         lines.extend(["", "本地知识库依据：", _clip_text(payload["local_answer"], 1200)])
     if payload.get("web_sources"):
-        lines.append("\n联网资料依据：")
+        lines.append("\n可引用材料：")
         for source in payload["web_sources"][:5]:
             lines.append(f"- [{source['ref']}] {source.get('title', '')}: {_clip_text(_fallback_source_text(source), 260)}")
     article = payload.get("article_context") or {}
-    if article.get("body") and not payload.get("local_answer") and not payload.get("web_sources"):
-        lines.extend(["", "当前文章依据：", _clip_text(str(article.get("body") or ""), 600)])
+    if (
+        article.get("body")
+        and payload.get("mode") != "web_only"
+        and not payload.get("local_answer")
+        and not payload.get("web_sources")
+    ):
+        lines.extend(["", "当前文章可提供的上下文：", _clip_text(str(article.get("body") or ""), 600)])
     return "\n".join(lines).strip()
 
 
@@ -134,9 +139,8 @@ def _requires_source_backed_fallback(payload: dict[str, Any]) -> bool:
 
 
 def _low_quality_fallback_answer(payload: dict[str, Any]) -> str:
-    """Generate low-quality fallback answer with search diagnostics."""
-    quality = payload.get("search_quality") or {}
-    lines = ["本次联网搜索没有找到足够可靠的公开资料来回答这个问题。"]
+    """Generate low-quality fallback answer without exposing search diagnostics."""
+    lines = ["无法确认：没有足够可靠的公开资料支撑确定回答。"]
     if payload.get("local_answer"):
         refs = [
             str(source.get("ref") or "")
@@ -145,22 +149,6 @@ def _low_quality_fallback_answer(payload: dict[str, Any]) -> str:
         ]
         suffix = f" [{' '.join(refs)}]" if refs else ""
         lines.extend(["", f"本地知识库可确认：{_clip_text(payload['local_answer'], 900)}{suffix}"])
-    queries = payload.get("web_queries") or []
-    rewritten = payload.get("rewritten_web_queries") or []
-    if queries:
-        lines.extend(["", "已尝试的搜索词："])
-        lines.extend(f"- {query}" for query in queries[:MAX_WEB_QUERIES])
-    if rewritten:
-        lines.extend(["", "已重写并再次搜索："])
-        lines.extend(f"- {query}" for query in rewritten[:MAX_WEB_QUERIES])
-    lines.extend(
-        [
-            "",
-            "搜索结果主要问题：",
-            f"- {quality.get('reason') or '来源相关性或权威性不足'}",
-            f"- 权威来源命中数：{quality.get('trusted_sources', 0)}",
-        ]
-    )
     return "\n".join(lines).strip()
 
 

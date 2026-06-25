@@ -616,6 +616,9 @@ def _direct_mentioned_url_candidates(
                 continue
             if not _mentioned_url_matches_plan(cleaned, domain, subject, preferences):
                 continue
+            quality_tags = ["mentioned_url_candidate"]
+            if _mentioned_url_matches_plan(cleaned, domain, subject, {"preferred_domains": [], "preferred_source_kinds": []}):
+                quality_tags.append("mentioned_subject_domain")
             fetched = _fetch_url_summary(cleaned) if _direct_probe_budget_available() else None
             candidates.append(
                 {
@@ -623,7 +626,7 @@ def _direct_mentioned_url_candidates(
                     "url": cleaned,
                     "description": (fetched or {}).get("description") or str(item.get("description") or ""),
                     "query": "direct:mentioned-url",
-                    "quality_tags": ["mentioned_url_candidate"],
+                    "quality_tags": quality_tags,
                 }
             )
             existing_urls.add(cleaned)
