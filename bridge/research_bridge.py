@@ -314,6 +314,10 @@ from bridge.research.light_web_qa import (
     run_light_web_qa,
     run_light_web_qa_async,
 )
+from bridge.web_context_answer import (
+    web_context_answer as _web_context_answer,
+    async_web_context_answer as _async_web_context_answer,
+)
 from bridge.research.results import web_research_result
 from bridge.research.adapters import (
     _legacy_search_web as _adapter_legacy_search_web,
@@ -466,18 +470,22 @@ def web_assist_answer(
     knowledge processing.  It bounds resources, preserves citations, and skips
     the legacy evidence-critic/research-repair chain by default.
     """
-    return _web_assist_answer_impl(
+    result = _web_context_answer(
         query=query,
         mode=mode,
         article_context=article_context,
         selection_context=selection_context,
-        export_file=export_file,
-        search_adapter=search_adapter,
-        extract_adapter=extract_adapter,
+        search_adapter=search_adapter or _default_web_search,
+        extract_adapter=extract_adapter or _default_web_extract,
+        local_search_adapter=_web_context_local_search,
         synthesize_adapter=synthesize_adapter,
-        intent="web_assist_answer",
-        path_label="web_assist",
     )
+    result["intent"] = "web_assist_answer"
+    return result
+
+
+def _web_context_local_search(query: str, warnings: list[str]) -> tuple[str, list[dict[str, Any]]]:
+    return _search_local(query, warnings)
 
 
 def light_web_answer(
@@ -608,19 +616,19 @@ async def async_web_assist_answer(
     event_callback: ResearchEventCallback | None = None,
 ) -> dict[str, Any]:
     """Async product-default web assist answer for dashboard callers."""
-    return await _async_web_assist_answer_impl(
+    result = await _async_web_context_answer(
         query=query,
         mode=mode,
         article_context=article_context,
         selection_context=selection_context,
-        export_file=export_file,
-        search_adapter=search_adapter,
-        extract_adapter=extract_adapter,
+        search_adapter=search_adapter or _default_web_search,
+        extract_adapter=extract_adapter or _default_web_extract,
+        local_search_adapter=_web_context_local_search,
         synthesize_adapter=synthesize_adapter,
         event_callback=event_callback,
-        intent="web_assist_answer",
-        path_label="web_assist",
     )
+    result["intent"] = "web_assist_answer"
+    return result
 
 
 async def async_light_web_answer(

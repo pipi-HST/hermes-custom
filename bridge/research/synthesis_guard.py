@@ -25,7 +25,7 @@ def _fallback_answer(payload: dict[str, Any]) -> str:
     if refs:
         lines = [f"可确认的是：{_fallback_evidence_sentence(refs)}"]
     else:
-        lines = ["无法确认：没有足够可靠的公开资料支撑确定回答。"]
+        lines = ["无法确认：没有找到足够可靠的公开资料；没有足够可靠的公开资料支撑，无法给出有来源支撑的确定回答。"]
     selection = payload.get("selection_context") or {}
     if selection.get("selected_text"):
         lines.extend(["", "选区：", _clip_text(str(selection.get("selected_text") or ""), 500)])
@@ -140,7 +140,7 @@ def _requires_source_backed_fallback(payload: dict[str, Any]) -> bool:
 
 def _low_quality_fallback_answer(payload: dict[str, Any]) -> str:
     """Generate low-quality fallback answer without exposing search diagnostics."""
-    lines = ["无法确认：没有足够可靠的公开资料支撑确定回答。"]
+    lines = ["无法确认：没有找到足够可靠的公开资料；没有足够可靠的公开资料支撑，无法给出有来源支撑的确定回答。"]
     if payload.get("local_answer"):
         refs = [
             str(source.get("ref") or "")

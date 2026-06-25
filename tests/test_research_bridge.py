@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from bridge import research_bridge
+from bridge import research_bridge, web_context_answer as web_context_module
 
 
 @pytest.fixture(autouse=True)
@@ -4810,20 +4810,17 @@ def test_light_web_answer_skips_evidence_critic_and_reads_selected_candidates(mo
 def test_web_assist_answer_uses_assist_budget_and_skips_default_extract(monkeypatch):
     monkeypatch.setattr(
         research_bridge,
-        "_default_query_planner",
-        lambda payload: {
-            "intent_label": "concept explainer",
-            "needs_web": True,
-            "mode": "local_web",
-            "subject": {"name": "RAG", "type_hint": "concept"},
-            "queries": ["RAG retrieval augmented generation", "RAG concept", "RAG examples", "RAG architecture"],
-            "evidence_contract": {"allow_summary_only": True, "minimum_independent_sources": 1},
-        },
-    )
-    monkeypatch.setattr(
-        research_bridge,
         "_default_evidence_critic",
         lambda _payload: (_ for _ in ()).throw(AssertionError("web assist must not call evidence critic")),
+    )
+    monkeypatch.setattr(
+        web_context_module,
+        "_llm_json",
+        lambda prompt, *, timeout_seconds: (
+            {"queries": ["RAG retrieval augmented generation", "RAG concept", "RAG architecture"]}
+            if "生成网页搜索词" in prompt
+            else {"selected_refs": ["W1", "W2", "W3"], "open_refs": [], "answer_shape": "概念解释"}
+        ),
     )
     seen_queries: list[str] = []
     seen_limits: list[int] = []
@@ -4854,14 +4851,14 @@ def test_web_assist_answer_uses_assist_budget_and_skips_default_extract(monkeypa
     )
 
     trace = result["meta"]["research_trace"]
-    assert result["meta"]["path"] == "web_assist"
-    assert trace["path"] == "web_assist"
+    assert result["intent"] == "web_assist_answer"
+    assert result["meta"]["path"] == "web_context"
+    assert trace["path"] == "web_context"
     assert trace["legacy_research"] is False
-    assert trace["stage_timings"]["critic_ms"] == 0
-    assert trace["read_pages"] == 0
     assert len(seen_queries) <= 3
-    assert seen_limits and max(seen_limits) == 6
-    assert result["meta"]["provider_status"]["candidate_count"] <= 12
+    assert seen_limits and max(seen_limits) == 8
+    assert result["meta"]["provider_status"]["candidate_count"] <= 8
+    assert result["meta"]["provider_status"]["extracted_pages"] == 0
     assert all(source["extract_status"] == "summary" for source in result["meta"]["web_sources"])
 
 
