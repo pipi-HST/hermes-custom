@@ -18,7 +18,7 @@ from agents.capture_agent import load_config
 from bridge.result_envelope import success_envelope
 from bridge.research.adapters import _default_search_backend
 from bridge.research.synthesis import _call_llm
-from bridge.research.timing import _empty_stage_timings, _add_stage_timing
+from bridge.research.timing import _add_stage_timing
 from bridge.research.types import (
     ResearchEventCallback,
     ResearchExtractAdapter,
@@ -71,7 +71,7 @@ def web_context_answer(
     article_context = article_context or {}
     selection_context = selection_context or {}
     warnings: list[str] = []
-    stage_timings = _empty_stage_timings()
+    stage_timings = _empty_web_context_stage_timings()
 
     use_local = normalized_mode in {"local_only", "local_web"}
     use_web = normalized_mode in {"web_only", "local_web"}
@@ -609,6 +609,14 @@ def _provider_status(
         "fallback_attempts": [],
         "warnings": list(warnings),
         "stage_timings": stage_timings,
+    }
+
+
+def _empty_web_context_stage_timings() -> dict[str, int]:
+    return {
+        "search_ms": 0,
+        "extract_ms": 0,
+        "synthesis_ms": 0,
     }
 
 

@@ -60,6 +60,8 @@ def test_web_context_answer_uses_summary_materials_without_extract(monkeypatch):
     assert result["meta"]["web_search_attempted"] is True
     assert result["meta"]["provider_status"]["summary_only_pages"] == 2
     assert result["meta"]["provider_status"]["extracted_pages"] == 0
+    assert result["meta"]["provider_status"]["stage_timings"].keys() == {"search_ms", "extract_ms", "synthesis_ms"}
+    assert "critic_ms" not in result["meta"]["provider_status"]["stage_timings"]
     assert result["meta"]["search_quality"] == {"passed": True, "reason": "materials_available"}
     assert "[W9]" not in result["chat_preview"]
     assert [source["ref"] for source in result["meta"]["web_sources"]] == ["W1", "W2"]
@@ -167,4 +169,3 @@ def test_async_web_context_answer_emits_candidate_trace(monkeypatch):
     assert result["meta"]["research_trace"]["candidate_sources"][0]["ref"] == "W1"
     assert ranked
     assert ranked[0]["web_sources"][0]["title"] == "什么是 Harness Engineering"
-
