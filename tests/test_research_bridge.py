@@ -135,6 +135,235 @@ def test_evidence_critic_reserve_allows_late_stage_request_window():
     assert timeout >= 10
 
 
+def test_low_remaining_budget_skips_broad_evidence_retry():
+    sources = [
+        {
+            "id": f"https://source-{index}.example/openai",
+            "url": f"https://source-{index}.example/openai",
+            "domain": f"source-{index}.example",
+            "title": f"OpenAI source {index}",
+            "excerpt": "OpenAI overview.",
+            "extract_status": "summary",
+        }
+        for index in range(1, 6)
+    ]
+    calls = []
+
+    def rejecting_critic(payload):
+        calls.append(payload)
+        return {
+            "decisions": [
+                {
+                    "source_id": source["source_id"],
+                    "subject_match": "yes",
+                    "source_authority": "unknown",
+                    "source_role": "clue",
+                    "allowed_usage": ["background"],
+                    "confidence": "low",
+                    "supports_claims": [],
+                    "adoption": "reject",
+                    "reason": "not enough evidence",
+                }
+                for source in payload["sources"]
+            ]
+        }
+
+    warnings = []
+    token = research_bridge._RESEARCH_DEADLINE.set(time.monotonic() + 20)
+    try:
+        adopted, rejected = research_bridge._apply_evidence_critic(
+            "OpenAI 官方网站如何介绍 OpenAI？",
+            {
+                "mode": "web_only",
+                "risk_level": "low",
+                "freshness_sensitive": False,
+                "answer_depth": "detailed",
+                "subject": {"name": "OpenAI"},
+                "answer_claims_needed": ["answer_user_question"],
+                "evidence_contract": {"allow_summary_only": True, "minimum_independent_sources": 1},
+                "source_preferences": {},
+            },
+            sources,
+            warnings,
+            critic_adapter=rejecting_critic,
+        )
+    finally:
+        research_bridge._RESEARCH_DEADLINE.reset(token)
+
+    assert adopted == []
+    assert len(rejected) == len(sources)
+    assert len(calls) == 3
+    assert "跳过证据裁判后的总 claim 复核" in " ".join(warnings)
+
+
+def test_low_remaining_budget_skips_post_critic_fallback(monkeypatch):
+    monkeypatch.setattr(research_bridge, "_available_fallback_search_backends", lambda _primary: ["ddgs"])
+    fallback_calls = []
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_web_search",
+        lambda *_args: {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "OpenAI source",
+                        "url": "https://source.example/openai",
+                        "description": "OpenAI overview.",
+                    }
+                ]
+            },
+        },
+    )
+    monkeypatch.setattr(
+        research_bridge,
+        "_web_search_with_backend",
+        lambda query, limit, backend: fallback_calls.append((query, backend)) or {"success": True, "data": {"web": []}},
+    )
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_evidence_critic",
+        lambda payload: {
+            "decisions": [
+                {
+                    "source_id": source["source_id"],
+                    "subject_match": "yes",
+                    "source_authority": "unknown",
+                    "source_role": "clue",
+                    "allowed_usage": ["background"],
+                    "confidence": "low",
+                    "supports_claims": [],
+                    "adoption": "reject",
+                    "reason": "not enough evidence",
+                }
+                for source in payload["sources"]
+            ]
+        },
+    )
+    warnings = []
+    token = research_bridge._RESEARCH_DEADLINE.set(time.monotonic() + 20)
+    try:
+        result = research_bridge._run_web_research(
+            "OpenAI 官方网站如何介绍 OpenAI？",
+            warnings,
+            research_plan={
+                "intent_label": "entity background",
+                "needs_web": True,
+                "mode": "web_only",
+                "subject": {"name": "OpenAI", "aliases": [], "type_hint": "company"},
+                "selection_role": "none",
+                "risk_level": "low",
+                "freshness_sensitive": False,
+                "answer_depth": "normal",
+                "queries": ["OpenAI official"],
+                "answer_claims_needed": ["answer_user_question"],
+                "claim_requirements": {},
+                "evidence_contract": {"allow_summary_only": True, "minimum_independent_sources": 1},
+                "source_preferences": {},
+                "answer_contract": {},
+                "privacy": {},
+                "plan_status": "planned",
+            },
+            article_context={},
+            selection_context={},
+            search_adapter=None,
+            extract_adapter=lambda urls: {"results": [{"url": url, "content": "OpenAI overview."} for url in urls]},
+        )
+    finally:
+        research_bridge._RESEARCH_DEADLINE.reset(token)
+
+    assert fallback_calls == []
+    assert result["provider_status"]["fallback_attempts"] == []
+    assert result["sources"] == []
+    assert result["search_quality"]["reason"] == "evidence_critic_rejected_all"
+    assert "跳过补充搜索" in " ".join(warnings)
+
+
+def test_low_remaining_budget_skips_async_post_critic_fallback(monkeypatch):
+    monkeypatch.setattr(research_bridge, "_available_fallback_search_backends", lambda _primary: ["ddgs"])
+    fallback_calls = []
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_web_search",
+        lambda *_args: {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "OpenAI source",
+                        "url": "https://source.example/openai",
+                        "description": "OpenAI overview.",
+                    }
+                ]
+            },
+        },
+    )
+    monkeypatch.setattr(
+        research_bridge,
+        "_web_search_with_backend",
+        lambda query, limit, backend: fallback_calls.append((query, backend)) or {"success": True, "data": {"web": []}},
+    )
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_evidence_critic",
+        lambda payload: {
+            "decisions": [
+                {
+                    "source_id": source["source_id"],
+                    "subject_match": "yes",
+                    "source_authority": "unknown",
+                    "source_role": "clue",
+                    "allowed_usage": ["background"],
+                    "confidence": "low",
+                    "supports_claims": [],
+                    "adoption": "reject",
+                    "reason": "not enough evidence",
+                }
+                for source in payload["sources"]
+            ]
+        },
+    )
+    warnings = []
+    token = research_bridge._RESEARCH_DEADLINE.set(time.monotonic() + 20)
+    try:
+        result = asyncio.run(
+            research_bridge._run_web_research_async(
+                "OpenAI 官方网站如何介绍 OpenAI？",
+                warnings,
+                research_plan={
+                    "intent_label": "entity background",
+                    "needs_web": True,
+                    "mode": "web_only",
+                    "subject": {"name": "OpenAI", "aliases": [], "type_hint": "company"},
+                    "selection_role": "none",
+                    "risk_level": "low",
+                    "freshness_sensitive": False,
+                    "answer_depth": "normal",
+                    "queries": ["OpenAI official"],
+                    "answer_claims_needed": ["answer_user_question"],
+                    "claim_requirements": {},
+                    "evidence_contract": {"allow_summary_only": True, "minimum_independent_sources": 1},
+                    "source_preferences": {},
+                    "answer_contract": {},
+                    "privacy": {},
+                    "plan_status": "planned",
+                },
+                article_context={},
+                selection_context={},
+                search_adapter=None,
+                extract_adapter=lambda urls: {"results": [{"url": url, "content": "OpenAI overview."} for url in urls]},
+            )
+        )
+    finally:
+        research_bridge._RESEARCH_DEADLINE.reset(token)
+
+    assert fallback_calls == []
+    assert result["provider_status"]["fallback_attempts"] == []
+    assert result["sources"] == []
+    assert result["search_quality"]["reason"] == "evidence_critic_rejected_all"
+    assert "跳过补充搜索" in " ".join(warnings)
+
+
 def test_research_planner_empty_result_uses_original_query_only():
     queries = research_bridge.plan_web_queries(
         "苹果现在的市值多少",

@@ -11,6 +11,7 @@ from bridge.research.types import (
     ResearchEventCallback,
     ResearchExtractAdapter,
     ResearchSearchAdapter,
+    WEB_FALLBACK_MIN_REMAINING_SECONDS,
 )
 from bridge.research.utils import (
     _dedupe_web_results,
@@ -67,6 +68,13 @@ class WebResearchDeps:
     available_fallback_search_backends: Callable[[str], list[str]]
     fallback_search_adapter: Callable[[str], ResearchSearchAdapter]
     research_budget_available: Callable[[float], bool]
+
+
+def _fallback_budget_available(deps: WebResearchDeps, warnings: list[str]) -> bool:
+    if deps.research_budget_available(WEB_FALLBACK_MIN_REMAINING_SECONDS):
+        return True
+    warnings.append("研究预算不足，已跳过补充搜索以避免检索链路继续超时。")
+    return False
 
 
 def empty_web_research(
@@ -149,7 +157,11 @@ async def run_web_research_async(
         if mentioned_url_candidates:
             results = _dedupe_web_results(mentioned_url_candidates + results)[:MAX_WEB_CANDIDATES]
         preferred_domain_queries = _preferred_domain_limited_queries(queries, research_plan.get("source_preferences") or {})
-        if preferred_domain_queries and not _results_include_preferred_domain(results, research_plan.get("source_preferences") or {}) and deps.research_budget_available(8.0):
+        if (
+            preferred_domain_queries
+            and not _results_include_preferred_domain(results, research_plan.get("source_preferences") or {})
+            and _fallback_budget_available(deps, warnings)
+        ):
             attempted_backends = {primary_backend}
             for backend in deps.available_fallback_search_backends(primary_backend):
                 if backend in attempted_backends:
@@ -233,7 +245,11 @@ async def run_web_research_async(
                 web_sources=_trace_sources(_web_sources_from_ranked(ranked, {})),
                 rewritten_queries=rewritten_queries,
             )
-    if using_default_search and (quality.get("retrieval_health") or {}).get("needs_recall_repair") and deps.research_budget_available(8.0):
+    if (
+        using_default_search
+        and (quality.get("retrieval_health") or {}).get("needs_recall_repair")
+        and _fallback_budget_available(deps, warnings)
+    ):
         fallback_queries = _limited_search_queries(rewritten_queries or queries, repair_query_limit)
         for backend in deps.available_fallback_search_backends(primary_backend):
             trigger = (quality.get("retrieval_health") or {}).get("repair_reason") or ""
@@ -339,7 +355,12 @@ async def run_web_research_async(
         extract_limit=extract_limit,
         event_callback=event_callback,
     )
-    if using_default_search and critic_rejected_sources and not sources and deps.research_budget_available(8.0):
+    if (
+        using_default_search
+        and critic_rejected_sources
+        and not sources
+        and _fallback_budget_available(deps, warnings)
+    ):
         attempted_backends = attempted_fallback_backends(fallback_attempts)
         for backend in deps.available_fallback_search_backends(primary_backend):
             if backend in attempted_backends:
@@ -397,7 +418,7 @@ async def run_web_research_async(
             if sources:
                 warnings.append("首轮来源未通过证据裁判，已通过补充搜索取得可采用来源。")
                 break
-        if not sources and deps.research_budget_available(8.0):
+        if not sources and _fallback_budget_available(deps, warnings):
             repair_queries = _post_critic_repair_queries(query, research_plan, queries, rewritten_queries)
             if repair_queries:
                 await _emit_research_event_async(
@@ -496,7 +517,12 @@ async def run_web_research_async(
         )
         return missing_required
     mark_sufficient_evidence_status(sources, research_plan, quality)
-    if sources and _missing_minimum_reliable_sources(research_plan, sources) and using_default_search and deps.research_budget_available(8.0):
+    if (
+        sources
+        and _missing_minimum_reliable_sources(research_plan, sources)
+        and using_default_search
+        and _fallback_budget_available(deps, warnings)
+    ):
         attempted_backends = attempted_fallback_backends(fallback_attempts)
         for backend in deps.available_fallback_search_backends(primary_backend):
             if backend in attempted_backends:

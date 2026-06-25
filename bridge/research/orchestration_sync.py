@@ -8,6 +8,7 @@ from bridge.research.types import (
     MAX_WEB_CANDIDATES,
     ResearchExtractAdapter,
     ResearchSearchAdapter,
+    WEB_FALLBACK_MIN_REMAINING_SECONDS,
 )
 from bridge.research.utils import (
     _dedupe_web_results,
@@ -48,6 +49,13 @@ from bridge.research.search_infra import (
     collect_web_search_results,
     rewrite_queries_for_low_quality_results,
 )
+
+
+def _fallback_budget_available(deps: WebResearchDeps, warnings: list[str]) -> bool:
+    if deps.research_budget_available(WEB_FALLBACK_MIN_REMAINING_SECONDS):
+        return True
+    warnings.append("研究预算不足，已跳过补充搜索以避免检索链路继续超时。")
+    return False
 
 
 def run_web_research(
@@ -99,7 +107,11 @@ def run_web_research(
         if mentioned_url_candidates:
             results = _dedupe_web_results(mentioned_url_candidates + results)[:MAX_WEB_CANDIDATES]
         preferred_domain_queries = _preferred_domain_limited_queries(queries, research_plan.get("source_preferences") or {})
-        if preferred_domain_queries and not _results_include_preferred_domain(results, research_plan.get("source_preferences") or {}) and deps.research_budget_available(8.0):
+        if (
+            preferred_domain_queries
+            and not _results_include_preferred_domain(results, research_plan.get("source_preferences") or {})
+            and _fallback_budget_available(deps, warnings)
+        ):
             attempted_backends = {primary_backend}
             for backend in deps.available_fallback_search_backends(primary_backend):
                 if backend in attempted_backends:
@@ -152,7 +164,11 @@ def run_web_research(
             ranked, quality = _rank_and_evaluate_results(query, results, research_plan)
             quality["rewrite_attempted"] = True
             quality["rewritten_queries"] = rewritten_queries
-    if using_default_search and (quality.get("retrieval_health") or {}).get("needs_recall_repair") and deps.research_budget_available(8.0):
+    if (
+        using_default_search
+        and (quality.get("retrieval_health") or {}).get("needs_recall_repair")
+        and _fallback_budget_available(deps, warnings)
+    ):
         fallback_queries = _limited_search_queries(rewritten_queries or queries, repair_query_limit)
         for backend in deps.available_fallback_search_backends(primary_backend):
             before_count = len(results)
@@ -223,7 +239,12 @@ def run_web_research(
         warnings,
         extract_limit=extract_limit,
     )
-    if using_default_search and critic_rejected_sources and not sources and deps.research_budget_available(8.0):
+    if (
+        using_default_search
+        and critic_rejected_sources
+        and not sources
+        and _fallback_budget_available(deps, warnings)
+    ):
         attempted_backends = attempted_fallback_backends(fallback_attempts)
         for backend in deps.available_fallback_search_backends(primary_backend):
             if backend in attempted_backends:
@@ -264,7 +285,7 @@ def run_web_research(
             if sources:
                 warnings.append("首轮来源未通过证据裁判，已通过补充搜索取得可采用来源。")
                 break
-        if not sources and deps.research_budget_available(8.0):
+        if not sources and _fallback_budget_available(deps, warnings):
             repair_queries = _post_critic_repair_queries(query, research_plan, queries, rewritten_queries)
             if repair_queries:
                 before_count = len(results)
@@ -327,7 +348,12 @@ def run_web_research(
     if missing_required:
         return missing_required
     mark_sufficient_evidence_status(sources, research_plan, quality)
-    if sources and _missing_minimum_reliable_sources(research_plan, sources) and using_default_search and deps.research_budget_available(8.0):
+    if (
+        sources
+        and _missing_minimum_reliable_sources(research_plan, sources)
+        and using_default_search
+        and _fallback_budget_available(deps, warnings)
+    ):
         attempted_backends = attempted_fallback_backends(fallback_attempts)
         for backend in deps.available_fallback_search_backends(primary_backend):
             if backend in attempted_backends:

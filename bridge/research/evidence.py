@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from bridge.research.types import (
+    EVIDENCE_RETRY_MIN_REMAINING_SECONDS,
     ResearchEvidenceCriticAdapter,
 )
 from bridge.research.utils import (
@@ -269,7 +270,11 @@ def _apply_evidence_critic(
         claims,
         warnings,
     )
-    if not adopted and _should_retry_broad_low_risk_claim(research_plan, claims) and _research_budget_available(3.0):
+    if (
+        not adopted
+        and _should_retry_broad_low_risk_claim(research_plan, claims)
+        and _research_budget_available(EVIDENCE_RETRY_MIN_REMAINING_SECONDS)
+    ):
         try:
             retry_decisions = _retry_evidence_critic_minimal(query, research_plan, sources, ["answer_user_question"], adapter)
             if not retry_decisions:
@@ -282,6 +287,8 @@ def _apply_evidence_critic(
             if retry_adopted:
                 adopted, rejected = retry_adopted, retry_rejected
                 warnings.append("首轮证据裁判未找到可采用来源，已改用总 claim 轻量复核。")
+    elif not adopted and _should_retry_broad_low_risk_claim(research_plan, claims):
+        warnings.append("研究预算不足，已跳过证据裁判后的总 claim 复核。")
     if _should_prune_redundant_same_domain_adopted_sources(research_plan):
         adopted, redundant_rejected = _prune_redundant_same_domain_adopted_sources(adopted)
         rejected = _dedupe_sources_by_url([*rejected, *redundant_rejected])
