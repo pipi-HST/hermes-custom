@@ -52,7 +52,13 @@ def extract_and_criticize_sources(
     _add_stage_timing(stage_timings, "extract_ms", extract_started)
     sources = _annotate_evidence_sources(query, sources, research_plan=research_plan)
     critic_started = time.monotonic()
-    sources, critic_rejected_sources = _apply_evidence_critic(query, research_plan, sources, warnings)
+    sources, critic_rejected_sources = _apply_evidence_critic(
+        query,
+        research_plan,
+        sources,
+        warnings,
+        stage_timings=stage_timings,
+    )
     _add_stage_timing(stage_timings, "critic_ms", critic_started)
     return _renumber_sources(sources, "W", {}), critic_rejected_sources
 
@@ -93,6 +99,13 @@ async def extract_and_criticize_sources_async(
         web_sources=_trace_sources(sources),
     )
     critic_started = time.monotonic()
-    sources, critic_rejected_sources = await asyncio.to_thread(_apply_evidence_critic, query, research_plan, sources, warnings)
+    sources, critic_rejected_sources = await asyncio.to_thread(
+        _apply_evidence_critic,
+        query,
+        research_plan,
+        sources,
+        warnings,
+        stage_timings=stage_timings,
+    )
     _add_stage_timing(stage_timings, "critic_ms", critic_started)
     return _renumber_sources(sources, "W", {}), critic_rejected_sources

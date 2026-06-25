@@ -5,7 +5,19 @@ import time
 from typing import Any
 
 
-STAGE_TIMING_KEYS = ("search_ms", "extract_ms", "critic_ms", "fallback_ms", "synthesis_ms")
+STAGE_TIMING_KEYS = (
+    "search_ms",
+    "extract_ms",
+    "critic_ms",
+    "initial_critic_ms",
+    "minimal_critic_ms",
+    "batch_critic_ms",
+    "broad_retry_ms",
+    "repair_critic_ms",
+    "limited_summary_adoption_ms",
+    "fallback_ms",
+    "synthesis_ms",
+)
 
 
 def _empty_stage_timings() -> dict[str, int]:

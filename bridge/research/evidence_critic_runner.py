@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 from typing import Any
 
 from bridge.research.evidence_critic_io import _evidence_critic_payload, _parse_evidence_critic_decisions
 from bridge.research.search import _allows_secondary_evidence_candidates
+from bridge.research.timing import _add_stage_timing
 from bridge.research.types import ResearchEvidenceCriticAdapter
 from bridge.research.utils import (
     _research_budget_available,
@@ -21,9 +23,13 @@ def _retry_evidence_critic_in_batches(
     sources: list[dict[str, Any]],
     claims: list[str],
     adapter: ResearchEvidenceCriticAdapter,
+    *,
+    stage_timings: dict[str, Any] | None = None,
+    timing_key: str | None = "batch_critic_ms",
 ) -> list[dict[str, Any]]:
     if len(sources) <= 2:
         return []
+    started = time.monotonic()
     batches = [sources[index : index + 2] for index in range(0, len(sources), 2)]
     batches = batches[:3]
 
@@ -41,6 +47,8 @@ def _retry_evidence_critic_in_batches(
                 decisions.extend(future.result())
             except Exception:
                 continue
+    if timing_key:
+        _add_stage_timing(stage_timings, timing_key, started)
     return decisions
 
 
@@ -79,9 +87,13 @@ def _retry_evidence_critic_minimal(
     sources: list[dict[str, Any]],
     claims: list[str],
     adapter: ResearchEvidenceCriticAdapter,
+    *,
+    stage_timings: dict[str, Any] | None = None,
+    timing_key: str | None = "minimal_critic_ms",
 ) -> list[dict[str, Any]]:
     if not _research_budget_available(3.0):
         return []
+    started = time.monotonic()
     batch_size = 2 if len(sources) > 1 else 1
     batches = [sources[index : index + batch_size] for index in range(0, len(sources), batch_size)]
     batches = batches[:3]
@@ -102,6 +114,8 @@ def _retry_evidence_critic_minimal(
                 decisions.extend(future.result())
             except Exception:
                 continue
+    if timing_key:
+        _add_stage_timing(stage_timings, timing_key, started)
     return decisions
 
 
@@ -112,9 +126,13 @@ def _repair_evidence_critic_minimal_batches(
     claims: list[str],
     adapter: ResearchEvidenceCriticAdapter,
     repair_context: dict[str, Any],
+    *,
+    stage_timings: dict[str, Any] | None = None,
+    timing_key: str | None = None,
 ) -> list[dict[str, Any]]:
     if not batches or not _research_budget_available(3.0):
         return []
+    started = time.monotonic()
 
     def run_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
         payload = _evidence_critic_payload(query, research_plan, batch, claims)
@@ -133,4 +151,6 @@ def _repair_evidence_critic_minimal_batches(
                 decisions.extend(future.result())
             except Exception:
                 continue
+    if timing_key:
+        _add_stage_timing(stage_timings, timing_key, started)
     return decisions

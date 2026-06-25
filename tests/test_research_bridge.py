@@ -3676,8 +3676,12 @@ def test_fallback_plan_empty_critic_limited_adopts_direct_overview_source(monkey
 
 def test_low_risk_overview_critic_failure_limited_adopts_direct_source():
     warnings = []
+    from bridge.research.timing import _empty_stage_timings
+
+    stage_timings = _empty_stage_timings()
 
     def broken_critic(payload):
+        time.sleep(0.005)
         raise ValueError("malformed critic json")
 
     adopted, rejected = research_bridge._apply_evidence_critic(
@@ -3719,12 +3723,16 @@ def test_low_risk_overview_critic_failure_limited_adopts_direct_source():
         ],
         warnings,
         critic_adapter=broken_critic,
+        stage_timings=stage_timings,
     )
 
     assert [source["domain"] for source in adopted] == ["chwang.com"]
     assert adopted[0]["quality_reason"] == "limited_summary_after_uncertified_critic"
     assert rejected[0]["domain"] == "aiqicha.baidu.com"
     assert "有限采用直接匹配来源" in " ".join(warnings)
+    assert stage_timings["initial_critic_ms"] > 0
+    assert stage_timings["minimal_critic_ms"] > 0
+    assert stage_timings["limited_summary_adoption_ms"] >= 0
 
 
 def test_empty_evidence_critic_decisions_reject_uncertified_web_sources(monkeypatch):
@@ -4594,7 +4602,19 @@ def test_research_result_meta_exposes_trace_for_ui():
     provider_status = result["meta"]["provider_status"]
     stage_timings = provider_status["stage_timings"]
     assert "search_elapsed_ms" in provider_status
-    assert set(stage_timings) == {"search_ms", "extract_ms", "critic_ms", "fallback_ms", "synthesis_ms"}
+    assert {
+        "search_ms",
+        "extract_ms",
+        "critic_ms",
+        "initial_critic_ms",
+        "minimal_critic_ms",
+        "batch_critic_ms",
+        "broad_retry_ms",
+        "repair_critic_ms",
+        "limited_summary_adoption_ms",
+        "fallback_ms",
+        "synthesis_ms",
+    } <= set(stage_timings)
     assert trace["stage_timings"] == stage_timings
     assert trace["provider_status"]["stage_timings"] == stage_timings
 
@@ -4675,6 +4695,12 @@ def test_research_stage_timings_split_provider_trace(monkeypatch):
     assert stage_timings["search_ms"] > 0
     assert stage_timings["extract_ms"] > 0
     assert stage_timings["critic_ms"] > 0
+    assert stage_timings["initial_critic_ms"] > 0
+    assert stage_timings["minimal_critic_ms"] == 0
+    assert stage_timings["batch_critic_ms"] == 0
+    assert stage_timings["broad_retry_ms"] == 0
+    assert stage_timings["repair_critic_ms"] == 0
+    assert stage_timings["limited_summary_adoption_ms"] == 0
     assert stage_timings["fallback_ms"] == 0
     assert stage_timings["synthesis_ms"] > 0
     assert result["meta"]["research_trace"]["stage_timings"] == stage_timings

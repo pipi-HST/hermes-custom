@@ -10,7 +10,7 @@ from bridge.research.types import (
     EVIDENCE_RETRY_MIN_REMAINING_SECONDS,
     ResearchEvidenceCriticAdapter,
 )
-from bridge.research.timing import _normalized_stage_timings
+from bridge.research.timing import _add_stage_timing, _normalized_stage_timings
 from bridge.research.utils import (
     _string_list,
     _clip_text,
@@ -196,6 +196,7 @@ def _apply_evidence_critic(
     warnings: list[str],
     *,
     critic_adapter: ResearchEvidenceCriticAdapter | None = None,
+    stage_timings: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     claims = _evidence_claims_for_plan(query, research_plan, sources)
     if not claims or not sources:
@@ -205,24 +206,25 @@ def _apply_evidence_critic(
     used_minimal_batches = bool(prefer_minimal and len(sources) > 2)
     used_full_batches = bool(not prefer_minimal and len(sources) > 3)
     if used_minimal_batches:
-        decisions = _retry_evidence_critic_minimal(query, research_plan, sources, claims, adapter)
+        decisions = _retry_evidence_critic_minimal(query, research_plan, sources, claims, adapter, stage_timings=stage_timings)
         if decisions:
             warnings.append("已用轻量分批证据裁判复核候选来源。")
         else:
-            decisions = _retry_evidence_critic_in_batches(query, research_plan, sources, claims, adapter)
+            decisions = _retry_evidence_critic_in_batches(query, research_plan, sources, claims, adapter, stage_timings=stage_timings)
             if decisions:
                 warnings.append("轻量证据裁判失败，已改用完整分批裁判复核候选来源。")
             else:
                 warnings.append("证据裁判失败，已拒绝采用未经裁判的网页证据。")
                 return [], [_source_rejected_by_contract(source, "evidence_critic_failed") for source in sources]
     elif used_full_batches:
-        decisions = _retry_evidence_critic_in_batches(query, research_plan, sources, claims, adapter)
+        decisions = _retry_evidence_critic_in_batches(query, research_plan, sources, claims, adapter, stage_timings=stage_timings)
         if decisions:
             warnings.append("已用分批证据裁判复核候选来源。")
         else:
             warnings.append("证据裁判失败，已拒绝采用未经裁判的网页证据。")
             return [], [_source_rejected_by_contract(source, "evidence_critic_failed") for source in sources]
     else:
+        initial_started = time.monotonic()
         try:
             payload = _evidence_critic_payload(query, research_plan, sources, claims)
             if prefer_minimal:
@@ -230,32 +232,47 @@ def _apply_evidence_critic(
             raw = adapter(payload)
             decisions = _parse_evidence_critic_decisions(raw)
         except Exception as exc:
+            _add_stage_timing(stage_timings, "initial_critic_ms", initial_started)
             decisions = (
-                _retry_evidence_critic_minimal(query, research_plan, sources, claims, adapter)
+                _retry_evidence_critic_minimal(query, research_plan, sources, claims, adapter, stage_timings=stage_timings)
                 if prefer_minimal
-                else _retry_evidence_critic_in_batches(query, research_plan, sources, claims, adapter)
+                else _retry_evidence_critic_in_batches(query, research_plan, sources, claims, adapter, stage_timings=stage_timings)
             )
             if not decisions and prefer_minimal:
-                decisions = _retry_evidence_critic_in_batches(query, research_plan, sources, claims, adapter)
+                decisions = _retry_evidence_critic_in_batches(query, research_plan, sources, claims, adapter, stage_timings=stage_timings)
             if decisions:
                 warnings.append(f"证据裁判首轮失败，已分批复核候选来源：{exc}")
             else:
-                adopted, rejected = _limited_summary_adoption_for_uncertified_critic(query, research_plan, sources, claims)
+                adopted, rejected = _timed_limited_summary_adoption_for_uncertified_critic(
+                    query,
+                    research_plan,
+                    sources,
+                    claims,
+                    stage_timings,
+                )
                 if adopted:
                     warnings.append(f"证据裁判失败，已按低风险摘要证据合同有限采用直接匹配来源：{exc}")
                     return adopted, rejected
                 warnings.append(f"证据裁判失败，已拒绝采用未经裁判的网页证据：{exc}")
                 return [], [_source_rejected_by_contract(source, "evidence_critic_failed") for source in sources]
+        else:
+            _add_stage_timing(stage_timings, "initial_critic_ms", initial_started)
     if not decisions:
-        decisions = _retry_evidence_critic_minimal(query, research_plan, sources, claims, adapter)
+        decisions = _retry_evidence_critic_minimal(query, research_plan, sources, claims, adapter, stage_timings=stage_timings)
         if decisions:
             warnings.append("证据裁判首轮未返回有效决策，已用极简裁判提示复核候选来源。")
         else:
-            decisions = _retry_evidence_critic_in_batches(query, research_plan, sources, claims, adapter)
+            decisions = _retry_evidence_critic_in_batches(query, research_plan, sources, claims, adapter, stage_timings=stage_timings)
             if decisions:
                 warnings.append("证据裁判首轮未返回有效决策，已分批复核候选来源。")
             else:
-                adopted, rejected = _limited_summary_adoption_for_uncertified_critic(query, research_plan, sources, claims)
+                adopted, rejected = _timed_limited_summary_adoption_for_uncertified_critic(
+                    query,
+                    research_plan,
+                    sources,
+                    claims,
+                    stage_timings,
+                )
                 if adopted:
                     warnings.append("证据裁判未返回有效决策，已按低风险摘要证据合同有限采用直接匹配来源。")
                     return adopted, rejected
@@ -272,6 +289,7 @@ def _apply_evidence_critic(
         adapter,
         claims,
         warnings,
+        stage_timings=stage_timings,
     )
     adopted, rejected = _repair_missing_claim_coverage_with_critic(
         query,
@@ -282,19 +300,31 @@ def _apply_evidence_critic(
         adapter,
         claims,
         warnings,
+        stage_timings=stage_timings,
     )
     if (
         not adopted
         and _should_retry_broad_low_risk_claim(research_plan, claims)
         and _research_budget_available(EVIDENCE_RETRY_MIN_REMAINING_SECONDS)
     ):
+        broad_retry_started = time.monotonic()
         try:
-            retry_decisions = _retry_evidence_critic_minimal(query, research_plan, sources, ["answer_user_question"], adapter)
+            retry_decisions = _retry_evidence_critic_minimal(
+                query,
+                research_plan,
+                sources,
+                ["answer_user_question"],
+                adapter,
+                stage_timings=stage_timings,
+                timing_key=None,
+            )
             if not retry_decisions:
                 retry_raw = adapter(_evidence_critic_payload(query, research_plan, sources, ["answer_user_question"]))
                 retry_decisions = _parse_evidence_critic_decisions(retry_raw)
         except Exception:
             retry_decisions = []
+        finally:
+            _add_stage_timing(stage_timings, "broad_retry_ms", broad_retry_started)
         if retry_decisions:
             retry_adopted, retry_rejected = _apply_evidence_decisions_to_sources(research_plan, sources, retry_decisions)
             if retry_adopted:
@@ -308,6 +338,20 @@ def _apply_evidence_critic(
     if rejected:
         warnings.append("部分联网来源未通过证据裁判，已从可引用依据中移除。")
     return adopted, rejected
+
+
+def _timed_limited_summary_adoption_for_uncertified_critic(
+    query: str,
+    research_plan: dict[str, Any],
+    sources: list[dict[str, Any]],
+    claims: list[str],
+    stage_timings: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    started = time.monotonic()
+    try:
+        return _limited_summary_adoption_for_uncertified_critic(query, research_plan, sources, claims)
+    finally:
+        _add_stage_timing(stage_timings, "limited_summary_adoption_ms", started)
 
 
 def _limited_summary_adoption_for_uncertified_critic(
@@ -489,6 +533,8 @@ def _repair_insufficient_adoption_with_critic(
     adapter: ResearchEvidenceCriticAdapter,
     claims: list[str],
     warnings: list[str],
+    *,
+    stage_timings: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if not adopted or not _missing_minimum_reliable_sources(research_plan, adopted):
         return adopted, rejected
@@ -512,6 +558,7 @@ def _repair_insufficient_adoption_with_critic(
         "instruction": "Re-evaluate non-adopted independent candidates. Adopt additional sources only if they directly support the required claims.",
     }
     repair_decisions: list[dict[str, Any]] = []
+    repair_started = time.monotonic()
     if _prefer_minimal_evidence_critic(research_plan, claims):
         repair_batches = [repair_candidates[index : index + 2] for index in range(0, len(repair_candidates), 2)]
         repair_decisions = _repair_evidence_critic_minimal_batches(
@@ -521,6 +568,8 @@ def _repair_insufficient_adoption_with_critic(
             claims,
             adapter,
             repair_context,
+            stage_timings=stage_timings,
+            timing_key=None,
         )
         if repair_decisions:
             warnings.append("采用来源未达到最低独立来源合同，已用轻量分批裁判复核剩余候选。")
@@ -532,8 +581,10 @@ def _repair_insufficient_adoption_with_critic(
             repair_raw = adapter(payload)
             repair_decisions = _parse_evidence_critic_decisions(repair_raw)
         except Exception as exc:
+            _add_stage_timing(stage_timings, "repair_critic_ms", repair_started)
             warnings.append(f"补充证据裁判失败，已保留首轮采用来源：{exc}")
             return adopted, rejected
+    _add_stage_timing(stage_timings, "repair_critic_ms", repair_started)
     if not repair_decisions:
         return adopted, rejected
     repair_adopted, repair_rejected = _apply_evidence_decisions_to_sources(research_plan, repair_candidates, repair_decisions)
@@ -559,6 +610,8 @@ def _repair_missing_claim_coverage_with_critic(
     adapter: ResearchEvidenceCriticAdapter,
     claims: list[str],
     warnings: list[str],
+    *,
+    stage_timings: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     missing_claims = _missing_supported_claims(claims, adopted)
     if not adopted or not missing_claims or not _research_budget_available(3.0):
@@ -580,6 +633,7 @@ def _repair_missing_claim_coverage_with_critic(
         "instruction": "Re-evaluate non-adopted candidates for the missing claims. Adopt a candidate only if it directly supports at least one missing claim.",
     }
     repair_decisions: list[dict[str, Any]] = []
+    repair_started = time.monotonic()
     if _prefer_minimal_evidence_critic(research_plan, missing_claims):
         repair_batches = [repair_candidates[index : index + 2] for index in range(0, len(repair_candidates), 2)]
         repair_decisions = _repair_evidence_critic_minimal_batches(
@@ -589,6 +643,8 @@ def _repair_missing_claim_coverage_with_critic(
             missing_claims,
             adapter,
             repair_context,
+            stage_timings=stage_timings,
+            timing_key=None,
         )
     else:
         payload = _evidence_critic_payload(query, research_plan, repair_candidates, missing_claims)
@@ -598,8 +654,10 @@ def _repair_missing_claim_coverage_with_critic(
             repair_raw = adapter(payload)
             repair_decisions = _parse_evidence_critic_decisions(repair_raw)
         except Exception as exc:
+            _add_stage_timing(stage_timings, "repair_critic_ms", repair_started)
             warnings.append(f"缺失 claim 覆盖复核失败，已保留首轮采用来源：{exc}")
             return adopted, rejected
+    _add_stage_timing(stage_timings, "repair_critic_ms", repair_started)
     if not repair_decisions:
         return adopted, rejected
     repair_adopted, repair_rejected = _apply_evidence_decisions_to_sources(research_plan, repair_candidates, repair_decisions)
