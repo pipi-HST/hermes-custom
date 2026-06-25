@@ -167,7 +167,14 @@ def test_async_web_context_answer_emits_candidate_trace(monkeypatch):
     )
 
     ranked = [event for event in events if event["type"] == "web_ranked"]
+    query_events = [event for event in events if event["type"] == "queries_ready"]
+    query_done_events = [event for event in events if event["type"] == "web_query_done"]
+    material_events = [event for event in events if event["type"] == "materials_selected"]
     assert result["meta"]["research_trace"]["candidate_sources"][0]["ref"] == "W1"
+    assert query_events and query_events[0]["queries"][:1] == ["Harness engineer"]
+    assert query_events[0]["query_count"] == 2
+    assert query_done_events and query_done_events[0]["candidate_count"] == 1
+    assert material_events and material_events[0]["material_count"] == 1
     assert ranked
     assert ranked[0]["web_sources"][0]["title"] == "什么是 Harness Engineering"
 
@@ -212,7 +219,7 @@ def test_async_web_context_answer_streams_answer_delta(monkeypatch):
     )
 
     deltas = [event["delta"] for event in events if event["type"] == "answer_delta"]
-    assert deltas == ["Coding agent", " 是能处理代码任务的 AI 系统 [W1]"]
+    assert "".join(deltas) == "Coding agent 是能处理代码任务的 AI 系统 [W1]"
     assert result["chat_preview"] == "Coding agent 是能处理代码任务的 AI 系统 [W1]"
 
 

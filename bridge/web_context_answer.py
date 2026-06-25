@@ -47,6 +47,7 @@ WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS = 35
 
 LocalSearchAdapter = Callable[[str, list[str]], tuple[str, list[dict[str, Any]]]]
 AnswerDeltaCallback = Callable[[str], None]
+ProgressCallback = Callable[..., None]
 
 PROCESS_LANGUAGE_PREFIX_RE = re.compile(
     r"^\s*(?:"
@@ -76,6 +77,7 @@ def web_context_answer(
     local_search_adapter: LocalSearchAdapter | None = None,
     synthesize_adapter: ResearchSynthesizeAdapter | None = None,
     answer_delta_callback: AnswerDeltaCallback | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     clean_query = (query or "").strip()
@@ -108,7 +110,8 @@ def web_context_answer(
     if use_web:
         search_started = time.monotonic()
         web_queries = _plan_queries(clean_query, article_context=article_context, selection_context=selection_context)
-        candidates = _search_candidates(web_queries, search_adapter, warnings)
+        _progress(progress_callback, "queries_ready", queries=web_queries, query_count=len(web_queries))
+        candidates = _search_candidates(web_queries, search_adapter, warnings, progress_callback=progress_callback)
         _add_stage_timing(stage_timings, "search_ms", search_started)
 
         material_plan = _select_materials(clean_query, candidates, local_answer=local_answer)
@@ -119,10 +122,19 @@ def web_context_answer(
         open_refs = [str(ref).upper() for ref in material_plan.get("open_refs") or []]
         opened_urls = [str(item.get("url") or "") for item in selected if str(item.get("ref") or "").upper() in open_refs]
         opened_urls = [url for url in _unique(opened_urls) if url][:WEB_CONTEXT_MAX_OPEN_PAGES]
+        _progress(
+            progress_callback,
+            "materials_selected",
+            candidate_count=len(candidates),
+            material_count=len(selected),
+            opened_pages=len(opened_urls),
+            web_sources=_trace_context_sources(selected),
+        )
         extracted_by_url: dict[str, str] = {}
         extract_failures: list[str] = []
         if opened_urls:
             extract_started = time.monotonic()
+            _progress(progress_callback, "web_extract_start", urls=opened_urls, opened_pages=len(opened_urls))
             try:
                 raw_extract = extract_adapter(opened_urls)
                 if asyncio.iscoroutine(raw_extract):
@@ -135,6 +147,16 @@ def web_context_answer(
             finally:
                 _add_stage_timing(stage_timings, "extract_ms", extract_started)
         web_sources = _material_sources(selected, extracted_by_url, extract_failures)
+        _progress(
+            progress_callback,
+            "web_extract_done",
+            candidate_count=len(candidates),
+            material_count=len(web_sources),
+            opened_pages=len(opened_urls),
+            extracted_pages=sum(1 for source in web_sources if source.get("extract_status") == "full"),
+            summary_only_pages=sum(1 for source in web_sources if source.get("extract_status") == "summary"),
+            web_sources=_trace_context_sources(web_sources),
+        )
 
     synthesis_input = _synthesis_payload(
         query=clean_query,
@@ -244,6 +266,8 @@ async def async_web_context_answer(
     await _emit(event_callback, "web_search_start", path="web_context")
     loop = asyncio.get_running_loop()
     streaming_started = False
+    delta_buffer: list[str] = []
+    last_delta_emit = time.monotonic()
 
     def emit_from_thread(event: str, **kwargs: Any) -> None:
         if event_callback is None:
@@ -258,13 +282,19 @@ async def async_web_context_answer(
             return
 
     def answer_delta_callback(delta: str) -> None:
-        nonlocal streaming_started
+        nonlocal last_delta_emit, streaming_started
         if not delta:
             return
         if not streaming_started:
             streaming_started = True
             emit_from_thread("synthesis_start")
-        emit_from_thread("answer_delta", delta=delta)
+        delta_buffer.append(delta)
+        now = time.monotonic()
+        buffered = "".join(delta_buffer)
+        if len(buffered) >= 96 or now - last_delta_emit >= 0.12:
+            delta_buffer.clear()
+            last_delta_emit = now
+            emit_from_thread("answer_delta", delta=buffered)
 
     result = await asyncio.to_thread(
         web_context_answer,
@@ -277,7 +307,13 @@ async def async_web_context_answer(
         local_search_adapter=local_search_adapter,
         synthesize_adapter=synthesize_adapter,
         answer_delta_callback=None if synthesize_adapter else answer_delta_callback,
+        progress_callback=emit_from_thread,
     )
+    if delta_buffer:
+        buffered = "".join(delta_buffer)
+        delta_buffer.clear()
+        last_delta_emit = time.monotonic()
+        await _emit(event_callback, "answer_delta", path="web_context", delta=buffered)
     meta = result.get("meta") or {}
     await _emit(
         event_callback,
@@ -321,14 +357,18 @@ def _search_candidates(
     queries: list[str],
     search_adapter: ResearchSearchAdapter,
     warnings: list[str],
+    *,
+    progress_callback: ProgressCallback | None = None,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
     for search_query in queries[:WEB_CONTEXT_MAX_QUERIES]:
+        _progress(progress_callback, "web_query_start", query=search_query)
         try:
             parsed = _parse_web_search(search_adapter(search_query, WEB_CONTEXT_RESULTS_PER_QUERY))
         except Exception as exc:
             warnings.append(f"网页搜索失败，已使用可用材料：{exc}")
+            _progress(progress_callback, "web_query_error", query=search_query, error=str(exc))
             continue
         for item in parsed:
             url = _clean_web_url(str(item.get("url") or ""))
@@ -351,6 +391,14 @@ def _search_candidates(
                     "extract_status": "summary",
                 }
             )
+        _progress(
+            progress_callback,
+            "web_query_done",
+            query=search_query,
+            result_count=len(parsed),
+            candidate_count=len(candidates),
+            web_sources=_trace_context_sources(candidates),
+        )
     return candidates
 
 
@@ -753,6 +801,15 @@ def _empty_web_context_stage_timings() -> dict[str, int]:
 
 def _run_coro_sync(coro: Awaitable[Any]) -> Any:
     return asyncio.run(coro)
+
+
+def _progress(progress_callback: ProgressCallback | None, event: str, **kwargs: Any) -> None:
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(event, **kwargs)
+    except Exception:
+        return
 
 
 async def _emit(event_callback: ResearchEventCallback | None, event: str, **kwargs: Any) -> None:
