@@ -4295,6 +4295,38 @@ def test_synthesis_prompt_uses_planner_answer_contract():
     assert "说明选区和主问题的关系" in prompt
 
 
+def test_synthesis_prompt_keeps_search_process_out_of_answer_body():
+    prompt = research_bridge._build_synthesis_prompt(
+        {
+            "query": "Hermes 智能体是什么",
+            "mode": "web_only",
+            "research_plan": {
+                "path": "light_web_qa",
+                "answer_depth": "normal",
+            },
+            "article_context": {},
+            "selection_context": {},
+            "local_answer": "",
+            "knowledge_sources": [],
+            "web_sources": [
+                {
+                    "ref": "W1",
+                    "title": "Hermes 部署教程",
+                    "url": "https://blog.csdn.net/example",
+                    "excerpt": "Hermes 是一款本地 AI 智能代理。",
+                    "extract_status": "summary",
+                }
+            ],
+            "search_quality": {"evidence_status": "limited"},
+        }
+    )
+
+    assert "主答案不是检索报告" in prompt
+    assert "从搜索结果看" in prompt
+    assert "不要写免责声明" in prompt
+    assert "只通过谨慎措辞体现边界" in prompt
+
+
 def test_provider_configuration_error_is_user_friendly():
     warnings = []
 
