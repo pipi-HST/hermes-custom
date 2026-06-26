@@ -66,6 +66,7 @@ def test_web_context_answer_uses_summary_materials_without_extract(monkeypatch):
     assert "[W9]" not in result["chat_preview"]
     assert not result["chat_preview"].startswith("从搜索结果看")
     assert [source["ref"] for source in result["meta"]["web_sources"]] == ["W1", "W2"]
+    assert [source["ref"] for source in result["meta"]["retrieved_web_sources"]] == ["W1", "W2"]
     assert [item["ref"] for item in result["source_map"]] == ["W1", "W2"]
     assert len(llm_calls) == 2
 
@@ -127,6 +128,51 @@ def test_web_context_answer_extracts_only_llm_requested_pages(monkeypatch):
     assert extracted_urls == ["https://example.com/ascend"]
     assert result["meta"]["provider_status"]["extracted_pages"] == 1
     assert result["meta"]["provider_status"]["summary_only_pages"] == 1
+
+
+def test_web_context_answer_keeps_web_sources_when_answer_only_cites_knowledge(monkeypatch):
+    def fake_llm_json(prompt, *, timeout_seconds):
+        if "生成网页搜索词" in prompt:
+            return {"queries": ["AI PM traditional PM difference"]}
+        if "选择网页材料" in prompt:
+            return {"selected_refs": ["W1", "W2"], "open_refs": []}
+        return {}
+
+    def fake_search(_query, _limit):
+        return {
+            "results": [
+                {
+                    "title": "AI product manager role",
+                    "url": "https://example.com/ai-pm",
+                    "description": "AI PM works with models, data and product delivery.",
+                },
+                {
+                    "title": "Traditional product manager role",
+                    "url": "https://example.com/pm",
+                    "description": "Traditional PM focuses on users, roadmap and business goals.",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(web_context_answer, "_llm_json", fake_llm_json)
+
+    result = web_context_answer.web_context_answer(
+        query="AI产品经理和传统产品经理有哪些区别",
+        mode="local_web",
+        local_search_adapter=lambda _query, _warnings: (
+            "AI PM 多了数据、模型评估和不确定性管理。",
+            [{"ref": "K1", "type": "knowledge", "id": "cap-1", "title": "AI产品经理笔记"}],
+        ),
+        search_adapter=fake_search,
+        extract_adapter=lambda _urls: {"results": []},
+        synthesize_adapter=lambda _payload: "AI PM 和传统 PM 的核心差异在于生产资料和不确定性管理 [K1]。",
+    )
+
+    assert result["chat_preview"].endswith("[K1]。")
+    assert [source["ref"] for source in result["meta"]["knowledge_sources"]] == ["K1"]
+    assert [source["ref"] for source in result["meta"]["web_sources"]] == ["W1", "W2"]
+    assert [item["ref"] for item in result["source_map"]] == ["K1", "W1", "W2"]
+    assert result["meta"]["used_web"] is True
 
 
 def test_async_web_context_answer_emits_candidate_trace(monkeypatch):
@@ -273,3 +319,40 @@ def test_web_context_answer_prompt_uses_generic_answer_contract(monkeypatch):
     assert "不要为了形式整齐而省略关键解释" in answer_prompt
     assert "1-3" not in answer_prompt
     assert "产品对比题" not in answer_prompt
+
+
+def test_web_context_answer_local_search_query_includes_short_selection(monkeypatch):
+    local_queries = []
+
+    def fake_local_search(query, _warnings):
+        local_queries.append(query)
+        return "本地答案", [{"ref": "K1", "type": "knowledge", "id": "cap-1", "title": "智能问数"}]
+
+    result = web_context_answer.web_context_answer(
+        query="这两个有什么区别",
+        mode="local_only",
+        selection_context={"selected_text": "Text-to-Metrics vs Text-to-SQL"},
+        search_adapter=lambda *_args: {"results": []},
+        extract_adapter=lambda _urls: {"results": []},
+        local_search_adapter=fake_local_search,
+        synthesize_adapter=lambda payload: "Text-to-Metrics 和 Text-to-SQL 的区别是前者走指标语义层，后者直接生成 SQL [K1]。",
+    )
+
+    assert result["chat_preview"].startswith("Text-to-Metrics")
+    assert local_queries == ["选区：\nText-to-Metrics vs Text-to-SQL\n\n问题：\n这两个有什么区别"]
+
+
+def test_web_context_answer_local_search_query_without_selection_uses_question():
+    local_queries = []
+
+    result = web_context_answer.web_context_answer(
+        query="Text-to-SQL 是什么",
+        mode="local_only",
+        search_adapter=lambda *_args: {"results": []},
+        extract_adapter=lambda _urls: {"results": []},
+        local_search_adapter=lambda query, _warnings: (local_queries.append(query) or ("本地答案", [])),
+        synthesize_adapter=lambda payload: "Text-to-SQL 是把自然语言转成 SQL。",
+    )
+
+    assert result["chat_preview"] == "Text-to-SQL 是把自然语言转成 SQL。"
+    assert local_queries == ["Text-to-SQL 是什么"]

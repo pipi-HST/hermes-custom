@@ -45,6 +45,18 @@ WEB_CONTEXT_QUERY_TIMEOUT_SECONDS = 8
 WEB_CONTEXT_SELECTION_TIMEOUT_SECONDS = 8
 WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS = 35
 
+WEB_CONTEXT_ANSWER_STYLE_CONTRACT_LINES = (
+    "回答应以解决用户问题为第一目标，而不是展示检索过程或追求形式整齐。",
+    "你负责语义判断：自行判断用户真正想知道什么、材料分别适合支撑什么、答案应该采用什么结构。",
+    "先直接回应用户真正问的问题，给出核心判断或核心解释。",
+    "不要套固定题型模板；如果表格有助于比较、分类或辅助扫描，可以使用表格。",
+    "表格只能辅助理解，不能替代回答；使用表格后，应补充必要解释、取舍建议或边界说明。",
+    "不要为了形式整齐而省略关键解释；如果问题更适合段落、列表或定义，就不要强行表格。",
+    "不要以“从搜索结果看”“根据检索结果”“需要先明确一点”等过程语开头。",
+    "不要写系统反思或免责声明；必要的不确定性要写成答案内容的一部分。",
+)
+WEB_CONTEXT_ANSWER_STYLE_CONTRACT = "\n".join(WEB_CONTEXT_ANSWER_STYLE_CONTRACT_LINES)
+
 LocalSearchAdapter = Callable[[str, list[str]], tuple[str, list[dict[str, Any]]]]
 AnswerDeltaCallback = Callable[[str], None]
 ProgressCallback = Callable[..., None]
@@ -64,6 +76,8 @@ PROCESS_LANGUAGE_LINE_RE = re.compile(
     r")\s*$",
     re.I,
 )
+
+MAX_SELECTION_SEARCH_CHARS = 1000
 
 
 def web_context_answer(
@@ -100,7 +114,10 @@ def web_context_answer(
     local_answer = ""
     knowledge_sources: list[dict[str, Any]] = []
     if use_local and local_search_adapter is not None:
-        local_answer, knowledge_sources = local_search_adapter(clean_query, warnings)
+        local_answer, knowledge_sources = local_search_adapter(
+            _local_search_query(clean_query, selection_context),
+            warnings,
+        )
 
     web_queries: list[str] = []
     candidates: list[dict[str, Any]] = []
@@ -169,6 +186,7 @@ def web_context_answer(
         web_queries=web_queries,
         material_plan=material_plan,
     )
+    material_web_sources = list(web_sources)
     synthesis_started = time.monotonic()
     answer = (
         synthesize_adapter(synthesis_input)
@@ -179,8 +197,11 @@ def web_context_answer(
     answer = _repair_answer_refs(answer, knowledge_sources, web_sources)
     answer = _remove_process_language(answer)
     cited_knowledge, cited_web = _cited_sources(answer, knowledge_sources, web_sources)
-    if cited_knowledge or cited_web:
+    if cited_knowledge:
         knowledge_sources = cited_knowledge
+    if use_web:
+        web_sources = _merge_sources_by_ref(cited_web, material_web_sources)
+    elif cited_web:
         web_sources = cited_web
 
     provider_status = _provider_status(
@@ -229,6 +250,7 @@ def web_context_answer(
             "web_search_attempted": use_web,
             "knowledge_sources": knowledge_sources,
             "web_sources": web_sources,
+            "retrieved_web_sources": candidates,
             "web_queries": web_queries,
             "search_quality": {
                 "passed": bool(web_sources or not use_web),
@@ -329,6 +351,13 @@ async def async_web_context_answer(
 
 def _normalize_mode(mode: str) -> str:
     return mode if mode in {"current_article_only", "local_only", "local_web", "web_only"} else "local_web"
+
+
+def _local_search_query(query: str, selection_context: dict[str, Any] | None) -> str:
+    selected_text = str((selection_context or {}).get("selected_text") or "").strip()
+    if not selected_text:
+        return query
+    return f"选区：\n{selected_text[:MAX_SELECTION_SEARCH_CHARS]}\n\n问题：\n{query}"
 
 
 def _plan_queries(
@@ -540,16 +569,11 @@ def _generate_answer(
     prompt = "\n".join(
         [
             "你是知识工作台里的联网辅助理解模块。",
-            "回答应以解决用户问题为第一目标，而不是展示检索过程或追求形式整齐。",
-            "你负责语义判断：自行判断用户真正想知道什么、材料分别适合支撑什么、答案应该采用什么结构。",
-            "先直接回应用户真正问的问题，给出核心判断或核心解释。",
-            "不要套固定题型模板；如果表格有助于比较、分类或辅助扫描，可以使用表格。",
-            "表格只能辅助理解，不能替代回答；使用表格后，应补充必要解释、取舍建议或边界说明。",
-            "不要为了形式整齐而省略关键解释；如果问题更适合段落、列表或定义，就不要强行表格。",
-            "不要以“从搜索结果看”“根据检索结果”“需要先明确一点”等过程语开头。",
-            "不要写系统反思或免责声明；必要的不确定性要写成答案内容的一部分。",
+            *WEB_CONTEXT_ANSWER_STYLE_CONTRACT_LINES,
+            "如果本地材料明显不能回答用户问题，应直接忽略，不要解释那些不相关材料在讲什么。",
             "优先识别一手来源、官方说明、媒体报道、论坛/博客各自的用途；弱来源可以作为背景或观点材料，但不要包装成官方结论。",
             "引用只能使用给定编号，如 [W1] 或 [K1]。",
+            "如果联网材料参与回答，应在对应结论附近使用可用 [W] 引用；不要只在文末泛泛列来源。",
             f"用户问题：{payload['query']}",
             f"当前选区：{_clip_text(str((payload.get('selection_context') or {}).get('selected_text') or ''), 600)}",
             f"本地材料：{_clip_text(str(payload.get('local_answer') or ''), 1000)}",
@@ -730,6 +754,23 @@ def _cited_sources(
         [source for source in knowledge_sources if str(source.get("ref") or "").upper() in refs],
         [source for source in web_sources if str(source.get("ref") or "").upper() in refs],
     )
+
+
+def _merge_sources_by_ref(
+    preferred: list[dict[str, Any]],
+    fallback: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for source in [*preferred, *fallback]:
+        ref = str(source.get("ref") or "").strip().upper()
+        url = str(source.get("url") or "").strip().lower()
+        key = ref or url
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(source)
+    return merged
 
 
 def _source_map_items(sources: list[dict[str, Any]], *, source_type: str) -> list[dict[str, Any]]:
