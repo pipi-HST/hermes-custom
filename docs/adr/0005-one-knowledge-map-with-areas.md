@@ -1,0 +1,3 @@
+# Use one Knowledge Map with Knowledge Areas for Hermes Knowledge navigation
+
+Hermes Knowledge uses one Web/DB Knowledge Map divided into Knowledge Areas, each with its own non-exclusive dimensions and entries. Knowledge Areas are navigation structure, not separate storage, retrieval, permission, or reset boundaries, so material may appear in multiple areas when there is confirmed evidence for each placement. Theme Agent map proposals and health checks operate only on confirmed material, and deleting map structure deletes only index assignments, never the underlying Capture, Knowledge Card, or Theme View.
