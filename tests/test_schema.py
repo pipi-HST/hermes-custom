@@ -174,6 +174,34 @@ def test_knowledge_write_jobs_table_exists(tmp_path):
     conn.close()
 
 
+def test_knowledge_edges_table_exists(tmp_path):
+    from db.schema import init_db
+
+    conn = init_db(str(tmp_path / "test.db"))
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(knowledge_edges)")]
+
+    assert cols == [
+        "id",
+        "source_kind",
+        "source_id",
+        "target_kind",
+        "target_id",
+        "relation_type",
+        "score",
+        "evidence_json",
+        "generated_by",
+        "created_at",
+        "updated_at",
+    ]
+    indexes = {
+        row["name"]
+        for row in conn.execute("PRAGMA index_list(knowledge_edges)").fetchall()
+    }
+    assert "idx_knowledge_edges_lookup" in indexes
+    assert "idx_knowledge_edges_relation" in indexes
+    conn.close()
+
+
 def test_capture_metadata_table_exists(tmp_path):
     from db.schema import init_db
 

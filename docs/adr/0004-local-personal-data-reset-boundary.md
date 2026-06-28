@@ -1,0 +1,3 @@
+# Reset local personal Knowledge data without deleting operational configuration
+
+Hermes Knowledge supports a local reset that clears personal Knowledge content while preserving operational configuration. The reset deletes rows from Knowledge content, draft, reading, review, embedding, graph, run/audit, write-job, and legacy `life_*` residual tables in `/Users/pipi/hermes-custom/data/captures.db`, preserving the database schema instead of rebuilding the DB. It may delete the legacy `~/Obsidian/hermes-vault` store and Knowledge content backup directories only after dry-run review and explicit confirmation. It preserves `config.yaml`, API keys, model settings, LaunchAgent configuration, normal logs, and the independent `/Users/pipi/hermes-life/data/life.db` store.

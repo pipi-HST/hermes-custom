@@ -333,6 +333,33 @@ CREATE TABLE IF NOT EXISTS knowledge_write_jobs (
 )
 """
 
+CREATE_KNOWLEDGE_EDGES_TABLE = """
+CREATE TABLE IF NOT EXISTS knowledge_edges (
+    id TEXT PRIMARY KEY,
+    source_kind TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    target_kind TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    relation_type TEXT NOT NULL,
+    score REAL NOT NULL DEFAULT 1.0,
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    generated_by TEXT NOT NULL DEFAULT 'auto',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(source_kind, source_id, target_kind, target_id, relation_type, generated_by)
+)
+"""
+
+CREATE_KNOWLEDGE_EDGES_LOOKUP_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_knowledge_edges_lookup
+ON knowledge_edges (source_kind, source_id, target_kind, target_id)
+"""
+
+CREATE_KNOWLEDGE_EDGES_RELATION_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_knowledge_edges_relation
+ON knowledge_edges (relation_type, score)
+"""
+
 
 def init_db(db_path: str) -> sqlite3.Connection:
     path = Path(db_path)
@@ -365,6 +392,9 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute(CREATE_READING_DRAFTS_TABLE)
     conn.execute(CREATE_CAPTURE_VERSION_BACKUPS_TABLE)
     conn.execute(CREATE_KNOWLEDGE_WRITE_JOBS_TABLE)
+    conn.execute(CREATE_KNOWLEDGE_EDGES_TABLE)
+    conn.execute(CREATE_KNOWLEDGE_EDGES_LOOKUP_INDEX)
+    conn.execute(CREATE_KNOWLEDGE_EDGES_RELATION_INDEX)
     conn.commit()
     return conn
 

@@ -215,6 +215,36 @@ def test_list_garden_cards_empty(client):
     assert body["items"] == []
 
 
+def test_knowledge_graph_refresh_and_focus(client, db, tmp_path):
+    (tmp_path / "captures").mkdir()
+    (tmp_path / "captures" / "one.md").write_text(
+        "---\ntitle: 材料一\nstory: 第一篇材料\n---\n\n正文",
+        encoding="utf-8",
+    )
+    db.execute(
+        "INSERT INTO captures (id, file_path, created_at) VALUES (?, ?, ?)",
+        ("cap1", "captures/one.md", "2026-06-01T00:00:00+00:00"),
+    )
+    db.execute(
+        """INSERT INTO garden_cards
+           (id, title, one_liner, capture_ids, knowledge_links, status)
+           VALUES (?, ?, ?, ?, '[]', 'seed')""",
+        ("card1", "知识卡片", "卡片摘要", '["cap1"]'),
+    )
+    db.commit()
+
+    refresh = client.post("/api/knowledge/graph/refresh")
+    assert refresh.status_code == 200
+    assert refresh.json()["relation_counts"]["card_uses_capture"] == 1
+
+    resp = client.get("/api/knowledge/graph?focus_kind=capture&focus_id=cap1")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["focus_id"] == "cap1"
+    assert any(node["id"] == "cap1" and node["open_url"] for node in body["nodes"])
+    assert any(edge["relation_type"] == "card_uses_capture" for edge in body["edges"])
+
+
 # ---------------------------------------------------------------------------
 # Capture note tests
 # ---------------------------------------------------------------------------
@@ -520,6 +550,7 @@ def test_create_editable_capture_draft_calls_bridge(client):
         source_type="manual",
         title="用户标题",
         folder_path="AI 产品",
+        organize=True,
         existing_folders=["Inbox", "AI 产品"],
     )
 
@@ -548,6 +579,7 @@ def test_update_editable_capture_draft_calls_bridge(client, draft_repo):
             json={
                 "content": "用户编辑后的正文",
                 "title": "用户标题",
+                "organize": False,
                 "existing_folders": ["Inbox", "AI 产品"],
             },
         )
@@ -564,6 +596,7 @@ def test_update_editable_capture_draft_calls_bridge(client, draft_repo):
         folder_path="",
         folder_suggestion=None,
         card_suggestion=None,
+        organize=False,
         existing_folders=["Inbox", "AI 产品"],
     )
 

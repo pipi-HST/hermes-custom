@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from agents.knowledge_graph import KnowledgeGraphService
 from db.reading_repo import ReadingRepo
 from db.repo import CaptureRepo
 
@@ -27,7 +28,7 @@ class ReviseDraftRequest(BaseModel):
 def create_knowledge_router(
     reading_repo: ReadingRepo,
     capture_repo: CaptureRepo,
-    vault_path: str = "~/Obsidian/hermes-vault",
+    vault_path: str = "~/Hermes/knowledge",
 ) -> APIRouter:
     router = APIRouter()
 
@@ -84,6 +85,24 @@ def create_knowledge_router(
         ).fetchall()
         items = [_strip_binary(dict(row)) for row in rows]
         return {"items": items}
+
+    @router.post("/knowledge/graph/refresh")
+    def refresh_knowledge_graph():
+        return KnowledgeGraphService(capture_repo.conn, vault_path).refresh()
+
+    @router.get("/knowledge/graph")
+    def get_knowledge_graph(
+        focus_kind: str = Query(default=""),
+        focus_id: str = Query(default=""),
+        depth: int = Query(default=1, ge=0, le=1),
+        limit: int = Query(default=80, ge=1, le=200),
+    ):
+        return KnowledgeGraphService(capture_repo.conn, vault_path).focus_graph(
+            focus_kind=focus_kind,
+            focus_id=focus_id,
+            depth=depth,
+            limit=limit,
+        )
 
     return router
 
