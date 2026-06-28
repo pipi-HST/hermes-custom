@@ -1,6 +1,8 @@
 """Capture draft API routes."""
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -32,11 +34,11 @@ class CreateEditableCaptureDraftRequest(BaseModel):
 class UpdateEditableCaptureDraftRequest(BaseModel):
     content: str
     title: str = ""
-    summary: str | None = None
-    tags: list[str] | None = None
+    summary: Optional[str] = None
+    tags: Optional[list[str]] = None
     folder_path: str = ""
-    folder_suggestion: dict | None = None
-    card_suggestion: dict | None = None
+    folder_suggestion: Optional[dict] = None
+    card_suggestion: Optional[dict] = None
     organize: bool = True
     existing_folders: list[str] = []
 

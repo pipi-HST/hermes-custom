@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -20,7 +20,7 @@ from db.repo import CaptureRepo
 class UpdateCaptureRequest(BaseModel):
     body: str = ""
     title: str = ""
-    folder_path: str | None = None
+    folder_path: Optional[str] = None
 
 
 def create_capture_router(
