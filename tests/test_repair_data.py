@@ -131,6 +131,28 @@ def test_repair_data_apply_records_write_job(tmp_path):
     assert job["db_table"] == "captures,capture_drafts"
 
 
+def test_repair_data_apply_empty_store_does_not_write_artifacts(tmp_path):
+    db_path = tmp_path / "captures.db"
+    vault_path = tmp_path / "vault"
+    (vault_path / "captures").mkdir(parents=True)
+    (vault_path / "_archive" / "raw").mkdir(parents=True)
+    conn = init_db(str(db_path))
+
+    result = repair_data(db_path, vault_path, apply=True)
+
+    assert result["planned_actions"] == []
+    assert result["missing_file_reports"] == []
+    assert result["missing_file_deletions"] == []
+    assert result["backup_path"] == ""
+    assert result["report_path"] == ""
+    assert not (tmp_path / "backups").exists()
+    assert not (tmp_path / "repair_reports").exists()
+    jobs = conn.execute(
+        "SELECT count(*) FROM knowledge_write_jobs WHERE intent = 'repair_data'"
+    ).fetchone()[0]
+    assert jobs == 0
+
+
 def test_dry_run_reports_duplicate_capture_without_changing_db(tmp_path):
     db_path = tmp_path / "captures.db"
     vault_path = tmp_path / "vault"

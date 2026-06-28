@@ -5,6 +5,7 @@ import logging
 import json
 import re
 import sqlite3
+import time
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,15 @@ CAPTURE_LONG_READING_CHAR_THRESHOLD = 8000
 CAPTURE_LONG_CHUNK_CHAR_LIMIT = 8000
 CAPTURE_SECTION_NOTE_CHAR_LIMIT = 1500
 CAPTURE_INTERNAL_PLAN_BUDGET_RATIO = 0.45
+CAPTURE_STAGE_TIMING_KEYS = (
+    "extract_clean",
+    "intent_planning",
+    "draft_create",
+    "revision_llm",
+    "metadata_summary",
+    "repo_update",
+    "total",
+)
 
 
 @dataclass
@@ -50,7 +60,7 @@ class CaptureConfig:
     llm_model: str = "gpt-4o"
     llm_base_url: str = ""
     qwen_api_key: str = ""
-    vault_path: str = "~/Obsidian/hermes-vault"
+    vault_path: str = "~/Hermes/knowledge"
     db_path: str = "./data/captures.db"
 
 
@@ -108,7 +118,7 @@ def load_config(config_path: str = "config.yaml") -> CaptureConfig:
         llm_model=llm.get("model", "gpt-4o"),
         llm_base_url=llm.get("base_url", ""),
         qwen_api_key=cfg.get("qwen", {}).get("api_key", llm.get("api_key", "")),
-        vault_path=vault.get("path", "~/Obsidian/hermes-vault"),
+        vault_path=vault.get("path", "~/Hermes/knowledge"),
         db_path=database.get("path", "./data/captures.db"),
     )
 
@@ -141,79 +151,109 @@ class CaptureAgent:
 
     def create_draft(self, raw_input: str, instruction: str = "",
                      source_url: str = "", source_type: str = "") -> dict:
-        """提取内容并保存为 SQLite 草稿；只有 commit 后才写 Obsidian。"""
-        extracted, cleaned = self._extract_and_clean(raw_input, source_url, source_type)
-        if isinstance(extracted, dict):
-            return extracted
+        """提取内容并保存为 SQLite 草稿；只有 commit 后才写 Knowledge File。"""
+        total_started = time.perf_counter()
+        timings = _empty_capture_stage_timings()
+        previous_timings = getattr(self, "_active_capture_stage_timings", None)
+        self._active_capture_stage_timings = timings
+        try:
+            stage_started = time.perf_counter()
+            extracted, cleaned = self._extract_and_clean(raw_input, source_url, source_type)
+            _add_capture_stage_timing(timings, "extract_clean", stage_started)
+            if isinstance(extracted, dict):
+                return _attach_capture_stage_timings(extracted, timings, total_started)
 
-        title = _derive_capture_title(extracted.title, cleaned, extracted.source_type)
-        source_body = extracted.raw_text
-        extracted_source = extracted.source_url or source_url
-        existing = (
-            self.draft_repo.find_duplicate(source=extracted_source)
-            if extracted_source
-            else None
-        )
-        if existing and existing.get("status") in (
-            "raw_extracted",
-            "draft_ready",
-            "revision_requested",
-            "draft_incomplete",
-        ):
-            existing["duplicate_of"] = existing.get("id", "")
-            existing["duplicate_state"] = "open"
-            return existing
-        if existing and existing.get("status") == "committed":
-            existing["duplicate_of"] = existing.get("id", "")
-            existing["duplicate_state"] = "committed"
-            return existing
-        capture_intent_obj = self._build_capture_intent_with_planning(
-            instruction,
-            source_text=cleaned,
-            title_hint=title,
-        )
-        title = capture_intent_obj.semantic_title or title
-        capture_intent = capture_intent_obj.to_dict()
-        stored_raw_text = source_body if self._is_full_text_save_intent(capture_intent) else cleaned
-        draft_body = self._presentation_text(
-            extracted.source_type,
-            stored_raw_text,
-            instruction=instruction,
-        )
-        draft = self.draft_repo.create(
-            raw_text=stored_raw_text,
-            source=extracted_source,
-            source_type=extracted.source_type or source_type or "note",
-            title=title,
-            word_count=len(draft_body),
-            instruction=instruction,
-            capture_intent=capture_intent,
-        )
-        if instruction.strip():
-            if self._is_full_text_save_intent(capture_intent):
-                existing_tags = self._get_existing_tags(Path(self.config.vault_path).expanduser())
-                tag_result = self.summarizer.summarize(cleaned, existing_tags)
-                return self.draft_repo.update(
-                    draft["id"],
-                    draft_text=draft_body,
-                    instruction=instruction,
-                    capture_intent=capture_intent,
-                    summary=tag_result.get("summary", ""),
-                    tags=tag_result.get("tags", []),
-                    status="draft_ready",
-                )
-            try:
-                return self.revise_draft(draft["id"], instruction)
-            except (httpx.TimeoutException, TimeoutError) as exc:
-                saved = self.draft_repo.update(
-                    draft["id"],
-                    instruction=instruction,
-                    capture_intent=capture_intent,
-                    status="raw_extracted",
-                ) or draft
-                saved["revision_error"] = str(exc) or type(exc).__name__
-                return saved
-        return draft
+            title = _derive_capture_title(extracted.title, cleaned, extracted.source_type)
+            source_body = extracted.raw_text
+            extracted_source = extracted.source_url or source_url
+            existing = (
+                self.draft_repo.find_duplicate(source=extracted_source)
+                if extracted_source
+                else None
+            )
+            if existing and existing.get("status") in (
+                "raw_extracted",
+                "draft_ready",
+                "revision_requested",
+                "draft_incomplete",
+            ):
+                existing["duplicate_of"] = existing.get("id", "")
+                existing["duplicate_state"] = "open"
+                return _attach_capture_stage_timings(existing, timings, total_started)
+            if existing and existing.get("status") == "committed":
+                existing["duplicate_of"] = existing.get("id", "")
+                existing["duplicate_state"] = "committed"
+                return _attach_capture_stage_timings(existing, timings, total_started)
+            stage_started = time.perf_counter()
+            capture_intent_obj = self._build_capture_intent_with_planning(
+                instruction,
+                source_text=cleaned,
+                title_hint=title,
+            )
+            _add_capture_stage_timing(timings, "intent_planning", stage_started)
+            title = capture_intent_obj.semantic_title or title
+            capture_intent = capture_intent_obj.to_dict()
+            stored_raw_text = source_body if self._is_full_text_save_intent(capture_intent) else cleaned
+            draft_body = self._presentation_text(
+                extracted.source_type,
+                stored_raw_text,
+                instruction=instruction,
+            )
+            stage_started = time.perf_counter()
+            draft = self.draft_repo.create(
+                raw_text=stored_raw_text,
+                source=extracted_source,
+                source_type=extracted.source_type or source_type or "note",
+                title=title,
+                word_count=len(draft_body),
+                instruction=instruction,
+                capture_intent=capture_intent,
+            )
+            _add_capture_stage_timing(timings, "draft_create", stage_started)
+            if instruction.strip():
+                if self._is_full_text_save_intent(capture_intent):
+                    existing_tags = self._get_existing_tags(Path(self.config.vault_path).expanduser())
+                    stage_started = time.perf_counter()
+                    tag_result = self.summarizer.summarize(cleaned, existing_tags)
+                    _add_capture_stage_timing(timings, "metadata_summary", stage_started)
+                    stage_started = time.perf_counter()
+                    updated = self.draft_repo.update(
+                        draft["id"],
+                        draft_text=draft_body,
+                        instruction=instruction,
+                        capture_intent=capture_intent,
+                        summary=tag_result.get("summary", ""),
+                        tags=tag_result.get("tags", []),
+                        status="draft_ready",
+                    )
+                    _add_capture_stage_timing(timings, "repo_update", stage_started)
+                    return _attach_capture_stage_timings(updated or draft, timings, total_started)
+                try:
+                    return _attach_capture_stage_timings(
+                        self.revise_draft(draft["id"], instruction),
+                        timings,
+                        total_started,
+                    )
+                except (httpx.TimeoutException, TimeoutError) as exc:
+                    stage_started = time.perf_counter()
+                    saved = self.draft_repo.update(
+                        draft["id"],
+                        instruction=instruction,
+                        capture_intent=capture_intent,
+                        status="raw_extracted",
+                    ) or draft
+                    _add_capture_stage_timing(timings, "repo_update", stage_started)
+                    saved["revision_error"] = str(exc) or type(exc).__name__
+                    return _attach_capture_stage_timings(saved, timings, total_started)
+            return _attach_capture_stage_timings(draft, timings, total_started)
+        finally:
+            if previous_timings is None:
+                try:
+                    delattr(self, "_active_capture_stage_timings")
+                except AttributeError:
+                    pass
+            else:
+                self._active_capture_stage_timings = previous_timings
 
     def create_editable_draft(
         self,
@@ -225,13 +265,14 @@ class CaptureAgent:
         title: str = "",
         folder_path: str = "",
         existing_folders: list[str] | None = None,
+        organize: bool = True,
     ) -> dict:
         """Create a user-editable draft without rewriting the pasted body."""
         body = (content or "").strip()
         if not body:
             return {"error": "内容不能为空"}
 
-        metadata = self._organize_editable_body(body, existing_folders=existing_folders)
+        metadata = self._organize_editable_body(body, existing_folders=existing_folders) if organize else {}
         user_title = title.strip()
         draft_title = user_title or metadata.get("title") or _derive_capture_title(None, body, source_type)
         capture_intent = self._editable_capture_intent(
@@ -242,6 +283,8 @@ class CaptureAgent:
         capture_intent["folder_suggestion"] = metadata.get("folder_suggestion") or {}
         capture_intent["card_suggestion"] = metadata.get("card_suggestion") or {}
         capture_intent["warnings"] = metadata.get("warnings") or []
+        if metadata.get("diagnostics"):
+            capture_intent["diagnostics"] = metadata.get("diagnostics")
         draft_body = metadata.get("body_markdown") or body
         return self.draft_repo.create(
             raw_text=body,
@@ -269,6 +312,7 @@ class CaptureAgent:
         folder_suggestion: dict | None = None,
         card_suggestion: dict | None = None,
         existing_folders: list[str] | None = None,
+        organize: bool = True,
     ) -> Optional[dict]:
         """Update the editable body and regenerate non-user-owned metadata."""
         draft = self.draft_repo.get_by_id(draft_id)
@@ -295,20 +339,27 @@ class CaptureAgent:
             updates["title"] = title.strip()
             title_source = "user"
 
-        metadata = self._organize_editable_body(body, existing_folders=existing_folders)
-        if summary is not None:
-            updates["summary"] = summary.strip()
+        metadata: dict = {}
+        if organize:
+            metadata = self._organize_editable_body(body, existing_folders=existing_folders)
+            if summary is not None:
+                updates["summary"] = summary.strip()
+            else:
+                updates["summary"] = metadata.get("summary", "")
+            if tags is not None:
+                updates["tags"] = tags
+            else:
+                updates["tags"] = metadata.get("tags", [])
+            updates["draft_text"] = metadata.get("body_markdown") or body
+            updates["word_count"] = len(updates["draft_text"])
+            if title_source != "user":
+                updates["title"] = metadata.get("title") or _derive_capture_title(None, body, draft.get("source_type", ""))
+                title_source = "ai"
         else:
-            updates["summary"] = metadata.get("summary", "")
-        if tags is not None:
-            updates["tags"] = tags
-        else:
-            updates["tags"] = metadata.get("tags", [])
-        updates["draft_text"] = metadata.get("body_markdown") or body
-        updates["word_count"] = len(updates["draft_text"])
-        if title_source != "user":
-            updates["title"] = metadata.get("title") or _derive_capture_title(None, body, draft.get("source_type", ""))
-            title_source = "ai"
+            if summary is not None:
+                updates["summary"] = summary.strip()
+            if tags is not None:
+                updates["tags"] = tags
 
         capture_intent = {
             **capture_intent,
@@ -318,9 +369,20 @@ class CaptureAgent:
         }
         if folder_path is not None:
             capture_intent["folder_path"] = folder_path.strip() or "Inbox"
-        capture_intent["folder_suggestion"] = folder_suggestion if isinstance(folder_suggestion, dict) else metadata.get("folder_suggestion") or {}
-        capture_intent["card_suggestion"] = card_suggestion if isinstance(card_suggestion, dict) else metadata.get("card_suggestion") or {}
-        capture_intent["warnings"] = metadata.get("warnings") or []
+        if isinstance(folder_suggestion, dict):
+            capture_intent["folder_suggestion"] = folder_suggestion
+        elif organize:
+            capture_intent["folder_suggestion"] = metadata.get("folder_suggestion") or {}
+        if isinstance(card_suggestion, dict):
+            capture_intent["card_suggestion"] = card_suggestion
+        elif organize:
+            capture_intent["card_suggestion"] = metadata.get("card_suggestion") or {}
+        if organize:
+            capture_intent["warnings"] = metadata.get("warnings") or []
+            if metadata.get("diagnostics"):
+                capture_intent["diagnostics"] = metadata.get("diagnostics")
+            else:
+                capture_intent.pop("diagnostics", None)
         updates["capture_intent"] = capture_intent
         return self.draft_repo.update(draft_id, **updates)
 
@@ -335,11 +397,14 @@ class CaptureAgent:
         if draft.get("status") in ("committed", "abandoned"):
             return {"error": f"草稿已{'入库' if draft['status'] == 'committed' else '废弃'}，无法修改"}
         current_text = draft.get("draft_text") or draft.get("raw_text", "")
+        timings = getattr(self, "_active_capture_stage_timings", None)
+        stage_started = time.perf_counter()
         capture_intent = self._build_capture_intent_with_planning(
             instruction,
             source_text=draft.get("raw_text", "") or current_text,
             title_hint=draft.get("title", ""),
         ).to_dict()
+        _add_capture_stage_timing(timings, "intent_planning", stage_started)
         if self._is_full_text_save_intent(capture_intent):
             source_text = draft.get("raw_text", "") or current_text
             draft_body = self._presentation_text(
@@ -349,8 +414,11 @@ class CaptureAgent:
             )
             existing_tags = self._get_existing_tags(Path(self.config.vault_path).expanduser())
             summary_source = clean_text(source_text) or source_text
+            stage_started = time.perf_counter()
             tag_result = self.summarizer.summarize(summary_source, existing_tags)
-            return self.draft_repo.update(
+            _add_capture_stage_timing(timings, "metadata_summary", stage_started)
+            stage_started = time.perf_counter()
+            updated = self.draft_repo.update(
                 draft_id,
                 draft_text=draft_body,
                 instruction=instruction,
@@ -359,6 +427,9 @@ class CaptureAgent:
                 tags=tag_result.get("tags", []),
                 status="draft_ready",
             )
+            _add_capture_stage_timing(timings, "repo_update", stage_started)
+            return updated
+        stage_started = time.perf_counter()
         llm_result = self._revise_with_llm(
             instruction=instruction,
             capture_intent=capture_intent,
@@ -366,6 +437,7 @@ class CaptureAgent:
             raw_text=draft.get("raw_text", ""),
             source_type=draft.get("source_type", ""),
         )
+        _add_capture_stage_timing(timings, "revision_llm", stage_started)
         if isinstance(llm_result, LLMResult):
             new_text = _strip_draft_preamble(llm_result.text)
             incomplete = llm_result.incomplete
@@ -374,6 +446,7 @@ class CaptureAgent:
             incomplete = getattr(self, "_last_llm_incomplete", False)
 
         if incomplete:
+            stage_started = time.perf_counter()
             updated = self.draft_repo.update(
                 draft_id,
                 draft_text=new_text,
@@ -381,13 +454,17 @@ class CaptureAgent:
                 capture_intent=capture_intent,
                 status="draft_incomplete",
             )
+            _add_capture_stage_timing(timings, "repo_update", stage_started)
             if updated is not None:
                 updated["revision_error"] = "llm_output_incomplete"
             return updated
 
         existing_tags = self._get_existing_tags(Path(self.config.vault_path).expanduser())
+        stage_started = time.perf_counter()
         tag_result = self.summarizer.summarize(new_text, existing_tags)
-        return self.draft_repo.update(
+        _add_capture_stage_timing(timings, "metadata_summary", stage_started)
+        stage_started = time.perf_counter()
+        updated = self.draft_repo.update(
             draft_id,
             draft_text=new_text,
             instruction=instruction,
@@ -396,6 +473,8 @@ class CaptureAgent:
             tags=tag_result.get("tags", []),
             status="draft_ready",
         )
+        _add_capture_stage_timing(timings, "repo_update", stage_started)
+        return updated
 
     def _build_capture_intent(self, instruction: str) -> CaptureIntent:
         user_request = (instruction or "").strip()
@@ -620,7 +699,11 @@ class CaptureAgent:
             folder_options = self._get_existing_folders(Path(self.config.vault_path).expanduser())
         try:
             organizer = getattr(self.summarizer, "organize_editable_draft", None)
-            if callable(organizer) and "summarize" not in getattr(self.summarizer, "__dict__", {}):
+            instance_attrs = getattr(self.summarizer, "__dict__", {})
+            if callable(organizer) and (
+                "organize_editable_draft" in instance_attrs
+                or "summarize" not in instance_attrs
+            ):
                 result = organizer(
                     cleaned_body,
                     existing_tags=existing_tags,
@@ -642,10 +725,11 @@ class CaptureAgent:
             "title": _clean_semantic_title(str(result.get("title") or "")),
             "summary": str(result.get("summary") or ""),
             "tags": result.get("tags") if isinstance(result.get("tags"), list) else [],
-            "body_markdown": cleaned_body,
-            "folder_suggestion": folder_suggestion,
-            "card_suggestion": card_suggestion,
+            "body_markdown": str(result.get("body_markdown") or "").strip() or cleaned_body,
+            "folder_suggestion": _normalize_editable_folder_suggestion(folder_suggestion),
+            "card_suggestion": _normalize_editable_card_suggestion(card_suggestion),
             "warnings": result.get("warnings") if isinstance(result.get("warnings"), list) else [],
+            "diagnostics": result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {},
         }
 
     def _light_cleanup_editable_body(self, body: str) -> str:
@@ -1228,7 +1312,8 @@ class CaptureAgent:
         summary = draft.get("summary", "")
         tags = draft.get("tags", [])
         capture_intent = draft.get("capture_intent") or {}
-        if not summary and body.strip():
+        is_editable_capture = capture_intent.get("entry_mode") == "editable_capture"
+        if not is_editable_capture and not summary and body.strip():
             tag_result = self.summarizer.summarize(body, self._get_existing_tags(vault_path))
             summary = tag_result.get("summary", "")
             tags = tag_result.get("tags", [])
@@ -1721,6 +1806,64 @@ def _clean_xiaohongshu_author_block(block: str, *, title: str = "") -> str:
     if _is_xiaohongshu_visual_noise(cleaned):
         return ""
     return cleaned
+
+
+def _empty_capture_stage_timings() -> dict[str, int]:
+    return {key: 0 for key in CAPTURE_STAGE_TIMING_KEYS}
+
+
+def _add_capture_stage_timing(
+    timings: dict[str, int] | None,
+    key: str,
+    started: float,
+) -> None:
+    if timings is None or key not in CAPTURE_STAGE_TIMING_KEYS:
+        return
+    elapsed_ms = max(int((time.perf_counter() - started) * 1000), 0)
+    timings[key] = max(int(timings.get(key) or 0), 0) + elapsed_ms
+
+
+def _attach_capture_stage_timings(
+    result: dict | None,
+    timings: dict[str, int],
+    total_started: float,
+) -> dict | None:
+    _add_capture_stage_timing(timings, "total", total_started)
+    if isinstance(result, dict):
+        result["stage_timings_ms"] = dict(timings)
+    return result
+
+
+def _normalize_editable_folder_suggestion(suggestion: dict) -> dict:
+    mode = str(suggestion.get("mode") or "").strip()
+    folder_path = str(suggestion.get("folder_path") or "").strip()
+    reason = str(suggestion.get("reason") or "").strip()
+    if mode not in {"existing", "new"}:
+        mode = "existing" if not folder_path or folder_path == "Inbox" else "new"
+    if not folder_path:
+        folder_path = "Inbox"
+        mode = "existing"
+    if not reason:
+        reason = "AI 未返回明确文件夹建议，先放入 Inbox 等待人工确认。"
+    return {
+        "mode": mode,
+        "folder_path": folder_path,
+        "reason": reason,
+    }
+
+
+def _normalize_editable_card_suggestion(suggestion: dict) -> dict:
+    should_generate = bool(suggestion.get("should_generate"))
+    reason = str(suggestion.get("reason") or "").strip()
+    cards = suggestion.get("cards") if isinstance(suggestion.get("cards"), list) else []
+    if not reason:
+        should_generate = False
+        reason = "AI 未返回有效卡片建议，默认暂不生成 Garden Card。"
+    return {
+        "should_generate": should_generate,
+        "reason": reason,
+        "cards": cards,
+    }
 
 
 def _is_xiaohongshu_runtime_noise(line: str) -> bool:

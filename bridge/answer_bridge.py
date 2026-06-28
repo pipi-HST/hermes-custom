@@ -278,7 +278,7 @@ def _save_answer_to_knowledge(
             chat_preview=(
                 "这段回答涉及多个材料，我不能自动判断要补进哪一篇主笔记。\n\n"
                 f"候选材料：\n{choices}\n\n"
-                "你可以改成保存为学习笔记/知识卡片，或明确说要补进哪一篇。"
+                "你可以改成保存为 Capture Note/知识卡片，或明确说要补进哪一篇。"
             ),
             meta={
                 "needs_target_choice": True,
@@ -351,7 +351,7 @@ def _save_answer_to_knowledge(
         },
     )
     label = {
-        "local_learning_note": "学习笔记",
+        "local_learning_note": "Capture Note",
         "knowledge_card": "知识卡片",
         "enhance_capture": "主笔记增强",
     }[decision["output_type"]]

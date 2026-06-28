@@ -324,7 +324,8 @@ def test_saved_answer_commit_uses_reading_write_service(answer_config, monkeypat
     assert committed["status"] == "success"
     assert committed["meta"]["write_service"] == "knowledge_write_service"
     artifact = committed["durable_artifacts"][0]
-    assert artifact["type"] == "learning_note"
+    assert artifact["type"] == "capture_note"
+    assert artifact["path"].startswith("captures/")
     assert (Path(answer_config.vault_path) / artifact["path"]).exists()
     conn = sqlite3.connect(answer_config.db_path)
     conn.row_factory = sqlite3.Row

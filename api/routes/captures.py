@@ -25,7 +25,7 @@ class UpdateCaptureRequest(BaseModel):
 
 def create_capture_router(
     repo: CaptureRepo,
-    vault_path: str = "~/Obsidian/hermes-vault",
+    vault_path: str = "~/Hermes/knowledge",
     config: CaptureConfig | dict[str, Any] | None = None,
 ) -> APIRouter:
     router = APIRouter()

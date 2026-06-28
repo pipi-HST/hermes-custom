@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import load_config
-from agents.garden_card_payload import parse_payload_json, render_garden_card_markdown
-from agents.markdown_writer import append_garden_card_to_theme_page, read_note
+from agents.garden_card_payload import parse_payload_json
+from agents.markdown_writer import read_note
 from agents.garden_agent import (
     CARD_KIND_LABELS,
     GardenAgent,
@@ -21,7 +21,6 @@ from agents.garden_agent import (
 from agents.garden_duplicates import find_garden_duplicate
 from bridge.file_artifacts import write_markdown_export
 from bridge.context import KnowledgeContext
-from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest
 from bridge.result_envelope import artifact_ref, error_envelope, next_action, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.schema import init_db
@@ -205,114 +204,6 @@ def _possible_duplicate_warning(duplicate: dict) -> str:
     reasons = duplicate.get("reasons") or []
     reason_text = "、".join(str(reason) for reason in reasons if reason) or "内容相近"
     return f"提醒：可能和已有知识卡片相近：《{title}》（{reason_text}）。"
-
-
-def _garden_card_markdown(
-    draft: dict,
-    *,
-    source_links: list[str] | None = None,
-    source_ref_map: dict[str, str] | None = None,
-    related_links: list[str] | None = None,
-    source_theme: str = "",
-) -> str:
-    now = datetime.now(timezone.utc).isoformat()
-    return render_garden_card_markdown(
-        parse_payload_json(draft.get("payload_json")),
-        status="seed",
-        created_at=draft.get("created_at", ""),
-        updated_at=now,
-        source_links=source_links,
-        source_ref_map=source_ref_map,
-        related_links=related_links,
-        source_theme=source_theme,
-    )
-
-
-def _theme_path_for_question(conn, question_id: str) -> str:
-    if not question_id:
-        return ""
-    row = conn.execute(
-        "SELECT context_ref FROM pending_questions WHERE id=?",
-        (question_id,),
-    ).fetchone()
-    if not row:
-        return ""
-    context_ref = row["context_ref"] or ""
-    if context_ref.startswith("theme:"):
-        return context_ref.removeprefix("theme:").strip()
-    return ""
-
-
-def _capture_property_links(conn, vault_path: Path, capture_ids: list[str]) -> list[str]:
-    links: list[str] = []
-    for capture_id in capture_ids:
-        row = _resolve_capture_row(conn, capture_id)
-        if not row:
-            continue
-        data = dict(row)
-        file_path = data.get("file_path") or ""
-        title = ""
-        if file_path:
-            note = read_note(vault_path, file_path)
-            if note:
-                title = str(note[0].get("title") or "").strip()
-        title = title or Path(file_path).stem or str(data.get("id") or capture_id)
-        if file_path:
-            link = f"[[{Path(file_path).with_suffix('')}|{title}]]"
-        else:
-            link = title
-        if link not in links:
-            links.append(link)
-    return links
-
-
-def _capture_property_link_map(conn, vault_path: Path, capture_ids: list[str]) -> dict[str, str]:
-    link_map: dict[str, str] = {}
-    for capture_id in capture_ids:
-        row = _resolve_capture_row(conn, capture_id)
-        if not row:
-            continue
-        data = dict(row)
-        file_path = data.get("file_path") or ""
-        title = ""
-        if file_path:
-            note = read_note(vault_path, file_path)
-            if note:
-                title = str(note[0].get("title") or "").strip()
-        title = title or Path(file_path).stem or str(data.get("id") or capture_id)
-        if file_path:
-            link = f"[[{Path(file_path).with_suffix('')}|{title}]]"
-        else:
-            link = title
-        resolved_id = str(data.get("id") or capture_id).strip()
-        if resolved_id:
-            link_map[resolved_id] = link
-            if len(resolved_id) >= 8:
-                link_map[resolved_id[:8]] = link
-        raw_id = str(capture_id or "").strip()
-        if raw_id:
-            link_map[raw_id] = link
-    return link_map
-
-
-def _garden_property_links(conn, card_ids: list[str]) -> list[str]:
-    links: list[str] = []
-    for card_id in card_ids:
-        card_id = str(card_id or "").strip()
-        if not card_id:
-            continue
-        row = conn.execute(
-            "SELECT id, title FROM garden_cards WHERE id = ?",
-            (card_id,),
-        ).fetchone()
-        if not row:
-            continue
-        title = str(row["title"] or "").strip() or card_id
-        target = _safe_garden_filename(title, card_id).removesuffix(".md")
-        link = f"[[garden/{target}|{title}]]"
-        if link not in links:
-            links.append(link)
-    return links
 
 
 def synthesize_garden(capture_ids: list[str] = None,
@@ -680,7 +571,7 @@ def _revise_garden_draft(
 
 
 def commit_garden_draft(draft_id: str = "", context: KnowledgeContext | None = None) -> dict:
-    """确认 Knowledge Card Draft，写入 garden_cards 和 Obsidian garden 文件。"""
+    """确认 Knowledge Card Draft，写入 garden_cards 结构化记录。"""
     config, repo = _config_repo(context)
     write_jobs = KnowledgeWriteJobRepo(repo.conn)
     job_id = write_jobs.start(
@@ -734,8 +625,6 @@ def commit_garden_draft(draft_id: str = "", context: KnowledgeContext | None = N
 
 
 def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
-    vault_path = Path(config.vault_path).expanduser()
-
     if not draft_id:
         latest = get_latest_open_garden_draft(repo)
         draft_id = latest["id"] if latest else ""
@@ -761,50 +650,6 @@ def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
             error="这个知识卡片草稿已经入库或无法入库。",
         )
 
-    filename = _safe_garden_filename(draft["title"], card_id)
-    source_links = _capture_property_links(
-        repo.conn, vault_path, _json_list(draft["capture_ids"])
-    )
-    source_ref_map = _capture_property_link_map(
-        repo.conn, vault_path, _json_list(draft["capture_ids"])
-    )
-    related_links = _garden_property_links(
-        repo.conn, _json_list(draft["knowledge_links"])
-    )
-    source_theme = _theme_path_for_question(repo.conn, draft.get("question_id") or "")
-    write_result = KnowledgeWriteService(vault_path).write_markdown_artifact(
-        MarkdownWriteRequest(
-            kind="knowledge_card",
-            relative_path=f"garden/{filename}",
-            content=_garden_card_markdown(
-                draft,
-                source_links=source_links,
-                source_ref_map=source_ref_map,
-                related_links=related_links,
-                source_theme=source_theme,
-            ),
-            db_object_id=card_id,
-            db_table="garden_cards",
-        )
-    )
-    rel_path = write_result.file_path
-
-    theme_sync_status = "not_applicable"
-    theme_sync_error = ""
-    if source_theme:
-        try:
-            synced = append_garden_card_to_theme_page(
-                vault_path,
-                source_theme,
-                card_title=draft["title"],
-                card_path=rel_path,
-            )
-            theme_sync_status = "synced" if synced else "missing_theme_page"
-        except Exception as exc:
-            logger.warning("Theme page sync failed for %s: %s", source_theme, exc)
-            theme_sync_status = "failed"
-            theme_sync_error = str(exc)
-
     if draft["question_id"]:
         repo.conn.execute(
             "UPDATE pending_questions SET status='answered', matched_response='synthesized' WHERE id=?",
@@ -821,27 +666,21 @@ def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
                 type="garden_card",
                 id=card_id,
                 title=draft["title"],
-                path=rel_path,
                 status="seed",
             )
         ],
         meta={
             "draft_id": draft_id,
             "card_id": card_id,
-            "path": rel_path,
+            "path": "",
             "knowledge_link_count": len(_json_list(draft["knowledge_links"])),
-            "source_theme": source_theme,
-            "theme_sync_status": theme_sync_status,
-            "theme_sync_error": theme_sync_error,
-            "write_service": "knowledge_write_service",
-            "write_backup_path": write_result.backup_path,
+            "storage": "sqlite",
         },
-        warnings=write_result.warnings,
     )
 
 
 def archive_garden_card(card_id: str = "", context: KnowledgeContext | None = None) -> dict:
-    """Archive a Knowledge Card without deleting its Obsidian file."""
+    """Archive a Knowledge Card without deleting its structured history."""
     _, repo = _config_repo(context)
     write_jobs = KnowledgeWriteJobRepo(repo.conn)
     job_id = write_jobs.start(

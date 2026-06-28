@@ -485,9 +485,11 @@ def test_run_theme_scan_builds_cluster_without_llm_filter(tmp_path: Path) -> Non
         "SELECT context_ref FROM pending_questions WHERE id = ?",
         (question_id,),
     ).fetchone()
-    assert question["context_ref"].startswith("theme:themes/")
-    assert result["durable_artifacts"][0]["type"] == "theme_page"
-    assert (tmp_path / result["durable_artifacts"][0]["path"]).exists()
+    assert question["context_ref"].startswith("theme_view:")
+    assert result["durable_artifacts"] == []
+    assert not (tmp_path / "themes").exists()
+    for path in (tmp_path / "captures").glob("*.md"):
+        assert "[[" not in path.read_text(encoding="utf-8")
 
 
 def test_theme_scan_preview_does_not_expose_internal_id_lists():
@@ -736,8 +738,8 @@ def test_run_theme_scan_marks_only_selected_batch(
     assert unscanned_count == 1
 
 
-def test_run_theme_scan_does_not_evolve_test_garbage(tmp_path: Path) -> None:
-    """测试垃圾可被标记扫描，但不应进入 MOC 演化流程。"""
+def test_run_theme_scan_does_not_evolve_legacy_moc_files_by_default(tmp_path: Path) -> None:
+    """默认 Theme View 扫描不应再更新旧 MOC/Theme Markdown 文件。"""
     from db.embedding_repo import CaptureEmbeddingRepo
     from db.schema import init_db
 
@@ -792,7 +794,8 @@ def test_run_theme_scan_does_not_evolve_test_garbage(tmp_path: Path) -> None:
         result = run_theme_scan()
 
     assert result["meta"]["skipped_test_garbage"] == 1
-    assert evolved_ids == ["real-id"]
+    assert result["meta"]["theme_pages_updated"] == 0
+    assert evolved_ids == []
 
 
 # ── _evolve_themes (Layer 3) ──

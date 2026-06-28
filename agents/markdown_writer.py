@@ -414,7 +414,7 @@ def write_theme_page(
     tags: list[str] | None = None,
     capture_count: int | None = None,
 ) -> str:
-    """Write an Obsidian Theme map page with a managed Hermes block."""
+    """Write a Theme View Markdown export with a managed Hermes block."""
     themes_dir = vault_path / "themes"
     themes_dir.mkdir(parents=True, exist_ok=True)
 

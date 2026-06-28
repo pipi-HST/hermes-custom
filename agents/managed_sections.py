@@ -1,4 +1,4 @@
-"""Helpers for Obsidian sections that are useful for management but poor RAG evidence."""
+"""Helpers for managed Markdown sections that are useful for navigation but poor RAG evidence."""
 from __future__ import annotations
 
 import re

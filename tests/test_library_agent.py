@@ -169,6 +169,104 @@ def test_existing_metadata_outline_and_real_headings_are_not_duplicated(tmp_path
     assert outliner.calls == []
 
 
+def test_outline_repair_removes_adjacent_bold_pseudo_heading_duplicate(tmp_path: Path) -> None:
+    outline = [{"level": 2, "title": "2. 学会用 git", "summary": "版本控制。"}]
+    body = (
+        "# 测试长文\n\n"
+        "## 目录纲要\n\n"
+        "- 2. 学会用 git：版本控制。\n\n"
+        "### 2. 学会用 git\n\n"
+        "**2. 学会用 git**\n\n"
+        "正文说明 git 为什么重要。\n\n"
+        + "更多内容。\n\n" * 40
+    )
+    rel_path = _write_capture(tmp_path, body=body)
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("long", rel_path))
+    conn.execute(
+        """INSERT INTO capture_metadata
+           (capture_id, outline_json, outline_source_hash)
+           VALUES (?, ?, ?)""",
+        ("long", '[{"level": 2, "title": "2. 学会用 git", "summary": "版本控制。"}]', "hash"),
+    )
+    conn.commit()
+
+    report = LibraryAgent(
+        tmp_path,
+        outliner=FakeOutliner(),
+        min_outline_chars=100,
+        db_conn=conn,
+    ).maintain_outlines(apply=True)
+
+    note = read_note(tmp_path, rel_path)
+    assert note is not None
+    _frontmatter, updated_body = note
+    assert report["updated"] == 1
+    assert "### 2. 学会用 git" in updated_body
+    assert "**2. 学会用 git**" not in updated_body
+    assert "正文说明 git 为什么重要。" in updated_body
+
+
+def test_existing_directory_with_partial_headings_gets_missing_outline_headings(tmp_path: Path) -> None:
+    outline = [
+        {"level": 1, "title": "引言：vibecoding 一年回顾", "summary": "开篇。"},
+        {"level": 1, "title": "经验一：命令清晰且聚焦", "summary": "聚焦小需求。"},
+        {"level": 1, "title": "经验二：学会用Git", "summary": "保留版本。"},
+        {"level": 1, "title": "经验七：不要迷信模型能力，掌握决策主动权", "summary": "保留决策。"},
+        {"level": 2, "title": "附：vibecoding经验提示词汇总", "summary": "汇总提示词。"},
+    ]
+    body = (
+        "## 目录纲要\n\n"
+        "- 引言：vibecoding 一年回顾：开篇。\n"
+        "- 经验一：命令清晰且聚焦：聚焦小需求。\n"
+        "- 经验二：学会用Git：保留版本。\n"
+        "- 经验七：不要迷信模型能力，掌握决策主动权：保留决策。\n"
+        "  - 附：vibecoding经验提示词汇总：汇总提示词。\n\n"
+        "## 引言：vibecoding 一年回顾\n\n"
+        "作者回顾了一年的变化。命令清晰且聚焦 很多刚入门的人会提出宏伟目标。"
+        "学会使用 Git 可以备份代码。不要迷信模型能力，掌握决策的主动权。"
+        "附上蒸馏我的vibecoding经验后的形成的提示词。"
+    )
+    rel_path = _write_capture(tmp_path, body=body)
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("long", rel_path))
+    conn.execute(
+        """INSERT INTO capture_metadata
+           (capture_id, outline_json, outline_source_hash)
+           VALUES (?, ?, ?)""",
+        (
+            "long",
+            '[{"level": 1, "title": "引言：vibecoding 一年回顾", "summary": "开篇。"}, '
+            '{"level": 1, "title": "经验一：命令清晰且聚焦", "summary": "聚焦小需求。"}, '
+            '{"level": 1, "title": "经验二：学会用Git", "summary": "保留版本。"}, '
+            '{"level": 1, "title": "经验七：不要迷信模型能力，掌握决策主动权", "summary": "保留决策。"}, '
+            '{"level": 2, "title": "附：vibecoding经验提示词汇总", "summary": "汇总提示词。"}]',
+            "hash",
+        ),
+    )
+    conn.commit()
+
+    outliner = FakeOutliner(outline=outline)
+    report = LibraryAgent(
+        tmp_path,
+        outliner=outliner,
+        min_outline_chars=20,
+        db_conn=conn,
+    ).maintain_outlines(apply=True)
+
+    note = read_note(tmp_path, rel_path)
+    assert note is not None
+    _frontmatter, updated_body = note
+    assert report["updated"] == 1
+    assert "## 引言：vibecoding 一年回顾\n\n作者回顾" in updated_body
+    assert "## 经验一：命令清晰且聚焦\n\n命令清晰且聚焦 很多刚入门" in updated_body
+    assert "## 经验二：学会用Git\n\n学会使用 Git 可以备份代码" in updated_body
+    assert "## 经验七：不要迷信模型能力，掌握决策主动权\n\n不要迷信模型能力，掌握决策的主动权" in updated_body
+    assert "### 附：vibecoding经验提示词汇总\n\n附上蒸馏" in updated_body
+    assert updated_body.count("## 引言：vibecoding 一年回顾") == 1
+    assert outliner.calls == []
+
+
 def test_apply_inserts_markdown_headings_for_unstructured_long_note(
     tmp_path: Path,
 ) -> None:
@@ -213,12 +311,86 @@ def test_apply_inserts_markdown_headings_for_unstructured_long_note(
     assert note is not None
     _frontmatter, updated_body = note
     assert report["updated"] == 1
-    assert "## 第一部分\n\n一、第一部分" in updated_body
-    assert "## 第二部分\n\n二、第二部分" in updated_body
+    assert "## 第一部分\n\n这里是原来的第一段正文。" in updated_body
+    assert "## 第二部分\n\n这里是原来的第二段正文。" in updated_body
+    assert "一、第一部分" not in updated_body
+    assert "二、第二部分" not in updated_body
     assert "这里是原来的第一段正文。" in updated_body
     assert "这里是原来的第二段正文。" in updated_body
     assert updated_body.count("## 第一部分") == 1
     assert updated_body.count("## 第二部分") == 1
+
+
+def test_outline_repair_removes_empty_headings_and_outline_spill_lines(
+    tmp_path: Path,
+) -> None:
+    outline = [
+        {"level": 1, "title": "1 编排循环（Orchestration Loop）", "summary": "说明编排循环。"},
+        {"level": 1, "title": "2 工具（Tools）", "summary": "说明工具设计。"},
+        {"level": 1, "title": "3 记忆（Memory）", "summary": "说明记忆。"},
+        {"level": 1, "title": "5 提示词构建（Prompt Construction）", "summary": "说明提示词。"},
+    ]
+    body = (
+        "# Agent Harness\n\n"
+        "## 目录纲要\n\n"
+        "- 1 编排循环（Orchestration Loop）：说明编排循环。\n"
+        "- 2 工具（Tools）：说明工具设计。\n"
+        "- 3 记忆（Memory）：说明记忆。\n"
+        "- 5 提示词构建（Prompt Construction）：说明提示词。\n\n"
+        "###\n\n"
+        "image.png\n\n"
+        "1 编排循环\n\n"
+        "### 1 编排循环（Orchestration Loop）\n\n"
+        "1 编排循环\n\n"
+        "编排循环负责驱动模型、工具和状态之间的往复。\n\n"
+        "2 工具\n\n"
+        "工具是代理与外部系统交互的接口。\n\n"
+        "3 记忆\n\n"
+        "记忆让代理能够保留跨轮次状态。\n\n"
+        "5 提示词构建\n\n"
+        "提示词构建决定模型每轮看到的任务边界。\n"
+    )
+    rel_path = _write_capture(tmp_path, body=body)
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("long", rel_path))
+    conn.execute(
+        """INSERT INTO capture_metadata
+           (capture_id, outline_json, outline_source_hash)
+           VALUES (?, ?, ?)""",
+        (
+            "long",
+            (
+                '[{"level": 1, "title": "1 编排循环（Orchestration Loop）", "summary": "说明编排循环。"}, '
+                '{"level": 1, "title": "2 工具（Tools）", "summary": "说明工具设计。"}, '
+                '{"level": 1, "title": "3 记忆（Memory）", "summary": "说明记忆。"}, '
+                '{"level": 1, "title": "5 提示词构建（Prompt Construction）", "summary": "说明提示词。"}]'
+            ),
+            "hash",
+        ),
+    )
+    conn.commit()
+
+    report = LibraryAgent(
+        tmp_path,
+        outliner=FakeOutliner(outline=outline),
+        min_outline_chars=20,
+        db_conn=conn,
+    ).maintain_outlines(apply=True)
+
+    note = read_note(tmp_path, rel_path)
+    assert note is not None
+    _frontmatter, updated_body = note
+    assert report["updated"] == 1
+    assert "\n###\n" not in updated_body
+    assert "图片占位：image.png" in updated_body
+    assert "\n1 编排循环\n\n### 1 编排循环" not in updated_body
+    assert "\n### 1 编排循环（Orchestration Loop）\n\n1 编排循环\n" not in updated_body
+    assert "\n2 工具\n\n工具是代理" not in updated_body
+    assert "\n3 记忆\n\n记忆让代理" not in updated_body
+    assert "\n5 提示词构建\n\n提示词构建" not in updated_body
+    assert "## 2 工具（Tools）\n\n工具是代理与外部系统交互的接口。" in updated_body
+    assert "## 3 记忆（Memory）\n\n记忆让代理能够保留跨轮次状态。" in updated_body
+    assert "## 5 提示词构建（Prompt Construction）\n\n提示词构建决定模型每轮看到的任务边界。" in updated_body
 
 
 def test_apply_inserts_markdown_headings_from_outline_ranges(
@@ -394,8 +566,10 @@ def test_apply_promotes_bold_section_labels_without_rewriting(tmp_path: Path) ->
     note = read_note(tmp_path, rel_path)
     assert note is not None
     _frontmatter, updated_body = note
-    assert "## 第一部分\n\n**第一部分**" in updated_body
-    assert "## 第二部分\n\n**第二部分**" in updated_body
+    assert "## 第一部分\n\n这里是原来的第一段正文。" in updated_body
+    assert "## 第二部分\n\n这里是原来的第二段正文。" in updated_body
+    assert "**第一部分**" not in updated_body
+    assert "**第二部分**" not in updated_body
 
 
 def test_existing_frontmatter_outline_is_migrated_to_db_and_removed(tmp_path: Path) -> None:

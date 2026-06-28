@@ -1,4 +1,4 @@
-"""Deterministic Obsidian Canvas builder for Garden knowledge maps."""
+"""Deterministic Canvas builder for Garden knowledge maps."""
 from __future__ import annotations
 
 import json

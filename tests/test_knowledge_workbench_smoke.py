@@ -103,6 +103,7 @@ def test_sourced_qa_smoke_saves_answer_draft_revises_and_commits(tmp_path, monke
     assert revised["status"] == "success"
     assert committed["status"] == "success"
     assert committed["meta"]["write_service"] == "knowledge_write_service"
+    assert committed["durable_artifacts"][0]["type"] == "capture_note"
     assert (Path(config.vault_path) / committed["meta"]["file_path"]).exists()
 
 
@@ -131,8 +132,9 @@ def test_reading_to_knowledge_card_smoke_writes_garden_card(tmp_path, monkeypatc
 
     assert committed["status"] == "success"
     assert committed["durable_artifacts"][0]["type"] == "knowledge_card"
-    assert committed["meta"]["write_service"] == "knowledge_write_service"
-    assert (Path(config.vault_path) / committed["durable_artifacts"][0]["path"]).exists()
+    assert committed["meta"]["storage"] == "sqlite"
+    assert committed["durable_artifacts"][0].get("path", "") == ""
+    assert not (Path(config.vault_path) / "garden").exists()
 
 
 def test_extractor_failure_smoke_does_not_create_failed_placeholder_draft(tmp_path):

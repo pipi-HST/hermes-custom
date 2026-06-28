@@ -66,7 +66,7 @@ class KnowledgeWriteService:
 def _safe_relative_path(value: str) -> Path:
     relative = Path(value)
     if relative.is_absolute() or ".." in relative.parts:
-        raise ValueError(f"artifact path must stay inside the vault: {value}")
+        raise ValueError(f"artifact path must stay inside Knowledge File storage: {value}")
     if not relative.as_posix().strip():
         raise ValueError("artifact path cannot be empty")
     return relative

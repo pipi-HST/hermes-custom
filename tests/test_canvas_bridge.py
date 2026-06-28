@@ -97,7 +97,7 @@ def test_generate_canvas_from_theme_writes_obsidian_canvas(tmp_path):
     assert "一句话" in text
     assert "来源：S1" in text
     assert payload["edges"] == []
-    assert "已生成 Obsidian Canvas" in envelope["chat_preview"]
+    assert "已生成 Knowledge Canvas" in envelope["chat_preview"]
     assert envelope["durable_artifacts"][0]["type"] == "obsidian_canvas"
 
 

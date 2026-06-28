@@ -47,14 +47,14 @@ logger = logging.getLogger(__name__)
 CLARIFY_OUTPUT_TYPE = (
     "你想整理成哪种？\n"
     "1. 原文增强版主笔记：保留文章主线，并把刚才讨论补进去\n"
-    "2. 局部学习笔记：只整理这次卡住的概念/段落\n"
+    "2. Capture Note：把这次卡住的概念/段落保存为知识文件\n"
     "3. 知识卡片：提炼成以后可复用的观点、方法、事实或风险\n"
     "回复 1/2/3 即可。"
 )
 
 OUTPUT_TYPES = {
     "enhance_capture": "原文增强版主笔记",
-    "local_learning_note": "局部学习笔记",
+    "local_learning_note": "Capture Note",
     "knowledge_card": "知识卡片",
 }
 
@@ -600,7 +600,7 @@ def _commit_reading_artifact(draft_id: str = "", context: KnowledgeContext | Non
     if output_type == "enhance_capture":
         return _commit_enhanced_capture(vault_path, repo, capture_repo, draft)
     if output_type == "knowledge_card":
-        return _commit_knowledge_card(config, vault_path, repo, draft)
+        return _commit_knowledge_card(config, repo, draft)
     if output_type in {"local_learning_note", "discussion_note"}:
         return _commit_independent_note(config, vault_path, repo, capture_repo, draft)
     return error_envelope(
@@ -617,15 +617,15 @@ def _commit_independent_note(
     capture_repo: CaptureRepo,
     draft: dict,
 ) -> dict:
-    note_type = "learning_note" if draft["output_type"] == "local_learning_note" else "discussion_note"
-    folder = "learning" if note_type == "learning_note" else "reading"
+    note_type = "capture_note"
+    folder = "captures"
     capture = capture_repo.insert(file_path="", raw_path="")
     capture_id = capture["id"]
     draft_title = draft.get("title") or "阅读整理"
     draft_summary = draft.get("summary") or ""
     frontmatter = {
         "id": capture_id,
-        "type": note_type,
+        "type": "capture_note",
         "status": "processed",
         "title": draft_title,
         "reading_session_id": draft["session_id"],
@@ -673,7 +673,7 @@ def _commit_independent_note(
         chat_preview=chat_preview,
         durable_artifacts=[
             artifact_ref(
-                type=note_type,
+                type="capture_note",
                 id=capture_id,
                 title=draft.get("title") or "阅读整理",
                 path=rel_path,
@@ -683,7 +683,8 @@ def _commit_independent_note(
         meta={
             "reading_draft_id": draft["id"],
             "capture_id": capture_id,
-            "artifact_type": note_type,
+            "artifact_type": "capture_note",
+            "source_output_type": draft["output_type"],
             "file_path": rel_path,
             "library_postprocess": library_report,
             "write_service": "knowledge_write_service",
@@ -716,31 +717,11 @@ def _postprocess_committed_learning_note(config, repo: ReadingRepo, capture_id: 
         return {"error": str(exc)}
 
 
-def _commit_knowledge_card(config, vault_path: Path, repo: ReadingRepo, draft: dict) -> dict:
-    garden_data, card_body, synth_warnings = _garden_data_from_reading_draft(config, repo, draft)
+def _commit_knowledge_card(config, repo: ReadingRepo, draft: dict) -> dict:
+    garden_data, _card_body, synth_warnings = _garden_data_from_reading_draft(config, repo, draft)
     card_id = create_garden_card(repo, garden_data)
-    write_result = _write_note_file(
-        vault_path=vault_path,
-        folder="garden",
-        title=draft.get("title") or "知识卡片",
-        draft_id=card_id,
-        kind="knowledge_card",
-        db_object_id=card_id,
-        db_table="garden_cards",
-        frontmatter={
-            "type": "garden_card",
-            "card_kind": garden_data["card_kind"],
-            "status": "seed",
-            "title": draft.get("title") or "知识卡片",
-            "garden_card_id": card_id,
-            "reading_session_id": draft["session_id"],
-            "created": _now(),
-        },
-        body=card_body,
-    )
-    rel_path = write_result.file_path
     repo.update_draft(draft["id"], status="committed")
-    repo.update_session(draft["session_id"], status="committed", committed_artifact_id=rel_path)
+    repo.update_session(draft["session_id"], status="committed", committed_artifact_id=card_id)
     return success_envelope(
         agent="reading",
         intent="commit_reading_artifact",
@@ -750,7 +731,6 @@ def _commit_knowledge_card(config, vault_path: Path, repo: ReadingRepo, draft: d
                 type="knowledge_card",
                 id=card_id,
                 title=draft.get("title") or "知识卡片",
-                path=rel_path,
                 status="created",
             )
         ],
@@ -758,10 +738,9 @@ def _commit_knowledge_card(config, vault_path: Path, repo: ReadingRepo, draft: d
             "reading_draft_id": draft["id"],
             "garden_card_id": card_id,
             "artifact_type": "knowledge_card",
-            "file_path": rel_path,
+            "file_path": "",
+            "storage": "sqlite",
             "synthesis_warnings": synth_warnings,
-            "write_service": "knowledge_write_service",
-            "write_backup_path": write_result.backup_path,
         },
         warnings=synth_warnings,
     )
@@ -1171,9 +1150,9 @@ def _draft_title(session: dict, output_type: str) -> str:
     if output_type == "enhance_capture":
         return str(base)
     suffix = {
-        "local_learning_note": "学习笔记",
+        "local_learning_note": "Capture Note",
         "knowledge_card": "知识卡片",
-    }.get(output_type, "学习笔记")
+    }.get(output_type, "Capture Note")
     return f"{base}-{suffix}"
 
 

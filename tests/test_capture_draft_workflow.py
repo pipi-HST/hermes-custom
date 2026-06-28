@@ -131,7 +131,7 @@ def test_create_editable_draft_stores_light_body_and_suggestions(
     )
 
     assert draft["title"] == "智能问数落地"
-    assert draft["draft_text"] == "智能问数落地正文"
+    assert draft["draft_text"] == "# 智能问数落地\n\n正文只做格式修正。"
     assert draft["summary"] == "智能问数需要数据治理、语义层和产品运营协同。"
     assert draft["tags"] == ["data-agent", "ai-product"]
     assert draft["capture_intent"]["folder_suggestion"]["folder_path"] == "智能问数"
@@ -139,18 +139,45 @@ def test_create_editable_draft_stores_light_body_and_suggestions(
     assert draft["capture_intent"]["warnings"] == ["确认案例是否完整。"]
 
 
-def test_create_editable_draft_ignores_ai_returned_body_markdown(
+def test_create_editable_draft_can_save_without_organizing(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        agent.summarizer,
+        "organize_editable_draft",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("保存空白草稿不应整理")),
+    )
+
+    draft = agent.create_editable_draft(
+        "用户直接写作的正文",
+        title="用户标题",
+        folder_path="Inbox",
+        organize=False,
+    )
+
+    assert draft["status"] == "draft_ready"
+    assert draft["title"] == "用户标题"
+    assert draft["summary"] == ""
+    assert draft["tags"] == []
+    assert draft["draft_text"] == "用户直接写作的正文"
+    assert draft["capture_intent"]["title_source"] == "user"
+    assert draft["capture_intent"]["folder_path"] == "Inbox"
+
+
+def test_create_editable_draft_uses_ai_structured_body_markdown(
     agent: CaptureAgent,
     monkeypatch,
 ):
     original = "第一段保留。\n\n第二段保留。\n\n第三段也必须保留。"
+    structured = "## 第一段\n\n第一段保留。\n\n## 第二段\n\n第二段保留。\n\n第三段也必须保留。"
 
     def fake_organize(_text, *, existing_tags=None, existing_folders=None):
         return {
             "title": "截断保护",
             "summary": "测试正文不能被 AI 缩短。",
             "tags": ["ai-product"],
-            "body_markdown": "第一段保留。",
+            "body_markdown": structured,
             "folder_suggestion": {},
             "card_suggestion": {},
             "warnings": [],
@@ -160,7 +187,7 @@ def test_create_editable_draft_ignores_ai_returned_body_markdown(
 
     draft = agent.create_editable_draft(original)
 
-    assert draft["draft_text"] == original
+    assert draft["draft_text"] == structured
 
 
 def test_create_editable_draft_preserves_body_when_metadata_has_no_body(
@@ -191,6 +218,31 @@ def test_create_editable_draft_preserves_body_when_metadata_has_no_body(
     draft = agent.create_editable_draft(original)
 
     assert draft["draft_text"] == original
+
+
+def test_create_editable_draft_normalizes_empty_suggestions(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    def fake_organize(_text, *, existing_tags=None, existing_folders=None):
+        return {
+            "title": "建议兜底",
+            "summary": "空建议也要变成可展示对象。",
+            "tags": ["ai-product"],
+            "body_markdown": "",
+            "folder_suggestion": {},
+            "card_suggestion": {},
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(agent.summarizer, "organize_editable_draft", fake_organize)
+
+    draft = agent.create_editable_draft("正文内容")
+
+    assert draft["capture_intent"]["folder_suggestion"]["folder_path"] == "Inbox"
+    assert draft["capture_intent"]["folder_suggestion"]["reason"]
+    assert draft["capture_intent"]["card_suggestion"]["should_generate"] is False
+    assert draft["capture_intent"]["card_suggestion"]["reason"]
 
 
 def test_editable_draft_commits_folder_path_to_capture_note(
@@ -257,6 +309,67 @@ def test_update_editable_draft_preserves_user_title_override(
     assert updated_again["capture_intent"]["title_source"] == "user"
 
 
+def test_update_editable_draft_can_save_without_organizing(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    organize_calls = 0
+
+    def fake_organize(_text, *, existing_tags=None, existing_folders=None):
+        nonlocal organize_calls
+        organize_calls += 1
+        return {
+            "title": "AI 初始标题",
+            "summary": "AI 初始摘要。",
+            "tags": ["ai-product"],
+            "body_markdown": "AI 整理后的正文",
+            "folder_suggestion": {
+                "mode": "existing",
+                "folder_path": "AI 产品",
+                "reason": "初始建议。",
+            },
+            "card_suggestion": {
+                "should_generate": True,
+                "reason": "初始卡片建议。",
+                "cards": [{"title": "初始卡片", "card_kind": "method", "reason": "可复用。"}],
+            },
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(agent.summarizer, "organize_editable_draft", fake_organize)
+    draft = agent.create_editable_draft("原始正文")
+    assert organize_calls == 1
+
+    updated = agent.update_editable_draft(
+        draft["id"],
+        content="用户手动改过的最终正文",
+        title="用户确认标题",
+        summary="用户确认摘要。",
+        tags=["user-tag"],
+        folder_path="Inbox",
+        folder_suggestion={
+            "mode": "existing",
+            "folder_path": "Inbox",
+            "reason": "用户确认。",
+        },
+        card_suggestion={
+            "should_generate": False,
+            "reason": "用户暂不生成。",
+            "cards": [],
+        },
+        organize=False,
+    )
+
+    assert organize_calls == 1
+    assert updated is not None
+    assert updated["draft_text"] == "用户手动改过的最终正文"
+    assert updated["title"] == "用户确认标题"
+    assert updated["summary"] == "用户确认摘要。"
+    assert updated["tags"] == ["user-tag"]
+    assert updated["capture_intent"]["folder_suggestion"]["reason"] == "用户确认。"
+    assert updated["capture_intent"]["card_suggestion"]["should_generate"] is False
+
+
 def test_commit_editable_draft_uses_edited_body_and_frontmatter(
     agent: CaptureAgent,
     tmp_path: Path,
@@ -287,7 +400,124 @@ def test_commit_editable_draft_uses_edited_body_and_frontmatter(
     assert capture_body == "用户最终编辑后的正文"
     assert capture_frontmatter["title"] == "自由编辑入库"
     assert capture_frontmatter["entry_mode"] == "editable_capture"
+
+
+def test_commit_editable_draft_does_not_generate_missing_metadata(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        agent.summarizer,
+        "organize_editable_draft",
+        lambda text, *, existing_tags=None, existing_folders=None: {
+            "title": "无摘要草稿",
+            "summary": "",
+            "tags": [],
+            "body_markdown": text,
+            "folder_suggestion": {},
+            "card_suggestion": {},
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("editable 入库不应补跑摘要 LLM")),
+    )
+
+    draft = agent.create_editable_draft("用户确认直接入库的正文")
+    committed = agent.commit_draft(draft["id"])
+
+    capture_note = read_note(tmp_path, committed["file_path"])
+    assert capture_note is not None
+    capture_frontmatter, capture_body = capture_note
+    assert committed["summary"] == ""
+    assert committed["tags"] == []
+    assert capture_frontmatter["story"] == ""
+    assert capture_frontmatter["tags"] == []
+    assert capture_body == "用户确认直接入库的正文"
     assert capture_frontmatter["title_source"] == "ai"
+
+
+def test_commit_draft_reuses_existing_summary_and_tags_without_resummarizing(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        agent.summarizer,
+        "organize_editable_draft",
+        lambda _text, *, existing_tags=None, existing_folders=None: {
+            "title": "整理草稿标题",
+            "summary": "整理草稿阶段生成的摘要。",
+            "tags": ["ai-product", "knowledge-workflow"],
+            "body_markdown": "",
+            "folder_suggestion": {
+                "mode": "existing",
+                "folder_path": "Inbox",
+                "reason": "默认分类。",
+            },
+            "card_suggestion": {
+                "should_generate": False,
+                "reason": "无需生成卡片。",
+            },
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("入库不应重复生成摘要标签")),
+    )
+    draft = agent.create_editable_draft("正文内容")
+
+    committed = agent.commit_draft(draft["id"])
+
+    capture_note = read_note(tmp_path, committed["file_path"])
+    assert capture_note is not None
+    frontmatter, _body = capture_note
+    assert committed["summary"] == "整理草稿阶段生成的摘要。"
+    assert committed["tags"] == ["ai-product", "knowledge-workflow"]
+    assert frontmatter["story"] == "整理草稿阶段生成的摘要。"
+    assert frontmatter["tags"] == ["ai-product", "knowledge-workflow"]
+
+
+def test_commit_draft_generates_summary_and_tags_when_missing(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {
+            "title": "兜底标题不覆盖",
+            "summary": "入库兜底生成摘要。",
+            "tags": ["fallback-tag"],
+        },
+    )
+    draft = agent.draft_repo.create(
+        raw_text="原文",
+        source="manual",
+        source_type="manual",
+        title="待入库草稿",
+        word_count=4,
+        draft_text="正式正文",
+        summary="",
+        tags=[],
+        status="draft_ready",
+    )
+
+    committed = agent.commit_draft(draft["id"])
+
+    capture_note = read_note(tmp_path, committed["file_path"])
+    assert capture_note is not None
+    frontmatter, _body = capture_note
+    assert committed["summary"] == "入库兜底生成摘要。"
+    assert committed["tags"] == ["fallback-tag"]
+    assert frontmatter["story"] == "入库兜底生成摘要。"
+    assert frontmatter["tags"] == ["fallback-tag"]
 
 
 def test_commit_short_editable_draft_uses_identity_index(

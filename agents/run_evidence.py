@@ -148,6 +148,8 @@ def extract_run_evidence(
         )
     elif intent in {
         "create_capture_draft",
+        "create_editable_capture_draft",
+        "update_editable_capture_draft",
         "show_capture_draft",
         "revise_capture_draft",
         "commit_capture_draft",
@@ -166,6 +168,33 @@ def extract_run_evidence(
                 "preview_truncated": bool(meta.get("preview_truncated")),
             }
         )
+        stage_timings = _normalized_stage_timings(meta.get("stage_timings_ms"))
+        if stage_timings:
+            evidence["stage_timings_ms"] = stage_timings
+        failure = meta.get("failure") if isinstance(meta.get("failure"), Mapping) else {}
+        if meta.get("extraction_failed") or failure:
+            evidence["extraction_failed"] = bool(meta.get("extraction_failed") or failure)
+            evidence["failure"] = {
+                "code": str(failure.get("code") or ""),
+                "message": str(failure.get("message") or ""),
+                "retryable": bool(failure.get("retryable")),
+            }
+        capture_intent = meta.get("capture_intent") if isinstance(meta.get("capture_intent"), Mapping) else {}
+        diagnostics = (
+            capture_intent.get("diagnostics")
+            if isinstance(capture_intent.get("diagnostics"), Mapping)
+            else {}
+        )
+        if diagnostics:
+            evidence.update(
+                {
+                    "llm_parse_failed": diagnostics.get("parse_error_kind") == "json_parse_failed",
+                    "llm_parse_error_kind": str(diagnostics.get("parse_error_kind") or ""),
+                    "llm_response_len": int(diagnostics.get("response_len") or 0),
+                    "llm_max_tokens": int(diagnostics.get("max_tokens") or 0),
+                    "llm_prompt_len": int(diagnostics.get("prompt_len") or 0),
+                }
+            )
         output_ref.update(
             {
                 "draft_id": draft_id,
@@ -476,3 +505,15 @@ def _strings(value: Any) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _normalized_stage_timings(value: Any) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        return {}
+    normalized: dict[str, int] = {}
+    for key, raw in value.items():
+        try:
+            normalized[str(key)] = max(int(raw or 0), 0)
+        except (TypeError, ValueError):
+            normalized[str(key)] = 0
+    return normalized

@@ -10,7 +10,7 @@ from agents.garden_agent import _parse_json_object
 
 STRUCTURE_PROMPT = """你是 Hermes 的 Garden Structure Agent。
 
-你的任务不是总结材料，也不是生成 MOC，而是判断一组 Garden Cards 是否已经形成一个值得画成 Obsidian Canvas 的知识结构。
+你的任务不是总结材料，也不是生成 MOC，而是判断一组 Garden Cards 是否已经形成一个值得画成 Knowledge Canvas 的知识结构。
 
 主题：{theme}
 

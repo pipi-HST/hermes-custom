@@ -39,13 +39,23 @@ tags: ["tag1", "tag2", "tag3"]
 EDITABLE_DRAFT_PROMPT = """你是 Hermes Knowledge 的知识整理助手。你的任务是把用户提供的内容整理成可编辑、可入库的知识草稿。
 
 严格要求：
-1. 只生成标题、摘要、标签、文件夹建议和 Garden Card 建议。
-2. 不要总结式改写正文，不要改变原文观点、顺序、例子和信息密度。
-3. 摘要必须基于正文实际内容，不要编造事实、来源、作者、日期。
-4. 需要判断内容适合放入已有文件夹，还是建议新建文件夹。
-5. 需要判断是否适合生成 Garden Card。
-6. 如果适合生成 Garden Card，需要建议生成哪些卡片，供后续 Garden Card Agent 决策。
-7. 不要返回正文，不要返回 body_markdown 字段。正文由用户直接编辑和确认，你只负责生成元信息。
+1. 生成标题、摘要、标签、结构化 Markdown 正文、文件夹建议和 Garden Card 建议。
+2. body_markdown 只改变可读性：分段、空行、二/三级标题、列表、加粗原文关键词、轻微错别字或标点修正。
+3. 不得总结式改写正文，不得删减信息、不得改变原文观点、不得打乱原文顺序、不得丢失例子和信息密度，不做压缩总结。
+4. 不得把多段原文合并成概述；原文中的段落、例子、枚举、引用和操作步骤应逐段保留，只允许调整排版和标题层级。
+5. body_markdown 长度不得显著短于原文；除非原文中存在重复目录、重复标题或图片占位污染，整理后至少保留原文约 80% 的信息量和正文篇幅。
+6. 长文不得把多个主题塞进一个大段落；每个主题、经验、步骤、案例或观点应拆成独立段落或章节。
+7. 如果生成了“## 目录纲要”，目录纲要中的每个主要条目都必须在正文后续位置有同名或近似同名的 Markdown heading，方便网页端跳转。
+8. 不得输出空标题，不得输出只有 ### 或 ## 的空 Markdown 标题；标题后必须有具体标题文本。
+9. 不得把目录纲要条目复制或混入正文段落；目录纲要只放在“## 目录纲要”区域，正文中要使用真实 Markdown heading 承接目录条目。
+10. 裸图片文件名或占位符不得作为标题或目录项；遇到 image.png 这类占位时，保留为“图片占位：image.png”。
+11. 如果不确定如何整理正文，body_markdown 应返回仅做空白行、段落和行尾清理后的原文。
+12. 摘要必须基于正文实际内容，不要编造事实、来源、作者、日期。
+13. 文件夹建议必须基于下面列出的“已有文件夹”。只能从“已有文件夹”中选择 existing；如果没有合适分类，才建议 new。
+14. 未列出的分类不能当作 existing，只能作为 new 建议。
+15. 需要判断是否适合生成 Garden Card，并给出非空 reason。
+16. 如果适合生成 Garden Card，需要建议生成哪些卡片，供后续 Garden Card Agent 决策。
+17. 不要输出 Markdown 代码块包裹 JSON；JSON 内的 body_markdown 字符串可以包含 Markdown。
 
 已有文件夹：
 {existing_folders}
@@ -61,6 +71,7 @@ EDITABLE_DRAFT_PROMPT = """你是 Hermes Knowledge 的知识整理助手。你�
   "title": "",
   "summary": "",
   "tags": [],
+  "body_markdown": "",
   "folder_suggestion": {{
     "mode": "existing 或 new",
     "folder_path": "",
@@ -121,12 +132,18 @@ class Summarizer:
             existing_tags=", ".join((existing_tags or self.seed_tags)[:30]),
             content=content,
         )
-        response = self._call_llm(prompt, max_tokens=4000)
+        max_tokens = self._editable_draft_max_tokens(content)
+        response = self._call_llm(prompt, max_tokens=max_tokens)
         parsed = self._parse_json_response(response)
         if not parsed:
             return self._editable_draft_safe_defaults(
                 content,
                 warning="AI 整理结果解析失败，请手动填写摘要、标签和建议。",
+                diagnostics=self._editable_parse_diagnostics(
+                    response,
+                    prompt_len=len(prompt),
+                    max_tokens=max_tokens,
+                ),
             )
         return self._normalize_editable_draft(parsed, content)
 
@@ -137,6 +154,25 @@ class Summarizer:
             existing_tags=tags_str,
             cleaned_text=cleaned_text,
         )
+
+    def _editable_draft_max_tokens(self, content: str) -> int:
+        return min(24000, max(4000, len(content) * 3))
+
+    def _editable_parse_diagnostics(
+        self,
+        raw: str,
+        *,
+        prompt_len: int,
+        max_tokens: int,
+    ) -> dict:
+        response = raw or ""
+        return {
+            "parse_error_kind": "json_parse_failed",
+            "response_len": len(response),
+            "response_tail": response[-500:],
+            "max_tokens": max_tokens,
+            "prompt_len": prompt_len,
+        }
 
     def _call_llm(self, prompt: str, *, max_tokens: int = 4000) -> str:
         headers = {
@@ -209,36 +245,82 @@ class Summarizer:
     def _normalize_editable_draft(self, data: dict, content: str) -> dict:
         tags = data.get("tags") if isinstance(data.get("tags"), list) else []
         warnings = data.get("warnings") if isinstance(data.get("warnings"), list) else []
+        folder_suggestion = (
+            data.get("folder_suggestion")
+            if isinstance(data.get("folder_suggestion"), dict)
+            else {}
+        )
+        card_suggestion = (
+            data.get("card_suggestion")
+            if isinstance(data.get("card_suggestion"), dict)
+            else {}
+        )
         return {
             "title": str(data.get("title") or "").strip(),
             "summary": str(data.get("summary") or "").strip(),
             "tags": [str(tag).strip() for tag in tags if str(tag).strip()][:8],
-            "body_markdown": "",
-            "folder_suggestion": (
-                data.get("folder_suggestion")
-                if isinstance(data.get("folder_suggestion"), dict)
-                else {}
-            ),
-            "card_suggestion": (
-                data.get("card_suggestion")
-                if isinstance(data.get("card_suggestion"), dict)
-                else {}
-            ),
+            "body_markdown": str(data.get("body_markdown") or "").strip(),
+            "folder_suggestion": self._normalize_folder_suggestion(folder_suggestion),
+            "card_suggestion": self._normalize_card_suggestion(card_suggestion),
             "warnings": [str(item).strip() for item in warnings if str(item).strip()],
         }
 
-    def _editable_draft_safe_defaults(self, content: str, *, warning: str) -> dict:
+    def _editable_draft_safe_defaults(
+        self,
+        content: str,
+        *,
+        warning: str,
+        diagnostics: dict | None = None,
+    ) -> dict:
         return {
             "title": "",
             "summary": "",
             "tags": [],
             "body_markdown": "",
-            "folder_suggestion": {},
-            "card_suggestion": {
-                "should_generate": False,
-                "reason": "AI 未返回有效建议。",
-            },
+            "folder_suggestion": self._default_folder_suggestion(),
+            "card_suggestion": self._default_card_suggestion("AI 未返回有效建议。"),
             "warnings": [warning],
+            "diagnostics": diagnostics or {},
+        }
+
+    def _normalize_folder_suggestion(self, suggestion: dict) -> dict:
+        mode = str(suggestion.get("mode") or "").strip()
+        folder_path = str(suggestion.get("folder_path") or "").strip()
+        reason = str(suggestion.get("reason") or "").strip()
+        if mode not in {"existing", "new"}:
+            mode = "existing" if not folder_path or folder_path == "Inbox" else "new"
+        if not folder_path:
+            folder_path = "Inbox"
+            mode = "existing"
+        if not reason:
+            reason = "AI 未返回明确文件夹建议，先放入 Inbox 等待人工确认。"
+        return {"mode": mode, "folder_path": folder_path, "reason": reason}
+
+    def _normalize_card_suggestion(self, suggestion: dict) -> dict:
+        should_generate = bool(suggestion.get("should_generate"))
+        reason = str(suggestion.get("reason") or "").strip()
+        cards = suggestion.get("cards") if isinstance(suggestion.get("cards"), list) else []
+        if not reason:
+            reason = "AI 未返回有效卡片建议，默认暂不生成 Garden Card。"
+            should_generate = False
+        return {
+            "should_generate": should_generate,
+            "reason": reason,
+            "cards": cards,
+        }
+
+    def _default_folder_suggestion(self) -> dict:
+        return {
+            "mode": "existing",
+            "folder_path": "Inbox",
+            "reason": "AI 整理结果解析失败，先放入 Inbox 等待人工确认。",
+        }
+
+    def _default_card_suggestion(self, reason: str) -> dict:
+        return {
+            "should_generate": False,
+            "reason": reason,
+            "cards": [],
         }
 
     def _parse_response(self, raw: str) -> dict:

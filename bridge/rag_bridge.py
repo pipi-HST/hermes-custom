@@ -145,8 +145,9 @@ def _search_knowledge_base(
         return success_envelope(
             agent="rag",
             intent="search_knowledge_base",
-            chat_preview="知识库中没有找到相关信息。",
-            meta={"query": query, "result_count": 0},
+            chat_preview="无知识库资料：当前本地知识库没有可引用的资料。",
+            source_map=[],
+            meta={"query": query, "result_count": 0, "answer": "无知识库资料：当前本地知识库没有可引用的资料。"},
         )
 
     titles = [r.get("title") or r.get("file_path", "?") for r in results]

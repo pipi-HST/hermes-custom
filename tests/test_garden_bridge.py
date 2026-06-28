@@ -491,8 +491,8 @@ def test_synthesize_garden_preview_lists_all_used_sources(repo, tmp_path):
         assert f"来源 {index}" in result["chat_preview"]
 
 
-def test_commit_garden_draft_writes_card_file_and_marks_draft(repo, tmp_path):
-    """确认 Garden Draft 后才写 garden_cards 和 Obsidian 文件。"""
+def test_commit_garden_draft_creates_structured_card_and_marks_draft(repo, tmp_path):
+    """确认 Garden Draft 后只写 garden_cards，不创建常驻 garden Markdown。"""
     from agents.garden_agent import create_garden_draft
     from bridge.garden_bridge import commit_garden_draft
 
@@ -521,9 +521,9 @@ def test_commit_garden_draft_writes_card_file_and_marks_draft(repo, tmp_path):
     artifact = result["durable_artifacts"][0]
     assert artifact["type"] == "garden_card"
     assert artifact["status"] == "seed"
-    assert artifact["path"].startswith("garden/")
-    assert (tmp_path / artifact["path"]).exists()
-    assert "# 确认后的观点" in (tmp_path / artifact["path"]).read_text(encoding="utf-8")
+    assert artifact.get("path", "") == ""
+    assert result["meta"]["storage"] == "sqlite"
+    assert not (tmp_path / "garden").exists()
 
     draft = repo.conn.execute(
         "SELECT * FROM garden_drafts WHERE id=?",
@@ -531,6 +531,9 @@ def test_commit_garden_draft_writes_card_file_and_marks_draft(repo, tmp_path):
     ).fetchone()
     assert draft["status"] == "committed"
     assert draft["committed_card_id"] == artifact["id"]
+    card = repo.conn.execute("SELECT * FROM garden_cards WHERE id=?", (artifact["id"],)).fetchone()
+    assert card["title"] == "确认后的观点"
+    assert card["status"] == "seed"
 
 
 def test_archive_garden_card_records_write_job(repo, tmp_path):
@@ -573,31 +576,17 @@ def test_archive_garden_card_records_write_job(repo, tmp_path):
     assert job["db_table"] == "garden_cards"
 
 
-def test_commit_theme_origin_garden_card_updates_source_theme_page(repo, tmp_path):
-    """从 Theme 候选生成的 Knowledge Card 入库后，应回写来源 Theme 页。"""
+def test_commit_theme_origin_garden_card_marks_question_without_theme_markdown(repo, tmp_path):
+    """从 Theme View 候选生成的 Knowledge Card 入库后，不再回写 Theme Markdown。"""
     from agents.garden_agent import create_garden_draft
-    from agents.markdown_writer import write_theme_page
     from agents.theme_agent import create_pending_question
     from bridge.garden_bridge import commit_garden_draft
 
-    theme_path = write_theme_page(
-        tmp_path,
-        theme_name="AI Agent 工程化",
-        body=(
-            "# AI Agent 工程化\n\n"
-            "## 主题判断\n\n这些材料共同讨论 Agent 工程化。\n\n"
-            "## 相关材料\n\n- [[Agent A]]\n\n"
-            "## 材料之间的关系\n\n- A 提供框架。\n\n"
-            "## 可沉淀的知识卡片方向\n\n- 方法卡：工作流判断。\n"
-        ),
-        captures=[{"title": "Agent A", "file_path": "captures/a.md"}],
-        garden_cards=[],
-    )
     question = create_pending_question(
         repo,
         "theme",
         "这组材料可以沉淀成什么知识卡片？",
-        context_ref=f"theme:{theme_path}",
+        context_ref="theme_view:cap1",
         related_capture_ids=["cap1"],
     )
     draft_id = create_garden_draft(repo, {
@@ -623,11 +612,9 @@ def test_commit_theme_origin_garden_card_updates_source_theme_page(repo, tmp_pat
         result = commit_garden_draft(draft_id)
 
     assert result["status"] == "success"
-    assert result["meta"]["source_theme"] == theme_path
-    assert result["meta"]["theme_sync_status"] == "synced"
-    card_path = result["durable_artifacts"][0]["path"]
-    card_text = (tmp_path / card_path).read_text(encoding="utf-8")
-    assert f"source_theme: {theme_path}" in card_text
+    assert result["durable_artifacts"][0].get("path", "") == ""
+    assert not (tmp_path / "themes").exists()
+    assert not (tmp_path / "garden").exists()
 
     question_row = repo.conn.execute(
         "SELECT status, matched_response FROM pending_questions WHERE id=?",
@@ -636,26 +623,8 @@ def test_commit_theme_origin_garden_card_updates_source_theme_page(repo, tmp_pat
     assert question_row["status"] == "answered"
     assert question_row["matched_response"] == "synthesized"
 
-    theme_text = (tmp_path / theme_path).read_text(encoding="utf-8")
-    assert "related_garden_cards:" in theme_text
-    assert card_path in theme_text
-    assert theme_text.count("[[AI Agent 工程化]]") == 1
-
-    from agents.markdown_writer import append_garden_card_to_theme_page
-
-    append_garden_card_to_theme_page(
-        tmp_path,
-        theme_path,
-        card_title="AI Agent 工程化",
-        card_path=card_path,
-    )
-    theme_text_after = (tmp_path / theme_path).read_text(encoding="utf-8")
-    assert theme_text_after.count("[[AI Agent 工程化]]") == 1
-
-
-def test_commit_garden_draft_writes_card_frontmatter(repo, tmp_path):
-    """确认 Garden Draft 后，Obsidian Properties 应面向人可读。"""
-    import yaml
+def test_commit_garden_draft_persists_card_payload_without_markdown(repo, tmp_path):
+    """Knowledge Card 入库以 SQLite 结构化对象为准。"""
     from agents.garden_agent import create_garden_draft
     from bridge.garden_bridge import commit_garden_draft
 
@@ -699,16 +668,16 @@ def test_commit_garden_draft_writes_card_frontmatter(repo, tmp_path):
         )
         result = commit_garden_draft(draft_id)
 
-    text = (tmp_path / result["durable_artifacts"][0]["path"]).read_text(encoding="utf-8")
-    assert text.startswith("---\n")
-    frontmatter = yaml.safe_load(text.split("---", 2)[1])
-    assert frontmatter["type"] == "garden_card"
-    assert frontmatter["card_kind"] == "method"
-    assert "id" not in frontmatter
-    assert "source_captures" not in frontmatter
-    assert "related_cards" not in frontmatter
-    assert frontmatter["sources"] == ["[[captures/cap|来源文章]]"]
-    assert frontmatter["related"] == ["[[garden/相关卡片-card1|相关卡片]]"]
+    assert result["durable_artifacts"][0].get("path", "") == ""
+    assert not (tmp_path / "garden").exists()
+    card = repo.conn.execute(
+        "SELECT * FROM garden_cards WHERE id = ?",
+        (result["durable_artifacts"][0]["id"],),
+    ).fetchone()
+    assert card["title"] == "方法卡"
+    assert card["card_kind"] == "method"
+    assert json.loads(card["knowledge_links"]) == ["card1"]
+    assert json.loads(card["capture_ids"]) == ["cap1"]
 
 
 def test_commit_garden_draft_rejects_internal_prompt_markdown(repo, tmp_path):

@@ -283,7 +283,7 @@ def capture_content(
     instruction: str = "",
     context: KnowledgeContext | None = None,
 ) -> dict:
-    """提取内容并生成可确认的草稿；不直接写入 Obsidian 正式库。"""
+    """提取内容并生成可确认的草稿；不直接写入 Knowledge File 正式库。"""
     _, agent = _agent_from_context(context)
     return _run_capture_with_ledger(
         agent,
@@ -305,6 +305,7 @@ def create_editable_capture_draft(
     title: str = "",
     folder_path: str = "",
     existing_folders: list[str] | None = None,
+    organize: bool = True,
     context: KnowledgeContext | None = None,
 ) -> dict:
     """Create a free-editing Capture draft that still commits through Capture."""
@@ -321,6 +322,7 @@ def create_editable_capture_draft(
             "title_provided": bool(title.strip()),
             "folder_path": folder_path,
             "existing_folder_count": len(existing_folders or []),
+            "organize": organize,
         },
         lambda: _create_editable_capture_draft(
             agent,
@@ -331,6 +333,7 @@ def create_editable_capture_draft(
             title=title,
             folder_path=folder_path,
             existing_folders=existing_folders,
+            organize=organize,
         ),
     )
 
@@ -345,6 +348,7 @@ def _create_editable_capture_draft(
     title: str = "",
     folder_path: str = "",
     existing_folders: list[str] | None = None,
+    organize: bool = True,
 ) -> dict:
     result = agent.create_editable_draft(
         content,
@@ -354,6 +358,7 @@ def _create_editable_capture_draft(
         title=title,
         folder_path=folder_path,
         existing_folders=existing_folders,
+        organize=organize,
     )
     if "error" in result:
         return error_envelope(
@@ -392,6 +397,7 @@ def _create_editable_capture_draft(
             "word_count": result.get("word_count", 0),
             "draft_status": result.get("status", ""),
             "capture_intent": result.get("capture_intent", {}),
+            "stage_timings_ms": result.get("stage_timings_ms", {}),
         },
     )
 
@@ -406,6 +412,7 @@ def update_editable_capture_draft(
     folder_suggestion: dict | None = None,
     card_suggestion: dict | None = None,
     existing_folders: list[str] | None = None,
+    organize: bool = True,
     context: KnowledgeContext | None = None,
 ) -> dict:
     """Update a free-editing Capture draft without committing it."""
@@ -421,6 +428,7 @@ def update_editable_capture_draft(
             "tags_provided": tags is not None,
             "folder_path": folder_path or "",
             "existing_folder_count": len(existing_folders or []),
+            "organize": organize,
         },
         lambda: _update_editable_capture_draft(
             agent,
@@ -433,6 +441,7 @@ def update_editable_capture_draft(
             folder_suggestion=folder_suggestion,
             card_suggestion=card_suggestion,
             existing_folders=existing_folders,
+            organize=organize,
         ),
     )
 
@@ -449,6 +458,7 @@ def _update_editable_capture_draft(
     folder_suggestion: dict | None = None,
     card_suggestion: dict | None = None,
     existing_folders: list[str] | None = None,
+    organize: bool = True,
 ) -> dict:
     result = agent.update_editable_draft(
         draft_id,
@@ -460,6 +470,7 @@ def _update_editable_capture_draft(
         folder_suggestion=folder_suggestion,
         card_suggestion=card_suggestion,
         existing_folders=existing_folders,
+        organize=organize,
     )
     if result is None:
         return error_envelope(
@@ -513,6 +524,11 @@ def _capture_content(agent, content: str, instruction: str = "") -> dict:
             agent="capture",
             intent="create_capture_draft",
             error=f"{result['error']}。{hint}".strip("。"),
+            meta={
+                "extraction_failed": bool(result.get("extraction_failed")),
+                "failure": result.get("failure") if isinstance(result.get("failure"), dict) else {},
+                "stage_timings_ms": result.get("stage_timings_ms", {}),
+            },
         )
     duplicate_state = result.get("duplicate_state", "")
     if duplicate_state == "committed":
@@ -538,6 +554,7 @@ def _capture_content(agent, content: str, instruction: str = "") -> dict:
                 "draft_id": result.get("id", ""),
                 "capture_id": capture_id,
                 "title": result.get("title", ""),
+                "stage_timings_ms": result.get("stage_timings_ms", {}),
             },
         )
     draft_text = result.get("draft_text", "")
@@ -604,6 +621,7 @@ def _capture_content(agent, content: str, instruction: str = "") -> dict:
         ],
         next_actions=actions,
         meta={
+            "draft_id": result.get("id", ""),
             "title": result.get("title", ""),
             "word_count": result.get("word_count", 0),
             "draft_status": result.get("status", ""),
@@ -612,6 +630,7 @@ def _capture_content(agent, content: str, instruction: str = "") -> dict:
             "capture_intent": result.get("capture_intent", {}),
             "preview_truncated": preview_truncated,
             "revision_error": result.get("revision_error", ""),
+            "stage_timings_ms": result.get("stage_timings_ms", {}),
         },
     )
 
@@ -809,6 +828,7 @@ def _revise_capture_draft(agent, draft_id: str = "", instruction: str = "") -> d
             "capture_intent": result.get("capture_intent", {}),
             "draft_status": result.get("status", ""),
             "preview_truncated": preview_truncated,
+            "stage_timings_ms": result.get("stage_timings_ms", {}),
         },
     )
 
@@ -819,7 +839,7 @@ def commit_capture_draft(
     confirmation_source: str = "agent",
     context: KnowledgeContext | None = None,
 ) -> dict:
-    """用户确认后将草稿写入 Obsidian raw/ 和 captures/。"""
+    """用户确认后将草稿写入 Knowledge File raw/ 和 captures/。"""
     _, agent = _agent_from_context(context)
     conn = getattr(getattr(agent, "repo", None), "conn", None) or getattr(
         getattr(agent, "draft_repo", None),

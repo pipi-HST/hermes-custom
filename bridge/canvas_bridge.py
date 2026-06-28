@@ -1,4 +1,4 @@
-"""Bridge for generating Obsidian Canvas relationship maps."""
+"""Bridge for generating Knowledge Canvas relationship maps."""
 from __future__ import annotations
 
 import json
@@ -445,17 +445,17 @@ def _canvas_preview(*, title: str, rel_path: str, capture_count: int, garden_cou
             f"- {garden_count} 张 Garden 卡",
             f"- {capture_count} 篇来源笔记",
             "",
-            f"你可以在 Obsidian 的 `{rel_path}` 打开它继续调整。",
+            f"你可以在 Knowledge File storage 的 `{rel_path}` 打开它继续调整。",
         ])
     return "\n".join([
-        f"已生成 Obsidian Canvas：《{title}》",
+        f"已生成 Knowledge Canvas：《{title}》",
         "",
         "里面包含：",
         "- 1 个主题页",
         f"- {capture_count} 篇来源笔记",
         f"- {garden_count} 张 Garden 卡",
         "",
-        f"你可以在 Obsidian 的 `{rel_path}` 打开它继续调整。",
+        f"你可以在 Knowledge File storage 的 `{rel_path}` 打开它继续调整。",
     ])
 
 

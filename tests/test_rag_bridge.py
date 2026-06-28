@@ -75,6 +75,41 @@ story: 市场短期有韧性，中期压力积累。
     return rel_path
 
 
+def test_search_knowledge_base_empty_store_returns_no_knowledge_material(monkeypatch, tmp_path):
+    from bridge import rag_bridge
+
+    db_path = tmp_path / "captures.db"
+    vault = tmp_path / "vault"
+    init_db(str(db_path)).close()
+
+    class FakeEmbedder:
+        def __init__(self, **_kwargs):
+            pass
+
+        def embed(self, _text: str) -> bytes:
+            return _vec(1.0, 0.0)
+
+    monkeypatch.setattr(
+        rag_bridge,
+        "load_config",
+        lambda _path: CaptureConfig(
+            vault_path=str(vault),
+            db_path=str(db_path),
+            qwen_api_key="qwen-test",
+            llm_api_key="llm-test",
+        ),
+    )
+    monkeypatch.setattr(rag_bridge, "Embedder", FakeEmbedder)
+    rag_bridge._config = None
+    rag_bridge._repo = None
+
+    envelope = rag_bridge.search_knowledge_base("空库能回答吗？")
+
+    assert envelope["chat_preview"] == "无知识库资料：当前本地知识库没有可引用的资料。"
+    assert envelope["source_map"] == []
+    assert envelope["meta"]["result_count"] == 0
+
+
 def test_search_knowledge_base_uses_best_section_embedding(monkeypatch, tmp_path):
     from bridge import rag_bridge
 

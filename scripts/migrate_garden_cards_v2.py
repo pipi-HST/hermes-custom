@@ -1,6 +1,11 @@
-"""One-off migration for existing Garden Cards to garden_card.v2."""
+"""Legacy one-off migration for old Markdown Garden Cards to garden_card.v2.
+
+This script predates the Knowledge File + Web/DB primary model. It is retained
+only for manual legacy recovery and must not run as a normal Knowledge workflow.
+"""
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 import sys
@@ -22,7 +27,7 @@ from db.schema import init_db
 
 
 DB_PATH = Path("/Users/pipi/hermes-custom/data/captures.db")
-VAULT_PATH = Path("/Users/pipi/Obsidian/hermes-vault")
+CONFIRMATION_PHRASE = "MIGRATE LEGACY GARDEN MARKDOWN"
 
 PAYLOADS = {
     "b02c7904e8d3": {
@@ -177,10 +182,25 @@ PAYLOADS = {
 }
 
 
-def main() -> None:
-    backup_dir = VAULT_PATH / "_archive" / "garden_migrations" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Legacy manual migration for old garden/*.md cards. "
+            "Current Hermes stores Knowledge Cards as structured Web/DB objects."
+        )
+    )
+    parser.add_argument("--db", default=str(DB_PATH))
+    parser.add_argument("--legacy-store", required=True)
+    parser.add_argument("--confirm", default="")
+    args = parser.parse_args(argv)
+    if args.confirm != CONFIRMATION_PHRASE:
+        parser.error(f"requires --confirm {CONFIRMATION_PHRASE!r}")
+
+    db_path = Path(args.db).expanduser()
+    vault_path = Path(args.legacy_store).expanduser()
+    backup_dir = vault_path / "_archive" / "garden_migrations" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_dir.mkdir(parents=True, exist_ok=True)
-    conn = init_db(str(DB_PATH))
+    conn = init_db(str(db_path))
     conn.row_factory = None
     migrated: list[str] = []
     try:
@@ -193,8 +213,8 @@ def main() -> None:
                 raise RuntimeError(f"garden card not found: {card_id}")
             _, title, status, capture_ids_json, created_at, updated_at = row
             source_ids = json.loads(capture_ids_json or "[]")
-            source_links, source_ref_map = _source_links(conn, source_ids)
-            card_path = _card_path(card_id)
+            source_links, source_ref_map = _source_links(conn, vault_path, source_ids)
+            card_path = _card_path(vault_path, card_id)
             if card_path.exists():
                 shutil.copy2(card_path, backup_dir / card_path.name)
             legacy = project_legacy_fields(payload)
@@ -246,14 +266,14 @@ def main() -> None:
     print("migrated=" + ",".join(migrated))
 
 
-def _card_path(card_id: str) -> Path:
-    matches = sorted((VAULT_PATH / "garden").glob(f"*-{card_id}.md"))
+def _card_path(vault_path: Path, card_id: str) -> Path:
+    matches = sorted((vault_path / "garden").glob(f"*-{card_id}.md"))
     if not matches:
         raise RuntimeError(f"garden markdown not found: {card_id}")
     return matches[0]
 
 
-def _source_links(conn, source_ids: list[str]) -> tuple[list[str], dict[str, str]]:
+def _source_links(conn, vault_path: Path, source_ids: list[str]) -> tuple[list[str], dict[str, str]]:
     links: list[str] = []
     ref_map: dict[str, str] = {}
     for source_id in source_ids:
@@ -262,7 +282,7 @@ def _source_links(conn, source_ids: list[str]) -> tuple[list[str], dict[str, str
             continue
         _, file_path = row
         title = Path(file_path).stem
-        note = read_note(VAULT_PATH, file_path)
+        note = read_note(vault_path, file_path)
         if note and note[0].get("title"):
             title = str(note[0]["title"])
         link = f"[[{file_path.removesuffix('.md')}|{title}]]"

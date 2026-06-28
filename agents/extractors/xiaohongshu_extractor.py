@@ -77,7 +77,7 @@ class XiaohongshuExtractor(BaseExtractor):
 
     def _extract_url(self, source: str) -> str:
         match = self.URL_RE.search(source or "")
-        return match.group(0).rstrip("，。；;、)") if match else ""
+        return match.group(0).rstrip("，。；;、,.!！?？)]）}】》\"'") if match else ""
 
     def _fetch_url(self, url: str) -> tuple[str, str]:
         headers = {

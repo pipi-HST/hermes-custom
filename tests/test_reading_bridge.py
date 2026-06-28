@@ -104,7 +104,7 @@ def test_summarize_reading_session_asks_when_output_type_missing(reading_config)
     assert result["meta"]["needs_clarification"] is True
     assert "你想整理成哪种" in result["chat_preview"]
     assert "原文增强版主笔记" in result["chat_preview"]
-    assert "局部学习笔记" in result["chat_preview"]
+    assert "Capture Note" in result["chat_preview"]
     assert "知识卡片" in result["chat_preview"]
     assert "讨论札记" not in result["chat_preview"]
     assert result["meta"]["choices"] == [
@@ -149,7 +149,7 @@ def test_summarize_reading_session_creates_learning_note_draft(reading_config):
     assert result["status"] == "success"
     assert result["durable_artifacts"][0]["type"] == "reading_draft"
     assert result["meta"]["output_type"] == "local_learning_note"
-    assert "已生成局部学习笔记草稿" in result["chat_preview"]
+    assert "已生成Capture Note草稿" in result["chat_preview"]
 
 
 def test_summarize_reading_session_metadata_uses_full_draft_text(reading_config):
@@ -235,7 +235,7 @@ def test_summarize_reading_session_creates_knowledge_card_draft(reading_config):
     assert "原文" in draft["draft_text"]
 
 
-def test_commit_learning_note_writes_independent_file(reading_config):
+def test_commit_learning_note_writes_capture_note_file(reading_config):
     from bridge import reading_bridge
 
     with patch.object(reading_bridge, "load_config", return_value=reading_config):
@@ -257,11 +257,12 @@ def test_commit_learning_note_writes_independent_file(reading_config):
 
     assert result["status"] == "success"
     artifact = result["durable_artifacts"][0]
-    assert artifact["type"] == "learning_note"
-    assert artifact["path"].startswith("learning/")
+    assert artifact["type"] == "capture_note"
+    assert artifact["path"].startswith("captures/")
     assert (Path(reading_config.vault_path) / artifact["path"]).exists()
     assert result["meta"]["library_postprocess"]["embedding_index"]["updated"] == 1
     assert result["meta"]["write_service"] == "knowledge_write_service"
+    assert result["meta"]["source_output_type"] == "local_learning_note"
 
     conn = init_db(reading_config.db_path)
     capture = conn.execute(
@@ -272,7 +273,7 @@ def test_commit_learning_note_writes_independent_file(reading_config):
     assert capture["file_path"] == artifact["path"]
 
     text = (Path(reading_config.vault_path) / artifact["path"]).read_text(encoding="utf-8")
-    assert "type: learning_note" in text
+    assert "type: capture_note" in text
     assert f"id: {result['meta']['capture_id']}" in text
     assert "reading_draft_id:" in text
 
@@ -326,7 +327,7 @@ def test_commit_learning_note_warns_when_library_postprocess_fails(reading_confi
     assert result["warnings"] == ["Library postprocess failed: outliner timeout"]
 
 
-def test_commit_knowledge_card_writes_garden_file(reading_config):
+def test_commit_knowledge_card_creates_structured_card_without_markdown(reading_config):
     from bridge import reading_bridge
 
     with patch.object(reading_bridge, "load_config", return_value=reading_config):
@@ -354,15 +355,10 @@ def test_commit_knowledge_card_writes_garden_file(reading_config):
     artifact = result["durable_artifacts"][0]
     assert artifact["type"] == "knowledge_card"
     assert result["meta"]["garden_card_id"] == artifact["id"]
-    assert result["meta"]["write_service"] == "knowledge_write_service"
-    assert artifact["path"].startswith("garden/")
-    card_path = Path(reading_config.vault_path) / artifact["path"]
-    assert card_path.exists()
-    text = card_path.read_text(encoding="utf-8")
-    assert "type: garden_card" in text
-    assert f"garden_card_id: {artifact['id']}" in text
-    assert "card_kind: viewpoint" in text
-    assert "它可以作为长文整理前先判断结构的工作流" in text
+    assert artifact.get("path", "") == ""
+    assert result["meta"]["storage"] == "sqlite"
+    assert result["meta"]["file_path"] == ""
+    assert not (Path(reading_config.vault_path) / "garden").exists()
 
     conn = init_db(reading_config.db_path)
     row = conn.execute(

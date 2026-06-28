@@ -37,7 +37,7 @@ THEME_NAME_PROMPT = """根据以下笔记的标题和摘要，生成一个简洁
 
 直接输出主题名："""
 
-THEME_PAGE_PROMPT = """根据主题名和相关笔记，生成 Obsidian 主题地图内容。
+THEME_PAGE_PROMPT = """根据主题名和相关笔记，生成 Theme View 关系地图内容。
 
 主题名：{theme_name}
 

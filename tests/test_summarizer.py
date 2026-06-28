@@ -92,7 +92,7 @@ def test_organize_editable_draft_parses_fenced_json(mock_call):
     assert result["title"] == "智能问数落地"
     assert result["summary"] == "智能问数需要语义层和产品运营协同。"
     assert result["tags"] == ["data-agent", "ai-product"]
-    assert result["body_markdown"] == ""
+    assert result["body_markdown"] == "# 智能问数落地\n\n正文只修正格式。"
     assert result["folder_suggestion"]["folder_path"] == "智能问数"
     assert result["card_suggestion"]["should_generate"] is True
 
@@ -108,8 +108,20 @@ def test_organize_editable_draft_bad_json_returns_safe_defaults(mock_call):
     assert result["summary"] == ""
     assert result["tags"] == []
     assert result["body_markdown"] == ""
+    assert result["folder_suggestion"] == {
+        "mode": "existing",
+        "folder_path": "Inbox",
+        "reason": "AI 整理结果解析失败，先放入 Inbox 等待人工确认。",
+    }
     assert result["card_suggestion"]["should_generate"] is False
+    assert result["card_suggestion"]["reason"]
     assert "解析失败" in result["warnings"][0]
+    diagnostics = result["diagnostics"]
+    assert diagnostics["parse_error_kind"] == "json_parse_failed"
+    assert diagnostics["response_len"] == len(mock_call.return_value)
+    assert diagnostics["max_tokens"] == 4000
+    assert diagnostics["prompt_len"] > len("用户原始正文")
+    assert diagnostics["response_tail"].endswith('"半截 JSON"')
 
 
 def test_parse_json_response_accepts_balanced_json_with_trailing_text():
@@ -119,22 +131,97 @@ def test_parse_json_response_accepts_balanced_json_with_trailing_text():
     assert result == {"summary": "可解析"}
 
 
-def test_organize_editable_draft_prompt_limits_ai_to_metadata(monkeypatch):
+def test_organize_editable_draft_prompt_allows_structured_body_without_compression(monkeypatch):
     prompts: list[str] = []
 
     def fake_call(prompt: str, *, max_tokens: int = 4000) -> str:
         prompts.append(prompt)
-        return '{"title": "长文整理", "summary": "长文只生成元数据。", "tags": ["draft"], "body_markdown": "", "folder_suggestion": {}, "card_suggestion": {}, "warnings": []}'
+        return '{"title": "长文整理", "summary": "长文整理出结构化正文。", "tags": ["draft"], "body_markdown": "## 背景\\n\\n正文内容", "folder_suggestion": {}, "card_suggestion": {}, "warnings": []}'
 
     s = Summarizer(api_key="test")
     monkeypatch.setattr(s, "_call_llm", fake_call)
 
     result = s.organize_editable_draft("正文内容" * 2000)
 
-    assert result["summary"] == "长文只生成元数据。"
-    assert result["body_markdown"] == ""
-    assert "不要返回正文" in prompts[0]
-    assert '"body_markdown"' not in prompts[0]
+    assert result["summary"] == "长文整理出结构化正文。"
+    assert result["body_markdown"] == "## 背景\n\n正文内容"
+    assert "body_markdown" in prompts[0]
+    assert "不得删减信息" in prompts[0]
+    assert "不做压缩总结" in prompts[0]
+    assert "只能从“已有文件夹”中选择 existing" in prompts[0]
+    assert "未列出的分类" in prompts[0]
+
+
+def test_organize_editable_draft_prompt_forbids_outline_body_pollution(monkeypatch):
+    prompts: list[str] = []
+
+    def fake_call(prompt: str, *, max_tokens: int = 4000) -> str:
+        prompts.append(prompt)
+        return '{"title": "结构整理", "summary": "摘要", "tags": ["draft"], "body_markdown": "正文", "folder_suggestion": {}, "card_suggestion": {}, "warnings": []}'
+
+    s = Summarizer(api_key="test")
+    monkeypatch.setattr(s, "_call_llm", fake_call)
+
+    s.organize_editable_draft("## 目录纲要\n\n1 编排循环\n\nimage.png\n\n正文")
+
+    prompt = prompts[0]
+    assert "不得输出空标题" in prompt
+    assert "不得输出只有 ### 或 ## 的空 Markdown 标题" in prompt
+    assert "不得把目录纲要条目复制或混入正文段落" in prompt
+    assert "图片占位：image.png" in prompt
+
+
+def test_organize_editable_draft_prompt_preserves_body_length_and_paragraphs(monkeypatch):
+    prompts: list[str] = []
+
+    def fake_call(prompt: str, *, max_tokens: int = 4000) -> str:
+        prompts.append(prompt)
+        return '{"title": "保真整理", "summary": "摘要", "tags": ["draft"], "body_markdown": "正文", "folder_suggestion": {}, "card_suggestion": {}, "warnings": []}'
+
+    s = Summarizer(api_key="test")
+    monkeypatch.setattr(s, "_call_llm", fake_call)
+
+    s.organize_editable_draft("第一段。\n\n第二段。\n\n第三段。" * 800)
+
+    prompt = prompts[0]
+    assert "只改变可读性" in prompt
+    assert "不得把多段原文合并成概述" in prompt
+    assert "body_markdown 长度不得显著短于原文" in prompt
+    assert "至少保留原文约 80%" in prompt
+
+
+def test_organize_editable_draft_scales_token_budget_for_long_body(monkeypatch):
+    budgets: list[int] = []
+
+    def fake_call(_prompt: str, *, max_tokens: int = 4000) -> str:
+        budgets.append(max_tokens)
+        return '{"title": "长文整理", "summary": "摘要", "tags": ["draft"], "body_markdown": "正文", "folder_suggestion": {}, "card_suggestion": {}, "warnings": []}'
+
+    s = Summarizer(api_key="test")
+    monkeypatch.setattr(s, "_call_llm", fake_call)
+
+    s.organize_editable_draft("长文内容" * 1200)
+
+    assert budgets[0] >= 12000
+
+
+def test_organize_editable_draft_normalizes_empty_suggestions(monkeypatch):
+    def fake_call(_prompt: str, *, max_tokens: int = 4000) -> str:
+        return (
+            '{"title": "文件夹建议", "summary": "摘要", "tags": ["draft"], '
+            '"body_markdown": "", "folder_suggestion": {}, '
+            '"card_suggestion": {}, "warnings": []}'
+        )
+
+    s = Summarizer(api_key="test")
+    monkeypatch.setattr(s, "_call_llm", fake_call)
+
+    result = s.organize_editable_draft("正文内容")
+
+    assert result["folder_suggestion"]["folder_path"] == "Inbox"
+    assert result["folder_suggestion"]["reason"]
+    assert result["card_suggestion"]["should_generate"] is False
+    assert result["card_suggestion"]["reason"]
 
 
 def test_organize_editable_draft_metadata_reads_beyond_old_short_prefix(monkeypatch):

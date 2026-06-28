@@ -15,12 +15,51 @@ from __future__ import annotations
 import json
 import os
 import sys
+import importlib
 from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, "/Users/pipi/hermes-custom")
 HERMES_DIR = "/Users/pipi/Downloads/hermes-agent-main"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_bridge_config(tmp_path, monkeypatch):
+    from agents.capture_agent import CaptureConfig
+
+    config = CaptureConfig(
+        llm_api_key="test-key",
+        llm_provider="openai",
+        llm_model="test-model",
+        llm_base_url="https://example.test",
+        qwen_api_key="",
+        vault_path=str(tmp_path / "knowledge"),
+        db_path=str(tmp_path / "captures.db"),
+    )
+    bridge_modules = [
+        "bridge.answer_bridge",
+        "bridge.capture_bridge",
+        "bridge.garden_bridge",
+        "bridge.librarian_bridge",
+        "bridge.rag_bridge",
+        "bridge.reading_bridge",
+        "bridge.review_bridge",
+        "bridge.theme_bridge",
+    ]
+    imported = []
+    for module_name in bridge_modules:
+        module = importlib.import_module(module_name)
+        imported.append(module)
+        monkeypatch.setattr(module, "load_config", lambda _path, _config=config: _config, raising=False)
+        for attr in ("_config", "_agent", "_repo"):
+            if hasattr(module, attr):
+                setattr(module, attr, None)
+    yield
+    for module in imported:
+        for attr in ("_config", "_agent", "_repo"):
+            if hasattr(module, attr):
+                setattr(module, attr, None)
 
 
 def _artifact(result: dict, artifact_type: str = "capture_draft") -> dict:
@@ -562,7 +601,6 @@ def test_hermes_commit_garden_draft_handler_preserves_artifact(monkeypatch):
                 type="garden_card",
                 id="g1",
                 title="观点",
-                path="garden/观点-g1.md",
                 status="seed",
             )
         ],
@@ -953,7 +991,7 @@ def test_bridge_rag(mock_embed, mock_query, mock_vector_search, mock_indexed_sea
     assert r["source_map"][0]["type"] == "capture_note"
 
 
-def test_bridge_theme_scan_runs(real_db):
+def test_bridge_theme_scan_runs():
     from bridge.theme_bridge import run_theme_scan
     result = run_theme_scan()
     assert result["status"] == "success"

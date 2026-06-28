@@ -37,35 +37,11 @@ def repair_data(
     report_root = Path(report_dir).expanduser() if report_dir else db.parent / "repair_reports"
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
-    backup_path = None
-    if apply:
-        backup_path = _backup_db(db, backup_root, timestamp)
-
     conn = init_db(str(db))
-    write_jobs = KnowledgeWriteJobRepo(conn) if apply else None
-    job_id = (
-        write_jobs.start(
-            intent="repair_data",
-            object_type="repair_batch",
-            object_id=timestamp,
-            payload={
-                "db_path": str(db),
-                "vault_path": str(vault),
-                "backup_path": str(backup_path) if backup_path else "",
-                "rename_readable": rename_readable,
-            },
-        )
-        if write_jobs
-        else ""
-    )
+    write_jobs: KnowledgeWriteJobRepo | None = None
+    job_id = ""
+    backup_path = None
     try:
-        if write_jobs:
-            write_jobs.mark_step(
-                job_id,
-                status="auditing",
-                step="repair_data.audit",
-                file_path=str(backup_path) if backup_path else "",
-            )
         vault_index = _index_vault(vault)
         before = _summary(conn, vault)
         actions: list[dict[str, Any]] = []
@@ -84,6 +60,28 @@ def repair_data(
         actions.extend(_duplicate_open_draft_actions(conn))
         if rename_readable:
             actions.extend(_readable_rename_actions(conn, vault, actions))
+
+        needs_artifact = bool(actions or missing_reports or missing_deletions)
+        if apply and needs_artifact:
+            backup_path = _backup_db(db, backup_root, timestamp)
+            write_jobs = KnowledgeWriteJobRepo(conn)
+            job_id = write_jobs.start(
+                intent="repair_data",
+                object_type="repair_batch",
+                object_id=timestamp,
+                payload={
+                    "db_path": str(db),
+                    "vault_path": str(vault),
+                    "backup_path": str(backup_path),
+                    "rename_readable": rename_readable,
+                },
+            )
+            write_jobs.mark_step(
+                job_id,
+                status="auditing",
+                step="repair_data.audit",
+                file_path=str(backup_path),
+            )
 
         if apply:
             if write_jobs:
@@ -108,20 +106,21 @@ def repair_data(
             "missing_file_reports": missing_reports,
             "missing_file_deletions": missing_deletions,
         }
-        if write_jobs:
-            write_jobs.mark_step(
-                job_id,
-                status="writing_file",
-                step="repair_data.report",
-                db_table="captures,capture_drafts",
-            )
-        result["report_path"] = str(_write_report(report_root, timestamp, result))
-        if write_jobs:
-            write_jobs.complete(
-                job_id,
-                file_path=result["report_path"],
-                db_table="captures,capture_drafts",
-            )
+        if needs_artifact:
+            if write_jobs:
+                write_jobs.mark_step(
+                    job_id,
+                    status="writing_file",
+                    step="repair_data.report",
+                    db_table="captures,capture_drafts",
+                )
+            result["report_path"] = str(_write_report(report_root, timestamp, result))
+            if write_jobs:
+                write_jobs.complete(
+                    job_id,
+                    file_path=result["report_path"],
+                    db_table="captures,capture_drafts",
+                )
         return result
     except Exception as exc:
         if write_jobs:
@@ -535,7 +534,7 @@ def main() -> int:
         description="Audit and repair local Hermes capture data."
     )
     parser.add_argument("--db", default="data/captures.db")
-    parser.add_argument("--vault", default="~/Obsidian/hermes-vault")
+    parser.add_argument("--vault", default="~/Hermes/knowledge")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--rename-readable", action="store_true")
     args = parser.parse_args()

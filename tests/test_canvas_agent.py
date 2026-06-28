@@ -285,7 +285,7 @@ def test_structured_canvas_uses_horizontal_knowledge_board_not_vertical_flowchar
 
 def test_structured_canvas_uses_roomy_nodes_to_avoid_text_clipping():
     long_summary = (
-        "这是一段会在 Obsidian Canvas 中造成裁切风险的长摘要。"
+        "这是一段会在 Knowledge Canvas 中造成裁切风险的长摘要。"
         "它应该被主动压短，而不是依赖节点滚动或让文字被挡住。"
         "这里继续补充一些细节，模拟真实 Garden Card 的较长 summary。"
     )
@@ -307,7 +307,7 @@ def test_structured_canvas_uses_roomy_nodes_to_avoid_text_clipping():
                 ),
             ],
             structure=CanvasStructure(
-                core_claim="这是一个较长的结构判断，用来确认核心说明框有足够高度，不会在 Obsidian Canvas 里被底部裁掉。",
+                core_claim="这是一个较长的结构判断，用来确认核心说明框有足够高度，不会在 Knowledge Canvas 里被底部裁掉。",
                 groups=[
                     CanvasStructureGroup(
                         role="support",

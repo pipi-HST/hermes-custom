@@ -449,7 +449,7 @@ def run_theme_scan(
 
     def operation() -> dict:
         try:
-            write_jobs.mark_step(job_id, status="writing_file", step="run_theme_scan")
+            write_jobs.mark_step(job_id, status="scanning_graph", step="run_theme_scan")
             result = _run_theme_scan(
                 config,
                 repo,
@@ -586,42 +586,13 @@ def _run_theme_scan(
     ]
     clusters = [_cluster_to_legacy_dict(cluster, node_by_id) for cluster in graph_clusters]
 
-    # Layer 1: inject wiki-links between related captures.
-    # Layer 2: create MOC pages for clusters with ≥3 captures.
+    # Theme scan now treats Theme View as a Web/DB object. Legacy helpers that
+    # write wiki-links or themes/*.md stay available for explicit exports, but
+    # the default scan must not create standing Markdown beyond Capture/Raw.
     links_injected = 0
     mocs_created = 0
     capture_theme_tags = 0
     theme_artifacts = []
-    for cluster in clusters:
-        try:
-            links_injected += _inject_wiki_links(vault_path, cluster)
-        except Exception as e:
-            logger.warning(f"Wiki-link injection failed: {e}")
-        try:
-            moc_path = _create_moc(vault_path, agent, cluster)
-            if moc_path:
-                cluster["_theme_page_path"] = moc_path
-                mocs_created += 1
-                moc = read_moc(vault_path, moc_path)
-                if moc:
-                    frontmatter, _ = moc
-                    theme_name = frontmatter.get("theme_name") or Path(moc_path).stem
-                    capture_theme_tags += _tag_captures_with_theme(
-                        vault_path,
-                        [cluster["new_capture"]] + cluster["related_captures"],
-                        theme_name,
-                    )
-                theme_artifacts.append(
-                    artifact_ref(
-                        type="theme_page",
-                        id=moc_path,
-                        title=Path(moc_path).stem,
-                        path=moc_path,
-                        status="created",
-                    )
-                )
-        except Exception as e:
-            logger.warning(f"MOC creation failed: {e}")
 
     results = []
     question_actions = []
@@ -634,11 +605,7 @@ def _run_theme_scan(
             )
             question = create_pending_question(
                 repo, "theme", q,
-                context_ref=(
-                    f"theme:{cluster['_theme_page_path']}"
-                    if cluster.get("_theme_page_path")
-                    else f"theme-{cluster['new_capture']['id'][:8]}"
-                ),
+                context_ref="theme_view:" + ",".join(related_capture_ids),
                 related_capture_ids=related_capture_ids,
             )
             results.append(q[:80])
@@ -655,7 +622,6 @@ def _run_theme_scan(
         except Exception as e:
             logger.warning(f"Theme question failed: {e}")
 
-    # Layer 3: match unclustered captures to existing themes.
     clustered_ids = {
         capture_id
         for cluster in clusters
@@ -675,7 +641,7 @@ def _run_theme_scan(
         for node in eligible_scan_nodes
     ]
     unclustered = [c for c in new_caps if c["id"] not in clustered_ids]
-    mocs_updated = _evolve_themes(vault_path, agent, unclustered)
+    mocs_updated = 0
 
     mark_scanned_ids = {node.capture_id for node in scan_nodes}
     now_iso = datetime.now(timezone.utc).isoformat()

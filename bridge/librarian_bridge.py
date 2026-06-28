@@ -1,4 +1,4 @@
-"""Librarian bridge — audit and safely repair the Obsidian vault."""
+"""Librarian bridge — audit and safely repair Knowledge Files."""
 from __future__ import annotations
 
 import sys
@@ -148,7 +148,7 @@ def _librarian_markdown_report_artifact(
         "",
         f"- 模式：{'已执行修复' if summary.get('applied') else '仅审计'}",
         f"- Capture 数量：{db.get('capture_count', 0)}",
-        f"- DB/vault 待处理项：{db.get('planned_action_count', 0)}",
+        f"- DB/Knowledge File 待处理项：{db.get('planned_action_count', 0)}",
         f"- JSON 明细：{json_report_path or '无'}",
         "",
         "## Outline",
@@ -261,10 +261,10 @@ def _chat_preview(summary: dict[str, Any], report_path: str, *, apply: bool) -> 
     embedding = summary["embedding_index"]
     lines = ["Librarian 已执行安全修复。" if apply else "Librarian 审计完成。"]
     if not summary["needs_confirmation"] and not summary["has_property_gaps"] and not apply:
-        lines.append("知识库当前干净：没有待处理的 DB/vault 断链、重复草稿或长文目录缺口。")
+        lines.append("知识库当前干净：没有待处理的 DB/Knowledge File 断链、重复草稿或长文目录缺口。")
     else:
         lines.append(
-            "DB/vault: "
+            "DB/Knowledge File: "
             f"{db['planned_action_count']} 个待处理项, "
             f"missing={db['missing_capture_paths']}, "
             f"duplicate_path={db['duplicate_capture_paths']}, "

@@ -1,4 +1,4 @@
-"""Library Agent maintenance for committed Obsidian capture notes."""
+"""Library Agent maintenance for committed Knowledge Files."""
 from __future__ import annotations
 
 import re
@@ -499,8 +499,18 @@ class LibraryAgent:
         outline = metadata_outline or legacy_outline
         has_outline = bool(outline)
         has_directory = _has_directory(body)
+        missing_outline_titles = _missing_outline_heading_titles(body, outline)
+        has_pseudo_heading_duplicates = _has_adjacent_outline_pseudo_heading_duplicates(body, outline)
+        has_outline_body_artifacts = _has_outline_body_artifacts(body, outline)
         has_sections = _has_real_markdown_sections(body)
-        if metadata_outline and not legacy_outline and has_directory and has_sections:
+        if (
+            metadata_outline
+            and not legacy_outline
+            and has_directory
+            and not missing_outline_titles
+            and not has_pseudo_heading_duplicates
+            and not has_outline_body_artifacts
+        ):
             report["skipped_existing"] += 1
             return
 
@@ -513,6 +523,7 @@ class LibraryAgent:
                     "missing_metadata_outline": not has_outline,
                     "legacy_frontmatter_outline": bool(legacy_outline),
                     "missing_directory": not has_directory,
+                    "has_outline_body_artifacts": has_outline_body_artifacts,
                     "body_chars": len(body),
                 }
             )
@@ -563,8 +574,13 @@ class LibraryAgent:
             return
         frontmatter.pop("outline", None)
         updated_body = body if has_directory or is_short else _insert_directory(body, outline)
-        if not is_short and not _has_real_markdown_sections(updated_body):
+        if not is_short and (
+            not _has_real_markdown_sections(updated_body)
+            or _missing_outline_heading_titles(updated_body, outline)
+        ):
             updated_body = _insert_outline_headings(updated_body, outline)
+        updated_body = _remove_adjacent_outline_pseudo_heading_duplicates(updated_body, outline)
+        updated_body = _cleanup_outline_body_artifacts(updated_body, outline)
         _write_markdown_parts(note_path, frontmatter, updated_body)
         report["updated"] += 1
         report["items"].append(
@@ -769,14 +785,19 @@ def _is_content_paragraph(block: str) -> bool:
 
 
 def _inline_outline_match(text: str, title: str) -> re.Match[str] | None:
-    escaped = re.escape(title)
-    patterns = [
-        rf"[一二三四五六七八九十]+、\s*{escaped}",
-        rf"[（(]?[一二三四五六七八九十0-9]+[)）.、]\s*{escaped}",
-        rf"\*\*\s*{escaped}\s*\*\*",
-    ]
-    if re.match(r"^(第[一二三四五六七八九十零0-9]+[层部分章节幕]|策略|坑|阶段)", title):
-        patterns.append(escaped)
+    patterns: list[str] = []
+    for variant in _outline_title_variants(title):
+        if not variant:
+            continue
+        flexible = _flexible_text_pattern(variant)
+        patterns.extend(
+            [
+                rf"[一二三四五六七八九十]+、\s*{flexible}",
+                rf"[（(]?[一二三四五六七八九十0-9]+[)）.、]\s*{flexible}",
+                rf"\*\*\s*{flexible}\s*\*\*",
+                flexible,
+            ]
+        )
     for pattern in patterns:
         match = re.search(pattern, text)
         if match:
@@ -841,6 +862,161 @@ def _existing_markdown_section_titles(body: str) -> set[str]:
     return titles
 
 
+def _has_adjacent_outline_pseudo_heading_duplicates(body: str, outline: list[dict]) -> bool:
+    return _remove_adjacent_outline_pseudo_heading_duplicates(body, outline) != body
+
+
+def _has_outline_body_artifacts(body: str, outline: list[dict]) -> bool:
+    return _cleanup_outline_body_artifacts(body, outline) != body
+
+
+def _cleanup_outline_body_artifacts(body: str, outline: list[dict]) -> str:
+    if not body:
+        return body
+    lines = body.splitlines()
+    directory_indexes = _directory_line_indexes(lines)
+    updated: list[str] = []
+    changed = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if index not in directory_indexes and re.fullmatch(r"#{1,6}", stripped):
+            changed = True
+            continue
+        if (
+            index not in directory_indexes
+            and _outline_pseudo_line_has_adjacent_heading(lines, index, outline)
+        ):
+            changed = True
+            continue
+        if index not in directory_indexes and _is_bare_image_placeholder(stripped):
+            updated.append(f"图片占位：{stripped}")
+            changed = True
+            continue
+        updated.append(line)
+    result = "\n".join(updated).rstrip()
+    if body.endswith("\n"):
+        result += "\n"
+    else:
+        result = result.rstrip()
+    return result if changed else body
+
+
+def _is_bare_image_placeholder(stripped: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"(?i)(?:image|img|screenshot|screen-shot|picture|photo)[-_ ]*\d*\.(?:png|jpe?g|gif|webp|heic)",
+            stripped,
+        )
+    )
+
+
+def _outline_pseudo_line_has_adjacent_heading(
+    lines: list[str],
+    index: int,
+    outline: list[dict],
+) -> bool:
+    stripped = lines[index].strip()
+    if not stripped or not _is_heading_like_line(stripped):
+        return False
+    if not _heading_matches_outline(stripped, outline):
+        return False
+    for direction in (-1, 1):
+        adjacent = index + direction
+        while 0 <= adjacent < len(lines) and not lines[adjacent].strip():
+            adjacent += direction
+        if not 0 <= adjacent < len(lines):
+            continue
+        heading_match = re.match(r"^#{2,3}\s+(.+?)\s*$", lines[adjacent].strip())
+        if heading_match and _outline_title_match_keys(stripped) & _outline_title_match_keys(heading_match.group(1)):
+            return True
+    return False
+
+
+def _remove_adjacent_outline_pseudo_heading_duplicates(body: str, outline: list[dict]) -> str:
+    if not body or not outline:
+        return body
+    lines = body.splitlines()
+    updated: list[str] = []
+    index = 0
+    changed = False
+    while index < len(lines):
+        line = lines[index]
+        updated.append(line)
+        heading_match = re.match(r"^(#{2,3})\s+(.+?)\s*$", line)
+        if not heading_match:
+            index += 1
+            continue
+        heading_title = _single_line(heading_match.group(2))
+        if heading_title == "目录纲要" or not _heading_matches_outline(heading_title, outline):
+            index += 1
+            continue
+        duplicate_index = index + 1
+        while duplicate_index < len(lines) and not lines[duplicate_index].strip():
+            duplicate_index += 1
+        if duplicate_index >= len(lines) or not _is_duplicate_pseudo_heading_line(
+            lines[duplicate_index].strip(),
+            heading_title,
+        ):
+            index += 1
+            continue
+        if updated[-1].strip():
+            updated.append("")
+        index = duplicate_index + 1
+        while index < len(lines) and not lines[index].strip():
+            index += 1
+        changed = True
+    if not changed:
+        return body
+    result = "\n".join(updated).rstrip()
+    if body.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def _heading_matches_outline(heading_title: str, outline: list[dict]) -> bool:
+    return any(
+        _outline_title_has_existing_heading(
+            str(item.get("title") or ""),
+            {heading_title},
+        )
+        for item in outline
+        if str(item.get("title") or "").strip()
+    )
+
+
+def _is_duplicate_pseudo_heading_line(line: str, heading_title: str) -> bool:
+    stripped = line.strip()
+    bold = re.fullmatch(r"\*\*\s*(.+?)\s*\*\*", stripped)
+    if bold:
+        stripped = bold.group(1).strip()
+    elif not _is_heading_like_line(stripped):
+        return False
+    if re.match(r"^#{1,6}\s+", stripped):
+        return False
+    return bool(_outline_title_match_keys(heading_title) & _outline_title_match_keys(stripped))
+
+
+def _missing_outline_heading_titles(body: str, outline: list[dict]) -> list[str]:
+    existing_titles = _existing_markdown_section_titles(body)
+    missing: list[str] = []
+    for item in outline:
+        title = _single_line(str(item.get("title") or ""))
+        if not title:
+            continue
+        if not _outline_title_has_existing_heading(title, existing_titles):
+            missing.append(title)
+    return missing
+
+
+def _outline_title_has_existing_heading(title: str, existing_titles: set[str]) -> bool:
+    title_keys = _outline_title_match_keys(title)
+    for existing in existing_titles:
+        existing_keys = _outline_title_match_keys(existing)
+        if title_keys & existing_keys:
+            return True
+    return False
+
+
 def _matching_outline_item(
     line: str,
     index: int,
@@ -855,7 +1031,11 @@ def _matching_outline_item(
         return None
     for item in outline:
         title = _single_line(str(item.get("title") or ""))
-        if title and title not in existing_titles and title in stripped:
+        if (
+            title
+            and not _outline_title_has_existing_heading(title, existing_titles)
+            and _outline_title_matches_text(title, stripped)
+        ):
             return item
     return None
 
@@ -871,6 +1051,7 @@ def _is_heading_like_line(stripped: str) -> bool:
         re.match(
             r"^("
             r"[一二三四五六七八九十]+、"
+            r"|[一二三四五六七八九十0-9]+\s+"
             r"|[（(]?[一二三四五六七八九十0-9]+[)）.、]"
             r"|第[一二三四五六七八九十零0-9]+[层部分章节幕]"
             r"|策略[一二三四五六七八九十0-9]+[：:]"
@@ -888,6 +1069,62 @@ def _heading_level(item: dict) -> str:
     except (TypeError, ValueError):
         level = 1
     return "##" if level <= 1 else "###"
+
+
+def _outline_title_matches_text(title: str, text: str) -> bool:
+    normalized_text = _normalize_outline_text(text)
+    return any(key and key in normalized_text for key in _outline_title_match_keys(title))
+
+
+def _outline_title_match_keys(title: str) -> set[str]:
+    variants = _outline_title_variants(title)
+    return {_normalize_outline_text(variant) for variant in variants if _normalize_outline_text(variant)}
+
+
+def _outline_title_variants(title: str) -> list[str]:
+    title = _single_line(title)
+    variants = [title]
+    without_prefix = _strip_outline_title_prefix(title)
+    if without_prefix and without_prefix != title:
+        variants.append(without_prefix)
+    without_parenthetical = re.sub(r"\s*[（(][^）)]{1,80}[）)]\s*$", "", title).strip()
+    if without_parenthetical and without_parenthetical != title:
+        variants.append(without_parenthetical)
+    for value in list(variants):
+        head = re.split(r"[：:—-]{1,2}", value, maxsplit=1)[0].strip()
+        if head and head != value:
+            variants.append(head)
+        tail = re.split(r"[：:—-]{1,2}", value, maxsplit=1)
+        if len(tail) > 1 and tail[1].strip():
+            variants.append(tail[1].strip())
+    for value in list(variants):
+        for part in re.split(r"[，,、；;]", value):
+            part = part.strip()
+            if part and part != value:
+                variants.append(part)
+        variants.append(value.replace("的", ""))
+        variants.append(value.replace("学会用", "学会使用"))
+        variants.append(value.replace("学会使用", "学会用"))
+    if title.startswith(("附：", "附:")):
+        variants.append("附上")
+    return list(dict.fromkeys(item for item in variants if item))
+
+
+def _strip_outline_title_prefix(title: str) -> str:
+    return re.sub(
+        r"^\s*(?:经验|策略|阶段|坑|附录?)[一二三四五六七八九十百千\d]*[：:、.．)）\-\s]*",
+        "",
+        title,
+    ).strip()
+
+
+def _normalize_outline_text(text: str) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", text, flags=re.UNICODE).lower()
+
+
+def _flexible_text_pattern(text: str) -> str:
+    chars = [re.escape(char) for char in text if not char.isspace()]
+    return r"\s*".join(chars)
 
 
 def _single_line(value: str) -> str:

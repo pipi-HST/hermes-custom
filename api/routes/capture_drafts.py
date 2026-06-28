@@ -25,6 +25,7 @@ class CreateEditableCaptureDraftRequest(BaseModel):
     source_type: str = "manual"
     title: str = ""
     folder_path: str = ""
+    organize: bool = True
     existing_folders: list[str] = []
 
 
@@ -36,6 +37,7 @@ class UpdateEditableCaptureDraftRequest(BaseModel):
     folder_path: str = ""
     folder_suggestion: dict | None = None
     card_suggestion: dict | None = None
+    organize: bool = True
     existing_folders: list[str] = []
 
 
@@ -85,6 +87,7 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
             source_type=body.source_type,
             title=body.title,
             folder_path=body.folder_path,
+            organize=body.organize,
             existing_folders=body.existing_folders,
         )
         return result
@@ -105,6 +108,7 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
             folder_path=body.folder_path,
             folder_suggestion=body.folder_suggestion,
             card_suggestion=body.card_suggestion,
+            organize=body.organize,
             existing_folders=body.existing_folders,
         )
         return result

@@ -91,6 +91,71 @@ def test_capture_content_records_run_ledger_and_strips_preamble(monkeypatch, tmp
     assert events == ["started", "completed"]
 
 
+def test_capture_content_records_stage_timings(monkeypatch, tmp_path):
+    agent = _install_agent(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        agent,
+        "_call_llm",
+        lambda prompt: "AI产品评测的核心是把判断力变成可复用的评估流程。",
+    )
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: {
+            "title": "AI产品评测",
+            "summary": "AI产品经理要把判断力注入评测体系。",
+            "tags": ["ai-product"],
+        },
+    )
+
+    result = capture_bridge.capture_content(SOURCE_TEXT, instruction="整理入库")
+
+    assert result["status"] == "success"
+    repo = AgentRunRepo(agent.conn)
+    latest = repo.latest(limit=1)[0]
+    evidence = json.loads(latest["evidence_json"])
+    timings = evidence["stage_timings_ms"]
+    assert {
+        "extract_clean",
+        "intent_planning",
+        "draft_create",
+        "revision_llm",
+        "metadata_summary",
+        "repo_update",
+        "total",
+    } <= set(timings)
+    assert all(isinstance(timings[key], int) and timings[key] >= 0 for key in timings)
+
+
+def test_editable_draft_parse_diagnostics_reach_run_ledger(monkeypatch, tmp_path):
+    agent = _install_agent(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        agent.summarizer,
+        "_call_llm",
+        lambda _prompt, *, max_tokens=4000: '{"title": "半截"',
+    )
+
+    result = capture_bridge.create_editable_capture_draft(
+        "这是一段用于验证诊断落库的长文。" * 20,
+        existing_folders=["Inbox", "AI 产品"],
+    )
+
+    assert result["status"] == "success"
+    draft_id = result["durable_artifacts"][0]["id"]
+    draft = agent.draft_repo.get_by_id(draft_id)
+    diagnostics = draft["capture_intent"]["diagnostics"]
+    assert diagnostics["parse_error_kind"] == "json_parse_failed"
+    assert diagnostics["response_len"] == len('{"title": "半截"')
+    assert diagnostics["response_tail"].endswith('"半截"')
+
+    latest = AgentRunRepo(agent.conn).latest(limit=1)[0]
+    evidence = json.loads(latest["evidence_json"])
+    assert evidence["draft_id"] == draft_id
+    assert evidence["llm_parse_failed"] is True
+    assert evidence["llm_parse_error_kind"] == "json_parse_failed"
+    assert evidence["llm_response_len"] == len('{"title": "半截"')
+
+
 def test_draft_preview_uses_body_after_emphasis_heading():
     from bridge import capture_bridge
 

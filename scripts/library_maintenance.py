@@ -1,4 +1,4 @@
-"""Run Library Agent maintenance tasks against the configured Obsidian vault."""
+"""Run Library Agent maintenance tasks against configured Knowledge Files."""
 from __future__ import annotations
 
 import argparse
@@ -49,7 +49,7 @@ def run_library_maintenance(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Maintain committed capture notes in the Obsidian vault."
+        description="Maintain committed capture notes in Knowledge File storage."
     )
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--vault", default=None)
