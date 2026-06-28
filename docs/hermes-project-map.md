@@ -8,9 +8,9 @@ Hermes 现在拆成了一个 runtime 项目和两个能力项目。
 |------|----------|------|
 | 微信/飞书网关 | `/Users/pipi/Downloads/hermes-agent-main` | 负责消息入口、工具注册、消息投递 |
 | Capture | `/Users/pipi/hermes-custom` | 抓取和整理知识材料 |
-| Library | `/Users/pipi/hermes-custom` | 修复 metadata、目录、embedding、Obsidian 一致性 |
-| RAG | `/Users/pipi/hermes-custom` | 基于 captures、themes、Garden cards 和来源回答问题 |
-| Theme / Garden | `/Users/pipi/hermes-custom` | 生成 MOC、主题页、Garden card、Canvas |
+| Library | `/Users/pipi/hermes-custom` | 维护 Knowledge File metadata、目录、embedding 和 SQLite 一致性 |
+| RAG | `/Users/pipi/hermes-custom` | 基于 Capture Notes、Theme Views、Knowledge Cards 和来源回答问题 |
+| Theme / Garden | `/Users/pipi/hermes-custom` | 维护 Theme View、Knowledge Card、Graph 和可选 Canvas |
 | Review | `/Users/pipi/hermes-custom` | 每日知识点回顾和追问回答 |
 | Life Assistant | `/Users/pipi/hermes-life` | 管 `life_*` 表、生活记录、提醒、Life memory |
 
@@ -18,7 +18,7 @@ Hermes 现在拆成了一个 runtime 项目和两个能力项目。
 
 Knowledge 代码不能读写 Life 的生活记录、提醒日志、Life memory。
 
-Life 代码不能读写 Obsidian captures、主题页、Garden cards、Review items、Capture drafts。
+Life 代码不能读写 Knowledge Files、Theme Views、Knowledge Cards、Review items、Capture drafts。
 
 Hermes runtime 可以把用户消息路由给任一能力项目，但不拥有业务逻辑。
 
@@ -58,4 +58,3 @@ Runtime Life 集成：
 cd /Users/pipi/Downloads/hermes-agent-main
 .venv/bin/python -m pytest tests/tools/test_life_tools_imports.py tests/agent/test_hermes_custom_direct_reply.py -q
 ```
-

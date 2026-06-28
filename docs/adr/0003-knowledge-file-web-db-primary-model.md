@@ -1,0 +1,3 @@
+# Use Knowledge File plus Web/DB as the primary Knowledge model
+
+Obsidian is no longer the primary carrier for Hermes Knowledge. Hermes keeps persistent Markdown only for Knowledge Files, currently Capture Notes and Raw Evidence, while Knowledge Cards, Theme Views, graph relationships, review state, drafts, and source maps are structured Web/DB objects. This gives Hermes direct control over confirmation, citations, empty states, graph behavior, and future UI, while still preserving Markdown where durable source material benefits from file readability. Obsidian may remain an optional external editor for Markdown files, but it is not the storage truth.

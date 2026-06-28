@@ -27,4 +27,4 @@ database:
   path: "./data/captures.db"
 
 vault:
-  path: "~/Obsidian/hermes-vault"
+  path: "~/Hermes/knowledge"

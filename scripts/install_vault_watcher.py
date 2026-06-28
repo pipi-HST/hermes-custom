@@ -1,4 +1,4 @@
-"""Install the Hermes vault watcher as a macOS LaunchAgent."""
+"""Install the Hermes Knowledge File watcher as a macOS LaunchAgent."""
 from __future__ import annotations
 
 import argparse
@@ -64,7 +64,7 @@ def build_plist(
 def install(
     *,
     project_root: str | Path,
-    vault_path: str | Path = "~/Obsidian/hermes-vault",
+    vault_path: str | Path = "~/Hermes/knowledge",
     interval: int = DEFAULT_INTERVAL_SECONDS,
     load: bool = False,
 ) -> Path:
@@ -111,10 +111,10 @@ def _uid() -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Install Hermes vault watcher LaunchAgent."
+        description="Install Hermes Knowledge File watcher LaunchAgent."
     )
     parser.add_argument("--project-root", default=str(Path(__file__).resolve().parents[1]))
-    parser.add_argument("--vault", default="~/Obsidian/hermes-vault")
+    parser.add_argument("--vault", default="~/Hermes/knowledge")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS)
     parser.add_argument("--load", action="store_true")
     args = parser.parse_args()

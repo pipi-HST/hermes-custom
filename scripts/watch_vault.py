@@ -1,4 +1,4 @@
-"""Watch the Obsidian vault and keep Hermes DB paths aligned."""
+"""Watch Knowledge Files and keep Hermes DB paths aligned."""
 from __future__ import annotations
 
 import argparse
@@ -48,7 +48,7 @@ def watch(
     interval: float = DEFAULT_INTERVAL_SECONDS,
     once: bool = False,
 ) -> None:
-    """Poll vault markdown files and repair after detected changes."""
+    """Poll Knowledge File Markdown files and repair after detected changes."""
     db = Path(db_path).expanduser()
     vault = Path(vault_path).expanduser()
     previous = snapshot_vault(vault)
@@ -67,10 +67,10 @@ def watch(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Watch Obsidian captures/raw files and sync Hermes DB."
+        description="Watch Knowledge File captures/raw files and sync Hermes DB."
     )
     parser.add_argument("--db", default="data/captures.db")
-    parser.add_argument("--vault", default="~/Obsidian/hermes-vault")
+    parser.add_argument("--vault", default="~/Hermes/knowledge")
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL_SECONDS)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()

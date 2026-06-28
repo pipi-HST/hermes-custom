@@ -2,13 +2,13 @@
 
 这个仓库现在只管 Hermes 的知识库能力层。
 
-它负责 Capture、Library、RAG、Theme、Garden / Knowledge Cards、Review、Canvas bridge、Obsidian 同步和 Knowledge API。Life Assistant 已经拆到独立仓库，不再放在这里。
+它负责 Capture、Library、RAG、Theme View、Garden / Knowledge Cards、Review、Canvas bridge、Knowledge File 同步和 Knowledge API。Life Assistant 已经拆到独立仓库，不再放在这里。
 
 ## 三个仓库分别管什么
 
 | 项目 | 本地路径 | GitHub | 职责 |
 |------|----------|--------|------|
-| Hermes Knowledge | `/Users/pipi/hermes-custom` | `pipi-HST/hermes-custom` | 知识库 Agent、Obsidian 文件、Knowledge API |
+| Hermes Knowledge | `/Users/pipi/hermes-custom` | `pipi-HST/hermes-custom` | 知识库 Agent、Knowledge File、Knowledge API |
 | Hermes Life | `/Users/pipi/hermes-life` | `pipi-HST/hermes-life` | 生活记录、提醒、Life memory、Life Dashboard 源码 |
 | Hermes Runtime | `/Users/pipi/Downloads/hermes-agent-main` | `pipi-HST/hermes-agent-main` | 微信/飞书网关、工具注册、消息分发、用户侧 Dashboard |
 
@@ -21,7 +21,7 @@ cd /Users/pipi/hermes-custom
 cp config.example.yaml config.yaml
 ```
 
-`config.yaml` 不进 Git。这里放 Knowledge 项目的 LLM key、Qwen / DashScope key、数据库路径、Obsidian vault 路径。这个文件是本地敏感配置，不要复制到文档、日志、Issue 或提交信息里。
+`config.yaml` 不进 Git。这里放 Knowledge 项目的 LLM key、Qwen / DashScope key、数据库路径、Knowledge File storage 路径。这个文件是本地敏感配置，不要复制到文档、日志、Issue 或提交信息里。
 
 ## 启动 Knowledge API
 
