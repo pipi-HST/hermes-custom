@@ -25,6 +25,11 @@ This has three problems:
 2. Query planning receives too much article text for a task that only needs search terms.
 3. Selected-text surrounding context, section context, and body excerpt can overlap, causing repeated prompt content and less stable answers.
 
+Recent UI checks also exposed two presentation problems in the side-panel answer flow:
+
+4. The process UI can show web-search language in modes that should not use the web. In `KnowledgeLibraryPage.tsx`, stream events such as `queries_ready`, `web_search_start`, and `web_query_start` write web-search copy directly, and the answer footer always shows `重新联网检索`. On the backend, provider status is also shaped around web fields such as `search_backend`, `extract_backend`, `extracted_pages`, and `summary_only_pages`, even when the selected mode is current-article or knowledge-base only.
+5. Citation links can disappear on later side-panel answers when the answer text contains `[K1]` or `[W1]` but the matching source is not present in `message.sources`. The current streaming source merge in `KnowledgeLibraryPage.tsx` caps merged sources at five before rendering, while `KnowledgeAnswerView` and `Markdown` only make a citation clickable when the final source map contains the exact rendered ref.
+
 ## Requirements
 
 The side-panel AI should preserve the user's article context without making each question into a heavyweight research task.
@@ -39,6 +44,8 @@ Functional requirements:
 - If the current section cannot be resolved, use selected-text surrounding context as fallback.
 - `question_type` is a free-form label from the model, used only for trace/debug UI.
 - Code must not branch on keyword-like `question_type` values.
+- Process UI must be mode-aware. Current-article and knowledge-base-only modes must not show web-search copy, web backend fields, or a `重新联网检索` action.
+- Citation rendering must be stable across turns. Each final assistant answer must receive sources covering every citation ref that remains in its answer text.
 
 Non-goals:
 
@@ -147,6 +154,43 @@ Knowledge base plus web:
 - For simple article-grounded questions, planner may return `needs_web=false`.
 - For medium or complex questions, planner may request web with a larger budget.
 
+## Mode-Aware Process UI
+
+The side-panel process UI should describe the actual work performed for the selected mode.
+
+Current article:
+
+- Pending summary: `正在基于当前文章回答`.
+- Details may show article context source, context clipping, and planner reason.
+- Do not show web queries, web backend, extraction counts, candidate webpages, or `重新联网检索`.
+
+Knowledge base:
+
+- Pending summary: `正在检索知识库` while local retrieval is running, then `正在基于知识库回答`.
+- Details may show local retrieval count and knowledge sources.
+- Do not show web backend, extraction counts, candidate webpages, or `重新联网检索`.
+- If a retry action is shown, label it as `重新检索知识库`; otherwise omit retry for this mode.
+
+Web:
+
+- Pending summary may use web-search language.
+- Details may show web queries, per-query status, candidate webpages, provider status, warnings, and web retry.
+- Footer action may be `重新联网检索`.
+
+Knowledge base plus web:
+
+- If the planner actually uses web, show both local and web stages.
+- If the planner skips web for a simple article-grounded question, present it like a knowledge/article answer and show `跳过联网` as a trace fact, not as a failure.
+- Footer retry should reflect the work that happened: web retry only when web was attempted, local retry only when only local was used.
+
+Implementation contract:
+
+- Backend should emit explicit stage flags such as `used_article_context`, `used_local`, `web_search_attempted`, and `used_web`.
+- Frontend should render web-specific rows only when `web_search_attempted=true` or web sources/query statuses are present.
+- `providerStatusLabels` should not display web-only fields for current-article or knowledge-base-only responses.
+- `applySelectionChatStreamEvent` should ignore or downlabel stale web events when the current mode forbids web.
+- The answer footer must choose actions from mode and trace, not render `重新联网检索` unconditionally.
+
 ## Prompt Shape
 
 The query planner prompt should receive:
@@ -186,8 +230,34 @@ Trace should expose:
 - `reason`
 - Article context source: `full_article`, `current_section`, or `surrounding_fallback`
 - Context clipped warning, if any
+- `used_article_context`
+- `used_local`
+- `web_search_attempted`
+- `used_web`
+- Mode-specific stage timings, with `total_elapsed_ms` reserved for end-to-end time and `stage_timings.search_ms` reserved for actual search time.
 
 The UI does not need a new panel. Existing retrieval details should show the planner reason, search budget, and article context source when those fields are present.
+
+The detail panel should be grouped by actual stage:
+
+- Article context.
+- Knowledge-base retrieval.
+- Web search.
+- Answer generation.
+
+Groups with no activity should be hidden. This avoids showing empty web fields such as `搜索后端: dashscope`, `全文页: 0`, or `摘要页: 0` when the user is in current-article or knowledge-base mode.
+
+## Citation Rendering Consistency
+
+The citation contract is:
+
+- If final answer text contains `[K1]`, `[K2]`, `[W1]`, or `[W2]`, the final response must include matching sources with those refs.
+- The backend may remove invalid refs, but it must not leave an answer with refs that are missing from `source_map`, `meta.knowledge_sources`, or `meta.web_sources`.
+- The frontend should build `message.sources` from the final response source payload, not from a truncated streaming trace.
+- Streaming trace data may be capped only for display. The data used to resolve answer citations must not be capped to five sources before citation rendering.
+- Source ref normalization must be per-answer and deterministic. A second side-panel answer should not inherit, drop, or renumber refs based on the first answer.
+
+The UI source list can still display a small number of sources by default, but hidden extra sources must remain available to the Markdown citation map if the answer cites them.
 
 ## Error Handling
 
@@ -213,6 +283,17 @@ If all web queries fail:
 - Return answer from available article/local context when allowed by mode.
 - Surface readable warning rather than raw provider error.
 
+If a forbidden web event appears in a non-web mode:
+
+- Keep the answer generation alive.
+- Do not switch the visible process UI into web-search mode.
+- Add a debug trace warning so the stream contract problem can be diagnosed.
+
+If a final answer contains a citation ref without a matching source:
+
+- Prefer backend repair before returning the response.
+- If the frontend still receives a missing source, render the text safely but record a visible development warning in retrieval details rather than pretending the citation is clickable.
+
 ## Testing
 
 Backend tests should cover:
@@ -224,11 +305,19 @@ Backend tests should cover:
 - Planner free-form `question_type` is preserved but does not control behavior.
 - Mode constraints override planner requests.
 - Search budget is clamped to maximum 6.
+- Current-article mode emits no web query events and no web provider status rows.
+- Knowledge-base mode emits local retrieval trace without web backend rows.
+- Final answer refs are all represented in `source_map`, `meta.knowledge_sources`, or `meta.web_sources`.
+- Answers with more than five candidate sources still preserve cited refs for rendering.
 
 Frontend/build verification:
 
 - Existing TypeScript build should pass.
 - Existing side-panel retrieval details continue to render.
+- Current-article and knowledge-base modes do not show web-search copy or `重新联网检索`.
+- Web and knowledge-plus-web modes still show per-query statuses and readable timeout warnings.
+- Two consecutive side-panel answers both render clickable citation links when their final responses contain matching sources.
+- Streaming source display caps do not remove sources needed by Markdown citations.
 
 Manual smoke:
 
@@ -237,3 +326,7 @@ Manual smoke:
 - Confirm the answer reflects current section context.
 - Switch to knowledge base plus web and ask a complex question.
 - Confirm trace shows query budget and query statuses without raw timeout strings.
+- Switch to current-article mode and ask a simple article question.
+- Confirm the process UI does not mention web search and the footer does not show `重新联网检索`.
+- Ask two side-panel questions in a row where both answers include citations.
+- Confirm both answers keep clickable citation links.
