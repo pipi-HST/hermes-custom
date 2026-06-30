@@ -163,6 +163,7 @@ def _web_provider_status(
     retrieval_health: dict[str, Any] | None = None,
     fallback_attempts: list[dict[str, Any]] | None = None,
     stage_timings: dict[str, Any] | None = None,
+    query_statuses: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     search_backend = ""
     extract_backend = ""
@@ -180,7 +181,9 @@ def _web_provider_status(
         "search_backend": search_backend,
         "extract_backend": extract_backend,
         "search_elapsed_ms": elapsed_ms,
+        "total_elapsed_ms": elapsed_ms,
         "stage_timings": _normalized_stage_timings(stage_timings),
+        "query_statuses": list(query_statuses or []),
         "warnings": warnings[warning_start:],
         "extracted_pages": sum(1 for source in extracted if source.get("extract_status") == "full"),
         "summary_only_pages": sum(1 for source in extracted if source.get("extract_status") == "summary"),

@@ -33,6 +33,8 @@ STATE_CHANGING_INTENTS = {
     "commit_reading_artifact",
 }
 
+_SOURCE_REF_MISSING = object()
+
 
 def success_envelope(
     *,
@@ -112,9 +114,17 @@ def source_ref(
     path: str = "",
     section: str = "",
     status: str = "",
+    ref: Any = _SOURCE_REF_MISSING,
+    file_path: Any = _SOURCE_REF_MISSING,
+    excerpt: Any = _SOURCE_REF_MISSING,
+    url: Any = _SOURCE_REF_MISSING,
+    domain: Any = _SOURCE_REF_MISSING,
+    source_kind: Any = _SOURCE_REF_MISSING,
+    reading_session_id: Any = _SOURCE_REF_MISSING,
+    reading_draft_id: Any = _SOURCE_REF_MISSING,
 ) -> dict[str, str]:
     """Build a Source Reference for a Source Map."""
-    return {
+    item = {
         "role": role,
         "type": type,
         "id": id,
@@ -123,6 +133,18 @@ def source_ref(
         "section": section,
         "status": status,
     }
+    optional = {
+        "ref": ref,
+        "file_path": file_path,
+        "excerpt": excerpt,
+        "url": url,
+        "domain": domain,
+        "source_kind": source_kind,
+        "reading_session_id": reading_session_id,
+        "reading_draft_id": reading_draft_id,
+    }
+    item.update({key: value for key, value in optional.items() if value is not _SOURCE_REF_MISSING})
+    return item
 
 
 def next_action(

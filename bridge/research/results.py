@@ -26,6 +26,7 @@ def research_provider_status(
     *,
     sources: list[dict[str, Any]] | None = None,
     stage_timings: dict[str, Any] | None = None,
+    query_statuses: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return _web_provider_status(
         started,
@@ -35,6 +36,7 @@ def research_provider_status(
         retrieval_health=quality.get("retrieval_health") or {},
         fallback_attempts=fallback_attempts,
         stage_timings=stage_timings,
+        query_statuses=query_statuses,
     )
 
 
@@ -150,6 +152,7 @@ def missing_required_preferred_result(
     warning_start: int,
     fallback_attempts: list[dict[str, Any]],
     stage_timings: dict[str, Any] | None = None,
+    query_statuses: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     if not _missing_required_preferred_source(research_plan, sources):
         return None
@@ -164,6 +167,7 @@ def missing_required_preferred_result(
         fallback_attempts,
         sources=sources,
         stage_timings=stage_timings,
+        query_statuses=query_statuses,
     )
     return classified_web_result(
         [],

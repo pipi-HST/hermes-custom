@@ -4295,6 +4295,41 @@ def test_synthesis_prompt_uses_planner_answer_contract():
     assert "说明选区和主问题的关系" in prompt
 
 
+def test_synthesis_prompt_requires_short_selection_to_use_surrounding_context():
+    prompt = research_bridge._build_synthesis_prompt(
+        {
+            "query": "这个是什么意思",
+            "mode": "current_article_only",
+            "research_plan": {
+                "intent_label": "selection explanation",
+                "selection_role": "primary_subject",
+                "answer_contract": {
+                    "primary_answer_first": True,
+                    "avoid_unasked_side_topics": True,
+                },
+            },
+            "article_context": {
+                "title": "基本无害的vibecoding实践技巧（文科生友好版）",
+                "folder_path": "Inbox",
+                "body": "### 5. 从错误中获得提升：把常犯的错自动化\n\n- 工具分化：文字规则（CLAUDE.md、AGENTS.md、记忆、skills）适合引导思考方式，约束力相对弱；hook、cron、脚本适合强制执行确定性流程。",
+            },
+            "selection_context": {
+                "selected_text": "skills",
+                "surrounding_before": "工具分化：文字规则（CLAUDE.md、AGENTS.md、记忆、",
+                "surrounding_after": "）适合引导思考方式，约束力相对弱；hook、cron、脚本适合强制执行确定性流程。",
+                "heading_path": ["总结", "5. 从错误中获得提升：把常犯的错自动化"],
+            },
+            "local_answer": "",
+            "knowledge_sources": [],
+            "web_sources": [],
+        }
+    )
+
+    assert "短词、术语或英文片段" in prompt
+    assert "必须结合选区前文、后文、标题路径和当前文章解释" in prompt
+    assert "不要只给通用词典释义" in prompt
+
+
 def test_synthesis_prompt_keeps_search_process_out_of_answer_body():
     prompt = research_bridge._build_synthesis_prompt(
         {
@@ -4495,6 +4530,90 @@ def test_cited_web_sources_are_renumbered_after_uncited_sources_are_filtered():
     assert [source["title"] for source in result["meta"]["web_sources"]] == ["来源一", "来源二", "来源四", "来源五"]
     assert [source["ref"] for source in result["source_map"]] == ["W1", "W2", "W3", "W4"]
     assert [source["ref"] for source in result["meta"]["research_trace"]["web_sources"]] == ["W1", "W2", "W3", "W4"]
+
+
+def test_escaped_web_citations_are_normalized_after_filtering():
+    result = research_bridge.research_answer(
+        query="段永平是谁",
+        mode="web_only",
+        search_adapter=lambda *_args: {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "来源一",
+                        "url": "https://example.com/1",
+                        "description": "段永平 摘要一",
+                    },
+                    {
+                        "title": "来源二",
+                        "url": "https://example.com/2",
+                        "description": "段永平 摘要二",
+                    },
+                ]
+            },
+        },
+        extract_adapter=lambda urls: {
+            "results": [{"url": url, "content": f"{url} 正文"} for url in urls]
+        },
+        synthesize_adapter=lambda payload: "段永平相关信息来自第二条资料 \\[W2\\]",
+    )
+
+    assert result["chat_preview"] == "段永平相关信息来自第二条资料 [W1]"
+    assert [source["title"] for source in result["meta"]["web_sources"]] == ["来源二"]
+    assert [source["ref"] for source in result["source_map"]] == ["W1"]
+
+
+def test_research_provider_status_records_per_query_failures(monkeypatch):
+    monkeypatch.setattr(
+        research_bridge,
+        "_default_query_planner",
+        lambda payload: {
+            "intent_label": "definition",
+            "needs_web": True,
+            "mode": "web_only",
+            "subject": {"name": "Example", "aliases": [], "type_hint": "concept"},
+            "queries": ["slow query", "fast query"],
+            "answer_claims_needed": ["answer_user_question"],
+            "evidence_contract": {
+                "minimum_independent_sources": 1,
+                "allow_summary_only": True,
+            },
+        },
+    )
+
+    def fake_search(query, _limit):
+        if query == "slow query":
+            raise RuntimeError("backend timeout")
+        return {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "Fast source",
+                        "url": "https://example.com/fast",
+                        "description": "Example is a documented concept.",
+                    }
+                ]
+            },
+        }
+
+    result = research_bridge.research_answer(
+        query="Example 是什么",
+        mode="web_only",
+        search_adapter=fake_search,
+        extract_adapter=lambda urls: {"results": [{"url": urls[0], "content": "Example is documented."}]},
+        synthesize_adapter=lambda payload: "Example 是一个有公开证据支持的概念 [W1]",
+    )
+
+    provider_status = result["meta"]["provider_status"]
+    query_statuses = provider_status["query_statuses"]
+    assert provider_status["total_elapsed_ms"] >= provider_status["search_elapsed_ms"]
+    assert [status["query"] for status in query_statuses] == ["slow query", "fast query"]
+    assert [status["status"] for status in query_statuses] == ["failed", "success"]
+    assert query_statuses[0]["error"]
+    assert query_statuses[1]["result_count"] == 1
+    assert result["meta"]["research_trace"]["provider_status"]["query_statuses"] == query_statuses
 
 
 def test_invalid_model_citation_fallback_gives_source_backed_answer():

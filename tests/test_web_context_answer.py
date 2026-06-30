@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 
@@ -60,7 +61,13 @@ def test_web_context_answer_uses_summary_materials_without_extract(monkeypatch):
     assert result["meta"]["web_search_attempted"] is True
     assert result["meta"]["provider_status"]["summary_only_pages"] == 2
     assert result["meta"]["provider_status"]["extracted_pages"] == 0
-    assert result["meta"]["provider_status"]["stage_timings"].keys() == {"search_ms", "extract_ms", "synthesis_ms"}
+    assert result["meta"]["provider_status"]["stage_timings"].keys() == {
+        "planning_ms",
+        "local_search_ms",
+        "search_ms",
+        "extract_ms",
+        "synthesis_ms",
+    }
     assert "critic_ms" not in result["meta"]["provider_status"]["stage_timings"]
     assert result["meta"]["search_quality"] == {"passed": True, "reason": "materials_available"}
     assert "[W9]" not in result["chat_preview"]
@@ -175,6 +182,285 @@ def test_web_context_answer_keeps_web_sources_when_answer_only_cites_knowledge(m
     assert result["meta"]["used_web"] is True
 
 
+def test_web_context_answer_times_out_stuck_search_query(monkeypatch):
+    events = []
+
+    def fake_search(query, _limit):
+        if query == "slow search":
+            time.sleep(0.35)
+            return {"results": [{"title": "too late", "url": "https://example.com/late", "description": "late"}]}
+        return {
+            "results": [
+                {
+                    "title": "fast result",
+                    "url": "https://example.com/fast",
+                    "description": "fast material",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(web_context_answer, "WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS", 0.05, raising=False)
+
+    started = time.monotonic()
+    warnings = []
+    candidates, query_statuses = web_context_answer._search_candidates(
+        ["slow search", "fast search"],
+        search_adapter=fake_search,
+        warnings=warnings,
+        progress_callback=lambda event, **kwargs: events.append({"type": event, **kwargs}),
+    )
+
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.25
+    assert [source["url"] for source in candidates] == ["https://example.com/fast"]
+    assert [status["status"] for status in query_statuses] == ["timeout", "success"]
+    assert query_statuses[0]["query"] == "slow search"
+    assert query_statuses[0]["result_count"] == 0
+    assert query_statuses[0]["error"]
+    assert query_statuses[1]["result_count"] == 1
+    assert any(event["type"] == "web_query_error" and event["query"] == "slow search" for event in events)
+    assert warnings == []
+
+
+def test_web_context_answer_records_query_statuses_and_readable_warnings(monkeypatch):
+    def fake_llm_json(prompt, *, timeout_seconds):
+        if "生成网页搜索词" in prompt:
+            return {"queries": ["slow search", "fast search"]}
+        if "选择网页材料" in prompt:
+            return {"selected_refs": ["W1"], "open_refs": []}
+        return {}
+
+    def fake_search(query, _limit):
+        if query == "slow search":
+            time.sleep(0.35)
+            return {"results": [{"title": "too late", "url": "https://example.com/late", "description": "late"}]}
+        return {
+            "results": [
+                {
+                    "title": "fast result",
+                    "url": "https://example.com/fast",
+                    "description": "fast material",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(web_context_answer, "WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS", 0.05, raising=False)
+    monkeypatch.setattr(web_context_answer, "_llm_json", fake_llm_json)
+
+    result = web_context_answer.web_context_answer(
+        query="解释这个术语",
+        mode="web_only",
+        search_adapter=fake_search,
+        extract_adapter=lambda _urls: {"results": []},
+        synthesize_adapter=lambda payload: "这是基于可用材料的解释 [W1]。",
+    )
+
+    warnings = result["warnings"]
+    provider_status = result["meta"]["provider_status"]
+    research_trace = result["meta"]["research_trace"]
+    query_statuses = provider_status["query_statuses"]
+
+    assert len(query_statuses) == 2
+    assert {status["status"] for status in query_statuses} == {"timeout", "success"}
+    assert all("duration_ms" in status for status in query_statuses)
+    assert query_statuses[0]["error"]
+    assert query_statuses[1]["result_count"] == 1
+    assert warnings == ["1 条查询超时，已跳过；已用 1 个可用来源继续回答。"]
+    assert provider_status["warnings"] == warnings
+    assert research_trace["warnings"] == warnings
+    assert research_trace["query_statuses"] == query_statuses
+    assert provider_status["total_elapsed_ms"] > 0
+    assert research_trace["total_elapsed_ms"] == provider_status["total_elapsed_ms"]
+    assert set(provider_status["stage_timings"]) == {
+        "planning_ms",
+        "local_search_ms",
+        "search_ms",
+        "extract_ms",
+        "synthesis_ms",
+    }
+    assert provider_status["stage_timings"]["search_ms"] > 0
+
+
+def test_web_context_answer_prompt_includes_article_term_context(monkeypatch):
+    prompts = []
+
+    def fake_llm_json(prompt, *, timeout_seconds):
+        if "生成网页搜索词" in prompt:
+            prompts.append(("query", prompt))
+            return {"queries": ["vibecoding skills CLAUDE AGENTS 记忆"]}
+        if "选择网页材料" in prompt:
+            return {"selected_refs": [], "open_refs": []}
+        return {}
+
+    def fake_call_text_llm(prompt, **_kwargs):
+        prompts.append(("answer", prompt))
+        return "这里的 skills 指可被 AI/Agent 加载的文本规则或能力说明，用来引导模型思考方式。"
+
+    monkeypatch.setattr(web_context_answer, "_llm_json", fake_llm_json)
+    monkeypatch.setattr(web_context_answer, "_call_text_llm", fake_call_text_llm)
+
+    result = web_context_answer.web_context_answer(
+        query="这是什么意思",
+        mode="current_article_only",
+        article_context={
+            "title": "基本无害的vibecoding实践技巧（文科生友好版）",
+            "body": "工具分化：文字规则（CLAUDE.md、AGENTS.md、记忆、skills）适合引导思考方式，约束力相对弱；hook、cron、脚本适合强制执行确定性流程。",
+            "folder_path": "AI/实践",
+            "summary": "文章总结了 vibecoding 中如何用规则、记忆、hook 和脚本降低反复犯错。",
+            "tags": ["vibecoding", "agent"],
+            "file_path": "/Users/pipi/Hermes/knowledge/captures/vibecoding.md",
+        },
+        selection_context={
+            "selected_text": "skills",
+            "surrounding_before": "工具分化：文字规则（CLAUDE.md、AGENTS.md、记忆、",
+            "surrounding_after": "）适合引导思考方式，约束力相对弱；hook、cron、脚本适合强制执行确定性流程。",
+            "heading_path": ["总结", "5. 从错误中获得提升：把常犯的错自动化"],
+        },
+        search_adapter=lambda *_args: {"results": []},
+        extract_adapter=lambda _urls: {"results": []},
+    )
+
+    assert result["chat_preview"].startswith("这里的 skills")
+    answer_prompt = [prompt for kind, prompt in prompts if kind == "answer"][-1]
+    assert "短词、英文术语或指代性问题" in answer_prompt
+    assert "不要只给通用词典释义" in answer_prompt
+    assert "当前选区：skills" in answer_prompt
+    assert "选区前文：工具分化：文字规则（CLAUDE.md、AGENTS.md、记忆、" in answer_prompt
+    assert "选区后文：）适合引导思考方式" in answer_prompt
+    assert "标题路径：总结 > 5. 从错误中获得提升：把常犯的错自动化" in answer_prompt
+    assert "文章标题：基本无害的vibecoding实践技巧（文科生友好版）" in answer_prompt
+    assert "文章上下文：工具分化：文字规则" in answer_prompt
+    assert "文件夹：AI/实践" in answer_prompt
+    assert "标签：vibecoding, agent" in answer_prompt
+    assert "文件路径：/Users/pipi/Hermes/knowledge/captures/vibecoding.md" in answer_prompt
+
+
+def test_current_article_mode_strips_refs_and_uses_no_sources(monkeypatch):
+    search_calls = []
+    local_calls = []
+
+    monkeypatch.setattr(
+        web_context_answer,
+        "_llm_json",
+        lambda _prompt, *, timeout_seconds: {"needs_web": True, "needs_local": True, "queries": ["should not run"]},
+    )
+
+    result = web_context_answer.web_context_answer(
+        query="这是什么意思",
+        mode="current_article_only",
+        article_context={"title": "文章", "body": "skills 在本文里指 Agent 可加载的能力说明。"},
+        selection_context={"selected_text": "skills"},
+        search_adapter=lambda *args: search_calls.append(args) or {"results": []},
+        extract_adapter=lambda _urls: {"results": []},
+        local_search_adapter=lambda query, _warnings: local_calls.append(query) or ("本地答案", [{"ref": "K1"}]),
+        synthesize_adapter=lambda _payload: "这里的 skills 是能力说明 [K1][W1]。",
+    )
+
+    assert result["chat_preview"] == "这里的 skills 是能力说明。"
+    assert result["source_map"] == []
+    assert result["meta"]["knowledge_sources"] == []
+    assert result["meta"]["web_sources"] == []
+    assert result["meta"]["web_search_attempted"] is False
+    assert result["meta"]["used_local"] is False
+    assert result["meta"]["used_web"] is False
+    assert search_calls == []
+    assert local_calls == []
+
+
+def test_local_only_forces_local_and_forbids_web(monkeypatch):
+    search_calls = []
+    local_calls = []
+
+    monkeypatch.setattr(
+        web_context_answer,
+        "_llm_json",
+        lambda _prompt, *, timeout_seconds: {"needs_web": True, "needs_local": False, "queries": ["should not run"]},
+    )
+
+    result = web_context_answer.web_context_answer(
+        query="解释这个概念",
+        mode="local_only",
+        search_adapter=lambda *args: search_calls.append(args) or {"results": []},
+        extract_adapter=lambda _urls: {"results": []},
+        local_search_adapter=lambda query, _warnings: local_calls.append(query) or ("本地解释", [{"ref": "K1", "type": "knowledge", "id": "cap-1", "title": "本地笔记"}]),
+        synthesize_adapter=lambda _payload: "这是本地解释 [K1]。",
+    )
+
+    assert result["chat_preview"] == "这是本地解释 [K1]。"
+    assert [item["ref"] for item in result["source_map"]] == ["K1"]
+    assert result["meta"]["web_search_attempted"] is False
+    assert result["meta"]["used_local"] is True
+    assert search_calls == []
+    assert local_calls == ["解释这个概念"]
+
+
+def test_web_only_forces_web_when_planner_skips(monkeypatch):
+    search_calls = []
+
+    monkeypatch.setattr(
+        web_context_answer,
+        "_llm_json",
+        lambda _prompt, *, timeout_seconds: {"needs_web": False, "search_budget": 0, "queries": []},
+    )
+
+    result = web_context_answer.web_context_answer(
+        query="checkpoint 是什么",
+        mode="web_only",
+        search_adapter=lambda query, limit: search_calls.append((query, limit)) or {
+            "results": [{"title": "Checkpoint", "url": "https://example.com/checkpoint", "description": "状态快照。"}]
+        },
+        extract_adapter=lambda _urls: {"results": []},
+        synthesize_adapter=lambda _payload: "checkpoint 是状态快照 [W1]。",
+    )
+
+    assert search_calls == [("checkpoint 是什么", web_context_answer.WEB_CONTEXT_RESULTS_PER_QUERY)]
+    assert result["meta"]["web_search_attempted"] is True
+    assert result["meta"]["used_web"] is True
+    assert result["chat_preview"] == "checkpoint 是状态快照 [W1]。"
+
+
+def test_local_web_can_skip_web_and_records_skipped_queries(monkeypatch):
+    search_calls = []
+    local_calls = []
+
+    monkeypatch.setattr(
+        web_context_answer,
+        "_llm_json",
+        lambda _prompt, *, timeout_seconds: {
+            "needs_web": False,
+            "needs_local": True,
+            "queries": ["vibecoding skills CLAUDE AGENTS"],
+            "reason": "当前章节足够解释该短词",
+        },
+    )
+
+    result = web_context_answer.web_context_answer(
+        query="这是什么意思",
+        mode="local_web",
+        selection_context={"selected_text": "skills"},
+        search_adapter=lambda *args: search_calls.append(args) or {"results": []},
+        extract_adapter=lambda _urls: {"results": []},
+        local_search_adapter=lambda query, _warnings: local_calls.append(query) or ("本地材料", []),
+        synthesize_adapter=lambda _payload: "这里的 skills 指 Agent 可加载的能力说明。",
+    )
+
+    query_statuses = result["meta"]["research_trace"]["query_statuses"]
+    assert search_calls == []
+    assert local_calls == ["选区：\nskills\n\n问题：\n这是什么意思"]
+    assert result["meta"]["web_search_attempted"] is False
+    assert result["meta"]["used_local"] is True
+    assert result["meta"]["research_trace"]["reason"] == "当前章节足够解释该短词"
+    assert query_statuses == [
+        {
+            "query": "vibecoding skills CLAUDE AGENTS",
+            "status": "skipped",
+            "duration_ms": 0,
+            "result_count": 0,
+            "error": "web_not_requested",
+        }
+    ]
+
+
 def test_async_web_context_answer_emits_candidate_trace(monkeypatch):
     events = []
 
@@ -218,7 +504,7 @@ def test_async_web_context_answer_emits_candidate_trace(monkeypatch):
     material_events = [event for event in events if event["type"] == "materials_selected"]
     assert result["meta"]["research_trace"]["candidate_sources"][0]["ref"] == "W1"
     assert query_events and query_events[0]["queries"][:1] == ["Harness engineer"]
-    assert query_events[0]["query_count"] == 2
+    assert query_events[0]["query_count"] == 1
     assert query_done_events and query_done_events[0]["candidate_count"] == 1
     assert material_events and material_events[0]["material_count"] == 1
     assert ranked
@@ -340,6 +626,153 @@ def test_web_context_answer_local_search_query_includes_short_selection(monkeypa
 
     assert result["chat_preview"].startswith("Text-to-Metrics")
     assert local_queries == ["选区：\nText-to-Metrics vs Text-to-SQL\n\n问题：\n这两个有什么区别"]
+
+
+def test_web_context_answer_normalizes_escaped_refs_and_filters_sources(monkeypatch):
+    monkeypatch.setattr(
+        web_context_answer,
+        "_llm_json",
+        lambda _prompt, *, timeout_seconds: {"needs_web": False, "needs_local": True, "queries": []},
+    )
+
+    result = web_context_answer.web_context_answer(
+        query="这是什么意思",
+        mode="local_only",
+        search_adapter=lambda *_args: {"results": []},
+        extract_adapter=lambda _urls: {"results": []},
+        local_search_adapter=lambda _query, _warnings: (
+            "本地答案",
+            [
+                {"ref": "K1", "type": "knowledge", "id": "cap-1", "title": "未引用来源"},
+                {
+                    "ref": "K2",
+                    "type": "knowledge",
+                    "id": "cap-2",
+                    "title": "目标文章",
+                    "path": "captures/target.md",
+                    "section": "目标章节",
+                    "excerpt": "目标摘录",
+                },
+            ],
+        ),
+        synthesize_adapter=lambda _payload: "这里指目标文章里的具体概念 \\[K2\\]。",
+    )
+
+    assert result["chat_preview"] == "这里指目标文章里的具体概念 [K2]。"
+    assert [source["ref"] for source in result["meta"]["knowledge_sources"]] == ["K2"]
+    assert result["source_map"] == [
+        {
+            "ref": "K2",
+            "role": "context",
+            "type": "knowledge",
+            "id": "cap-2",
+            "title": "目标文章",
+            "url": "",
+            "path": "captures/target.md",
+            "file_path": "captures/target.md",
+            "section": "目标章节",
+            "excerpt": "目标摘录",
+            "domain": "",
+            "status": "",
+        }
+    ]
+
+
+def test_web_context_answer_prioritizes_current_article_over_ai_answer_notes(monkeypatch):
+    monkeypatch.setattr(
+        web_context_answer,
+        "_llm_json",
+        lambda _prompt, *, timeout_seconds: {"needs_web": False, "needs_local": True, "queries": []},
+    )
+    seen_payloads = []
+
+    def fake_synthesize(payload):
+        seen_payloads.append(payload)
+        assert [source["title"] for source in payload["knowledge_sources"]] == [
+            "当前文章",
+            "历史 AI 问答",
+        ]
+        return "这里应优先结合当前文章解释 [K2]。"
+
+    result = web_context_answer.web_context_answer(
+        query="这是什么意思",
+        mode="local_only",
+        article_context={
+            "title": "当前文章",
+            "body": "## 当前章节\n这里讨论一个短词在本文里的含义。",
+            "file_path": "captures/current.md",
+        },
+        selection_context={
+            "selected_text": "term",
+            "heading_path": ["当前章节"],
+        },
+        search_adapter=lambda *_args: {"results": []},
+        extract_adapter=lambda _urls: {"results": []},
+        local_search_adapter=lambda _query, _warnings: (
+            "本地答案",
+            [
+                {
+                    "ref": "K1",
+                    "type": "knowledge",
+                    "id": "ai-note",
+                    "title": "历史 AI 问答",
+                    "path": "captures/ai-note.md",
+                    "file_path": "captures/ai-note.md",
+                    "excerpt": "历史回答",
+                    "reading_session_id": "session-1",
+                    "reading_draft_id": "draft-1",
+                    "source_kind": "AI 解释",
+                },
+                {
+                    "ref": "K2",
+                    "type": "knowledge",
+                    "id": "current",
+                    "title": "当前文章",
+                    "path": "captures/current.md",
+                    "file_path": "captures/current.md",
+                    "section": "当前章节",
+                    "excerpt": "当前章节摘录",
+                },
+            ],
+        ),
+        synthesize_adapter=fake_synthesize,
+    )
+
+    assert seen_payloads
+    assert result["chat_preview"] == "这里应优先结合当前文章解释 [K2]。"
+    assert [source["ref"] for source in result["meta"]["retrieved_knowledge_sources"]] == ["K2", "K1"]
+    assert [source["ref"] for source in result["meta"]["knowledge_sources"]] == ["K2"]
+
+
+def test_web_context_answer_local_search_query_includes_article_context():
+    local_queries = []
+
+    result = web_context_answer.web_context_answer(
+        query="这是什么意思",
+        mode="local_only",
+        article_context={
+            "title": "基本无害的vibecoding实践技巧（文科生友好版）",
+            "body": "## 5. 从错误中获得提升\n常犯的错误固化为规则、记忆、skill、hook、cron 或脚本。",
+            "summary": "文章讨论 vibecoding 实践技巧。",
+        },
+        selection_context={
+            "selected_text": "cron",
+            "heading_path": ["5. 从错误中获得提升"],
+        },
+        search_adapter=lambda *_args: {"results": []},
+        extract_adapter=lambda _urls: {"results": []},
+        local_search_adapter=lambda query, _warnings: (local_queries.append(query) or ("本地答案", [])),
+        synthesize_adapter=lambda _payload: "这里的 cron 指定时任务。",
+    )
+
+    assert result["chat_preview"] == "这里的 cron 指定时任务。"
+    assert len(local_queries) == 1
+    local_query = local_queries[0]
+    assert "选区：\ncron" in local_query
+    assert "文章标题：\n基本无害的vibecoding实践技巧（文科生友好版）" in local_query
+    assert "标题路径：\n5. 从错误中获得提升" in local_query
+    assert "当前文章上下文：\n## 5. 从错误中获得提升" in local_query
+    assert "常犯的错误固化为规则、记忆、skill、hook、cron 或脚本。" in local_query
 
 
 def test_web_context_answer_local_search_query_without_selection_uses_question():

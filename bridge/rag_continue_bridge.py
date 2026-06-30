@@ -163,6 +163,7 @@ def _source_rows(value: Any) -> list[dict[str, str]]:
                 "summary": "",
                 "file_path": str(row.get("path") or row.get("file_path") or ""),
                 "section_title": str(row.get("section") or row.get("section_title") or ""),
+                "excerpt": str(row.get("excerpt") or ""),
             }
         )
     return result
@@ -177,8 +178,11 @@ def _source_map(sources: list[dict[str, str]]) -> list[dict]:
             title=source.get("title", ""),
             path=source.get("file_path", ""),
             section=source.get("section_title", ""),
+            ref=str(index),
+            file_path=source.get("file_path", ""),
+            excerpt=source.get("excerpt", ""),
         )
-        for source in sources
+        for index, source in enumerate(sources, 1)
     ]
 
 

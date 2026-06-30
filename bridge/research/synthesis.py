@@ -167,6 +167,8 @@ def _build_synthesis_prompt(payload: dict[str, Any]) -> str:
         parts.append("- 先直接回答用户的主问题，再展开依据。")
     if answer_contract["explain_selection_relation"] and selection.get("selected_text"):
         parts.append("- 说明选区和主问题的关系，但不要把选区自动当成主问题。")
+    if selection.get("selected_text"):
+        parts.append("- 如果用户选区是短词、术语或英文片段，必须结合选区前文、后文、标题路径和当前文章解释它在本文中的含义；不要只给通用词典释义。")
     if answer_contract["avoid_unasked_side_topics"]:
         parts.append("- 不展开用户没有要求的旁支。")
     if article and payload.get("mode") != "web_only":

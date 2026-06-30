@@ -248,6 +248,7 @@ def test_save_answer_metadata_uses_full_draft_text(answer_config, monkeypatch):
     def fake_metadata(_config, markdown: str) -> dict:
         captured["markdown"] = markdown
         return {
+            "title": "市场结构分化与风险估值",
             "summary": "这是基于全文生成的摘要。",
             "tags": ["finance-market", "risk-valuation"],
             "source": "ai_full_text",
@@ -280,11 +281,20 @@ def test_save_answer_metadata_uses_full_draft_text(answer_config, monkeypatch):
     conn = sqlite3.connect(answer_config.db_path)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        "SELECT summary, meta_json FROM reading_drafts WHERE id = ?",
+        "SELECT title, summary, draft_text, meta_json FROM reading_drafts WHERE id = ?",
         (result["meta"]["reading_draft_id"],),
     ).fetchone()
+    session_row = conn.execute(
+        "SELECT source_title FROM reading_sessions WHERE id = ?",
+        (result["meta"]["reading_session_id"],),
+    ).fetchone()
+    assert session_row["source_title"] == "市场结构分化与风险估值"
+    assert row["title"] == "市场结构分化与风险估值"
+    assert row["draft_text"].startswith("# 市场结构分化与风险估值\n")
     assert row["summary"] == "这是基于全文生成的摘要。"
     assert json.loads(row["meta_json"])["metadata"]["tags"] == ["finance-market", "risk-valuation"]
+    assert "《市场结构分化与风险估值》" in result["chat_preview"]
+    assert result["durable_artifacts"][0]["title"] == "市场结构分化与风险估值"
 
     committed = reading_bridge.commit_reading_artifact(result["meta"]["reading_draft_id"])
     text = (Path(answer_config.vault_path) / committed["durable_artifacts"][0]["path"]).read_text(encoding="utf-8")

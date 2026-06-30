@@ -29,6 +29,19 @@ def test_validate_citations_accepts_single_and_compact_multi_source_markers():
     assert result.warnings == []
 
 
+def test_validate_citations_accepts_escaped_markers():
+    result = validate_citations(
+        "这个结论来自第一份材料\\[1\\]，并由两份材料共同支持\\[1\\]\\[2\\]。",
+        _sources(2),
+    )
+
+    assert result.valid is True
+    assert result.missing_citations is False
+    assert result.unknown_citation_ids == []
+    assert result.cited_source_ids == ["1", "2"]
+    assert result.warnings == []
+
+
 def test_validate_citations_rejects_unknown_source_index():
     result = validate_citations("这个结论引用了不存在的材料[99]。", _sources(2))
 
