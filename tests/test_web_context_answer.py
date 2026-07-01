@@ -6,13 +6,64 @@ import pytest
 from bridge import web_context_answer
 
 
+def patch_research_plan(
+    monkeypatch,
+    *,
+    queries=None,
+    needs_web=None,
+    intent_label="planner",
+    answer_depth="normal",
+    extra=None,
+):
+    def fake_plan(query, *, mode="local_web", article_context=None, selection_context=None):
+        del article_context, selection_context
+        mode_allows_web = mode in {"local_web", "web_only"}
+        resolved_needs_web = mode_allows_web if needs_web is None else bool(needs_web)
+        if mode in {"current_article_only", "local_only"}:
+            resolved_needs_web = False
+        planned_queries = list(queries) if queries is not None else ([query] if resolved_needs_web else [])
+        plan = {
+            "intent_label": intent_label,
+            "needs_web": resolved_needs_web,
+            "mode": mode,
+            "subject": {},
+            "selection_role": "none",
+            "risk_level": "low",
+            "freshness_sensitive": False,
+            "answer_depth": answer_depth,
+            "queries": planned_queries,
+            "answer_claims_needed": [],
+            "claim_requirements": {},
+            "evidence_contract": {
+                "must_cover_subject": True,
+                "minimum_independent_sources": 1,
+                "prefer_authoritative_sources": True,
+                "must_use_primary_source": False,
+                "allow_summary_only": True,
+                "answer_policy": "answer_only_supported",
+            },
+            "source_preferences": {},
+            "answer_contract": {},
+            "privacy": {"may_use_selection_text": False, "allowed_context_terms": []},
+            "plan_status": "planned",
+        }
+        plan.update(extra or {})
+        return plan
+
+    monkeypatch.setattr(web_context_answer, "plan_research", fake_plan)
+
+
+@pytest.fixture(autouse=True)
+def default_research_plan(monkeypatch):
+    patch_research_plan(monkeypatch)
+
+
 def test_web_context_answer_uses_summary_materials_without_extract(monkeypatch):
     llm_calls = []
+    patch_research_plan(monkeypatch, queries=["DeepSeek 招聘 Harness"])
 
     def fake_llm_json(prompt, *, timeout_seconds):
         llm_calls.append(prompt)
-        if "生成网页搜索词" in prompt:
-            return {"queries": ["DeepSeek 招聘 Harness"]}
         if "选择网页材料" in prompt:
             return {"selected_refs": ["W1", "W2"], "open_refs": [], "answer_shape": "直接列岗位"}
         return {}
@@ -75,15 +126,14 @@ def test_web_context_answer_uses_summary_materials_without_extract(monkeypatch):
     assert [source["ref"] for source in result["meta"]["web_sources"]] == ["W1", "W2"]
     assert [source["ref"] for source in result["meta"]["retrieved_web_sources"]] == ["W1", "W2"]
     assert [item["ref"] for item in result["source_map"]] == ["W1", "W2"]
-    assert len(llm_calls) == 2
+    assert len(llm_calls) == 1
 
 
 def test_web_context_answer_extracts_only_llm_requested_pages(monkeypatch):
     extracted_urls = []
+    patch_research_plan(monkeypatch, queries=["DeepSeek 华为 芯片 训练"])
 
     def fake_llm_json(prompt, *, timeout_seconds):
-        if "生成网页搜索词" in prompt:
-            return {"queries": ["DeepSeek 华为 芯片 训练"]}
         if "选择网页材料" in prompt:
             return {"selected_refs": ["W1", "W2"], "open_refs": ["W2"], "answer_shape": "区分训练和适配"}
         return {}
@@ -138,9 +188,9 @@ def test_web_context_answer_extracts_only_llm_requested_pages(monkeypatch):
 
 
 def test_web_context_answer_keeps_web_sources_when_answer_only_cites_knowledge(monkeypatch):
+    patch_research_plan(monkeypatch, queries=["AI PM traditional PM difference"])
+
     def fake_llm_json(prompt, *, timeout_seconds):
-        if "生成网页搜索词" in prompt:
-            return {"queries": ["AI PM traditional PM difference"]}
         if "选择网页材料" in prompt:
             return {"selected_refs": ["W1", "W2"], "open_refs": []}
         return {}
@@ -223,9 +273,9 @@ def test_web_context_answer_times_out_stuck_search_query(monkeypatch):
 
 
 def test_web_context_answer_records_query_statuses_and_readable_warnings(monkeypatch):
+    patch_research_plan(monkeypatch, queries=["slow search", "fast search"])
+
     def fake_llm_json(prompt, *, timeout_seconds):
-        if "生成网页搜索词" in prompt:
-            return {"queries": ["slow search", "fast search"]}
         if "选择网页材料" in prompt:
             return {"selected_refs": ["W1"], "open_refs": []}
         return {}
@@ -282,12 +332,8 @@ def test_web_context_answer_records_query_statuses_and_readable_warnings(monkeyp
 
 
 def test_web_context_answer_skips_synthesis_when_web_has_no_material(monkeypatch):
+    patch_research_plan(monkeypatch, queries=["slow query"])
     monkeypatch.setattr(web_context_answer, "WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS", 0.05, raising=False)
-    monkeypatch.setattr(
-        web_context_answer,
-        "_llm_json",
-        lambda _prompt, *, timeout_seconds: {"needs_web": True, "needs_local": False, "queries": ["slow query"]},
-    )
 
     def slow_search(_query, _limit):
         time.sleep(0.35)
@@ -319,9 +365,6 @@ def test_web_context_answer_prompt_includes_article_term_context(monkeypatch):
     prompts = []
 
     def fake_llm_json(prompt, *, timeout_seconds):
-        if "生成网页搜索词" in prompt:
-            prompts.append(("query", prompt))
-            return {"queries": ["vibecoding skills CLAUDE AGENTS 记忆"]}
         if "选择网页材料" in prompt:
             return {"selected_refs": [], "open_refs": []}
         return {}
@@ -373,12 +416,6 @@ def test_current_article_mode_strips_refs_and_uses_no_sources(monkeypatch):
     search_calls = []
     local_calls = []
 
-    monkeypatch.setattr(
-        web_context_answer,
-        "_llm_json",
-        lambda _prompt, *, timeout_seconds: {"needs_web": True, "needs_local": True, "queries": ["should not run"]},
-    )
-
     result = web_context_answer.web_context_answer(
         query="这是什么意思",
         mode="current_article_only",
@@ -405,12 +442,6 @@ def test_local_only_forces_local_and_forbids_web(monkeypatch):
     search_calls = []
     local_calls = []
 
-    monkeypatch.setattr(
-        web_context_answer,
-        "_llm_json",
-        lambda _prompt, *, timeout_seconds: {"needs_web": True, "needs_local": False, "queries": ["should not run"]},
-    )
-
     result = web_context_answer.web_context_answer(
         query="解释这个概念",
         mode="local_only",
@@ -430,12 +461,7 @@ def test_local_only_forces_local_and_forbids_web(monkeypatch):
 
 def test_web_only_forces_web_when_planner_skips(monkeypatch):
     search_calls = []
-
-    monkeypatch.setattr(
-        web_context_answer,
-        "_llm_json",
-        lambda _prompt, *, timeout_seconds: {"needs_web": False, "search_budget": 0, "queries": []},
-    )
+    patch_research_plan(monkeypatch, queries=[], needs_web=False)
 
     result = web_context_answer.web_context_answer(
         query="checkpoint 是什么",
@@ -456,17 +482,7 @@ def test_web_only_forces_web_when_planner_skips(monkeypatch):
 def test_local_web_can_skip_web_and_records_skipped_queries(monkeypatch):
     search_calls = []
     local_calls = []
-
-    monkeypatch.setattr(
-        web_context_answer,
-        "_llm_json",
-        lambda _prompt, *, timeout_seconds: {
-            "needs_web": False,
-            "needs_local": True,
-            "queries": ["vibecoding skills CLAUDE AGENTS"],
-            "reason": "当前章节足够解释该短词",
-        },
-    )
+    patch_research_plan(monkeypatch, queries=["vibecoding skills CLAUDE AGENTS"], needs_web=False)
 
     result = web_context_answer.web_context_answer(
         query="这是什么意思",
@@ -483,7 +499,7 @@ def test_local_web_can_skip_web_and_records_skipped_queries(monkeypatch):
     assert local_calls == ["选区：\nskills\n\n问题：\n这是什么意思"]
     assert result["meta"]["web_search_attempted"] is False
     assert result["meta"]["used_local"] is True
-    assert result["meta"]["research_trace"]["reason"] == "当前章节足够解释该短词"
+    assert result["meta"]["research_trace"]["intent_label"] == "planner"
     assert query_statuses == [
         {
             "query": "vibecoding skills CLAUDE AGENTS",
@@ -497,10 +513,9 @@ def test_local_web_can_skip_web_and_records_skipped_queries(monkeypatch):
 
 def test_async_web_context_answer_emits_candidate_trace(monkeypatch):
     events = []
+    patch_research_plan(monkeypatch, queries=["Harness engineer"])
 
     def fake_llm_json(prompt, *, timeout_seconds):
-        if "生成网页搜索词" in prompt:
-            return {"queries": ["Harness engineer"]}
         if "选择网页材料" in prompt:
             return {"selected_refs": ["W1"], "open_refs": []}
         return {}
@@ -547,10 +562,9 @@ def test_async_web_context_answer_emits_candidate_trace(monkeypatch):
 
 def test_async_web_context_answer_streams_answer_delta(monkeypatch):
     events = []
+    patch_research_plan(monkeypatch, queries=["Coding agent"])
 
     def fake_llm_json(prompt, *, timeout_seconds):
-        if "生成网页搜索词" in prompt:
-            return {"queries": ["Coding agent"]}
         if "选择网页材料" in prompt:
             return {"selected_refs": ["W1"], "open_refs": []}
         return {}
@@ -591,10 +605,9 @@ def test_async_web_context_answer_streams_answer_delta(monkeypatch):
 
 def test_web_context_answer_prompt_uses_generic_answer_contract(monkeypatch):
     prompts = []
+    patch_research_plan(monkeypatch, queries=["Codex Claude Code difference"])
 
     def fake_llm_json(prompt, *, timeout_seconds):
-        if "生成网页搜索词" in prompt:
-            return {"queries": ["Codex Claude Code difference"]}
         if "选择网页材料" in prompt:
             return {"selected_refs": ["W1", "W2"], "open_refs": []}
         return {}
@@ -663,12 +676,6 @@ def test_web_context_answer_local_search_query_includes_short_selection(monkeypa
 
 
 def test_web_context_answer_normalizes_escaped_refs_and_filters_sources(monkeypatch):
-    monkeypatch.setattr(
-        web_context_answer,
-        "_llm_json",
-        lambda _prompt, *, timeout_seconds: {"needs_web": False, "needs_local": True, "queries": []},
-    )
-
     result = web_context_answer.web_context_answer(
         query="这是什么意思",
         mode="local_only",
@@ -713,11 +720,6 @@ def test_web_context_answer_normalizes_escaped_refs_and_filters_sources(monkeypa
 
 
 def test_web_context_answer_prioritizes_current_article_over_ai_answer_notes(monkeypatch):
-    monkeypatch.setattr(
-        web_context_answer,
-        "_llm_json",
-        lambda _prompt, *, timeout_seconds: {"needs_web": False, "needs_local": True, "queries": []},
-    )
     seen_payloads = []
 
     def fake_synthesize(payload):

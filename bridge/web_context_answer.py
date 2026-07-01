@@ -20,9 +20,14 @@ from agents.capture_agent import load_config
 
 from bridge.result_envelope import success_envelope
 from bridge.research.adapters import _default_search_backend
+from bridge.research.planner import (
+    _max_initial_search_queries_for_plan,
+    plan_research,
+)
 from bridge.research.synthesis import _call_llm
 from bridge.research.timing import _add_stage_timing
 from bridge.research.types import (
+    MAX_WEB_QUERIES,
     ResearchEventCallback,
     ResearchExtractAdapter,
     ResearchSearchAdapter,
@@ -38,15 +43,12 @@ from bridge.research.utils import (
     _unique,
 )
 
-WEB_CONTEXT_MAX_QUERIES = 6
-WEB_CONTEXT_WEB_ONLY_MAX_QUERIES = 3
 WEB_CONTEXT_RESULTS_PER_QUERY = 8
 WEB_CONTEXT_MAX_MATERIALS = 6
 WEB_CONTEXT_MAX_OPEN_PAGES = 2
 WEB_CONTEXT_FULL_ARTICLE_CHARS = 4000
 WEB_CONTEXT_SUMMARY_CHARS = 800
 WEB_CONTEXT_SURROUNDING_CHARS = 500
-WEB_CONTEXT_QUERY_TIMEOUT_SECONDS = 8
 WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS = 10
 WEB_CONTEXT_SELECTION_TIMEOUT_SECONDS = 8
 WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS = 35
@@ -86,16 +88,6 @@ PROCESS_LANGUAGE_LINE_RE = re.compile(
 MAX_SELECTION_SEARCH_CHARS = 1000
 ANSWER_REF_RE = re.compile(r"\\?\[([KW]\d+)\\?\]", re.I)
 
-DEFAULT_RESEARCH_PLAN = {
-    "complexity": "simple",
-    "question_type": "",
-    "needs_web": False,
-    "needs_local": False,
-    "search_budget": 1,
-    "queries": [],
-    "reason": "",
-}
-
 
 def web_context_answer(
     *,
@@ -127,15 +119,15 @@ def web_context_answer(
     stage_timings = _empty_web_context_stage_timings()
 
     planning_started = time.monotonic()
-    research_plan = _plan_research(
+    research_plan = plan_research(
         clean_query,
         mode=normalized_mode,
         article_context=article_context,
         selection_context=selection_context,
     )
     _add_stage_timing(stage_timings, "planning_ms", planning_started)
-    use_local = bool(research_plan.get("needs_local"))
-    use_web = bool(research_plan.get("needs_web"))
+    use_local = _mode_needs_local(normalized_mode)
+    use_web = _mode_needs_web(normalized_mode, research_plan)
     planned_queries = [str(item or "").strip() for item in research_plan.get("queries") or [] if str(item or "").strip()]
     query_cap = _query_cap(normalized_mode, research_plan)
     web_queries = planned_queries[:query_cap]
@@ -148,14 +140,12 @@ def web_context_answer(
         progress_callback,
         "plan",
         mode=normalized_mode,
-        plan_status="planned_web" if use_web else ("skipped_web" if normalized_mode == "local_web" else "planned"),
+        plan_status=research_plan.get("plan_status") or ("planned_web" if use_web else "planned"),
         needs_web=use_web,
         needs_local=use_local,
-        complexity=research_plan.get("complexity"),
-        question_type=research_plan.get("question_type"),
-        search_budget=research_plan.get("search_budget"),
         queries=web_queries or planned_queries,
-        reason=research_plan.get("reason"),
+        intent_label=research_plan.get("intent_label"),
+        answer_depth=research_plan.get("answer_depth"),
     )
     local_answer = ""
     knowledge_sources: list[dict[str, Any]] = []
@@ -305,13 +295,16 @@ def web_context_answer(
         "path": "web_context",
         "legacy_research": False,
         "mode": normalized_mode,
-        "complexity": research_plan.get("complexity"),
-        "question_type": research_plan.get("question_type"),
+        "intent_label": research_plan.get("intent_label"),
+        "answer_depth": research_plan.get("answer_depth"),
+        "plan_status": research_plan.get("plan_status"),
+        "subject": research_plan.get("subject") or {},
+        "source_preferences": research_plan.get("source_preferences") or {},
+        "evidence_contract": research_plan.get("evidence_contract") or {},
+        "answer_contract": research_plan.get("answer_contract") or {},
         "needs_web": use_web,
         "needs_local": use_local,
-        "search_budget": research_plan.get("search_budget"),
         "queries": web_queries or planned_queries,
-        "reason": research_plan.get("reason"),
         "article_context_source": article_context.get("context_source"),
         "context_warnings": article_context.get("context_warnings") or [],
         "used_article_context": bool(article_context.get("context_text") or article_context.get("body")),
@@ -367,14 +360,10 @@ def web_context_answer(
             "provider_status": provider_status,
             "research_trace": research_trace,
             "research_plan": {
+                **research_plan,
                 "path": "web_context",
-                "intent_label": "web context answer",
                 "needs_web": use_web,
                 "needs_local": use_local,
-                "complexity": research_plan.get("complexity"),
-                "question_type": research_plan.get("question_type"),
-                "search_budget": research_plan.get("search_budget"),
-                "reason": research_plan.get("reason"),
                 "mode": normalized_mode,
                 "queries": web_queries,
             },
@@ -619,92 +608,22 @@ def _is_ai_answer_note_source(source: dict[str, Any]) -> bool:
     return kind in {"ai 解释", "ai explanation", "reading_draft", "reading draft", "answer_draft"}
 
 
-def _plan_research(
-    query: str,
-    *,
-    mode: str,
-    article_context: dict[str, Any],
-    selection_context: dict[str, Any],
-) -> dict[str, Any]:
-    selection_context_block = _selection_context_prompt_block(selection_context, selected_limit=240, surrounding_limit=500)
-    article_context_block = _article_context_prompt_block(article_context, body_limit=1200)
-    prompt = "\n".join(
-        [
-            "你要为知识工作台的问题生成网页搜索词。",
-            "目标是帮助用户理解、补充背景、扩展材料，不是做证据审判。",
-            "如果用户选中的是短词、英文术语或指代性内容，搜索词必须优先带上当前文章语境，不要生成泛化词典查询。",
-            "如果当前文章语境已经足够，生成 1-2 条轻量补充查询即可；不要为了凑数量强行扩成 3 条。",
-            "只返回 JSON：{\"complexity\":\"simple|medium|complex\",\"question_type\":\"...\",\"needs_web\":true,\"needs_local\":true,\"search_budget\":1,\"queries\":[\"...\"],\"reason\":\"...\"}。",
-            "question_type 由你自由填写短标签；search_budget 是上限，不是必须用满；queries 最多 6 个。",
-            f"当前模式：{mode}",
-            f"用户问题：{query}",
-            selection_context_block,
-            article_context_block,
-        ]
-    )
-    payload = _llm_json(prompt, timeout_seconds=WEB_CONTEXT_QUERY_TIMEOUT_SECONDS)
-    plan = _coerce_research_plan(payload, fallback_query=query)
-    return _apply_mode_constraints(plan, mode=mode)
-
-
-def _coerce_research_plan(payload: dict[str, Any], *, fallback_query: str) -> dict[str, Any]:
-    complexity = str(payload.get("complexity") or DEFAULT_RESEARCH_PLAN["complexity"]).strip().lower()
-    if complexity not in {"simple", "medium", "complex"}:
-        complexity = "simple"
-    queries = [str(item or "").strip() for item in payload.get("queries") or []]
-    queries = [item for item in queries if item]
-    search_budget = payload.get("search_budget")
-    if not isinstance(search_budget, int) or search_budget < 0:
-        search_budget = len(queries) if queries else {"simple": 1, "medium": 3, "complex": 6}[complexity]
-    needs_web = payload.get("needs_web")
-    if not isinstance(needs_web, bool):
-        needs_web = bool(queries)
-    needs_local = payload.get("needs_local")
-    if not isinstance(needs_local, bool):
-        needs_local = False
-    if not queries and needs_web:
-        queries = [fallback_query]
-    return {
-        **DEFAULT_RESEARCH_PLAN,
-        "complexity": complexity,
-        "question_type": str(payload.get("question_type") or ""),
-        "needs_web": needs_web,
-        "needs_local": needs_local,
-        "search_budget": max(0, min(int(search_budget), WEB_CONTEXT_MAX_QUERIES)),
-        "queries": _unique(queries)[:WEB_CONTEXT_MAX_QUERIES],
-        "reason": str(payload.get("reason") or ""),
-    }
-
-
-def _apply_mode_constraints(plan: dict[str, Any], *, mode: str) -> dict[str, Any]:
-    next_plan = {**plan}
-    if mode == "current_article_only":
-        next_plan["needs_web"] = False
-        next_plan["needs_local"] = False
-        next_plan["search_budget"] = 0
-    elif mode == "local_only":
-        next_plan["needs_web"] = False
-        next_plan["needs_local"] = True
-        next_plan["search_budget"] = 0
-    elif mode == "web_only":
-        next_plan["needs_web"] = True
-        next_plan["needs_local"] = False
-        if not next_plan.get("queries"):
-            next_plan["queries"] = []
-        next_plan["search_budget"] = max(1, min(int(next_plan.get("search_budget") or 1), WEB_CONTEXT_WEB_ONLY_MAX_QUERIES))
-    elif mode == "local_web":
-        next_plan["needs_local"] = True
-        next_plan["search_budget"] = max(0, min(int(next_plan.get("search_budget") or 0), WEB_CONTEXT_MAX_QUERIES))
-    return next_plan
-
-
 def _query_cap(mode: str, plan: dict[str, Any]) -> int:
-    budget = int(plan.get("search_budget") or 0)
-    if mode == "web_only":
-        return max(1, min(budget or 1, WEB_CONTEXT_WEB_ONLY_MAX_QUERIES))
-    if mode == "local_web":
-        return max(0, min(budget, WEB_CONTEXT_MAX_QUERIES))
+    if mode in {"web_only", "local_web"} and plan.get("needs_web"):
+        return max(1, min(_max_initial_search_queries_for_plan(plan), MAX_WEB_QUERIES))
     return 0
+
+
+def _mode_needs_local(mode: str) -> bool:
+    return mode in {"local_only", "local_web"}
+
+
+def _mode_needs_web(mode: str, plan: dict[str, Any]) -> bool:
+    if mode == "web_only":
+        return True
+    if mode == "local_web":
+        return bool(plan.get("needs_web"))
+    return False
 
 
 def _skipped_query_statuses(queries: list[str], *, reason: str) -> list[dict[str, Any]]:
@@ -730,7 +649,7 @@ def _search_candidates(
     candidates: list[dict[str, Any]] = []
     query_statuses: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for search_query in queries[:WEB_CONTEXT_MAX_QUERIES]:
+    for search_query in queries[:MAX_WEB_QUERIES]:
         _progress(progress_callback, "web_query_start", query=search_query)
         query_started = time.monotonic()
         try:
