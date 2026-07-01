@@ -225,7 +225,18 @@ def web_context_answer(
             finally:
                 _add_stage_timing(stage_timings, "extract_ms", extract_started)
         web_sources = _material_sources(selected, extracted_by_url, extract_failures)
-        warnings.extend(_query_warning_messages(query_statuses, len(web_sources)))
+        warnings.extend(
+            _query_warning_messages(
+                query_statuses,
+                len(web_sources),
+                has_existing_material=_has_existing_answer_material(
+                    local_answer=local_answer,
+                    knowledge_sources=knowledge_sources,
+                    article_context=article_context,
+                    selection_context=selection_context,
+                ),
+            )
+        )
         _progress(
             progress_callback,
             "web_extract_done",
@@ -251,12 +262,18 @@ def web_context_answer(
     )
     retrieved_knowledge_sources = list(knowledge_sources)
     material_web_sources = list(web_sources)
+    synthesis_skipped = False
     synthesis_started = time.monotonic()
-    answer = (
-        synthesize_adapter(synthesis_input)
-        if synthesize_adapter
-        else _generate_answer(synthesis_input, warnings, answer_delta_callback=answer_delta_callback)
-    )
+    if use_web and not _has_answer_material(synthesis_input):
+        warnings.append("没有可用材料，已跳过空材料回答生成。")
+        synthesis_skipped = True
+        answer = _fallback_answer(synthesis_input)
+    else:
+        answer = (
+            synthesize_adapter(synthesis_input)
+            if synthesize_adapter
+            else _generate_answer(synthesis_input, warnings, answer_delta_callback=answer_delta_callback)
+        )
     _add_stage_timing(stage_timings, "synthesis_ms", synthesis_started)
     if normalized_mode == "current_article_only":
         answer = _strip_answer_refs(answer)
@@ -280,6 +297,7 @@ def web_context_answer(
         stage_timings=stage_timings,
         query_statuses=query_statuses,
         web_attempted=use_web,
+        synthesis_skipped=synthesis_skipped,
     )
     total_elapsed_ms = int((time.monotonic() - started) * 1000)
     provider_status["total_elapsed_ms"] = total_elapsed_ms
@@ -313,6 +331,7 @@ def web_context_answer(
             "knowledge": len(knowledge_sources),
         },
         "stage_timings": stage_timings,
+        "synthesis_skipped": synthesis_skipped,
         "query_statuses": query_statuses,
         "total_elapsed_ms": total_elapsed_ms,
         "warnings": list(warnings),
@@ -792,11 +811,21 @@ def _search_with_timeout(
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-def _query_warning_messages(query_statuses: list[dict[str, Any]], source_count: int) -> list[str]:
+def _query_warning_messages(
+    query_statuses: list[dict[str, Any]],
+    source_count: int,
+    *,
+    has_existing_material: bool = True,
+) -> list[str]:
     timeout_count = sum(1 for item in query_statuses if item.get("status") == "timeout")
     failure_count = sum(1 for item in query_statuses if item.get("status") == "failed")
     messages: list[str] = []
-    suffix = f"已用 {source_count} 个可用来源继续回答。" if source_count else "暂无可用联网来源，已用现有材料继续回答。"
+    if source_count:
+        suffix = f"已用 {source_count} 个可用来源继续回答。"
+    elif has_existing_material:
+        suffix = "暂无可用联网来源，已用现有材料继续回答。"
+    else:
+        suffix = "暂无可用联网来源。"
     if timeout_count:
         messages.append(f"{timeout_count} 条查询超时，已跳过；{suffix}")
     if failure_count:
@@ -1017,6 +1046,38 @@ def _generate_answer(
     except Exception as exc:
         warnings.append(f"回答生成失败，已使用材料摘要：{exc}")
         return _fallback_answer(payload)
+
+
+def _has_answer_material(payload: dict[str, Any]) -> bool:
+    if payload.get("web_sources"):
+        return True
+    return _has_existing_answer_material(
+        local_answer=str(payload.get("local_answer") or ""),
+        knowledge_sources=list(payload.get("knowledge_sources") or []),
+        article_context=payload.get("article_context")
+        if isinstance(payload.get("article_context"), dict)
+        else {},
+        selection_context=payload.get("selection_context")
+        if isinstance(payload.get("selection_context"), dict)
+        else {},
+    )
+
+
+def _has_existing_answer_material(
+    *,
+    local_answer: str,
+    knowledge_sources: list[dict[str, Any]],
+    article_context: dict[str, Any],
+    selection_context: dict[str, Any],
+) -> bool:
+    if knowledge_sources or local_answer.strip():
+        return True
+    article_text = (
+        article_context.get("context_text") or article_context.get("body") or article_context.get("summary") or ""
+    )
+    if str(article_text).strip():
+        return True
+    return bool(str(selection_context.get("selected_text") or "").strip())
 
 
 def _fallback_answer(payload: dict[str, Any]) -> str:
@@ -1259,12 +1320,14 @@ def _provider_status(
     stage_timings: dict[str, Any],
     query_statuses: list[dict[str, Any]],
     web_attempted: bool,
+    synthesis_skipped: bool,
 ) -> dict[str, Any]:
     status = {
         "path": "web_context",
         "total_elapsed_ms": int((time.monotonic() - started) * 1000),
         "warnings": list(warnings),
         "stage_timings": stage_timings,
+        "synthesis_skipped": synthesis_skipped,
         "query_statuses": query_statuses,
     }
     if web_attempted:

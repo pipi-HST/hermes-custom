@@ -281,6 +281,40 @@ def test_web_context_answer_records_query_statuses_and_readable_warnings(monkeyp
     assert provider_status["stage_timings"]["search_ms"] > 0
 
 
+def test_web_context_answer_skips_synthesis_when_web_has_no_material(monkeypatch):
+    monkeypatch.setattr(web_context_answer, "WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS", 0.05, raising=False)
+    monkeypatch.setattr(
+        web_context_answer,
+        "_llm_json",
+        lambda _prompt, *, timeout_seconds: {"needs_web": True, "needs_local": False, "queries": ["slow query"]},
+    )
+
+    def slow_search(_query, _limit):
+        time.sleep(0.35)
+        return {"results": [{"title": "late", "url": "https://example.com/late", "description": "late"}]}
+
+    result = web_context_answer.web_context_answer(
+        query="HTML 承载复杂信息 可视化 原型 vibecoding",
+        mode="web_only",
+        search_adapter=slow_search,
+        extract_adapter=lambda _urls: {"results": []},
+        synthesize_adapter=lambda _payload: (_ for _ in ()).throw(
+            AssertionError("empty material should not synthesize")
+        ),
+    )
+
+    assert result["chat_preview"] == "暂时没有足够材料回答这个问题。"
+    assert result["meta"]["web_search_attempted"] is True
+    assert result["meta"]["used_web"] is False
+    assert result["meta"]["provider_status"]["used_sources"] == 0
+    assert result["meta"]["provider_status"]["synthesis_skipped"] is True
+    assert result["meta"]["research_trace"]["synthesis_skipped"] is True
+    assert result["warnings"] == [
+        "1 条查询超时，已跳过；暂无可用联网来源。",
+        "没有可用材料，已跳过空材料回答生成。",
+    ]
+
+
 def test_web_context_answer_prompt_includes_article_term_context(monkeypatch):
     prompts = []
 
