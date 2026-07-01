@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -25,7 +26,6 @@ from bridge.research.planner import (
     plan_research,
 )
 from bridge.research.synthesis import _call_llm
-from bridge.research.timing import _add_stage_timing
 from bridge.research.types import (
     MAX_WEB_QUERIES,
     ResearchEventCallback,
@@ -49,7 +49,7 @@ WEB_CONTEXT_MAX_OPEN_PAGES = 2
 WEB_CONTEXT_FULL_ARTICLE_CHARS = 4000
 WEB_CONTEXT_SUMMARY_CHARS = 800
 WEB_CONTEXT_SURROUNDING_CHARS = 500
-WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS = 10
+DEFAULT_WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS = 18.0
 WEB_CONTEXT_SELECTION_TIMEOUT_SECONDS = 8
 WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS = 35
 
@@ -125,7 +125,7 @@ def web_context_answer(
         article_context=article_context,
         selection_context=selection_context,
     )
-    _add_stage_timing(stage_timings, "planning_ms", planning_started)
+    _add_web_context_stage_timing(stage_timings, "planning_ms", planning_started)
     use_local = _mode_needs_local(normalized_mode)
     use_web = _mode_needs_web(normalized_mode, research_plan)
     planned_queries = [str(item or "").strip() for item in research_plan.get("queries") or [] if str(item or "").strip()]
@@ -160,7 +160,7 @@ def web_context_answer(
             article_context=article_context,
             selection_context=selection_context,
         )
-        _add_stage_timing(stage_timings, "local_search_ms", local_started)
+        _add_web_context_stage_timing(stage_timings, "local_search_ms", local_started)
 
     candidates: list[dict[str, Any]] = []
     query_statuses: list[dict[str, Any]] = list(skipped_query_statuses)
@@ -174,7 +174,7 @@ def web_context_answer(
         _progress(progress_callback, "queries_ready", queries=web_queries, query_count=len(web_queries))
         candidates, executed_statuses = _search_candidates(web_queries, search_adapter, warnings, progress_callback=progress_callback)
         query_statuses.extend(executed_statuses)
-        _add_stage_timing(stage_timings, "search_ms", search_started)
+        _add_web_context_stage_timing(stage_timings, "search_ms", search_started)
 
         material_plan = _select_materials(
             clean_query,
@@ -213,13 +213,15 @@ def web_context_answer(
                 warnings.append(f"网页打开失败，已使用搜索摘要：{exc}")
                 extract_failures = opened_urls
             finally:
-                _add_stage_timing(stage_timings, "extract_ms", extract_started)
+                _add_web_context_stage_timing(stage_timings, "extract_ms", extract_started)
         web_sources = _material_sources(selected, extracted_by_url, extract_failures)
         warnings.extend(
             _query_warning_messages(
                 query_statuses,
                 len(web_sources),
-                has_existing_material=_has_existing_answer_material(
+                has_existing_material=False
+                if normalized_mode == "web_only"
+                else _has_existing_answer_material(
                     local_answer=local_answer,
                     knowledge_sources=knowledge_sources,
                     article_context=article_context,
@@ -254,7 +256,7 @@ def web_context_answer(
     material_web_sources = list(web_sources)
     synthesis_skipped = False
     synthesis_started = time.monotonic()
-    if use_web and not _has_answer_material(synthesis_input):
+    if use_web and not _has_synthesis_material(synthesis_input):
         warnings.append("没有可用材料，已跳过空材料回答生成。")
         synthesis_skipped = True
         answer = _fallback_answer(synthesis_input)
@@ -264,7 +266,7 @@ def web_context_answer(
             if synthesize_adapter
             else _generate_answer(synthesis_input, warnings, answer_delta_callback=answer_delta_callback)
         )
-    _add_stage_timing(stage_timings, "synthesis_ms", synthesis_started)
+    _add_web_context_stage_timing(stage_timings, "synthesis_ms", synthesis_started)
     if normalized_mode == "current_article_only":
         answer = _strip_answer_refs(answer)
     answer = _normalize_answer_refs(answer)
@@ -444,7 +446,10 @@ async def async_web_context_answer(
         search_quality=meta.get("search_quality") or {},
         web_sources=(meta.get("research_trace") or {}).get("candidate_sources") or [],
     )
-    if not streaming_started:
+    trace = meta.get("research_trace") if isinstance(meta.get("research_trace"), dict) else {}
+    provider_status = meta.get("provider_status") if isinstance(meta.get("provider_status"), dict) else {}
+    synthesis_skipped = bool(trace.get("synthesis_skipped") or provider_status.get("synthesis_skipped"))
+    if not streaming_started and not synthesis_skipped:
         await _emit(event_callback, "synthesis_start", path="web_context")
     return result
 
@@ -718,7 +723,7 @@ def _search_with_timeout(
     query: str,
     limit: int,
 ) -> str | dict[str, Any]:
-    timeout_seconds = max(0.1, float(WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS))
+    timeout_seconds = _web_context_search_query_timeout_seconds()
     executor = ThreadPoolExecutor(max_workers=1)
     future = executor.submit(search_adapter, query, limit)
     try:
@@ -728,6 +733,15 @@ def _search_with_timeout(
         raise TimeoutError(f"搜索超时：{query}") from exc
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _web_context_search_query_timeout_seconds() -> float:
+    raw = os.environ.get("HERMES_WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS")
+    try:
+        value = float(raw) if raw is not None else DEFAULT_WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS
+    except (TypeError, ValueError):
+        value = DEFAULT_WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS
+    return max(3.0, min(value, 45.0))
 
 
 def _query_warning_messages(
@@ -980,6 +994,12 @@ def _has_answer_material(payload: dict[str, Any]) -> bool:
         if isinstance(payload.get("selection_context"), dict)
         else {},
     )
+
+
+def _has_synthesis_material(payload: dict[str, Any]) -> bool:
+    if payload.get("mode") == "web_only":
+        return bool(payload.get("web_sources"))
+    return _has_answer_material(payload)
 
 
 def _has_existing_answer_material(
@@ -1274,6 +1294,12 @@ def _empty_web_context_stage_timings() -> dict[str, int]:
         "extract_ms": 0,
         "synthesis_ms": 0,
     }
+
+
+def _add_web_context_stage_timing(stage_timings: dict[str, Any], key: str, started: float) -> None:
+    if key not in _empty_web_context_stage_timings():
+        return
+    stage_timings[key] = int(stage_timings.get(key) or 0) + int((time.monotonic() - started) * 1000)
 
 
 def _run_coro_sync(coro: Awaitable[Any]) -> Any:

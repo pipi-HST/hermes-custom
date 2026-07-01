@@ -58,6 +58,20 @@ def default_research_plan(monkeypatch):
     patch_research_plan(monkeypatch)
 
 
+def test_web_context_search_query_timeout_env(monkeypatch):
+    monkeypatch.delenv("HERMES_WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS", raising=False)
+    assert web_context_answer._web_context_search_query_timeout_seconds() == 18.0
+
+    monkeypatch.setenv("HERMES_WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS", "2")
+    assert web_context_answer._web_context_search_query_timeout_seconds() == 3.0
+
+    monkeypatch.setenv("HERMES_WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS", "99")
+    assert web_context_answer._web_context_search_query_timeout_seconds() == 45.0
+
+    monkeypatch.setenv("HERMES_WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS", "bad")
+    assert web_context_answer._web_context_search_query_timeout_seconds() == 18.0
+
+
 def test_web_context_answer_uses_summary_materials_without_extract(monkeypatch):
     llm_calls = []
     patch_research_plan(monkeypatch, queries=["DeepSeek 招聘 Harness"])
@@ -249,7 +263,7 @@ def test_web_context_answer_times_out_stuck_search_query(monkeypatch):
             ]
         }
 
-    monkeypatch.setattr(web_context_answer, "WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS", 0.05, raising=False)
+    monkeypatch.setattr(web_context_answer, "_web_context_search_query_timeout_seconds", lambda: 0.05)
 
     started = time.monotonic()
     warnings = []
@@ -294,7 +308,7 @@ def test_web_context_answer_records_query_statuses_and_readable_warnings(monkeyp
             ]
         }
 
-    monkeypatch.setattr(web_context_answer, "WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS", 0.05, raising=False)
+    monkeypatch.setattr(web_context_answer, "_web_context_search_query_timeout_seconds", lambda: 0.05)
     monkeypatch.setattr(web_context_answer, "_llm_json", fake_llm_json)
 
     result = web_context_answer.web_context_answer(
@@ -331,9 +345,68 @@ def test_web_context_answer_records_query_statuses_and_readable_warnings(monkeyp
     assert provider_status["stage_timings"]["search_ms"] > 0
 
 
+def test_web_context_answer_records_light_path_stage_timings(monkeypatch):
+    def slow_plan(query, *, mode="local_web", article_context=None, selection_context=None):
+        del article_context, selection_context
+        time.sleep(0.01)
+        return {
+            "intent_label": "planner",
+            "needs_web": True,
+            "mode": mode,
+            "subject": {},
+            "selection_role": "none",
+            "risk_level": "low",
+            "freshness_sensitive": False,
+            "answer_depth": "normal",
+            "queries": [query],
+            "answer_claims_needed": [],
+            "claim_requirements": {},
+            "evidence_contract": {"minimum_independent_sources": 1},
+            "source_preferences": {},
+            "answer_contract": {},
+            "privacy": {"may_use_selection_text": False, "allowed_context_terms": []},
+            "plan_status": "planned",
+        }
+
+    def fake_local_search(_query, _warnings):
+        time.sleep(0.01)
+        return "本地材料", [{"ref": "K1", "type": "knowledge", "id": "k1", "title": "本地材料"}]
+
+    def fake_search(_query, _limit):
+        time.sleep(0.01)
+        return {"results": [{"title": "网页材料", "url": "https://example.com/web", "description": "网页摘要"}]}
+
+    def fake_llm_json(prompt, *, timeout_seconds):
+        if "选择网页材料" in prompt:
+            return {"selected_refs": ["W1"], "open_refs": []}
+        return {}
+
+    def fake_synthesize(_payload):
+        time.sleep(0.01)
+        return "这是综合答案 [K1][W1]。"
+
+    monkeypatch.setattr(web_context_answer, "plan_research", slow_plan)
+    monkeypatch.setattr(web_context_answer, "_llm_json", fake_llm_json)
+
+    result = web_context_answer.web_context_answer(
+        query="解释轻链路",
+        mode="local_web",
+        search_adapter=fake_search,
+        extract_adapter=lambda _urls: {"results": []},
+        local_search_adapter=fake_local_search,
+        synthesize_adapter=fake_synthesize,
+    )
+
+    timings = result["meta"]["provider_status"]["stage_timings"]
+    assert timings["planning_ms"] > 0
+    assert timings["local_search_ms"] > 0
+    assert timings["search_ms"] > 0
+    assert timings["synthesis_ms"] > 0
+
+
 def test_web_context_answer_skips_synthesis_when_web_has_no_material(monkeypatch):
     patch_research_plan(monkeypatch, queries=["slow query"])
-    monkeypatch.setattr(web_context_answer, "WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS", 0.05, raising=False)
+    monkeypatch.setattr(web_context_answer, "_web_context_search_query_timeout_seconds", lambda: 0.05)
 
     def slow_search(_query, _limit):
         time.sleep(0.35)
@@ -342,6 +415,11 @@ def test_web_context_answer_skips_synthesis_when_web_has_no_material(monkeypatch
     result = web_context_answer.web_context_answer(
         query="HTML 承载复杂信息 可视化 原型 vibecoding",
         mode="web_only",
+        article_context={
+            "title": "本地文章",
+            "body": "这篇文章里有足够多的本地文字，但 web_only 下不能把它当作答案材料。",
+        },
+        selection_context={"selected_text": "复杂信息可视化"},
         search_adapter=slow_search,
         extract_adapter=lambda _urls: {"results": []},
         synthesize_adapter=lambda _payload: (_ for _ in ()).throw(
@@ -359,6 +437,27 @@ def test_web_context_answer_skips_synthesis_when_web_has_no_material(monkeypatch
         "1 条查询超时，已跳过；暂无可用联网来源。",
         "没有可用材料，已跳过空材料回答生成。",
     ]
+
+
+def test_web_context_query_cap_preserves_planner_tiers():
+    normal_plan = {
+        "needs_web": True,
+        "answer_depth": "normal",
+        "risk_level": "low",
+        "freshness_sensitive": False,
+        "queries": ["q1", "q2", "q3", "q4"],
+        "evidence_contract": {"minimum_independent_sources": 1},
+    }
+    detailed_plan = {
+        **normal_plan,
+        "answer_depth": "detailed",
+        "evidence_contract": {"minimum_independent_sources": 2},
+    }
+    high_risk_plan = {**normal_plan, "risk_level": "high"}
+
+    assert web_context_answer._query_cap("web_only", normal_plan) == 2
+    assert web_context_answer._query_cap("web_only", detailed_plan) == web_context_answer.MAX_WEB_QUERIES
+    assert web_context_answer._query_cap("web_only", high_risk_plan) == web_context_answer.MAX_WEB_QUERIES
 
 
 def test_web_context_answer_prompt_includes_article_term_context(monkeypatch):
@@ -558,6 +657,33 @@ def test_async_web_context_answer_emits_candidate_trace(monkeypatch):
     assert material_events and material_events[0]["material_count"] == 1
     assert ranked
     assert ranked[0]["web_sources"][0]["title"] == "什么是 Harness Engineering"
+
+
+def test_async_web_context_answer_does_not_emit_synthesis_start_when_skipped(monkeypatch):
+    events = []
+    patch_research_plan(monkeypatch, queries=["slow query"])
+    monkeypatch.setattr(web_context_answer, "_web_context_search_query_timeout_seconds", lambda: 0.05)
+
+    def slow_search(_query, _limit):
+        time.sleep(0.35)
+        return {"results": [{"title": "late", "url": "https://example.com/late", "description": "late"}]}
+
+    result = asyncio.run(
+        web_context_answer.async_web_context_answer(
+            query="HTML 承载复杂信息 可视化 原型 vibecoding",
+            mode="web_only",
+            article_context={"title": "本地文章", "body": "本地文章不能在 web_only 下触发合成。"},
+            search_adapter=slow_search,
+            extract_adapter=lambda _urls: {"results": []},
+            synthesize_adapter=lambda _payload: (_ for _ in ()).throw(
+                AssertionError("empty web_only material should not synthesize")
+            ),
+            event_callback=lambda event: events.append(event),
+        )
+    )
+
+    assert result["meta"]["provider_status"]["synthesis_skipped"] is True
+    assert "synthesis_start" not in [event["type"] for event in events]
 
 
 def test_async_web_context_answer_streams_answer_delta(monkeypatch):
