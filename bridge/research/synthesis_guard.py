@@ -163,6 +163,7 @@ def _cited_refs(answer: str) -> set[str]:
 def _normalize_tool_citation_brackets(answer: str) -> str:
     """Normalize citation brackets to standard [K1]/[W1] format."""
     text = answer or ""
+    text = re.sub(r"\\\[\s*([KW]\d+)\s*\\\]", r"[\1]", text, flags=re.IGNORECASE)
     text = re.sub(r"［\s*([KW]\d+)\s*］", r"[\1]", text, flags=re.IGNORECASE)
     text = re.sub(r"【\s*([KW]\d+)\s*】", r"[\1]", text, flags=re.IGNORECASE)
     return text

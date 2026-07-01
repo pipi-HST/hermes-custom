@@ -76,6 +76,7 @@ def run_light_web_qa(
     warning_start = len(warnings)
     stage_timings = _empty_stage_timings()
     queries = _light_queries(query, research_plan)
+    query_statuses: list[dict[str, Any]] = []
     search_started = time.monotonic()
     results = collect_web_search_results(
         queries,
@@ -83,6 +84,7 @@ def run_light_web_qa(
         warnings=warnings,
         backend_label=_default_search_backend(),
         max_queries=min(len(queries), _light_query_limit(path_label)),
+        query_statuses=query_statuses,
     )
     if promote_mentioned_urls:
         results = _promote_mentioned_url_candidates(query, results, research_plan)
@@ -97,6 +99,7 @@ def run_light_web_qa(
         started=started,
         warning_start=warning_start,
         stage_timings=stage_timings,
+        query_statuses=query_statuses,
         path_label=path_label,
     )
 
@@ -117,6 +120,7 @@ async def run_light_web_qa_async(
     warning_start = len(warnings)
     stage_timings = _empty_stage_timings()
     queries = _light_queries(query, research_plan)
+    query_statuses: list[dict[str, Any]] = []
     search_started = time.monotonic()
     results = await collect_web_search_results_async(
         queries,
@@ -125,6 +129,7 @@ async def run_light_web_qa_async(
         event_callback=event_callback,
         backend_label=_default_search_backend(),
         max_queries=min(len(queries), _light_query_limit(path_label)),
+        query_statuses=query_statuses,
     )
     if promote_mentioned_urls:
         results = await asyncio.to_thread(_promote_mentioned_url_candidates, query, results, research_plan)
@@ -139,6 +144,7 @@ async def run_light_web_qa_async(
         started=started,
         warning_start=warning_start,
         stage_timings=stage_timings,
+        query_statuses=query_statuses,
         event_callback=event_callback,
         path_label=path_label,
     )
@@ -155,6 +161,7 @@ async def _finish_light_web_qa_async(
     started: float,
     warning_start: int,
     stage_timings: dict[str, Any],
+    query_statuses: list[dict[str, Any]],
     event_callback: ResearchEventCallback | None = None,
     path_label: str = "light_web_qa",
 ) -> dict[str, Any]:
@@ -212,6 +219,7 @@ async def _finish_light_web_qa_async(
         started=started,
         warning_start=warning_start,
         stage_timings=stage_timings,
+        query_statuses=query_statuses,
         read_pages=len(urls),
         path_label=path_label,
     )
@@ -228,6 +236,7 @@ def _finish_light_web_qa(
     started: float,
     warning_start: int,
     stage_timings: dict[str, Any],
+    query_statuses: list[dict[str, Any]],
     event_callback: ResearchEventCallback | None = None,
     path_label: str = "light_web_qa",
 ) -> dict[str, Any]:
@@ -277,6 +286,7 @@ def _finish_light_web_qa(
         started=started,
         warning_start=warning_start,
         stage_timings=stage_timings,
+        query_statuses=query_statuses,
         read_pages=len(urls),
         path_label=path_label,
     )
@@ -295,6 +305,7 @@ def _assemble_light_web_result(
     started: float,
     warning_start: int,
     stage_timings: dict[str, Any],
+    query_statuses: list[dict[str, Any]],
     read_pages: int,
     path_label: str = "light_web_qa",
 ) -> dict[str, Any]:
@@ -316,6 +327,7 @@ def _assemble_light_web_result(
         [],
         sources=sources,
         stage_timings=stage_timings,
+        query_statuses=query_statuses,
     )
     provider_status["path"] = path_label
     provider_status["candidate_count"] = len(candidates)

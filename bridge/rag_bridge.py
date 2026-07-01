@@ -195,8 +195,14 @@ def _search_knowledge_base(
             title=item.get("title") or item.get("file_path", ""),
             path=item.get("file_path", ""),
             section=item.get("section_title", ""),
+            ref=str(index),
+            file_path=item.get("file_path", ""),
+            excerpt=_source_excerpt(item),
+            source_kind=str(item.get("source_kind") or ""),
+            reading_session_id=str(item.get("reading_session_id") or ""),
+            reading_draft_id=str(item.get("reading_draft_id") or ""),
         )
-        for item in results
+        for index, item in enumerate(results, 1)
     ]
     citation_validation = validate_citations(resp["answer"], source_map)
     repaired = False
@@ -374,8 +380,17 @@ def _hydrate_capture(vault_path: str, row: dict) -> dict:
         "title": frontmatter.get("title", ""),
         "story": frontmatter.get("story", ""),
         "tags": frontmatter.get("tags", []),
+        "source_kind": str(frontmatter.get("source_kind") or frontmatter.get("source_type") or ""),
+        "reading_session_id": str(frontmatter.get("reading_session_id") or ""),
+        "reading_draft_id": str(frontmatter.get("reading_draft_id") or ""),
+        "output_type": str(frontmatter.get("output_type") or ""),
         "body": body,
     }
+
+
+def _source_excerpt(item: dict, *, limit: int = 500) -> str:
+    text = re.sub(r"\s+", " ", str(item.get("body") or item.get("story") or "")).strip()
+    return text[:limit]
 
 
 def _extract_section_body(body: str, section_title: str) -> str:

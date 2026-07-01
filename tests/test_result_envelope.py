@@ -123,6 +123,38 @@ def test_source_ref_has_stable_fields() -> None:
     }
 
 
+def test_source_ref_keeps_optional_navigation_fields() -> None:
+    ref = source_ref(
+        role="evidence",
+        type="capture_section",
+        id="cap-1",
+        title="测试笔记",
+        path="captures/test.md",
+        section="核心机制",
+        status="",
+        ref="K1",
+        file_path="captures/test.md",
+        excerpt="章节摘录",
+        url="",
+        domain="",
+    )
+
+    assert ref == {
+        "role": "evidence",
+        "type": "capture_section",
+        "id": "cap-1",
+        "title": "测试笔记",
+        "path": "captures/test.md",
+        "section": "核心机制",
+        "status": "",
+        "ref": "K1",
+        "file_path": "captures/test.md",
+        "excerpt": "章节摘录",
+        "url": "",
+        "domain": "",
+    }
+
+
 def test_next_action_has_stable_fields() -> None:
     action = next_action(
         label="展开来源",

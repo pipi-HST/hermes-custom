@@ -329,6 +329,15 @@ def _save_answer_to_knowledge(
         sources=sources,
     )
     metadata = _generate_full_text_metadata(config, draft_text)
+    title = _metadata_answer_draft_title(metadata, fallback=title)
+    session = repo.update_session(session["id"], source_title=title) or session
+    draft_text = _build_answer_draft_text(
+        title=title,
+        user_message=user_message,
+        assistant_answer=assistant_answer,
+        output_type=decision["output_type"],
+        sources=sources,
+    )
     draft = repo.create_draft(
         session_id=session["id"],
         output_type=decision["output_type"],
@@ -520,6 +529,13 @@ def _answer_draft_title(*, user_message: str, assistant_answer: str) -> str:
     base = re.sub(r"\s+", " ", user_message or assistant_answer).strip()
     base = re.sub(r"[#*_`>\[\]()]+" , "", base)
     return (base[:36].strip(" ，。；：") or "对话沉淀笔记")
+
+
+def _metadata_answer_draft_title(metadata: dict, *, fallback: str) -> str:
+    base = str((metadata or {}).get("title") or "").strip()
+    base = re.sub(r"\s+", " ", base)
+    base = re.sub(r"[#*_`>\[\]()]+" , "", base)
+    return (base[:36].strip(" ，。；：") or fallback)
 
 
 def _topic_phrase(user_message: str, assistant_answer: str = "") -> str:

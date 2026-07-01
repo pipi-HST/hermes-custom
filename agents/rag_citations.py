@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 
 
-_CITATION_RE = re.compile(r"\[(\d{1,3})\]")
+_CITATION_RE = re.compile(r"\\?\[(\d{1,3})\\?\]")
 
 
 @dataclass(frozen=True)

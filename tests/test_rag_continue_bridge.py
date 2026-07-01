@@ -48,6 +48,9 @@ def test_continue_latest_rag_answer_returns_second_page(monkeypatch, tmp_path):
     assert "[1] 来源一 / 章节一" in envelope["chat_preview"]
     assert envelope["meta"]["source_run_id"] == run["id"]
     assert envelope["meta"]["page"] == 2
+    assert envelope["source_map"][0]["ref"] == "1"
+    assert envelope["source_map"][0]["file_path"] == "captures/one.md"
+    assert envelope["source_map"][0]["excerpt"] == ""
 
 
 def test_continue_latest_rag_answer_advances_after_prior_continue(monkeypatch, tmp_path):

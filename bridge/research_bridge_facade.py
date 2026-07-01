@@ -47,8 +47,12 @@ def _search_local(query: str, warnings: list[str]) -> tuple[str, list[dict[str, 
                     "id": str(item.get("id") or ""),
                     "title": str(item.get("title") or item.get("path") or f"知识来源 {index}"),
                     "path": str(item.get("path") or ""),
+                    "file_path": str(item.get("file_path") or item.get("path") or ""),
                     "section": str(item.get("section") or ""),
                     "excerpt": str(item.get("excerpt") or item.get("section") or ""),
+                    "source_kind": str(item.get("source_kind") or ""),
+                    "reading_session_id": str(item.get("reading_session_id") or ""),
+                    "reading_draft_id": str(item.get("reading_draft_id") or ""),
                 }
             )
     return answer, sources

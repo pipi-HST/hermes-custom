@@ -139,6 +139,7 @@ async def run_web_research_async(
     started = time.monotonic()
     stage_timings = _empty_stage_timings()
     fallback_attempts: list[dict[str, Any]] = []
+    query_statuses: list[dict[str, Any]] = []
     primary_backend = deps.default_search_backend() if using_default_search else ""
     search_started = time.monotonic()
     direct_candidates = (
@@ -153,6 +154,7 @@ async def run_web_research_async(
         event_callback=event_callback,
         backend_label=primary_backend,
         max_queries=initial_query_limit,
+        query_statuses=query_statuses,
     )
     if using_default_search:
         results = _dedupe_web_results(direct_candidates + results)[:MAX_WEB_CANDIDATES]
@@ -188,6 +190,7 @@ async def run_web_research_async(
                         event_callback=event_callback,
                         backend_label=backend,
                         max_queries=repair_query_limit,
+                        query_statuses=query_statuses,
                     )
                     preferred_results = [{**item, "fallback_candidate": True} for item in preferred_results]
                 except Exception as exc:
@@ -242,6 +245,7 @@ async def run_web_research_async(
                 event_callback=event_callback,
                 backend_label=primary_backend,
                 max_queries=repair_query_limit,
+                query_statuses=query_statuses,
             )
             _add_stage_timing(stage_timings, "search_ms", search_started)
             results = _dedupe_web_results(rewritten_results + results)
@@ -280,6 +284,7 @@ async def run_web_research_async(
                     event_callback=event_callback,
                     backend_label=backend,
                     max_queries=repair_query_limit,
+                    query_statuses=query_statuses,
                 )
                 fallback_results = [{**item, "fallback_candidate": True} for item in fallback_results]
             except Exception as exc:
@@ -315,6 +320,7 @@ async def run_web_research_async(
         quality,
         fallback_attempts,
         stage_timings=stage_timings,
+        query_statuses=query_statuses,
     )
     classified = _classify_ranked_sources(
         query,
@@ -345,6 +351,7 @@ async def run_web_research_async(
             quality,
             fallback_attempts,
             stage_timings=stage_timings,
+            query_statuses=query_statuses,
         )
         return web_research_result(
             [],
@@ -399,6 +406,7 @@ async def run_web_research_async(
                     event_callback=event_callback,
                     backend_label=backend,
                     max_queries=repair_query_limit,
+                    query_statuses=query_statuses,
                 )
                 fallback_results = [{**item, "fallback_candidate": True} for item in fallback_results]
             except Exception as exc:
@@ -458,6 +466,7 @@ async def run_web_research_async(
                         event_callback=event_callback,
                         backend_label=primary_backend,
                         max_queries=repair_query_limit,
+                        query_statuses=query_statuses,
                     )
                     fallback_results = [{**item, "fallback_candidate": True} for item in fallback_results]
                 except Exception as exc:
@@ -504,6 +513,7 @@ async def run_web_research_async(
         fallback_attempts,
         sources=sources,
         stage_timings=stage_timings,
+        query_statuses=query_statuses,
     )
     await _emit_research_event_async(
         event_callback,
@@ -532,6 +542,7 @@ async def run_web_research_async(
         warning_start=warning_start,
         fallback_attempts=fallback_attempts,
         stage_timings=stage_timings,
+        query_statuses=query_statuses,
     )
     if missing_required:
         await _emit_research_event_async(
@@ -571,6 +582,7 @@ async def run_web_research_async(
                     event_callback=event_callback,
                     backend_label=backend,
                     max_queries=repair_query_limit,
+                    query_statuses=query_statuses,
                 )
                 fallback_results = [{**item, "fallback_candidate": True} for item in fallback_results]
             except Exception as exc:
@@ -619,6 +631,7 @@ async def run_web_research_async(
             fallback_attempts,
             sources=sources,
             stage_timings=stage_timings,
+            query_statuses=query_statuses,
         )
     mark_sufficient_evidence_status(sources, research_plan, quality)
     mark_limited_evidence_status(sources, research_plan, quality, warnings)

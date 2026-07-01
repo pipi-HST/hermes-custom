@@ -10,6 +10,7 @@ import asyncio
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any, Callable, Awaitable
 
@@ -19,9 +20,14 @@ from agents.capture_agent import load_config
 
 from bridge.result_envelope import success_envelope
 from bridge.research.adapters import _default_search_backend
+from bridge.research.planner import (
+    _max_initial_search_queries_for_plan,
+    plan_research,
+)
 from bridge.research.synthesis import _call_llm
 from bridge.research.timing import _add_stage_timing
 from bridge.research.types import (
+    MAX_WEB_QUERIES,
     ResearchEventCallback,
     ResearchExtractAdapter,
     ResearchSearchAdapter,
@@ -37,11 +43,13 @@ from bridge.research.utils import (
     _unique,
 )
 
-WEB_CONTEXT_MAX_QUERIES = 3
 WEB_CONTEXT_RESULTS_PER_QUERY = 8
 WEB_CONTEXT_MAX_MATERIALS = 6
 WEB_CONTEXT_MAX_OPEN_PAGES = 2
-WEB_CONTEXT_QUERY_TIMEOUT_SECONDS = 8
+WEB_CONTEXT_FULL_ARTICLE_CHARS = 4000
+WEB_CONTEXT_SUMMARY_CHARS = 800
+WEB_CONTEXT_SURROUNDING_CHARS = 500
+WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS = 10
 WEB_CONTEXT_SELECTION_TIMEOUT_SECONDS = 8
 WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS = 35
 
@@ -78,6 +86,7 @@ PROCESS_LANGUAGE_LINE_RE = re.compile(
 )
 
 MAX_SELECTION_SEARCH_CHARS = 1000
+ANSWER_REF_RE = re.compile(r"\\?\[([KW]\d+)\\?\]", re.I)
 
 
 def web_context_answer(
@@ -104,34 +113,76 @@ def web_context_answer(
             meta={"query": query, "mode": normalized_mode, "path": "web_context"},
         )
 
-    article_context = article_context or {}
-    selection_context = selection_context or {}
     warnings: list[str] = []
+    selection_context = selection_context or {}
+    article_context = _normalized_article_context(article_context or {}, selection_context, warnings)
     stage_timings = _empty_web_context_stage_timings()
 
-    use_local = normalized_mode in {"local_only", "local_web"}
-    use_web = normalized_mode in {"web_only", "local_web"}
+    planning_started = time.monotonic()
+    research_plan = plan_research(
+        clean_query,
+        mode=normalized_mode,
+        article_context=article_context,
+        selection_context=selection_context,
+    )
+    _add_stage_timing(stage_timings, "planning_ms", planning_started)
+    use_local = _mode_needs_local(normalized_mode)
+    use_web = _mode_needs_web(normalized_mode, research_plan)
+    planned_queries = [str(item or "").strip() for item in research_plan.get("queries") or [] if str(item or "").strip()]
+    query_cap = _query_cap(normalized_mode, research_plan)
+    web_queries = planned_queries[:query_cap]
+    skipped_query_statuses = (
+        _skipped_query_statuses(planned_queries, reason="web_not_requested")
+        if normalized_mode == "local_web" and planned_queries and not use_web
+        else []
+    )
+    _progress(
+        progress_callback,
+        "plan",
+        mode=normalized_mode,
+        plan_status=research_plan.get("plan_status") or ("planned_web" if use_web else "planned"),
+        needs_web=use_web,
+        needs_local=use_local,
+        queries=web_queries or planned_queries,
+        intent_label=research_plan.get("intent_label"),
+        answer_depth=research_plan.get("answer_depth"),
+    )
     local_answer = ""
     knowledge_sources: list[dict[str, Any]] = []
     if use_local and local_search_adapter is not None:
+        local_started = time.monotonic()
         local_answer, knowledge_sources = local_search_adapter(
-            _local_search_query(clean_query, selection_context),
+            _local_search_query(clean_query, selection_context, article_context),
             warnings,
         )
+        knowledge_sources = _prioritize_article_sources(
+            knowledge_sources,
+            article_context=article_context,
+            selection_context=selection_context,
+        )
+        _add_stage_timing(stage_timings, "local_search_ms", local_started)
 
-    web_queries: list[str] = []
     candidates: list[dict[str, Any]] = []
+    query_statuses: list[dict[str, Any]] = list(skipped_query_statuses)
     web_sources: list[dict[str, Any]] = []
     opened_urls: list[str] = []
     material_plan: dict[str, Any] = {"selected_refs": [], "open_refs": [], "answer_shape": ""}
     if use_web:
         search_started = time.monotonic()
-        web_queries = _plan_queries(clean_query, article_context=article_context, selection_context=selection_context)
+        if not web_queries:
+            web_queries = [clean_query]
         _progress(progress_callback, "queries_ready", queries=web_queries, query_count=len(web_queries))
-        candidates = _search_candidates(web_queries, search_adapter, warnings, progress_callback=progress_callback)
+        candidates, executed_statuses = _search_candidates(web_queries, search_adapter, warnings, progress_callback=progress_callback)
+        query_statuses.extend(executed_statuses)
         _add_stage_timing(stage_timings, "search_ms", search_started)
 
-        material_plan = _select_materials(clean_query, candidates, local_answer=local_answer)
+        material_plan = _select_materials(
+            clean_query,
+            candidates,
+            local_answer=local_answer,
+            article_context=article_context,
+            selection_context=selection_context,
+        )
         selected = _sources_by_refs(candidates, material_plan.get("selected_refs") or [])
         if not selected:
             selected = candidates[:WEB_CONTEXT_MAX_MATERIALS]
@@ -164,6 +215,18 @@ def web_context_answer(
             finally:
                 _add_stage_timing(stage_timings, "extract_ms", extract_started)
         web_sources = _material_sources(selected, extracted_by_url, extract_failures)
+        warnings.extend(
+            _query_warning_messages(
+                query_statuses,
+                len(web_sources),
+                has_existing_material=_has_existing_answer_material(
+                    local_answer=local_answer,
+                    knowledge_sources=knowledge_sources,
+                    article_context=article_context,
+                    selection_context=selection_context,
+                ),
+            )
+        )
         _progress(
             progress_callback,
             "web_extract_done",
@@ -180,20 +243,31 @@ def web_context_answer(
         mode=normalized_mode,
         article_context=article_context,
         selection_context=selection_context,
+        research_plan=research_plan,
         local_answer=local_answer,
         knowledge_sources=knowledge_sources,
         web_sources=web_sources,
         web_queries=web_queries,
         material_plan=material_plan,
     )
+    retrieved_knowledge_sources = list(knowledge_sources)
     material_web_sources = list(web_sources)
+    synthesis_skipped = False
     synthesis_started = time.monotonic()
-    answer = (
-        synthesize_adapter(synthesis_input)
-        if synthesize_adapter
-        else _generate_answer(synthesis_input, warnings, answer_delta_callback=answer_delta_callback)
-    )
+    if use_web and not _has_answer_material(synthesis_input):
+        warnings.append("没有可用材料，已跳过空材料回答生成。")
+        synthesis_skipped = True
+        answer = _fallback_answer(synthesis_input)
+    else:
+        answer = (
+            synthesize_adapter(synthesis_input)
+            if synthesize_adapter
+            else _generate_answer(synthesis_input, warnings, answer_delta_callback=answer_delta_callback)
+        )
     _add_stage_timing(stage_timings, "synthesis_ms", synthesis_started)
+    if normalized_mode == "current_article_only":
+        answer = _strip_answer_refs(answer)
+    answer = _normalize_answer_refs(answer)
     answer = _repair_answer_refs(answer, knowledge_sources, web_sources)
     answer = _remove_process_language(answer)
     cited_knowledge, cited_web = _cited_sources(answer, knowledge_sources, web_sources)
@@ -211,10 +285,32 @@ def web_context_answer(
         web_sources=web_sources,
         opened_urls=opened_urls,
         stage_timings=stage_timings,
+        query_statuses=query_statuses,
+        web_attempted=use_web,
+        synthesis_skipped=synthesis_skipped,
     )
+    total_elapsed_ms = int((time.monotonic() - started) * 1000)
+    provider_status["total_elapsed_ms"] = total_elapsed_ms
     research_trace = {
         "path": "web_context",
         "legacy_research": False,
+        "mode": normalized_mode,
+        "intent_label": research_plan.get("intent_label"),
+        "answer_depth": research_plan.get("answer_depth"),
+        "plan_status": research_plan.get("plan_status"),
+        "subject": research_plan.get("subject") or {},
+        "source_preferences": research_plan.get("source_preferences") or {},
+        "evidence_contract": research_plan.get("evidence_contract") or {},
+        "answer_contract": research_plan.get("answer_contract") or {},
+        "needs_web": use_web,
+        "needs_local": use_local,
+        "queries": web_queries or planned_queries,
+        "article_context_source": article_context.get("context_source"),
+        "context_warnings": article_context.get("context_warnings") or [],
+        "used_article_context": bool(article_context.get("context_text") or article_context.get("body")),
+        "used_local": bool(knowledge_sources or local_answer),
+        "used_web": bool(web_sources),
+        "web_search_attempted": use_web,
         "web_queries": web_queries,
         "candidate_sources": _trace_context_sources(candidates),
         "material_sources": _trace_context_sources(web_sources),
@@ -228,6 +324,9 @@ def web_context_answer(
             "knowledge": len(knowledge_sources),
         },
         "stage_timings": stage_timings,
+        "synthesis_skipped": synthesis_skipped,
+        "query_statuses": query_statuses,
+        "total_elapsed_ms": total_elapsed_ms,
         "warnings": list(warnings),
     }
     source_map = [
@@ -239,7 +338,7 @@ def web_context_answer(
         intent="web_context_answer",
         chat_preview=answer,
         source_map=source_map,
-        warnings=[],
+        warnings=list(warnings),
         meta={
             "query": clean_query,
             "mode": normalized_mode,
@@ -249,6 +348,7 @@ def web_context_answer(
             "used_web": bool(web_sources),
             "web_search_attempted": use_web,
             "knowledge_sources": knowledge_sources,
+            "retrieved_knowledge_sources": retrieved_knowledge_sources,
             "web_sources": web_sources,
             "retrieved_web_sources": candidates,
             "web_queries": web_queries,
@@ -260,9 +360,10 @@ def web_context_answer(
             "provider_status": provider_status,
             "research_trace": research_trace,
             "research_plan": {
+                **research_plan,
                 "path": "web_context",
-                "intent_label": "web context answer",
                 "needs_web": use_web,
+                "needs_local": use_local,
                 "mode": normalized_mode,
                 "queries": web_queries,
             },
@@ -284,8 +385,7 @@ async def async_web_context_answer(
     event_callback: ResearchEventCallback | None = None,
 ) -> dict[str, Any]:
     clean_query = (query or "").strip()
-    await _emit(event_callback, "plan", path="web_context", mode=_normalize_mode(mode), needs_web=mode in {"web_only", "local_web"})
-    await _emit(event_callback, "web_search_start", path="web_context")
+    await _emit(event_callback, "planning_start", path="web_context", mode=_normalize_mode(mode))
     loop = asyncio.get_running_loop()
     streaming_started = False
     delta_buffer: list[str] = []
@@ -353,33 +453,190 @@ def _normalize_mode(mode: str) -> str:
     return mode if mode in {"current_article_only", "local_only", "local_web", "web_only"} else "local_web"
 
 
-def _local_search_query(query: str, selection_context: dict[str, Any] | None) -> str:
-    selected_text = str((selection_context or {}).get("selected_text") or "").strip()
-    if not selected_text:
-        return query
-    return f"选区：\n{selected_text[:MAX_SELECTION_SEARCH_CHARS]}\n\n问题：\n{query}"
+def _normalized_article_context(
+    article_context: dict[str, Any],
+    selection_context: dict[str, Any],
+    warnings: list[str],
+) -> dict[str, Any]:
+    body = str(article_context.get("body") or article_context.get("content") or "")
+    summary = _clip_text(str(article_context.get("summary") or ""), WEB_CONTEXT_SUMMARY_CHARS)
+    heading_path = selection_context.get("heading_path") or []
+    if not isinstance(heading_path, list):
+        heading_path = []
+    context_warnings: list[str] = []
+    if len(body) <= WEB_CONTEXT_FULL_ARTICLE_CHARS:
+        context_source = "full_article"
+        context_text = body
+    else:
+        section = _section_for_heading_path(body, [str(item) for item in heading_path])
+        if section:
+            context_source = "current_section"
+            context_text = section
+            if len(context_text) > WEB_CONTEXT_FULL_ARTICLE_CHARS:
+                context_text = _clip_text(context_text, WEB_CONTEXT_FULL_ARTICLE_CHARS)
+                context_warnings.append("current_section_too_long_clipped")
+        else:
+            context_source = "surrounding_fallback"
+            context_text = "\n".join(
+                part
+                for part in [
+                    _clip_text(str(selection_context.get("surrounding_before") or ""), WEB_CONTEXT_SURROUNDING_CHARS),
+                    str(selection_context.get("selected_text") or ""),
+                    _clip_text(str(selection_context.get("surrounding_after") or ""), WEB_CONTEXT_SURROUNDING_CHARS),
+                ]
+                if part
+            )
+            context_warnings.append("section_resolution_failed")
+    return {
+        "title": str(article_context.get("title") or ""),
+        "summary": summary,
+        "body": body,
+        "context_text": context_text,
+        "context_source": context_source,
+        "context_warnings": context_warnings,
+        "folder_path": str(article_context.get("folder_path") or ""),
+        "tags": article_context.get("tags") if isinstance(article_context.get("tags"), list) else [],
+        "file_path": str(article_context.get("file_path") or ""),
+    }
 
 
-def _plan_queries(
+def _section_for_heading_path(body: str, heading_path: list[str]) -> str:
+    wanted = [item.strip().lstrip("#").strip() for item in heading_path if item.strip()]
+    if not body.strip() or not wanted:
+        return ""
+    headings: list[tuple[int, str, int, int]] = []
+    for match in re.finditer(r"(?m)^(#{1,6})\s+(.+?)\s*$", body):
+        headings.append((len(match.group(1)), match.group(2).strip(), match.start(), match.end()))
+    if not headings:
+        return ""
+    target_index = -1
+    target_title = wanted[-1]
+    for index, (_level, title, _start, _end) in enumerate(headings):
+        if title == target_title:
+            target_index = index
+    if target_index < 0:
+        return ""
+    level, _title, _start, content_start = headings[target_index]
+    content_end = len(body)
+    for next_level, _next_title, next_start, _next_end in headings[target_index + 1:]:
+        if next_level <= level:
+            content_end = next_start
+            break
+    return body[content_start:content_end].strip()
+
+
+def _local_search_query(
     query: str,
+    selection_context: dict[str, Any] | None,
+    article_context: dict[str, Any] | None = None,
+) -> str:
+    selected_text = str((selection_context or {}).get("selected_text") or "").strip()
+    article_context = article_context or {}
+    title = str(article_context.get("title") or "").strip()
+    context_text = str(article_context.get("context_text") or "").strip()
+    summary = str(article_context.get("summary") or "").strip()
+    heading_path = (selection_context or {}).get("heading_path") or []
+    has_heading_path = isinstance(heading_path, list) and any(str(item).strip() for item in heading_path)
+    if not any([selected_text, title, context_text, summary, has_heading_path]):
+        return query
+    if not selected_text:
+        parts = [f"问题：\n{query}"]
+    else:
+        parts = [
+            f"选区：\n{selected_text[:MAX_SELECTION_SEARCH_CHARS]}",
+            f"问题：\n{query}",
+        ]
+    if title:
+        parts.append(f"文章标题：\n{_clip_text(title, 160)}")
+    if isinstance(heading_path, list) and heading_path:
+        path = " > ".join(str(item) for item in heading_path if str(item).strip())
+        if path:
+            parts.append(f"标题路径：\n{_clip_text(path, 240)}")
+    if context_text:
+        parts.append(f"当前文章上下文：\n{_clip_text(context_text, 1200)}")
+    if summary and article_context.get("context_source") != "full_article":
+        parts.append(f"文章摘要：\n{_clip_text(summary, 500)}")
+    return "\n\n".join(parts)
+
+
+def _prioritize_article_sources(
+    sources: list[dict[str, Any]],
     *,
     article_context: dict[str, Any],
     selection_context: dict[str, Any],
-) -> list[str]:
-    prompt = "\n".join(
-        [
-            "你要为知识工作台的问题生成网页搜索词。",
-            "目标是帮助用户理解、补充背景、扩展材料，不是做证据审判。",
-            "只返回 JSON：{\"queries\":[\"...\"]}，最多 3 个。",
-            f"用户问题：{query}",
-            f"选区：{_clip_text(str(selection_context.get('selected_text') or ''), 240)}",
-            f"文章标题：{_clip_text(str(article_context.get('title') or ''), 120)}",
-        ]
+) -> list[dict[str, Any]]:
+    if not sources or not _selection_needs_article_priority(selection_context):
+        return sources
+    return sorted(
+        sources,
+        key=lambda source: (
+            0 if _source_matches_article(source, article_context) else 1,
+            1 if _is_ai_answer_note_source(source) else 0,
+        ),
     )
-    payload = _llm_json(prompt, timeout_seconds=WEB_CONTEXT_QUERY_TIMEOUT_SECONDS)
-    queries = [str(item or "").strip() for item in payload.get("queries") or []]
-    queries = [item for item in queries if item]
-    return _unique([*queries, query])[:WEB_CONTEXT_MAX_QUERIES] or [query]
+
+
+def _selection_needs_article_priority(selection_context: dict[str, Any]) -> bool:
+    selected = str((selection_context or {}).get("selected_text") or "").strip()
+    if not selected:
+        return False
+    if len(selected) <= 80:
+        return True
+    return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_./+-]{1,80}", selected))
+
+
+def _source_matches_article(source: dict[str, Any], article_context: dict[str, Any]) -> bool:
+    article_path = str(article_context.get("file_path") or article_context.get("path") or "").strip()
+    source_path = str(source.get("file_path") or source.get("path") or "").strip()
+    if article_path and source_path and article_path == source_path:
+        return True
+    article_id = str(article_context.get("id") or "").strip()
+    source_id = str(source.get("id") or "").strip()
+    if article_id and source_id and article_id == source_id:
+        return True
+    article_title = str(article_context.get("title") or "").strip()
+    source_title = str(source.get("title") or "").strip()
+    return bool(article_title and source_title and article_title == source_title)
+
+
+def _is_ai_answer_note_source(source: dict[str, Any]) -> bool:
+    if str(source.get("reading_session_id") or "").strip():
+        return True
+    if str(source.get("reading_draft_id") or "").strip():
+        return True
+    kind = str(source.get("source_kind") or source.get("type") or "").strip().lower()
+    return kind in {"ai 解释", "ai explanation", "reading_draft", "reading draft", "answer_draft"}
+
+
+def _query_cap(mode: str, plan: dict[str, Any]) -> int:
+    if mode in {"web_only", "local_web"} and plan.get("needs_web"):
+        return max(1, min(_max_initial_search_queries_for_plan(plan), MAX_WEB_QUERIES))
+    return 0
+
+
+def _mode_needs_local(mode: str) -> bool:
+    return mode in {"local_only", "local_web"}
+
+
+def _mode_needs_web(mode: str, plan: dict[str, Any]) -> bool:
+    if mode == "web_only":
+        return True
+    if mode == "local_web":
+        return bool(plan.get("needs_web"))
+    return False
+
+
+def _skipped_query_statuses(queries: list[str], *, reason: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "query": query,
+            "status": "skipped",
+            "duration_ms": 0,
+            "result_count": 0,
+            "error": reason,
+        }
+        for query in queries
+    ]
 
 
 def _search_candidates(
@@ -388,17 +645,41 @@ def _search_candidates(
     warnings: list[str],
     *,
     progress_callback: ProgressCallback | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     candidates: list[dict[str, Any]] = []
+    query_statuses: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for search_query in queries[:WEB_CONTEXT_MAX_QUERIES]:
+    for search_query in queries[:MAX_WEB_QUERIES]:
         _progress(progress_callback, "web_query_start", query=search_query)
+        query_started = time.monotonic()
         try:
-            parsed = _parse_web_search(search_adapter(search_query, WEB_CONTEXT_RESULTS_PER_QUERY))
+            raw = _search_with_timeout(search_adapter, search_query, WEB_CONTEXT_RESULTS_PER_QUERY)
+            parsed = _parse_web_search(raw)
+            query_status = {
+                "query": search_query,
+                "status": "success",
+                "duration_ms": int((time.monotonic() - query_started) * 1000),
+                "result_count": len(parsed),
+                "error": "",
+            }
         except Exception as exc:
-            warnings.append(f"网页搜索失败，已使用可用材料：{exc}")
-            _progress(progress_callback, "web_query_error", query=search_query, error=str(exc))
+            query_status = {
+                "query": search_query,
+                "status": "timeout" if isinstance(exc, TimeoutError) else "failed",
+                "duration_ms": int((time.monotonic() - query_started) * 1000),
+                "result_count": 0,
+                "error": str(exc),
+            }
+            query_statuses.append(query_status)
+            _progress(
+                progress_callback,
+                "web_query_error",
+                query=search_query,
+                error="搜索超时" if query_status["status"] == "timeout" else "搜索失败",
+                query_status=query_status,
+            )
             continue
+        query_statuses.append(query_status)
         for item in parsed:
             url = _clean_web_url(str(item.get("url") or ""))
             key = (url or str(item.get("title") or "")).lower()
@@ -426,12 +707,92 @@ def _search_candidates(
             query=search_query,
             result_count=len(parsed),
             candidate_count=len(candidates),
+            query_status=query_status,
             web_sources=_trace_context_sources(candidates),
         )
-    return candidates
+    return candidates, query_statuses
 
 
-def _select_materials(query: str, candidates: list[dict[str, Any]], *, local_answer: str) -> dict[str, Any]:
+def _search_with_timeout(
+    search_adapter: ResearchSearchAdapter,
+    query: str,
+    limit: int,
+) -> str | dict[str, Any]:
+    timeout_seconds = max(0.1, float(WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS))
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(search_adapter, query, limit)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FuturesTimeoutError as exc:
+        future.cancel()
+        raise TimeoutError(f"搜索超时：{query}") from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _query_warning_messages(
+    query_statuses: list[dict[str, Any]],
+    source_count: int,
+    *,
+    has_existing_material: bool = True,
+) -> list[str]:
+    timeout_count = sum(1 for item in query_statuses if item.get("status") == "timeout")
+    failure_count = sum(1 for item in query_statuses if item.get("status") == "failed")
+    messages: list[str] = []
+    if source_count:
+        suffix = f"已用 {source_count} 个可用来源继续回答。"
+    elif has_existing_material:
+        suffix = "暂无可用联网来源，已用现有材料继续回答。"
+    else:
+        suffix = "暂无可用联网来源。"
+    if timeout_count:
+        messages.append(f"{timeout_count} 条查询超时，已跳过；{suffix}")
+    if failure_count:
+        messages.append(f"{failure_count} 条查询失败，已跳过；{suffix}")
+    return messages
+
+
+def _selection_context_prompt_block(
+    selection_context: dict[str, Any],
+    *,
+    selected_limit: int,
+    surrounding_limit: int,
+) -> str:
+    heading_path = selection_context.get("heading_path") or []
+    if not isinstance(heading_path, list):
+        heading_path = []
+    lines = [
+        f"当前选区：{_clip_text(str(selection_context.get('selected_text') or ''), selected_limit)}",
+        f"选区前文：{_clip_text(str(selection_context.get('surrounding_before') or ''), surrounding_limit)}",
+        f"选区后文：{_clip_text(str(selection_context.get('surrounding_after') or ''), surrounding_limit)}",
+        f"标题路径：{' > '.join(str(item) for item in heading_path if str(item).strip())}",
+    ]
+    return "\n".join(lines)
+
+
+def _article_context_prompt_block(article_context: dict[str, Any], *, body_limit: int) -> str:
+    context_text = str(article_context.get("context_text") or article_context.get("body") or "")
+    tags = article_context.get("tags") if isinstance(article_context.get("tags"), list) else []
+    lines = [
+        f"文章标题：{_clip_text(str(article_context.get('title') or ''), 160)}",
+        f"文件夹：{_clip_text(str(article_context.get('folder_path') or ''), 160)}",
+        f"摘要：{_clip_text(str(article_context.get('summary') or ''), 800)}",
+        f"标签：{_clip_text(', '.join(str(item) for item in tags), 240)}",
+        f"文件路径：{_clip_text(str(article_context.get('file_path') or ''), 240)}",
+        f"文章上下文来源：{article_context.get('context_source') or 'unknown'}",
+        f"文章上下文：{_clip_text(context_text, body_limit)}",
+    ]
+    return "\n".join(lines)
+
+
+def _select_materials(
+    query: str,
+    candidates: list[dict[str, Any]],
+    *,
+    local_answer: str,
+    article_context: dict[str, Any],
+    selection_context: dict[str, Any],
+) -> dict[str, Any]:
     if not candidates:
         return {"selected_refs": [], "open_refs": [], "answer_shape": ""}
     rows = [
@@ -451,6 +812,8 @@ def _select_materials(query: str, candidates: list[dict[str, Any]], *, local_ans
             "只返回 JSON：{\"selected_refs\":[\"W1\"],\"open_refs\":[\"W2\"],\"answer_shape\":\"简短说明\"}",
             "selected_refs 最多 6 个；open_refs 最多 2 个；如果摘要足够，open_refs 返回空数组。",
             f"用户问题：{query}",
+            _selection_context_prompt_block(selection_context, selected_limit=240, surrounding_limit=500),
+            _article_context_prompt_block(article_context, body_limit=1200),
             f"本地材料摘要：{_clip_text(local_answer, 300)}",
             "搜索结果：",
             json.dumps(rows, ensure_ascii=False),
@@ -522,6 +885,7 @@ def _synthesis_payload(
     mode: str,
     article_context: dict[str, Any],
     selection_context: dict[str, Any],
+    research_plan: dict[str, Any],
     local_answer: str,
     knowledge_sources: list[dict[str, Any]],
     web_sources: list[dict[str, Any]],
@@ -533,6 +897,7 @@ def _synthesis_payload(
         "mode": mode,
         "article_context": article_context,
         "selection_context": selection_context,
+        "research_plan": research_plan,
         "local_answer": local_answer,
         "knowledge_sources": knowledge_sources,
         "web_sources": web_sources,
@@ -566,16 +931,24 @@ def _generate_answer(
         }
         for source in payload.get("knowledge_sources") or []
     ]
+    selection_block = _selection_context_prompt_block(payload.get("selection_context") or {}, selected_limit=600, surrounding_limit=1200)
+    article_block = _article_context_prompt_block(payload.get("article_context") or {}, body_limit=4000)
     prompt = "\n".join(
         [
-            "你是知识工作台里的联网辅助理解模块。",
+            "你是知识工作台里的文章理解辅助模块。",
             *WEB_CONTEXT_ANSWER_STYLE_CONTRACT_LINES,
+            "如果用户问的是短词、英文术语或指代性问题，必须优先解释它在当前文章、当前选区和前后文里的具体含义；不要只给通用词典释义。",
+            "即使当前选区只有一个英文词、缩写或术语，也要把它当作有效选区；不要说看不到选中内容，也不要要求用户重新框选。",
+            "不要自动继承上一轮对话；只根据本轮问题和本轮给定上下文回答。",
             "如果本地材料明显不能回答用户问题，应直接忽略，不要解释那些不相关材料在讲什么。",
             "优先识别一手来源、官方说明、媒体报道、论坛/博客各自的用途；弱来源可以作为背景或观点材料，但不要包装成官方结论。",
             "引用只能使用给定编号，如 [W1] 或 [K1]。",
+            "如果当前模式是 current_article_only，不要输出 [K] 或 [W] 引用，也不要声称做了知识库检索或联网搜索。",
             "如果联网材料参与回答，应在对应结论附近使用可用 [W] 引用；不要只在文末泛泛列来源。",
+            f"当前模式：{payload.get('mode')}",
             f"用户问题：{payload['query']}",
-            f"当前选区：{_clip_text(str((payload.get('selection_context') or {}).get('selected_text') or ''), 600)}",
+            selection_block,
+            article_block,
             f"本地材料：{_clip_text(str(payload.get('local_answer') or ''), 1000)}",
             f"本地来源：{json.dumps(knowledge_rows, ensure_ascii=False)}",
             f"网页材料：{json.dumps(source_rows, ensure_ascii=False)}",
@@ -592,6 +965,38 @@ def _generate_answer(
     except Exception as exc:
         warnings.append(f"回答生成失败，已使用材料摘要：{exc}")
         return _fallback_answer(payload)
+
+
+def _has_answer_material(payload: dict[str, Any]) -> bool:
+    if payload.get("web_sources"):
+        return True
+    return _has_existing_answer_material(
+        local_answer=str(payload.get("local_answer") or ""),
+        knowledge_sources=list(payload.get("knowledge_sources") or []),
+        article_context=payload.get("article_context")
+        if isinstance(payload.get("article_context"), dict)
+        else {},
+        selection_context=payload.get("selection_context")
+        if isinstance(payload.get("selection_context"), dict)
+        else {},
+    )
+
+
+def _has_existing_answer_material(
+    *,
+    local_answer: str,
+    knowledge_sources: list[dict[str, Any]],
+    article_context: dict[str, Any],
+    selection_context: dict[str, Any],
+) -> bool:
+    if knowledge_sources or local_answer.strip():
+        return True
+    article_text = (
+        article_context.get("context_text") or article_context.get("body") or article_context.get("summary") or ""
+    )
+    if str(article_text).strip():
+        return True
+    return bool(str(selection_context.get("selected_text") or "").strip())
 
 
 def _fallback_answer(payload: dict[str, Any]) -> str:
@@ -726,7 +1131,15 @@ def _repair_answer_refs(answer: str, knowledge_sources: list[dict[str, Any]], we
         ref = match.group(1).upper()
         return f"[{ref}]" if ref in available else ""
 
-    return re.sub(r"\[([WK]\d+)\]", replace, answer or "").strip()
+    return ANSWER_REF_RE.sub(replace, answer or "").strip()
+
+
+def _strip_answer_refs(answer: str) -> str:
+    return re.sub(r"\s*\\?\[([WK]\d+)\]", "", answer or "", flags=re.I).strip()
+
+
+def _normalize_answer_refs(answer: str) -> str:
+    return ANSWER_REF_RE.sub(lambda match: f"[{match.group(1).upper()}]", answer or "")
 
 
 def _remove_process_language(answer: str) -> str:
@@ -747,7 +1160,8 @@ def _cited_sources(
     knowledge_sources: list[dict[str, Any]],
     web_sources: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    refs = {match.upper() for match in re.findall(r"\[([WK]\d+)\]", answer or "")}
+    normalized = _normalize_answer_refs(answer)
+    refs = {match.group(1).upper() for match in ANSWER_REF_RE.finditer(normalized)}
     if not refs:
         return knowledge_sources, web_sources
     return (
@@ -777,17 +1191,25 @@ def _source_map_items(sources: list[dict[str, Any]], *, source_type: str) -> lis
     output: list[dict[str, Any]] = []
     for source in sources:
         ref = str(source.get("ref") or "").strip()
-        output.append(
-            {
-                "ref": ref,
-                "role": "context",
-                "type": source_type,
-                "id": str(source.get("id") or source.get("url") or ref),
-                "title": str(source.get("title") or ref),
-                "url": str(source.get("url") or ""),
-                "status": source.get("extract_status") or "",
-            }
-        )
+        item = {
+            "ref": ref,
+            "role": "context",
+            "type": source_type,
+            "id": str(source.get("id") or source.get("url") or ref),
+            "title": str(source.get("title") or ref),
+            "url": str(source.get("url") or ""),
+            "path": str(source.get("path") or source.get("file_path") or source.get("url") or ""),
+            "file_path": str(source.get("file_path") or source.get("path") or ""),
+            "section": str(source.get("section") or source.get("section_title") or ""),
+            "excerpt": str(source.get("excerpt") or source.get("description") or ""),
+            "domain": str(source.get("domain") or ""),
+            "status": source.get("extract_status") or "",
+        }
+        for key in ("source_kind", "reading_session_id", "reading_draft_id"):
+            value = str(source.get(key) or "")
+            if value:
+                item[key] = value
+        output.append(item)
     return output
 
 
@@ -815,25 +1237,39 @@ def _provider_status(
     web_sources: list[dict[str, Any]],
     opened_urls: list[str],
     stage_timings: dict[str, Any],
+    query_statuses: list[dict[str, Any]],
+    web_attempted: bool,
+    synthesis_skipped: bool,
 ) -> dict[str, Any]:
-    return {
+    status = {
         "path": "web_context",
-        "search_backend": _default_search_backend(),
-        "extract_backend": "",
-        "search_elapsed_ms": int((time.monotonic() - started) * 1000),
-        "candidate_count": len(candidates),
-        "used_sources": len(web_sources),
-        "opened_pages": len(opened_urls),
-        "extracted_pages": sum(1 for source in web_sources if source.get("extract_status") == "full"),
-        "summary_only_pages": sum(1 for source in web_sources if source.get("extract_status") == "summary"),
-        "fallback_attempts": [],
+        "total_elapsed_ms": int((time.monotonic() - started) * 1000),
         "warnings": list(warnings),
         "stage_timings": stage_timings,
+        "synthesis_skipped": synthesis_skipped,
+        "query_statuses": query_statuses,
     }
+    if web_attempted:
+        status.update(
+            {
+                "search_backend": _default_search_backend(),
+                "extract_backend": "",
+                "search_elapsed_ms": int(stage_timings.get("search_ms") or 0),
+                "candidate_count": len(candidates),
+                "used_sources": len(web_sources),
+                "opened_pages": len(opened_urls),
+                "extracted_pages": sum(1 for source in web_sources if source.get("extract_status") == "full"),
+                "summary_only_pages": sum(1 for source in web_sources if source.get("extract_status") == "summary"),
+                "fallback_attempts": [],
+            }
+        )
+    return status
 
 
 def _empty_web_context_stage_timings() -> dict[str, int]:
     return {
+        "planning_ms": 0,
+        "local_search_ms": 0,
         "search_ms": 0,
         "extract_ms": 0,
         "synthesis_ms": 0,

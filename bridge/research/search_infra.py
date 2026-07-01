@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from typing import Any
 
@@ -71,6 +72,7 @@ def collect_web_search_results(
     warnings: list[str],
     backend_label: str = "",
     max_queries: int | None = None,
+    query_statuses: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     candidates: list[dict[str, str]] = []
     errors: list[str] = []
@@ -80,8 +82,17 @@ def collect_web_search_results(
     timeout_seconds = _web_search_stage_timeout()
     if timeout_seconds < 1.0:
         warnings.append("联网搜索预算已耗尽，已停止继续请求搜索后端。")
+        _extend_query_statuses(
+            query_statuses,
+            [
+                _query_status(query, status="skipped", duration_ms=0, result_count=0, error="search_budget_exhausted")
+                for query in search_queries
+            ],
+        )
         return []
     executor = ThreadPoolExecutor(max_workers=min(len(search_queries), MAX_WEB_QUERIES))
+    started_by_query = {query: time.monotonic() for query in search_queries}
+    status_by_query: dict[str, dict[str, Any]] = {}
     futures = {
         executor.submit(_search_query_candidates, search_query, search_adapter, backend_label): search_query
         for search_query in search_queries
@@ -90,16 +101,43 @@ def collect_web_search_results(
         for future in as_completed(futures, timeout=timeout_seconds):
             search_query = futures[future]
             try:
-                candidates.extend(future.result())
+                query_candidates = future.result()
+                candidates.extend(query_candidates)
+                status_by_query[search_query] = _query_status(
+                    search_query,
+                    status="success",
+                    duration_ms=_elapsed_ms(started_by_query[search_query]),
+                    result_count=len(query_candidates),
+                    error="",
+                )
             except Exception as exc:
-                errors.append(f"{search_query}: {_friendly_search_error(exc)}")
+                error = _friendly_search_error(exc)
+                errors.append(f"{search_query}: {error}")
+                status_by_query[search_query] = _query_status(
+                    search_query,
+                    status="failed",
+                    duration_ms=_elapsed_ms(started_by_query[search_query]),
+                    result_count=0,
+                    error=error,
+                )
     except FuturesTimeoutError:
         for future, search_query in futures.items():
             if not future.done():
                 errors.append(f"{search_query}: 搜索超时")
+                status_by_query[search_query] = _query_status(
+                    search_query,
+                    status="timeout",
+                    duration_ms=_elapsed_ms(started_by_query[search_query]),
+                    result_count=0,
+                    error="搜索超时",
+                )
                 future.cancel()
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
+    _extend_query_statuses(
+        query_statuses,
+        [status_by_query[query] for query in search_queries if query in status_by_query],
+    )
     if errors and not candidates:
         warnings.append(f"联网搜索失败：{'; '.join(errors[:2])}")
     elif errors:
@@ -136,6 +174,7 @@ async def collect_web_search_results_async(
     event_callback: ResearchEventCallback | None = None,
     backend_label: str = "",
     max_queries: int | None = None,
+    query_statuses: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     candidates: list[dict[str, str]] = []
     errors: list[str] = []
@@ -145,9 +184,18 @@ async def collect_web_search_results_async(
     timeout_seconds = _web_search_stage_timeout()
     if timeout_seconds < 1.0:
         warnings.append("联网搜索预算已耗尽，已停止继续请求搜索后端。")
+        _extend_query_statuses(
+            query_statuses,
+            [
+                _query_status(query, status="skipped", duration_ms=0, result_count=0, error="search_budget_exhausted")
+                for query in search_queries
+            ],
+        )
         return []
     for search_query in search_queries:
         await _emit_research_event_async(event_callback, "web_query_start", query=search_query)
+    started_by_query = {query: time.monotonic() for query in search_queries}
+    status_by_query: dict[str, dict[str, Any]] = {}
     tasks = {
         asyncio.create_task(asyncio.to_thread(_search_query_candidates, search_query, search_adapter, backend_label)): search_query
         for search_query in search_queries
@@ -166,28 +214,83 @@ async def collect_web_search_results_async(
             try:
                 query_candidates = task.result()
                 candidates.extend(query_candidates)
+                query_status = _query_status(
+                    search_query,
+                    status="success",
+                    duration_ms=_elapsed_ms(started_by_query[search_query]),
+                    result_count=len(query_candidates),
+                    error="",
+                )
+                status_by_query[search_query] = query_status
                 await _emit_research_event_async(
                     event_callback,
                     "web_query_done",
                     query=search_query,
                     result_count=len(query_candidates),
+                    query_status=query_status,
                     web_sources=_trace_sources(query_candidates),
                 )
             except Exception as exc:
-                error = f"{search_query}: {_friendly_search_error(exc)}"
-                errors.append(error)
-                await _emit_research_event_async(event_callback, "web_query_error", query=search_query, error=error)
+                error = _friendly_search_error(exc)
+                errors.append(f"{search_query}: {error}")
+                query_status = _query_status(
+                    search_query,
+                    status="failed",
+                    duration_ms=_elapsed_ms(started_by_query[search_query]),
+                    result_count=0,
+                    error=error,
+                )
+                status_by_query[search_query] = query_status
+                await _emit_research_event_async(event_callback, "web_query_error", query=search_query, error=error, query_status=query_status)
     for task in pending:
         search_query = tasks[task]
-        error = f"{search_query}: 搜索超时"
-        errors.append(error)
-        await _emit_research_event_async(event_callback, "web_query_error", query=search_query, error=error)
+        error = "搜索超时"
+        errors.append(f"{search_query}: {error}")
+        query_status = _query_status(
+            search_query,
+            status="timeout",
+            duration_ms=_elapsed_ms(started_by_query[search_query]),
+            result_count=0,
+            error=error,
+        )
+        status_by_query[search_query] = query_status
+        await _emit_research_event_async(event_callback, "web_query_error", query=search_query, error=error, query_status=query_status)
         task.cancel()
+    _extend_query_statuses(
+        query_statuses,
+        [status_by_query[query] for query in search_queries if query in status_by_query],
+    )
     if errors and not candidates:
         warnings.append(f"联网搜索失败：{'; '.join(errors[:2])}")
     elif errors:
         warnings.append(f"部分联网搜索失败，已使用可用结果：{'; '.join(errors[:2])}")
     return _dedupe_web_results(candidates)[:MAX_WEB_CANDIDATES]
+
+
+def _elapsed_ms(started: float) -> int:
+    return max(int((time.monotonic() - started) * 1000), 0)
+
+
+def _query_status(
+    query: str,
+    *,
+    status: str,
+    duration_ms: int,
+    result_count: int,
+    error: str,
+) -> dict[str, Any]:
+    return {
+        "query": query,
+        "status": status,
+        "duration_ms": duration_ms,
+        "result_count": result_count,
+        "error": error,
+    }
+
+
+def _extend_query_statuses(target: list[dict[str, Any]] | None, values: list[dict[str, Any]]) -> None:
+    if target is not None:
+        target.extend(values)
 
 
 def rank_web_sources(

@@ -220,8 +220,11 @@ def test_search_knowledge_base_uses_best_section_embedding(monkeypatch, tmp_path
 
     envelope = rag_bridge.search_knowledge_base("Terminal-Bench 的坑是什么？")
 
+    assert envelope["source_map"][0]["ref"] == "1"
     assert envelope["source_map"][0]["type"] == "capture_section"
+    assert envelope["source_map"][0]["file_path"] == rel_path
     assert envelope["source_map"][0]["section"] == "第二部分"
+    assert "Terminal-Bench" in envelope["source_map"][0]["excerpt"]
     assert FakeRagAgent.seen_captures[0]["section_title"] == "第二部分"
     assert "Terminal-Bench" in FakeRagAgent.seen_captures[0]["body"]
     assert "背景材料" not in FakeRagAgent.seen_captures[0]["body"]

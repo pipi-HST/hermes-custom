@@ -476,7 +476,7 @@ def _research_plan_from_payload(
     subject = _sanitize_subject(payload.get("subject") if isinstance(payload.get("subject"), dict) else {}, query=query)
     answer_depth = _enum_value(payload.get("answer_depth"), {"brief", "normal", "detailed"}, "normal")
     queries = _queries_with_detailed_question_anchor(queries, query=query, answer_depth=answer_depth)
-    queries = _queries_with_subject_anchor(queries, subject=subject)
+    queries = _queries_with_subject_anchor(queries, subject=subject, prefer_subject_name=answer_depth == "detailed")
     source_preferences = payload.get("source_preferences") if isinstance(payload.get("source_preferences"), dict) else {}
     source_preferences = _source_preferences_with_subject_defaults(source_preferences, subject)
     source_preferences = _source_preferences_with_query_domains(source_preferences, queries)
@@ -633,7 +633,7 @@ def _sanitize_planned_queries(
         if not value:
             continue
         queries.append(value[:120])
-    return _unique_queries([*_query_anchor_candidates(query, queries), *queries])[:MAX_WEB_QUERIES]
+    return _unique_queries([*queries, *_query_anchor_candidates(query, queries)])[:MAX_WEB_QUERIES]
 
 
 def _query_anchor_candidates(query: str, planned_queries: list[str]) -> list[str]:
@@ -669,30 +669,48 @@ def _queries_with_detailed_question_anchor(queries: list[str], *, query: str, an
     if not compact or len(compact) > 80 or _query_anchor_is_context_only(compact):
         return queries
     if any(compact.lower() == item.lower() for item in queries):
-        return queries
+        return _unique_queries([compact, *queries])[:MAX_WEB_QUERIES]
     return _unique_queries([compact, *queries])[:MAX_WEB_QUERIES]
 
 
-def _queries_with_subject_anchor(queries: list[str], *, subject: dict[str, Any]) -> list[str]:
+def _queries_with_subject_anchor(
+    queries: list[str],
+    *,
+    subject: dict[str, Any],
+    prefer_subject_name: bool = False,
+) -> list[str]:
     subject_name = _search_query_from_private_context(str((subject or {}).get("name") or ""))
     if not subject_name:
         return queries
+    if prefer_subject_name and _is_informative_query_anchor(subject_name):
+        if not queries:
+            return [subject_name]
+        return _unique_queries([queries[0], subject_name, *queries[1:]])[:MAX_WEB_QUERIES]
     haystack = " ".join(queries).lower()
     if subject_name.lower() in haystack:
         return queries
     subject_terms = [term for term in _subject_terms("", subject) if len(term.strip()) >= 4]
-    if any(term and term.lower() in haystack for term in subject_terms):
+    if not prefer_subject_name and any(term and term.lower() in haystack for term in subject_terms):
         return queries
     aliases = [
         _search_query_from_private_context(str(alias))
         for alias in ((subject or {}).get("aliases") or [])
         if str(alias or "").strip()
     ]
-    if any(alias and alias.lower() in haystack for alias in aliases):
+    if not prefer_subject_name and any(alias and alias.lower() in haystack for alias in aliases):
         return queries
     first_query = queries[0] if queries else ""
     anchored = f"{subject_name} {first_query}".strip()[:120]
     return _unique_queries([anchored, *queries])[:MAX_WEB_QUERIES]
+
+
+def _is_informative_query_anchor(value: str) -> bool:
+    text = re.sub(r"\s+", "", value or "")
+    if not text:
+        return False
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return len(text) >= 4
+    return len(text) >= 3
 
 
 def _redact_private_query_context(
