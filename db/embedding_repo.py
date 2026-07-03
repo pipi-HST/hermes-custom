@@ -72,6 +72,32 @@ class CaptureEmbeddingRepo:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def delete_missing_for_capture(
+        self,
+        capture_id: str,
+        current_keys: set[tuple[str, str]],
+    ) -> int:
+        """Remove embedding rows that no longer correspond to the current note."""
+        rows = self.conn.execute(
+            """SELECT kind, section_id FROM capture_embeddings
+               WHERE capture_id = ?""",
+            (capture_id,),
+        ).fetchall()
+        stale_keys = [
+            (row["kind"], row["section_id"])
+            for row in rows
+            if (row["kind"], row["section_id"]) not in current_keys
+        ]
+        if not stale_keys:
+            return 0
+        self.conn.executemany(
+            """DELETE FROM capture_embeddings
+               WHERE capture_id = ? AND kind = ? AND section_id = ?""",
+            [(capture_id, kind, section_id) for kind, section_id in stale_keys],
+        )
+        self.conn.commit()
+        return len(stale_keys)
+
     def needs_reindex(
         self,
         capture_id: str,

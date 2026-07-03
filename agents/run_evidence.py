@@ -171,6 +171,25 @@ def extract_run_evidence(
         stage_timings = _normalized_stage_timings(meta.get("stage_timings_ms"))
         if stage_timings:
             evidence["stage_timings_ms"] = stage_timings
+        library_postprocess = (
+            meta.get("library_postprocess")
+            if isinstance(meta.get("library_postprocess"), Mapping)
+            else {}
+        )
+        pipeline = (
+            library_postprocess.get("pipeline")
+            if isinstance(library_postprocess.get("pipeline"), Mapping)
+            else {}
+        )
+        if pipeline:
+            evidence.update(
+                {
+                    "directory_rendered": bool(pipeline.get("directory_rendered")),
+                    "section_embedding_count": int(pipeline.get("section_embedding_count") or 0),
+                    "rag_section_ready": bool(pipeline.get("rag_section_ready")),
+                    "outline_metadata_ready": bool(pipeline.get("outline_metadata_ready")),
+                }
+            )
         failure = meta.get("failure") if isinstance(meta.get("failure"), Mapping) else {}
         if meta.get("extraction_failed") or failure:
             evidence["extraction_failed"] = bool(meta.get("extraction_failed") or failure)

@@ -71,8 +71,6 @@ def build_section_indexes(
     outline: list[dict] | None = None,
 ) -> list[IndexItem]:
     sections = _markdown_sections(body)
-    if not sections and outline:
-        sections = _outline_sections(outline)
     title = _single_line(str(frontmatter.get("title") or "未命名"))
     items: list[IndexItem] = []
     for idx, (section_title, section_body) in enumerate(sections, 1):
@@ -144,7 +142,12 @@ def _markdown_sections(body: str) -> list[tuple[str, str]]:
         if is_managed_section_title(title):
             continue
         start = match.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
+        current_level = len(match.group(1))
+        end = len(body)
+        for next_match in matches[idx + 1 :]:
+            if len(next_match.group(1)) <= current_level:
+                end = next_match.start()
+                break
         section_body = body[start:end].strip()
         sections.append((title, section_body))
     return sections

@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import load_config
-from agents.garden_card_payload import parse_payload_json
 from agents.markdown_writer import read_note
 from agents.garden_agent import (
     CARD_KIND_LABELS,
@@ -19,6 +18,7 @@ from agents.garden_agent import (
     update_garden_draft,
 )
 from agents.garden_duplicates import find_garden_duplicate
+from bridge.ai_cancel import AIOperationCancelled, raise_if_cancelled
 from bridge.file_artifacts import write_markdown_export
 from bridge.context import KnowledgeContext
 from bridge.result_envelope import artifact_ref, error_envelope, next_action, success_envelope
@@ -352,6 +352,7 @@ def _synthesize_garden(
     if duplicate["status"] == "duplicate":
         return _duplicate_garden_response(duplicate)
 
+    raise_if_cancelled("garden.synthesize.before_create_draft")
     draft_id = create_garden_draft(repo, garden_data)
 
     title_text = result.get("title", "")
@@ -524,6 +525,7 @@ def _revise_garden_draft(
             error=result["error"],
         )
 
+    raise_if_cancelled("garden.revise.before_update_draft")
     updated = update_garden_draft(repo, draft_id, {
         "title": result.get("title", draft["title"]),
         "one_liner": result.get("one_liner", draft["one_liner"]),
@@ -595,6 +597,14 @@ def commit_garden_draft(draft_id: str = "", context: KnowledgeContext | None = N
                     db_table="garden_cards",
                 )
             return result
+        except AIOperationCancelled as exc:
+            write_jobs.fail(
+                job_id,
+                step=exc.stage or "commit_garden_draft",
+                error=str(exc),
+                status="cancelled",
+            )
+            raise
         except Exception as exc:
             committed = ""
             if draft_id:
@@ -642,6 +652,7 @@ def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
             error="这个知识卡片草稿包含内部模板痕迹，已阻止入库。请先重新生成或修改草稿。",
         )
 
+    raise_if_cancelled("garden.commit.before_create_card")
     card_id = commit_garden_draft_to_card(repo, draft_id)
     if not card_id:
         return error_envelope(

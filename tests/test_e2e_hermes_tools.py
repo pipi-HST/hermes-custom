@@ -116,7 +116,7 @@ def test_hermes_capture_schema_has_content():
     assert "instruction" in props, f"missing instruction, props={list(props.keys())}"
     assert "content" in params.get("required", [])
     assert "微信" in description
-    assert "待确认整理稿" in description
+    assert "待确认原文初稿" in description
     assert "USER_VISIBLE_REPLY" in description
 
 
@@ -690,17 +690,19 @@ def test_bridge_capture_text_with_instruction_returns_draft(mock_summarize, mock
         instruction="总结全文核心观点",
     )
     assert r["status"] == "success"
-    assert _artifact(r)["status"] == "draft_ready"
-    assert "完整草稿已保存" in r["chat_preview"]
+    assert _artifact(r)["status"] == "raw_extracted"
+    assert "原文已提取，已生成待确认初稿" in r["chat_preview"]
     assert "标题：" in r["chat_preview"]
-    assert "重点回应：" in r["chat_preview"]
-    assert "总结：" in r["chat_preview"]
+    assert "按当前要求生成最终整理稿并入库" in r["chat_preview"]
+    assert "重点回应：" not in r["chat_preview"]
+    assert "总结：" not in r["chat_preview"]
     assert "草稿预览" not in r["chat_preview"]
     assert "标签：" not in r["chat_preview"]
     assert "目录纲要" not in r["chat_preview"]
     assert "参考来源" not in r["chat_preview"]
-    assert "核心观点" in r["chat_preview"]
+    assert "核心观点" not in r["chat_preview"]
     assert "__HERMES_DIRECT_REPLY__" not in r["chat_preview"]
+    assert "revision_llm" not in r["meta"]["stage_timings_ms"] or r["meta"]["stage_timings_ms"]["revision_llm"] == 0
 
 
 @patch("agents.capture_agent.Summarizer.summarize")
@@ -727,11 +729,17 @@ def test_bridge_capture_full_text_save_does_not_summarize_body(mock_llm, mock_su
     )
 
     assert r["status"] == "success"
-    assert _artifact(r)["status"] == "draft_ready"
-    assert "已生成全文草稿" in r["chat_preview"]
-    assert "满意回复「存库」" in r["chat_preview"]
+    assert _artifact(r)["status"] == "raw_extracted"
+    assert "原文已提取，已生成待确认初稿" in r["chat_preview"]
+    assert "全文入库" in json.dumps(r["next_actions"], ensure_ascii=False)
+    assert "正文已按原文保存" not in r["chat_preview"]
+    assert "预览摘要（仅用于列表预览/检索，不替代正文）" not in r["chat_preview"]
+    assert "摘要：" not in r["chat_preview"]
     assert r["meta"]["capture_intent"]["output_shape"] == ["full_text"]
     assert r["meta"]["capture_intent"]["material_intent"] == "verbatim_full_text"
+    assert r["meta"]["capture_intent"]["draft_guidance"] == "verbatim"
+    assert r["meta"]["capture_intent"]["compression"] == "none"
+    assert r["meta"]["capture_intent"]["plan_source"] == "deterministic_full_text"
 
 
 def test_draft_preview_key_response_uses_user_emphasis():
@@ -786,28 +794,30 @@ def test_bridge_capture_instruction_timeout_returns_saved_raw_draft(mock_llm):
     assert r["status"] == "success"
     assert _artifact(r)["status"] == "raw_extracted"
     assert _artifact(r)["id"]
-    assert "已提取" in r["chat_preview"]
-    assert "稍后继续整理" in r["chat_preview"]
+    assert "原文已提取" in r["chat_preview"]
+    assert "待确认初稿" in r["chat_preview"]
     assert r["meta"]["draft_status"] == "raw_extracted"
-    assert r["meta"]["revision_error"] == "timed out"
+    assert r["meta"]["revision_error"] == ""
 
 
 @patch("agents.capture_agent.CaptureAgent._call_llm")
 @patch("agents.capture_agent.Summarizer.summarize")
 def test_bridge_capture_with_instruction_truncates_long_message_but_keeps_full_draft(mock_summarize, mock_llm):
-    from bridge.capture_bridge import capture_content
+    from bridge.capture_bridge import capture_content, revise_capture_draft
 
     long_draft = "核心观点：" + ("长内容" * 1000)
     mock_llm.return_value = long_draft
     mock_summarize.return_value = {"title": "长草稿", "summary": "S", "tags": ["draft"]}
 
-    r = capture_content(
+    created = capture_content(
         "知识管理的核心是将碎片信息转化为可复用的认知资产。"
         "个人知识管理有三个层次：捕获、整理、内化。这需要长期坚持和积累。"
         "补充：人工智能技术正在快速发展，深度学习模型取得了显著成果。"
         "从图像识别到自然语言处理，AI应用越来越广泛地改变着我们的世界。",
         instruction="总结全文核心观点",
     )
+    draft_id = _artifact(created)["id"]
+    r = revise_capture_draft(draft_id=draft_id, instruction="总结全文核心观点")
 
     assert r["status"] == "success"
     assert _artifact(r)["status"] == "draft_ready"
@@ -820,17 +830,19 @@ def test_bridge_capture_with_instruction_truncates_long_message_but_keeps_full_d
 @patch("agents.capture_agent.CaptureAgent._call_llm")
 def test_bridge_capture_incomplete_draft_does_not_offer_commit(mock_llm):
     from agents.capture_agent import LLMResult
-    from bridge.capture_bridge import capture_content
+    from bridge.capture_bridge import capture_content, revise_capture_draft
 
     mock_llm.return_value = LLMResult(text="半截草稿，而是", incomplete=True)
 
-    r = capture_content(
+    created = capture_content(
         "知识管理的核心是将碎片信息转化为可复用的认知资产。"
         "个人知识管理有三个层次：捕获、整理、内化。这需要长期坚持和积累。"
         "补充：人工智能技术正在快速发展，深度学习模型取得了显著成果。"
         "从图像识别到自然语言处理，AI应用越来越广泛地改变着我们的世界。",
         instruction="总结全文核心观点",
     )
+    draft_id = _artifact(created)["id"]
+    r = revise_capture_draft(draft_id=draft_id, instruction="总结全文核心观点")
 
     assert r["status"] == "success"
     assert _artifact(r)["status"] == "draft_incomplete"

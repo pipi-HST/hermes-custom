@@ -1,14 +1,31 @@
 """Tests for summarizer."""
 from __future__ import annotations
 
+from unittest.mock import patch
 import pytest
-from unittest.mock import MagicMock, patch
+
+from bridge.ai_cancel import AIOperationCancelled, cancel_operation, operation_context
 from agents.summarizer import Summarizer, SEED_TAGS
 
 
 def test_summarizer_uses_seed_tags_on_cold_start():
     s = Summarizer(api_key="test", provider="openai", model="test-model")
     assert s.seed_tags == SEED_TAGS
+
+
+def test_call_llm_respects_cancel_before_http(monkeypatch):
+    s = Summarizer(api_key="test", provider="openai", model="test-model")
+
+    def fail_client(*_args, **_kwargs):
+        raise AssertionError("HTTP client should not be created after cancellation")
+
+    monkeypatch.setattr("agents.summarizer.httpx.Client", fail_client)
+    with operation_context("op-summarizer"):
+        cancel_operation("op-summarizer")
+        with pytest.raises(AIOperationCancelled) as exc_info:
+            s._call_llm("请整理")
+
+    assert exc_info.value.stage == "summarizer.before_llm"
 
 
 def test_build_prompt_includes_existing_tags():
@@ -119,9 +136,12 @@ def test_organize_editable_draft_bad_json_returns_safe_defaults(mock_call):
     diagnostics = result["diagnostics"]
     assert diagnostics["parse_error_kind"] == "json_parse_failed"
     assert diagnostics["response_len"] == len(mock_call.return_value)
+    assert diagnostics["response_head"].startswith("{")
     assert diagnostics["max_tokens"] == 4000
     assert diagnostics["prompt_len"] > len("用户原始正文")
     assert diagnostics["response_tail"].endswith('"半截 JSON"')
+    mock_call.assert_called_once()
+    assert mock_call.call_args.kwargs["json_mode"] is True
 
 
 def test_parse_json_response_accepts_balanced_json_with_trailing_text():
@@ -131,11 +151,53 @@ def test_parse_json_response_accepts_balanced_json_with_trailing_text():
     assert result == {"summary": "可解析"}
 
 
+def test_call_llm_json_mode_falls_back_when_provider_rejects_response_format(monkeypatch):
+    calls: list[dict] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, content: str = "{}"):
+            self.status_code = status_code
+            self._content = content
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise AssertionError("fallback response should be used before raising")
+
+        def json(self) -> dict:
+            return {"choices": [{"message": {"content": self._content}}]}
+
+    class FakeClient:
+        def __init__(self, timeout: int):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, _url: str, *, headers: dict, json: dict):
+            calls.append(dict(json))
+            if len(calls) == 1:
+                return FakeResponse(400)
+            return FakeResponse(200, '{"title": "可解析"}')
+
+    monkeypatch.setattr("agents.summarizer.httpx.Client", FakeClient)
+    s = Summarizer(api_key="test")
+
+    result = s._call_llm("请返回 JSON", json_mode=True)
+
+    assert result == '{"title": "可解析"}'
+    assert calls[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in calls[1]
+
+
 def test_organize_editable_draft_prompt_allows_structured_body_without_compression(monkeypatch):
     prompts: list[str] = []
 
-    def fake_call(prompt: str, *, max_tokens: int = 4000) -> str:
+    def fake_call(prompt: str, *, max_tokens: int = 4000, json_mode: bool = False) -> str:
         prompts.append(prompt)
+        assert json_mode is True
         return '{"title": "长文整理", "summary": "长文整理出结构化正文。", "tags": ["draft"], "body_markdown": "## 背景\\n\\n正文内容", "folder_suggestion": {}, "card_suggestion": {}, "warnings": []}'
 
     s = Summarizer(api_key="test")
@@ -155,8 +217,9 @@ def test_organize_editable_draft_prompt_allows_structured_body_without_compressi
 def test_organize_editable_draft_prompt_forbids_outline_body_pollution(monkeypatch):
     prompts: list[str] = []
 
-    def fake_call(prompt: str, *, max_tokens: int = 4000) -> str:
+    def fake_call(prompt: str, *, max_tokens: int = 4000, json_mode: bool = False) -> str:
         prompts.append(prompt)
+        assert json_mode is True
         return '{"title": "结构整理", "summary": "摘要", "tags": ["draft"], "body_markdown": "正文", "folder_suggestion": {}, "card_suggestion": {}, "warnings": []}'
 
     s = Summarizer(api_key="test")
@@ -174,8 +237,9 @@ def test_organize_editable_draft_prompt_forbids_outline_body_pollution(monkeypat
 def test_organize_editable_draft_prompt_preserves_body_length_and_paragraphs(monkeypatch):
     prompts: list[str] = []
 
-    def fake_call(prompt: str, *, max_tokens: int = 4000) -> str:
+    def fake_call(prompt: str, *, max_tokens: int = 4000, json_mode: bool = False) -> str:
         prompts.append(prompt)
+        assert json_mode is True
         return '{"title": "保真整理", "summary": "摘要", "tags": ["draft"], "body_markdown": "正文", "folder_suggestion": {}, "card_suggestion": {}, "warnings": []}'
 
     s = Summarizer(api_key="test")
@@ -193,8 +257,9 @@ def test_organize_editable_draft_prompt_preserves_body_length_and_paragraphs(mon
 def test_organize_editable_draft_scales_token_budget_for_long_body(monkeypatch):
     budgets: list[int] = []
 
-    def fake_call(_prompt: str, *, max_tokens: int = 4000) -> str:
+    def fake_call(_prompt: str, *, max_tokens: int = 4000, json_mode: bool = False) -> str:
         budgets.append(max_tokens)
+        assert json_mode is True
         return '{"title": "长文整理", "summary": "摘要", "tags": ["draft"], "body_markdown": "正文", "folder_suggestion": {}, "card_suggestion": {}, "warnings": []}'
 
     s = Summarizer(api_key="test")
@@ -206,7 +271,8 @@ def test_organize_editable_draft_scales_token_budget_for_long_body(monkeypatch):
 
 
 def test_organize_editable_draft_normalizes_empty_suggestions(monkeypatch):
-    def fake_call(_prompt: str, *, max_tokens: int = 4000) -> str:
+    def fake_call(_prompt: str, *, max_tokens: int = 4000, json_mode: bool = False) -> str:
+        assert json_mode is True
         return (
             '{"title": "文件夹建议", "summary": "摘要", "tags": ["draft"], '
             '"body_markdown": "", "folder_suggestion": {}, '
@@ -227,8 +293,9 @@ def test_organize_editable_draft_normalizes_empty_suggestions(monkeypatch):
 def test_organize_editable_draft_metadata_reads_beyond_old_short_prefix(monkeypatch):
     prompts: list[str] = []
 
-    def fake_call(prompt: str, *, max_tokens: int = 4000) -> str:
+    def fake_call(prompt: str, *, max_tokens: int = 4000, json_mode: bool = False) -> str:
         prompts.append(prompt)
+        assert json_mode is True
         return '{"title": "长文后段主题", "summary": "摘要需要看到后半段。", "tags": ["draft"], "body_markdown": "", "folder_suggestion": {}, "card_suggestion": {}, "warnings": []}'
 
     s = Summarizer(api_key="test")

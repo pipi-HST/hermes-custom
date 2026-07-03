@@ -4,11 +4,9 @@
   /opt/homebrew/bin/python3.11 -m pytest tests/test_e2e_full_flow.py -v --tb=long
 """
 
-import os
 import json
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 import pytest
@@ -96,17 +94,18 @@ class TestToolHandlerToAgent:
         })
         envelope = _tool_envelope(result)
         assert envelope["status"] == "success"
-        assert "已生成" in envelope["chat_preview"]
+        assert "原文已提取，已生成待确认初稿" in envelope["chat_preview"]
         assert "标题：" in envelope["chat_preview"]
-        assert "重点回应：" in envelope["chat_preview"]
-        assert "总结：" in envelope["chat_preview"]
+        assert "重点回应：" not in envelope["chat_preview"]
+        assert "总结：" not in envelope["chat_preview"]
         assert "草稿预览" not in envelope["chat_preview"]
-        assert "核心观点" in envelope["chat_preview"]
-        assert "展开草稿" in envelope["chat_preview"]
-        assert "满意回复「存库」" in envelope["chat_preview"]
+        assert "核心观点" not in envelope["chat_preview"]
         intents = [action["intent"] for action in envelope["next_actions"]]
+        labels = [action["label"] for action in envelope["next_actions"]]
         assert "show_capture_draft" in intents
         assert "commit_capture_draft" in intents
+        assert "展开原文" in labels
+        assert "按当前方向整理入库" in labels
 
     def test_capture_tool_handler_with_url(self):
         """tool handler 处理 URL 输入"""

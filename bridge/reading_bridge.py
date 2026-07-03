@@ -26,6 +26,7 @@ from agents.summarizer import Summarizer
 from bridge.context import KnowledgeContext
 from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest, KnowledgeWriteResult
 from agents.outliner import Outliner
+from bridge.ai_cancel import AIOperationCancelled, raise_if_cancelled
 from bridge.result_envelope import (
     artifact_ref,
     error_envelope,
@@ -516,6 +517,14 @@ def commit_reading_artifact(draft_id: str = "", context: KnowledgeContext | None
                         db_table=db_table,
                     )
             return result
+        except AIOperationCancelled as exc:
+            write_jobs.fail(
+                job_id,
+                step=exc.stage or "commit_reading_artifact",
+                error=str(exc),
+                status="cancelled",
+            )
+            raise
         except Exception as exc:
             write_jobs.fail(job_id, step="commit_reading_artifact", error=str(exc))
             raise
@@ -619,6 +628,7 @@ def _commit_independent_note(
 ) -> dict:
     note_type = "capture_note"
     folder = "captures"
+    raise_if_cancelled("reading.commit_note.before_write")
     capture = capture_repo.insert(file_path="", raw_path="")
     capture_id = capture["id"]
     draft_title = draft.get("title") or "阅读整理"
@@ -719,6 +729,7 @@ def _postprocess_committed_learning_note(config, repo: ReadingRepo, capture_id: 
 
 def _commit_knowledge_card(config, repo: ReadingRepo, draft: dict) -> dict:
     garden_data, _card_body, synth_warnings = _garden_data_from_reading_draft(config, repo, draft)
+    raise_if_cancelled("reading.commit_card.before_write")
     card_id = create_garden_card(repo, garden_data)
     repo.update_draft(draft["id"], status="committed")
     repo.update_session(draft["session_id"], status="committed", committed_artifact_id=card_id)
@@ -999,6 +1010,7 @@ def _commit_enhanced_capture(
     old_text = full_path.read_text(encoding="utf-8")
     previous_hash = _sha256(old_text)
     new_text = _merge_frontmatter(old_text, draft.get("draft_text", ""))
+    raise_if_cancelled("reading.enhance_capture.before_write")
     write_result = KnowledgeWriteService(vault_path).write_markdown_artifact(
         MarkdownWriteRequest(
             kind="capture_note",

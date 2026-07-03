@@ -10,6 +10,7 @@ from typing import Optional
 
 import httpx
 
+from bridge.ai_cancel import raise_if_cancelled
 from agents.garden_card_payload import (
     GARDEN_CARD_SCHEMA_VERSION,
     normalize_garden_payload,
@@ -312,12 +313,14 @@ class GardenAgent:
             "temperature": 0.3,
             "max_tokens": max_tokens,
         }
+        raise_if_cancelled("garden.before_llm")
         with httpx.Client(timeout=120) as client:
             resp = client.post(
                 f"{self.llm_base_url}/chat/completions",
                 headers=headers, json=body,
             )
             resp.raise_for_status()
+            raise_if_cancelled("garden.after_llm")
             return resp.json()["choices"][0]["message"]["content"]
 
 

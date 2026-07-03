@@ -7,6 +7,8 @@ from typing import Optional
 
 import httpx
 
+from bridge.ai_cancel import raise_if_cancelled
+
 SEED_TAGS = [
     "ai-agent", "ai-rag", "ai-product", "product-design",
     "health-sleep", "health-exercise", "health-mood",
@@ -133,7 +135,7 @@ class Summarizer:
             content=content,
         )
         max_tokens = self._editable_draft_max_tokens(content)
-        response = self._call_llm(prompt, max_tokens=max_tokens)
+        response = self._call_llm(prompt, max_tokens=max_tokens, json_mode=True)
         parsed = self._parse_json_response(response)
         if not parsed:
             return self._editable_draft_safe_defaults(
@@ -169,12 +171,19 @@ class Summarizer:
         return {
             "parse_error_kind": "json_parse_failed",
             "response_len": len(response),
+            "response_head": response[:500],
             "response_tail": response[-500:],
             "max_tokens": max_tokens,
             "prompt_len": prompt_len,
         }
 
-    def _call_llm(self, prompt: str, *, max_tokens: int = 4000) -> str:
+    def _call_llm(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 4000,
+        json_mode: bool = False,
+    ) -> str:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -188,13 +197,23 @@ class Summarizer:
             "temperature": 0.3,
             "max_tokens": max_tokens,
         }
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        raise_if_cancelled("summarizer.before_llm")
         with httpx.Client(timeout=300) as client:
             resp = client.post(
                 f"{self.base_url}/chat/completions",
                 headers=headers, json=body,
             )
+            if json_mode and resp.status_code in {400, 422}:
+                body.pop("response_format", None)
+                resp = client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=headers, json=body,
+                )
             resp.raise_for_status()
             data = resp.json()
+            raise_if_cancelled("summarizer.after_llm")
             return data["choices"][0]["message"]["content"]
 
     def _parse_json_response(self, raw: str) -> dict:
@@ -338,7 +357,7 @@ class Summarizer:
                 tags = [t.strip().strip('"') for t in tags_match.group(1).split(",")]
 
         if not summary:
-            lines = [l.strip() for l in raw.split("\n") if l.strip()]
+            lines = [line.strip() for line in raw.split("\n") if line.strip()]
             summary = lines[0][:100] if lines else "无摘要"
 
         return {"title": title, "summary": summary, "tags": tags[:5]}

@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from agents.run_evidence import extract_input_object_refs, extract_run_evidence
+from bridge.ai_cancel import AIOperationCancelled
 from db.agent_run_repo import AgentRunRepo
 
 
@@ -32,6 +33,24 @@ def run_with_ledger(
     )
     try:
         result = operation()
+    except AIOperationCancelled as exc:
+        repo.complete_run(
+            run["id"],
+            output_ref={},
+            evidence={
+                "has_envelope": False,
+                "cancelled_stage": exc.stage,
+                "operation_id": exc.operation_id,
+            },
+            warnings=[],
+            status="cancelled",
+        )
+        repo.record_event(
+            run["id"],
+            event_type="cancelled",
+            payload={"stage": exc.stage, "operation_id": exc.operation_id},
+        )
+        raise
     except Exception as exc:
         repo.fail_run(
             run["id"],

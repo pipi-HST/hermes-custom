@@ -6,7 +6,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from agents.capture_agent import CaptureAgent, CaptureConfig, load_config
+from agents.capture_agent import CaptureAgent, load_config
+from bridge.ai_cancel import AIOperationCancelled
 from bridge.context import KnowledgeContext
 from bridge.file_artifacts import write_markdown_export
 from bridge.result_envelope import (
@@ -94,8 +95,8 @@ def _full_text_saved_preview(result: dict, action: str) -> tuple[str, bool]:
     message = (
         f"已{action}全文草稿。\n\n"
         f"标题：{title}\n\n"
-        f"正文将按全文入库（{word_count} 字），不做压缩总结。\n\n"
-        f"摘要：{summary}\n\n"
+        f"正文已按原文保存（{word_count} 字），不做压缩总结。\n\n"
+        f"预览摘要（仅用于列表预览/检索，不替代正文）：{summary}\n\n"
         "回复「展开草稿」抽查正文；满意回复「存库」。"
     )
     message, message_truncated = _clip_text_with_flag(message, PREVIEW_LIMIT)
@@ -303,6 +304,7 @@ def create_editable_capture_draft(
     source: str = "",
     source_type: str = "manual",
     title: str = "",
+    title_source: str | None = None,
     folder_path: str = "",
     existing_folders: list[str] | None = None,
     organize: bool = True,
@@ -320,6 +322,7 @@ def create_editable_capture_draft(
             "source": source,
             "source_type": source_type,
             "title_provided": bool(title.strip()),
+            "title_source": title_source or "",
             "folder_path": folder_path,
             "existing_folder_count": len(existing_folders or []),
             "organize": organize,
@@ -331,6 +334,7 @@ def create_editable_capture_draft(
             source=source,
             source_type=source_type,
             title=title,
+            title_source=title_source,
             folder_path=folder_path,
             existing_folders=existing_folders,
             organize=organize,
@@ -346,6 +350,7 @@ def _create_editable_capture_draft(
     source: str = "",
     source_type: str = "manual",
     title: str = "",
+    title_source: str | None = None,
     folder_path: str = "",
     existing_folders: list[str] | None = None,
     organize: bool = True,
@@ -356,6 +361,7 @@ def _create_editable_capture_draft(
         source_type=source_type,
         instruction=instruction,
         title=title,
+        title_source=title_source,
         folder_path=folder_path,
         existing_folders=existing_folders,
         organize=organize,
@@ -366,12 +372,20 @@ def _create_editable_capture_draft(
             intent="create_editable_capture_draft",
             error=result["error"],
         )
+    capture_intent = result.get("capture_intent", {}) if isinstance(result.get("capture_intent"), dict) else {}
+    suggestions_status = str(capture_intent.get("ai_suggestions_status") or "")
+    if suggestions_status == "generated":
+        preview_suffix = "标题、摘要、标签、文件夹和卡片建议已自动生成；确认后可入库检索。"
+    elif suggestions_status == "failed":
+        preview_suffix = "AI 建议生成失败，正文已保留；可重试生成建议或手动填写后入库。"
+    else:
+        preview_suffix = "正文已保存为草稿；尚未生成 AI 建议。"
     return success_envelope(
         agent="capture",
         intent="create_editable_capture_draft",
         chat_preview=(
             f"已保存自由编辑草稿《{result.get('title') or '无标题'}》。"
-            "标题、摘要和标签已自动生成；确认后可入库检索。"
+            f"{preview_suffix}"
         ),
         durable_artifacts=[
             artifact_ref(
@@ -396,7 +410,7 @@ def _create_editable_capture_draft(
             "tags": result.get("tags", []),
             "word_count": result.get("word_count", 0),
             "draft_status": result.get("status", ""),
-            "capture_intent": result.get("capture_intent", {}),
+            "capture_intent": capture_intent,
             "stage_timings_ms": result.get("stage_timings_ms", {}),
         },
     )
@@ -406,6 +420,7 @@ def update_editable_capture_draft(
     draft_id: str,
     content: str,
     title: str = "",
+    title_source: str | None = None,
     summary: str | None = None,
     tags: list[str] | None = None,
     folder_path: str | None = None,
@@ -424,6 +439,7 @@ def update_editable_capture_draft(
             "draft_id": draft_id,
             "content_length": len(content or ""),
             "title_provided": bool((title or "").strip()),
+            "title_source": title_source or "",
             "summary_provided": summary is not None,
             "tags_provided": tags is not None,
             "folder_path": folder_path or "",
@@ -435,6 +451,7 @@ def update_editable_capture_draft(
             draft_id=draft_id,
             content=content,
             title=title,
+            title_source=title_source,
             summary=summary,
             tags=tags,
             folder_path=folder_path,
@@ -452,6 +469,7 @@ def _update_editable_capture_draft(
     draft_id: str,
     content: str,
     title: str = "",
+    title_source: str | None = None,
     summary: str | None = None,
     tags: list[str] | None = None,
     folder_path: str | None = None,
@@ -464,6 +482,7 @@ def _update_editable_capture_draft(
         draft_id,
         content=content,
         title=title,
+        title_source=title_source,
         summary=summary,
         tags=tags,
         folder_path=folder_path,
@@ -484,6 +503,7 @@ def _update_editable_capture_draft(
             intent="update_editable_capture_draft",
             error=result["error"],
         )
+    capture_intent = result.get("capture_intent", {}) if isinstance(result.get("capture_intent"), dict) else {}
     return success_envelope(
         agent="capture",
         intent="update_editable_capture_draft",
@@ -511,7 +531,8 @@ def _update_editable_capture_draft(
             "tags": result.get("tags", []),
             "word_count": result.get("word_count", 0),
             "draft_status": result.get("status", ""),
-            "capture_intent": result.get("capture_intent", {}),
+            "capture_intent": capture_intent,
+            "stage_timings_ms": result.get("stage_timings_ms", {}),
         },
     )
 
@@ -588,25 +609,46 @@ def _capture_content(agent, content: str, instruction: str = "") -> dict:
             )
     else:
         preview_truncated = False
-        revision_error = result.get("revision_error", "")
-        if revision_error:
-            guidance = "整理草稿暂时超时，已保留原文草稿。稍后继续整理，或直接回复新的修改要求。"
+        capture_intent = result.get("capture_intent", {}) if isinstance(result.get("capture_intent"), dict) else {}
+        instruction = (result.get("instruction") or capture_intent.get("user_request") or "").strip()
+        is_full_text = capture_intent.get("material_intent") == "verbatim_full_text"
+        if instruction:
+            guidance = (
+                "原文已保存为待确认初稿。你可以先展开原文抽查；"
+                "确认后我再按当前要求生成最终整理稿并入库。"
+            )
         else:
             guidance = "想怎么整理？比如「提炼重点」「翻译成英文」「压缩到 500 字」"
         message = (
-            f"已提取《{result.get('title') or '无标题'}》"
+            f"原文已提取，已生成待确认初稿。\n\n"
+            f"标题：{result.get('title') or '无标题'}\n"
             f"（{result.get('word_count', 0)} 字）\n"
             f"草稿编号：{result.get('id', '')}\n"
             f"{guidance}"
         )
         actions = [
             next_action(
-                label="继续整理",
+                label="展开原文",
+                intent="show_capture_draft",
+                payload={"draft_id": result.get("id", ""), "page": 1},
+                requires_confirmation=False,
+            ),
+            next_action(
+                label="修改整理要求",
                 intent="revise_capture_draft",
                 payload={"draft_id": result.get("id", "")},
                 requires_confirmation=False,
-            )
+            ),
         ]
+        if instruction:
+            actions.append(
+                next_action(
+                    label="全文入库" if is_full_text else "按当前方向整理入库",
+                    intent="commit_capture_draft",
+                    payload={"draft_id": result.get("id", "")},
+                    requires_confirmation=True,
+                )
+            )
     return success_envelope(
         agent="capture",
         intent="create_capture_draft",
@@ -630,6 +672,7 @@ def _capture_content(agent, content: str, instruction: str = "") -> dict:
             "capture_intent": result.get("capture_intent", {}),
             "preview_truncated": preview_truncated,
             "revision_error": result.get("revision_error", ""),
+            "pending_finalization": not bool(draft_text),
             "stage_timings_ms": result.get("stage_timings_ms", {}),
         },
     )
@@ -899,6 +942,15 @@ def commit_capture_draft(
                             db_table="captures,capture_embeddings",
                         )
             return result
+        except AIOperationCancelled as exc:
+            if write_jobs:
+                write_jobs.fail(
+                    job_id,
+                    step=exc.stage or "commit_capture_draft",
+                    error=str(exc),
+                    status="cancelled",
+                )
+            raise
         except Exception as exc:
             if write_jobs:
                 write_jobs.fail(job_id, step="commit_capture_draft", error=str(exc))
@@ -1042,6 +1094,13 @@ def _commit_capture_draft(
                 requires_confirmation=False,
             )
         )
+    library_postprocess = result.get("library_postprocess", {})
+    pipeline = (
+        library_postprocess.get("pipeline")
+        if isinstance(library_postprocess, dict) and isinstance(library_postprocess.get("pipeline"), dict)
+        else {}
+    )
+    warnings = [str(item) for item in pipeline.get("warnings") or []]
     return success_envelope(
         agent="capture",
         intent="commit_capture_draft",
@@ -1063,6 +1122,7 @@ def _commit_capture_draft(
             ),
         ],
         next_actions=actions,
+        warnings=warnings,
         meta={
             "draft_id": draft_id,
             "capture_id": capture_id,
@@ -1071,6 +1131,8 @@ def _commit_capture_draft(
             "tags": result.get("tags", []),
             "raw_path": result.get("raw_path", ""),
             "file_path": result.get("file_path", ""),
+            "stage_timings_ms": result.get("stage_timings_ms", {}),
+            "library_postprocess": library_postprocess,
         },
     )
 

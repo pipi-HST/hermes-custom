@@ -54,6 +54,35 @@ def test_section_indexes_split_markdown_headings():
     assert "内容 B" in sections[1].index_text
 
 
+def test_section_indexes_keep_child_content_with_parent_heading():
+    frontmatter = {"title": "长文"}
+    body = """# 长文
+
+## 四类案例
+
+### 模型选型
+模型选型内容。
+
+### RAG 知识检索
+RAG 内容。
+
+## 后续判断
+后续内容。
+"""
+
+    sections = build_section_indexes("cap1", "captures/a.md", frontmatter, body)
+
+    assert [section.section_title for section in sections] == [
+        "四类案例",
+        "模型选型",
+        "RAG 知识检索",
+        "后续判断",
+    ]
+    assert "模型选型内容" in sections[0].index_text
+    assert "RAG 内容" in sections[0].index_text
+    assert "后续内容" not in sections[0].index_text
+
+
 def test_section_indexes_return_empty_for_unsectioned_short_note():
     frontmatter = {"title": "短文"}
     body = "只有一小段内容。"
@@ -61,7 +90,7 @@ def test_section_indexes_return_empty_for_unsectioned_short_note():
     assert build_section_indexes("cap1", "captures/a.md", frontmatter, body) == []
 
 
-def test_section_indexes_can_use_metadata_outline_without_rewriting_body():
+def test_section_indexes_do_not_fabricate_sections_from_metadata_outline():
     frontmatter = {"title": "原文长文"}
     body = "# 原文长文\n\n这是一篇没有 Markdown 二级标题的原文。"
     outline = [
@@ -77,9 +106,7 @@ def test_section_indexes_can_use_metadata_outline_without_rewriting_body():
         outline=outline,
     )
 
-    assert [section.section_title for section in sections] == ["第一部分", "第二部分"]
-    assert "这里是第一部分的结构摘要" in sections[0].index_text
-    assert "原文长文" in sections[0].index_text
+    assert sections == []
 
 
 def test_section_indexes_skip_managed_sections():

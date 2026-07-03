@@ -26,8 +26,15 @@ from agents.extractors.voice_extractor import VoiceExtractor
 from agents.extractors.image_extractor import ImageExtractor
 from agents.extractors.xiaohongshu_extractor import XiaohongshuExtractor
 from agents.extractors.document_extractor import DocumentExtractor
-from agents.library_agent import LibraryAgent
+from agents.library_agent import (
+    LibraryAgent,
+    _directory_absolute_url_free,
+    _directory_links_match_content_headings,
+    _has_capture_processing_note,
+    _has_directory_content_heading_coverage_gap,
+)
 from agents.outliner import Outliner
+from bridge.ai_cancel import raise_if_cancelled
 from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest
 from db.repo import CaptureDraftRepo, CaptureRepo
 from db.embedding_repo import CaptureEmbeddingRepo
@@ -42,10 +49,14 @@ CAPTURE_LONG_READING_CHAR_THRESHOLD = 8000
 CAPTURE_LONG_CHUNK_CHAR_LIMIT = 8000
 CAPTURE_SECTION_NOTE_CHAR_LIMIT = 1500
 CAPTURE_INTERNAL_PLAN_BUDGET_RATIO = 0.45
+CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD = 2000
+CAPTURE_OVERCOMPRESSED_RATIO = 0.65
+CAPTURE_MAX_READABLE_PARAGRAPH_CHARS = 1200
 CAPTURE_STAGE_TIMING_KEYS = (
     "extract_clean",
     "intent_planning",
     "draft_create",
+    "finalize_for_commit",
     "revision_llm",
     "metadata_summary",
     "repo_update",
@@ -193,7 +204,7 @@ class CaptureAgent:
             _add_capture_stage_timing(timings, "intent_planning", stage_started)
             title = capture_intent_obj.semantic_title or title
             capture_intent = capture_intent_obj.to_dict()
-            stored_raw_text = source_body if self._is_full_text_save_intent(capture_intent) else cleaned
+            stored_raw_text = source_body
             draft_body = self._presentation_text(
                 extracted.source_type,
                 stored_raw_text,
@@ -210,41 +221,6 @@ class CaptureAgent:
                 capture_intent=capture_intent,
             )
             _add_capture_stage_timing(timings, "draft_create", stage_started)
-            if instruction.strip():
-                if self._is_full_text_save_intent(capture_intent):
-                    existing_tags = self._get_existing_tags(Path(self.config.vault_path).expanduser())
-                    stage_started = time.perf_counter()
-                    tag_result = self.summarizer.summarize(cleaned, existing_tags)
-                    _add_capture_stage_timing(timings, "metadata_summary", stage_started)
-                    stage_started = time.perf_counter()
-                    updated = self.draft_repo.update(
-                        draft["id"],
-                        draft_text=draft_body,
-                        instruction=instruction,
-                        capture_intent=capture_intent,
-                        summary=tag_result.get("summary", ""),
-                        tags=tag_result.get("tags", []),
-                        status="draft_ready",
-                    )
-                    _add_capture_stage_timing(timings, "repo_update", stage_started)
-                    return _attach_capture_stage_timings(updated or draft, timings, total_started)
-                try:
-                    return _attach_capture_stage_timings(
-                        self.revise_draft(draft["id"], instruction),
-                        timings,
-                        total_started,
-                    )
-                except (httpx.TimeoutException, TimeoutError) as exc:
-                    stage_started = time.perf_counter()
-                    saved = self.draft_repo.update(
-                        draft["id"],
-                        instruction=instruction,
-                        capture_intent=capture_intent,
-                        status="raw_extracted",
-                    ) or draft
-                    _add_capture_stage_timing(timings, "repo_update", stage_started)
-                    saved["revision_error"] = str(exc) or type(exc).__name__
-                    return _attach_capture_stage_timings(saved, timings, total_started)
             return _attach_capture_stage_timings(draft, timings, total_started)
         finally:
             if previous_timings is None:
@@ -263,6 +239,7 @@ class CaptureAgent:
         source_type: str = "manual",
         instruction: str = "",
         title: str = "",
+        title_source: str | None = None,
         folder_path: str = "",
         existing_folders: list[str] | None = None,
         organize: bool = True,
@@ -274,18 +251,32 @@ class CaptureAgent:
 
         metadata = self._organize_editable_body(body, existing_folders=existing_folders) if organize else {}
         user_title = title.strip()
-        draft_title = user_title or metadata.get("title") or _derive_capture_title(None, body, source_type)
+        requested_title_source = _normalize_editable_title_source(title_source)
+        resolved_title_source = requested_title_source or ("user" if user_title else "ai")
+        if resolved_title_source == "user" and user_title:
+            draft_title = user_title
+        else:
+            draft_title = metadata.get("title") or _derive_capture_title(None, body, source_type)
+            resolved_title_source = "ai"
+        ai_suggestions_status = _editable_ai_suggestions_status(
+            metadata,
+            organize=organize,
+            title=draft_title,
+            validate_title=resolved_title_source != "user",
+        )
         capture_intent = self._editable_capture_intent(
             instruction=instruction,
-            title_source="user" if user_title else "ai",
+            title_source=resolved_title_source,
             folder_path=folder_path,
         )
         capture_intent["folder_suggestion"] = metadata.get("folder_suggestion") or {}
         capture_intent["card_suggestion"] = metadata.get("card_suggestion") or {}
         capture_intent["warnings"] = metadata.get("warnings") or []
+        capture_intent["ai_suggestions_status"] = ai_suggestions_status
         if metadata.get("diagnostics"):
             capture_intent["diagnostics"] = metadata.get("diagnostics")
         draft_body = metadata.get("body_markdown") or body
+        raise_if_cancelled("capture.editable.create.before_write")
         return self.draft_repo.create(
             raw_text=body,
             source=source,
@@ -306,6 +297,7 @@ class CaptureAgent:
         *,
         content: str,
         title: str = "",
+        title_source: str | None = None,
         summary: str | None = None,
         tags: list[str] | None = None,
         folder_path: str | None = None,
@@ -329,17 +321,22 @@ class CaptureAgent:
         if not body:
             return {"error": "内容不能为空"}
 
-        title_source = str(capture_intent.get("title_source") or "ai")
+        saved_title_source = str(capture_intent.get("title_source") or "ai")
+        requested_title_source = _normalize_editable_title_source(title_source)
+        resolved_title_source = requested_title_source or saved_title_source
+        incoming_title = title.strip()
         updates: dict[str, object] = {
             "draft_text": body,
             "word_count": len(body),
             "status": "draft_ready",
         }
-        if title.strip():
-            updates["title"] = title.strip()
-            title_source = "user"
+        if incoming_title and (not organize or resolved_title_source == "user" or requested_title_source is None):
+            updates["title"] = incoming_title
+            if requested_title_source != "ai":
+                resolved_title_source = "user"
 
         metadata: dict = {}
+        ai_suggestions_status = "not_generated"
         if organize:
             metadata = self._organize_editable_body(body, existing_folders=existing_folders)
             if summary is not None:
@@ -352,9 +349,15 @@ class CaptureAgent:
                 updates["tags"] = metadata.get("tags", [])
             updates["draft_text"] = metadata.get("body_markdown") or body
             updates["word_count"] = len(updates["draft_text"])
-            if title_source != "user":
+            if resolved_title_source != "user":
                 updates["title"] = metadata.get("title") or _derive_capture_title(None, body, draft.get("source_type", ""))
-                title_source = "ai"
+                resolved_title_source = "ai"
+            ai_suggestions_status = _editable_ai_suggestions_status(
+                metadata,
+                organize=True,
+                title=str(updates.get("title") or draft.get("title") or ""),
+                validate_title=resolved_title_source != "user",
+            )
         else:
             if summary is not None:
                 updates["summary"] = summary.strip()
@@ -363,9 +366,10 @@ class CaptureAgent:
 
         capture_intent = {
             **capture_intent,
-            "title_source": title_source,
+            "title_source": resolved_title_source,
             "editable_source_of_truth": "draft_text",
             "pipeline_policy": "reuse_capture_library_rag",
+            "ai_suggestions_status": ai_suggestions_status,
         }
         if folder_path is not None:
             capture_intent["folder_path"] = folder_path.strip() or "Inbox"
@@ -384,9 +388,16 @@ class CaptureAgent:
             else:
                 capture_intent.pop("diagnostics", None)
         updates["capture_intent"] = capture_intent
+        raise_if_cancelled("capture.editable.update.before_write")
         return self.draft_repo.update(draft_id, **updates)
 
-    def revise_draft(self, draft_id: str, instruction: str) -> Optional[dict]:
+    def revise_draft(
+        self,
+        draft_id: str,
+        instruction: str,
+        *,
+        reuse_saved_intent: bool = False,
+    ) -> Optional[dict]:
         """按用户指令生成或更新草稿，不写入正式知识库。"""
         draft = self.draft_repo.get_by_id(draft_id)
         if not draft:
@@ -398,13 +409,17 @@ class CaptureAgent:
             return {"error": f"草稿已{'入库' if draft['status'] == 'committed' else '废弃'}，无法修改"}
         current_text = draft.get("draft_text") or draft.get("raw_text", "")
         timings = getattr(self, "_active_capture_stage_timings", None)
-        stage_started = time.perf_counter()
-        capture_intent = self._build_capture_intent_with_planning(
-            instruction,
-            source_text=draft.get("raw_text", "") or current_text,
-            title_hint=draft.get("title", ""),
-        ).to_dict()
-        _add_capture_stage_timing(timings, "intent_planning", stage_started)
+        saved_intent = draft.get("capture_intent") if isinstance(draft.get("capture_intent"), dict) else {}
+        if reuse_saved_intent and saved_intent:
+            capture_intent = dict(saved_intent)
+        else:
+            stage_started = time.perf_counter()
+            capture_intent = self._build_capture_intent_with_planning(
+                instruction,
+                source_text=draft.get("raw_text", "") or current_text,
+                title_hint=draft.get("title", ""),
+            ).to_dict()
+            _add_capture_stage_timing(timings, "intent_planning", stage_started)
         if self._is_full_text_save_intent(capture_intent):
             source_text = draft.get("raw_text", "") or current_text
             draft_body = self._presentation_text(
@@ -495,6 +510,11 @@ class CaptureAgent:
         emphasis = self._extract_emphasis(user_request)
         preserve = self._detect_preserve_items(user_request)
         material_intent = self._detect_material_intent(user_request, emphasis)
+        is_full_text_save = material_intent == "verbatim_full_text"
+        if is_full_text_save:
+            task_type = "capture"
+            if "original_wording" not in preserve:
+                preserve.append("original_wording")
         must_preserve = [] if coverage == "selected_sections" else [
             "source_fidelity",
             "main_thread",
@@ -502,7 +522,7 @@ class CaptureAgent:
         ]
         if material_intent == "enhanced_note" and "source_layering" not in must_preserve:
             must_preserve.append("source_layering")
-        output_shape = ["full_text"] if material_intent == "verbatim_full_text" else ["natural_draft"]
+        output_shape = ["full_text"] if is_full_text_save else ["natural_draft"]
         return CaptureIntent(
             user_request=user_request,
             material_intent=material_intent,
@@ -512,8 +532,10 @@ class CaptureAgent:
             must_preserve=must_preserve,
             output_shape=output_shape,
             detail_level=self._detect_detail_level(user_request),
-            compression=self._detect_compression(user_request),
+            draft_guidance="verbatim" if is_full_text_save else "let_model_decide",
+            compression="none" if is_full_text_save else self._detect_compression(user_request),
             preserve=preserve,
+            plan_source="deterministic_full_text" if is_full_text_save else "fallback",
         )
 
     def _build_capture_intent_with_planning(
@@ -529,7 +551,10 @@ class CaptureAgent:
             or self._is_full_text_save_intent(fallback.to_dict())
             or not self._capture_planning_available()
         ):
-            fallback.plan_source = "fallback"
+            if self._is_full_text_save_intent(fallback.to_dict()):
+                fallback.plan_source = "deterministic_full_text"
+            else:
+                fallback.plan_source = "fallback"
             return fallback
 
         try:
@@ -630,6 +655,11 @@ class CaptureAgent:
 
         semantic_title = _clean_semantic_title(str(plan.get("title") or ""))
         detail_policy = str(plan.get("detail_policy") or "").strip()
+        if self._is_high_fidelity_organize_request(fallback.user_request):
+            detail_level = "source_like" if detail_level == "medium" else detail_level
+            compression = "low" if compression == "medium" else compression
+            if "original_wording" not in preserve:
+                preserve.append("original_wording")
         return CaptureIntent(
             user_request=fallback.user_request,
             material_intent=fallback.material_intent,
@@ -662,6 +692,20 @@ class CaptureAgent:
 
     def _is_full_text_save_intent(self, capture_intent: dict) -> bool:
         return capture_intent.get("output_shape") == ["full_text"]
+
+    def _is_literal_raw_save_intent(self, capture_intent: dict, instruction: str = "") -> bool:
+        user_request = str(instruction or capture_intent.get("user_request") or "")
+        return bool(re.search(r"(一字不改|原封不动|原样).{0,12}(保存|入库|存库|归档)", user_request))
+
+    def _is_high_fidelity_organize_request(self, user_request: str) -> bool:
+        return bool(
+            re.search(
+                r"(全文整理|高保真整理|高保真全文|尽可能|尽量|最大程度).{0,12}(整理|提取|保留|原文)|"
+                r"全文整理|"
+                r"(贴近原文|原文质感|原文关键表述|少压缩)",
+                user_request or "",
+            )
+        )
 
     def _editable_capture_intent(
         self,
@@ -713,7 +757,10 @@ class CaptureAgent:
                 result = self.summarizer.summarize(clean_text(cleaned_body) or cleaned_body, existing_tags)
         except Exception as exc:
             logger.warning(f"Editable draft metadata generation failed: {exc}")
-            result = {}
+            result = {
+                "warnings": ["AI 建议生成失败，请检查模型配置后重试或手动填写。"],
+                "diagnostics": {"error": str(exc)},
+            }
         folder_suggestion = result.get("folder_suggestion") if isinstance(result.get("folder_suggestion"), dict) else {}
         folder_path = str(folder_suggestion.get("folder_path") or "").strip()
         if folder_path and folder_suggestion.get("mode") not in {"existing", "new"}:
@@ -792,6 +839,8 @@ class CaptureAgent:
         return "refined_note"
 
     def _detect_detail_level(self, user_request: str) -> str:
+        if self._is_high_fidelity_organize_request(user_request):
+            return "source_like"
         if re.search(
             r"(尽可能|尽量|最大程度).{0,8}(提取|保留).{0,8}原文|贴近原文|原文质感|原文关键表述",
             user_request,
@@ -804,6 +853,8 @@ class CaptureAgent:
         return "medium"
 
     def _detect_compression(self, user_request: str) -> str:
+        if self._is_high_fidelity_organize_request(user_request):
+            return "low"
         if re.search(
             r"(尽可能|尽量|最大程度).{0,8}(提取|保留).{0,8}原文|少压缩|稍加总结|贴近原文|原文质感",
             user_request,
@@ -816,7 +867,7 @@ class CaptureAgent:
     def _detect_preserve_items(self, user_request: str) -> list[str]:
         preserve: list[str] = []
         checks = [
-            ("original_wording", r"(原文|原句|关键表述|原文质感|贴近原文)"),
+            ("original_wording", r"(全文整理|高保真|原文|原句|关键表述|原文质感|贴近原文)"),
             ("data", r"(数据|数字|比例|金额|时间|日期|指标)"),
             ("examples", r"(案例|例子|例证|故事)"),
             ("methodology", r"(方法论|方法|做法|步骤|路径)"),
@@ -922,9 +973,31 @@ class CaptureAgent:
                 "- 这是重点定向整理：全文主线要保留，用户点名关切要明显展开，"
                 "不要因为重点展开而丢掉其他必要脉络。\n"
             )
+        if material_intent == "verbatim_full_text":
+            return (
+                "- 这是全文高保真入库：raw 原文由系统另存为证据层；你负责把正式正文整理成可读 Markdown。\n"
+                "- 默认不得改变原文原意、不得压缩成摘要、不得删除正文论证；可以添加分段、"
+                "`##`/`###` heading、title-only `## 目录纲要` 和少量原文短语加粗。\n"
+                "- 公众号关注、图源尾巴、声明、往期内容等明确页面噪音可以不放入正式正文。\n"
+            )
         if material_intent == "refined_note":
             return "- 这是精炼整理稿：目标是形成可读、可信、便于入库的整理笔记。\n"
         return ""
+
+    def _build_capture_body_structure_rule(self, source_text: str) -> str:
+        text_len = len(source_text or "")
+        if text_len >= CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD:
+            return (
+                "- 这是长文入库整理：请你负责生成清晰的 Markdown 章节结构，"
+                "用 `##`/`###` heading 承接主要章节。\n"
+                "- 可以在正文开头生成 `## 目录纲要`，但目录只能列章节标题，"
+                "不要写“标题：摘要”；目录中的每一项必须在正文后续位置有同名 `##`/`###` heading，方便点击跳转。\n"
+                "- 正文要按语义自然分段，避免把长文塞成一个巨大段落；可以克制地加粗原文已有的关键短语。\n"
+            )
+        return (
+            "- 如果正文自然需要小标题，请使用 `##`/`###` Markdown heading；"
+            "如果生成 `## 目录纲要`，目录项也必须能对应到正文同名 heading。\n"
+        )
 
     def _clip_source_text(self, text: str) -> str:
         text = text or ""
@@ -963,7 +1036,8 @@ class CaptureAgent:
             raw_text=raw_text,
             source_type=source_type,
         )
-        return self._call_llm(prompt)
+        result = self._call_llm(prompt)
+        return self._retry_revision_for_directory_contract(result, prompt)
 
     def _should_use_chunked_reading(self, source_text: str, capture_intent: dict) -> bool:
         text_len = len(source_text or "")
@@ -997,7 +1071,8 @@ class CaptureAgent:
             section_notes=notes_result.text,
             source_type=source_type,
         )
-        return self._call_llm(prompt)
+        result = self._call_llm(prompt)
+        return self._retry_revision_for_directory_contract(result, prompt)
 
     def _build_long_source_notes(
         self,
@@ -1190,8 +1265,9 @@ class CaptureAgent:
             f"{self._build_density_rule(capture_intent)}"
             f"{self._build_detail_policy_rule(capture_intent)}"
             f"{self._build_material_intent_rule(capture_intent)}"
+            f"{self._build_capture_body_structure_rule(section_notes)}"
             "- 基于分段笔记直接写最终整理稿，由你决定详略、结构和自然小标题。\n"
-            "- 不要机械套模板；不要输出内部计划；不要输出标签、摘要、目录或任务合同。\n"
+            "- 不要机械套模板；不要输出内部计划；不要输出标签、摘要或任务合同。\n"
             "- 不要逐段搬运分段笔记；把它们综合成一篇可读的整理稿。\n"
             "- 不要输出“好的，我们开始”这类对话开场白；第一行就进入正文。\n"
             "- 如果用户明确说“只要/仅保留/删除其他内容”，才只处理指定部分。\n"
@@ -1234,9 +1310,10 @@ class CaptureAgent:
             f"{self._build_density_rule(capture_intent)}"
             f"{self._build_detail_policy_rule(capture_intent)}"
             f"{self._build_material_intent_rule(capture_intent)}"
+            f"{self._build_capture_body_structure_rule(source_text)}"
             "- 由你决定最终整理稿的详略和结构：可以精炼，可以保留必要细节，也可以使用少量自然小标题。\n"
             "- 不要逐段搬运原文；不要为了格式而格式化；不要机械套用固定模板。\n"
-            "- 不要输出标签、摘要、提纲、目录或任务合同；这些元信息由系统另行处理。\n"
+            "- 不要输出标签、摘要或任务合同；这些元信息由系统另行处理。\n"
             "- 不要输出“好的，我们开始”这类对话开场白；第一行就进入正文。\n"
             "- 如果用户明确说“只要/仅保留/删除其他内容”，才只处理指定部分。\n"
             f"{self._build_source_type_rule(source_type)}"
@@ -1244,6 +1321,161 @@ class CaptureAgent:
             f"{material}\n\n"
             "请直接输出最终整理稿。"
         )
+
+    def _retry_revision_for_directory_contract(
+        self,
+        result: str | LLMResult,
+        original_prompt: str,
+    ) -> str | LLMResult:
+        text = result.text if isinstance(result, LLMResult) else str(result)
+        if isinstance(result, LLMResult) and result.incomplete:
+            return result
+        warning = _directory_contract_warning(text)
+        if not warning:
+            return result
+        retry_prompt = (
+            f"{original_prompt}\n\n"
+            "上一次输出的目录/章节结构没有通过系统校验："
+            f"{warning}。请重新输出完整整理稿：如果保留 `## 目录纲要`，"
+            "目录必须只列标题，且每个目录项都要在正文中有同名 `##`/`###` heading；"
+            "如果无法保证跳转，请不要输出目录。"
+        )
+        return self._call_llm(retry_prompt)
+
+    def _finalize_capture_body_with_llm(
+        self,
+        *,
+        draft: dict,
+        capture_intent: dict,
+        instruction: str,
+    ) -> dict:
+        raw_text = draft.get("raw_text", "")
+        source_text = self._presentation_text(
+            draft.get("source_type", ""),
+            raw_text,
+            instruction=instruction,
+        )
+        final_intent = dict(capture_intent)
+        final_intent["detail_level"] = "source_like"
+        final_intent["compression"] = "none"
+        final_intent["draft_guidance"] = "high_fidelity_markdown"
+        prompt = self._build_revision_prompt(
+            instruction=instruction or "全文高保真整理入库",
+            capture_intent=final_intent,
+            current_text="",
+            raw_text=source_text,
+            source_type=draft.get("source_type", ""),
+        )
+        result = self._call_llm(prompt, return_meta=True)
+        if not isinstance(result, LLMResult):
+            result = LLMResult(
+                text=str(result),
+                incomplete=getattr(self, "_last_llm_incomplete", False),
+            )
+        body = _strip_draft_preamble(result.text)
+        warning = self._capture_body_quality_warning(source_text, body)
+        if result.incomplete and not warning:
+            warning = "LLM 输出未完整完成"
+        if warning:
+            retry_prompt = self._build_final_render_retry_prompt(
+                prompt=prompt,
+                warning=warning,
+                previous_body=body,
+            )
+            retry = self._call_llm(retry_prompt, return_meta=True)
+            if not isinstance(retry, LLMResult):
+                retry = LLMResult(
+                    text=str(retry),
+                    incomplete=getattr(self, "_last_llm_incomplete", False),
+                )
+            retry_body = _strip_draft_preamble(retry.text)
+            retry_warning = self._capture_body_quality_warning(source_text, retry_body)
+            if retry.incomplete and not retry_warning:
+                retry_warning = "LLM 输出未完整完成"
+            if retry_warning:
+                self.draft_repo.update(
+                    draft["id"],
+                    draft_text=retry_body or body,
+                    instruction=instruction,
+                    capture_intent=final_intent,
+                    status="draft_incomplete",
+                )
+                return {"error": f"整理稿未通过入库验收：{retry_warning}"}
+            body = retry_body
+        existing_tags = self._get_existing_tags(Path(self.config.vault_path).expanduser())
+        stage_started = time.perf_counter()
+        tag_result = self.summarizer.summarize(body, existing_tags)
+        _add_capture_stage_timing(
+            getattr(self, "_active_capture_stage_timings", None),
+            "metadata_summary",
+            stage_started,
+        )
+        stage_started = time.perf_counter()
+        updated = self.draft_repo.update(
+            draft["id"],
+            draft_text=body,
+            instruction=instruction,
+            capture_intent=final_intent,
+            summary=tag_result.get("summary", ""),
+            tags=tag_result.get("tags", []),
+            status="draft_ready",
+        )
+        _add_capture_stage_timing(
+            getattr(self, "_active_capture_stage_timings", None),
+            "repo_update",
+            stage_started,
+        )
+        return updated or {**draft, "draft_text": body, "capture_intent": final_intent}
+
+    def _build_final_render_retry_prompt(
+        self,
+        *,
+        prompt: str,
+        warning: str,
+        previous_body: str,
+    ) -> str:
+        return (
+            f"{prompt}\n\n"
+            "上一次高保真整理稿没有通过系统验收："
+            f"{warning}。\n"
+            "请重新输出完整正文。要求：长文必须有 title-only `## 目录纲要`，"
+            "目录项必须和后文 `##`/`###` heading 同名；正文必须自然分段，"
+            "不能压缩成摘要，不能改变原文原意。\n\n"
+            f"上一次输出供你诊断，不要照抄错误结构：\n{previous_body[:4000]}"
+        )
+
+    def _capture_body_quality_warning(self, raw_text: str, body: str) -> str:
+        body = (body or "").strip()
+        if not body:
+            return "整理稿为空"
+        directory_warning = _directory_contract_warning(body)
+        if directory_warning:
+            return directory_warning
+        if len(raw_text or "") < CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD:
+            return ""
+        if "## 目录纲要" not in body:
+            return "长文缺少目录纲要"
+        if len(_draft_heading_titles(body)) < 2:
+            return "长文缺少可索引章节 heading"
+        paragraphs = [
+            line.strip()
+            for line in re.split(r"\n\s*\n", _remove_draft_directory_block(body))
+            if line.strip() and not re.match(r"^#{1,6}\s+", line.strip())
+        ]
+        if not paragraphs:
+            return "长文缺少正文段落"
+        if max(len(paragraph) for paragraph in paragraphs) > CAPTURE_MAX_READABLE_PARAGRAPH_CHARS:
+            return "正文存在超长段落，阅读性不足"
+        if self._high_fidelity_body_too_short(raw_text, body):
+            return "整理稿疑似压缩过度"
+        return ""
+
+    def _high_fidelity_body_too_short(self, raw_text: str, body: str) -> bool:
+        raw_len = len(_normalized_capture_body_text(raw_text))
+        if raw_len < CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD:
+            return False
+        body_len = len(_normalized_capture_body_text(_remove_draft_directory_block(body)))
+        return body_len < int(raw_len * CAPTURE_OVERCOMPRESSED_RATIO)
 
     def _build_source_type_rule(self, source_type: str) -> str:
         if source_type != "xiaohongshu":
@@ -1296,6 +1528,27 @@ class CaptureAgent:
 
     def commit_draft(self, draft_id: str) -> Optional[dict]:
         """确认草稿入库：写 _archive/raw/ 与 captures/，再登记正式 captures 表。"""
+        total_started = time.perf_counter()
+        timings = _empty_capture_stage_timings()
+        previous_timings = getattr(self, "_active_capture_stage_timings", None)
+        self._active_capture_stage_timings = timings
+        try:
+            return self._commit_draft_with_timings(draft_id, timings, total_started)
+        finally:
+            if previous_timings is None:
+                try:
+                    delattr(self, "_active_capture_stage_timings")
+                except AttributeError:
+                    pass
+            else:
+                self._active_capture_stage_timings = previous_timings
+
+    def _commit_draft_with_timings(
+        self,
+        draft_id: str,
+        timings: dict[str, int],
+        total_started: float,
+    ) -> Optional[dict]:
         draft = self.draft_repo.get_by_id(draft_id)
         if not draft:
             return None
@@ -1303,6 +1556,17 @@ class CaptureAgent:
             return {"error": "草稿已入库，请勿重复提交"}
         if draft.get("status") == "abandoned":
             return {"error": "草稿已废弃，无法入库"}
+        if draft.get("status") == "draft_incomplete":
+            return {"error": "草稿还没生成完整，请先继续整理后再存库"}
+
+        stage_started = time.perf_counter()
+        draft = self._finalize_draft_before_commit(draft)
+        _add_capture_stage_timing(timings, "finalize_for_commit", stage_started)
+        raise_if_cancelled("capture.commit.after_finalize")
+        if draft is None:
+            return None
+        if "error" in draft:
+            return draft
         if draft.get("status") == "draft_incomplete":
             return {"error": "草稿还没生成完整，请先继续整理后再存库"}
 
@@ -1318,6 +1582,7 @@ class CaptureAgent:
             summary = tag_result.get("summary", "")
             tags = tag_result.get("tags", [])
 
+        raise_if_cancelled("capture.commit.before_write")
         capture = self.repo.insert()
         meta = NoteMeta(
             id=capture["id"],
@@ -1345,10 +1610,15 @@ class CaptureAgent:
             story=summary,
             word_count=len(body),
         )
+        body_to_write = (
+            body
+            if self._is_literal_raw_save_intent(capture_intent)
+            else _remove_redundant_capture_title(body, capture_meta.title)
+        )
         file_path = self._write_capture_note(
             vault_path,
             capture_meta,
-            body,
+            body_to_write,
             stage="captures",
             kind="capture_note",
             extra_frontmatter=_capture_note_intent_frontmatter(capture_intent),
@@ -1359,8 +1629,41 @@ class CaptureAgent:
             capture["id"],
             render_outline=True,
         )
+        final_note = read_note(vault_path, file_path)
+        if final_note is not None:
+            _final_frontmatter, final_body = final_note
+            body = final_body
+        pipeline_error = self._long_capture_commit_pipeline_error(
+            raw_text=draft.get("raw_text", ""),
+            body=body,
+            library_postprocess=library_postprocess,
+        )
+        if pipeline_error:
+            self.draft_repo.update(
+                draft_id,
+                draft_text=body,
+                word_count=len(body),
+                status="draft_incomplete",
+                committed_capture_id=capture["id"],
+                summary=summary,
+                tags=tags,
+            )
+            return _attach_capture_stage_timings({
+                "error": f"入库后验收失败：{pipeline_error}",
+                "status": "draft_incomplete",
+                "draft_id": draft_id,
+                "capture_id": capture["id"],
+                "title": meta.title,
+                "summary": summary,
+                "tags": tags,
+                "raw_path": raw_path,
+                "file_path": file_path,
+                "library_postprocess": library_postprocess,
+            }, timings, total_started)
         self.draft_repo.update(
             draft_id,
+            draft_text=body,
+            word_count=len(body),
             status="committed",
             committed_capture_id=capture["id"],
             summary=summary,
@@ -1368,7 +1671,7 @@ class CaptureAgent:
         )
         if summary:
             self._enrich_async(capture["id"], summary)
-        return {
+        return _attach_capture_stage_timings({
             "status": "committed",
             "draft_id": draft_id,
             "capture_id": capture["id"],
@@ -1378,7 +1681,141 @@ class CaptureAgent:
             "raw_path": raw_path,
             "file_path": file_path,
             "library_postprocess": library_postprocess,
-        }
+        }, timings, total_started)
+
+    def _long_capture_commit_pipeline_error(
+        self,
+        *,
+        raw_text: str,
+        body: str,
+        library_postprocess: dict,
+    ) -> str:
+        if max(len(raw_text or ""), len(body or "")) < CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD:
+            return ""
+        if "## 目录纲要" not in (body or ""):
+            return "长文缺少目录纲要"
+        directory_warning = _directory_contract_warning(body)
+        if directory_warning:
+            return directory_warning
+        if _has_capture_processing_note(body):
+            return "长文正文仍包含整理说明"
+        if not _directory_absolute_url_free(body):
+            return "长文目录包含绝对链接"
+        if _has_directory_content_heading_coverage_gap(body):
+            return "长文目录未覆盖全部正文主章节"
+        if not _directory_links_match_content_headings(body):
+            return "长文目录链接未匹配正文 heading"
+        pipeline = (
+            library_postprocess.get("pipeline")
+            if isinstance(library_postprocess, dict)
+            and isinstance(library_postprocess.get("pipeline"), dict)
+            else {}
+        )
+        if library_postprocess.get("error"):
+            return f"Library 后处理失败：{library_postprocess['error']}"
+        if pipeline and not pipeline.get("directory_rendered"):
+            return "长文目录未渲染到正式正文"
+        if pipeline and not pipeline.get("directory_heading_coverage_ready"):
+            return "长文目录未覆盖全部正文主章节"
+        if pipeline and not pipeline.get("directory_link_ready"):
+            return "长文目录链接未匹配正文 heading"
+        if pipeline and not pipeline.get("directory_absolute_url_free", True):
+            return "长文目录包含绝对链接"
+        if pipeline and not pipeline.get("processing_note_free", True):
+            return "长文正文仍包含整理说明"
+        if pipeline and not pipeline.get("outline_metadata_ready"):
+            return "长文大纲 metadata 未写入"
+        if pipeline and int(pipeline.get("section_embedding_count") or 0) <= 0:
+            return "长文章节索引未写入"
+        if pipeline and not pipeline.get("rag_section_ready"):
+            return "长文章节 RAG 未就绪"
+        return ""
+
+    def _finalize_draft_before_commit(self, draft: dict) -> Optional[dict]:
+        capture_intent = draft.get("capture_intent") if isinstance(draft.get("capture_intent"), dict) else {}
+        if capture_intent.get("entry_mode") == "editable_capture":
+            return draft
+        raw_text = draft.get("raw_text", "")
+        if not raw_text.strip():
+            return draft
+        instruction = (draft.get("instruction") or capture_intent.get("user_request") or "").strip()
+        if self._is_full_text_save_intent(capture_intent):
+            if self._is_literal_raw_save_intent(capture_intent, instruction):
+                if draft.get("draft_text"):
+                    return draft
+                return self._finalize_literal_raw_draft(draft, capture_intent, instruction)
+            return self._finalize_capture_body_with_llm(
+                draft=draft,
+                capture_intent=capture_intent,
+                instruction=instruction,
+            )
+        overcompressed_error = self._overcompressed_commit_error(draft)
+        if overcompressed_error:
+            self.draft_repo.update(draft["id"], status="draft_incomplete")
+            return {"error": overcompressed_error}
+        if draft.get("draft_text"):
+            return draft
+        if instruction:
+            revised = self.revise_draft(draft["id"], instruction, reuse_saved_intent=True)
+            if isinstance(revised, dict):
+                overcompressed_error = self._overcompressed_commit_error(revised)
+                if overcompressed_error:
+                    self.draft_repo.update(draft["id"], status="draft_incomplete")
+                    return {"error": overcompressed_error}
+            return revised
+        return draft
+
+    def _finalize_literal_raw_draft(
+        self,
+        draft: dict,
+        capture_intent: dict,
+        instruction: str,
+    ) -> dict:
+        draft_body = self._presentation_text(
+            draft.get("source_type", ""),
+            draft.get("raw_text", ""),
+            instruction=instruction,
+        )
+        existing_tags = self._get_existing_tags(Path(self.config.vault_path).expanduser())
+        summary_source = clean_text(draft.get("raw_text", "")) or draft.get("raw_text", "")
+        stage_started = time.perf_counter()
+        tag_result = self.summarizer.summarize(summary_source, existing_tags)
+        _add_capture_stage_timing(
+            getattr(self, "_active_capture_stage_timings", None),
+            "metadata_summary",
+            stage_started,
+        )
+        stage_started = time.perf_counter()
+        updated = self.draft_repo.update(
+            draft["id"],
+            draft_text=draft_body,
+            instruction=instruction,
+            capture_intent=capture_intent,
+            summary=tag_result.get("summary", ""),
+            tags=tag_result.get("tags", []),
+            status="draft_ready",
+        )
+        _add_capture_stage_timing(
+            getattr(self, "_active_capture_stage_timings", None),
+            "repo_update",
+            stage_started,
+        )
+        return updated or draft
+
+    def _overcompressed_commit_error(self, draft: dict) -> str:
+        raw_text = str(draft.get("raw_text") or "")
+        draft_text = str(draft.get("draft_text") or "")
+        if not raw_text.strip() or not draft_text.strip():
+            return ""
+        capture_intent = draft.get("capture_intent") if isinstance(draft.get("capture_intent"), dict) else {}
+        user_request = str(draft.get("instruction") or capture_intent.get("user_request") or "")
+        if not self._is_high_fidelity_organize_request(user_request):
+            return ""
+        if len(raw_text) < CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD:
+            return ""
+        if len(draft_text) >= int(len(raw_text) * CAPTURE_OVERCOMPRESSED_RATIO):
+            return ""
+        return "整理稿疑似压缩过度，请先修订为高保真全文整理后再入库"
 
     def _write_capture_note(
         self,
@@ -1587,12 +2024,14 @@ class CaptureAgent:
                     "temperature": 0.3,
                     "max_tokens": CAPTURE_LLM_MAX_TOKENS,
                 }
+                raise_if_cancelled("capture.before_llm")
                 resp = client.post(
                     f"{base_url}/chat/completions",
                     headers=headers, json=body,
                 )
                 resp.raise_for_status()
                 choice = resp.json()["choices"][0]
+                raise_if_cancelled("capture.after_llm")
                 content = choice["message"]["content"]
                 parts.append(content)
                 if choice.get("finish_reason") != "length":
@@ -1663,7 +2102,7 @@ def _clean_semantic_title(title: str) -> str:
     title = re.sub(r"\s+", " ", title)
     if not title or title in {"无", "无标题", "未命名"}:
         return ""
-    if re.fullmatch(r"doc_[\w-]+.*|整理稿(?:\(\d+\))?", title, flags=re.I):
+    if _looks_like_generic_document_title(title):
         return ""
     return title[:80]
 
@@ -1698,7 +2137,112 @@ def _derive_capture_title(extracted_title: str | None, text: str, source_type: s
         markdown_title = _first_markdown_h1(text)
         if markdown_title:
             return markdown_title
+        if extracted_title and _looks_like_generic_document_title(extracted_title):
+            return _derive_title("", text)
     return _derive_title(extracted_title, text)
+
+
+def _looks_like_generic_document_title(title: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", (title or "").strip())
+    if not cleaned:
+        return True
+    return bool(
+        re.fullmatch(
+            r"(?:doc|document|file)[_-]?[\w-]+.*|"
+            r"(?:整理稿|文字稿)(?:[_ -]?(?:副本|copy)|[（(]\d+[）)]|[_ -]?\d+)?",
+            cleaned,
+            flags=re.I,
+        )
+    )
+
+
+def _remove_leading_duplicate_title(body: str, title: str) -> str:
+    if not body or not title:
+        return body
+    lines = body.splitlines()
+    index = 0
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    if index >= len(lines):
+        return body
+    first = lines[index].strip()
+    normalized_first = _normalize_title_for_duplicate_check(re.sub(r"^#{1,6}\s+", "", first))
+    normalized_title = _normalize_title_for_duplicate_check(title)
+    if normalized_first != normalized_title:
+        return body
+    del lines[index]
+    while index < len(lines) and not lines[index].strip():
+        del lines[index]
+    result = "\n".join(lines).lstrip("\n")
+    if body.endswith("\n") and result and not result.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def _normalize_title_for_duplicate_check(value: str) -> str:
+    value = re.sub(r"\s+", " ", (value or "").strip().strip("#> -"))
+    return value.casefold()
+
+
+def _remove_redundant_capture_title(body: str, title: str) -> str:
+    cleaned = _remove_leading_duplicate_title(body, title)
+    cleaned = _remove_redundant_directory_root_title(cleaned, title)
+    cleaned = _remove_first_duplicate_markdown_heading(cleaned, title)
+    return cleaned
+
+
+def _remove_redundant_directory_root_title(body: str, title: str) -> str:
+    if "## 目录纲要" not in (body or ""):
+        return body
+    lines = body.splitlines()
+    in_directory = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if re.fullmatch(r"##\s+目录纲要", stripped):
+            in_directory = True
+            continue
+        if not in_directory:
+            continue
+        if not stripped:
+            continue
+        if not re.match(r"^[-*+]\s+", stripped):
+            break
+        item_title = re.sub(r"^[-*+]\s+", "", stripped).strip()
+        if _normalize_title_for_duplicate_check(item_title) == _normalize_title_for_duplicate_check(title):
+            del lines[index]
+            while index < len(lines):
+                next_line = lines[index]
+                if not next_line.strip():
+                    index += 1
+                    continue
+                if not re.match(r"^\s+[-*+]\s+", next_line):
+                    break
+                lines[index] = re.sub(r"^\s{2}", "", next_line, count=1)
+                index += 1
+        break
+    result = "\n".join(lines)
+    if body.endswith("\n") and result and not result.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def _remove_first_duplicate_markdown_heading(body: str, title: str) -> str:
+    lines = body.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or re.fullmatch(r"##\s+目录纲要", stripped) or re.match(r"^[-*+]\s+", stripped):
+            continue
+        match = re.match(r"^#{2,6}\s+(.+?)\s*$", stripped)
+        if match and _normalize_title_for_duplicate_check(match.group(1)) == _normalize_title_for_duplicate_check(title):
+            del lines[index]
+            while index < len(lines) and not lines[index].strip():
+                del lines[index]
+            break
+        break
+    result = "\n".join(lines)
+    if body.endswith("\n") and result and not result.endswith("\n"):
+        result += "\n"
+    return result
 
 
 def _capture_note_intent_frontmatter(capture_intent: dict) -> dict:
@@ -1737,6 +2281,91 @@ def _strip_draft_preamble(text: str) -> str:
             continue
         break
     return "\n\n".join(paragraphs).strip()
+
+
+def _directory_contract_warning(text: str) -> str:
+    directory_titles = _draft_directory_titles(text)
+    if not directory_titles:
+        return ""
+    heading_titles = _draft_heading_titles(text)
+    for title in directory_titles:
+        if title in heading_titles:
+            continue
+        prefix = re.split(r"[：:]", title, maxsplit=1)[0].strip()
+        if prefix and prefix in heading_titles:
+            return "目录项包含摘要式冒号说明"
+    missing = [title for title in directory_titles if title not in heading_titles]
+    if missing:
+        return "目录项缺少同名正文 heading: " + ", ".join(missing[:3])
+    return ""
+
+
+def _draft_directory_titles(text: str) -> list[str]:
+    lines = (text or "").splitlines()
+    titles: list[str] = []
+    in_directory = False
+    saw_item = False
+    for line in lines:
+        stripped = line.strip()
+        if re.fullmatch(r"##\s+目录纲要", stripped):
+            in_directory = True
+            saw_item = False
+            continue
+        if not in_directory:
+            continue
+        if stripped and saw_item and not re.match(r"^[-*+]\s+", stripped):
+            break
+        item = re.match(r"^[-*+]\s+(.+?)\s*$", stripped)
+        if item:
+            titles.append(_plain_draft_directory_title(item.group(1)))
+            saw_item = True
+    return titles
+
+
+def _draft_heading_titles(text: str) -> set[str]:
+    return {
+        match.group(1).strip()
+        for match in re.finditer(r"^#{2,3}\s+(.+?)\s*$", text or "", flags=re.MULTILINE)
+        if match.group(1).strip() != "目录纲要"
+    }
+
+
+def _plain_draft_directory_title(value: str) -> str:
+    title = re.sub(r"^#+\s*", "", value or "").strip()
+    link = re.fullmatch(r"\[([^\]]+)\]\(#[^)]+\)", title)
+    if link:
+        title = link.group(1).strip()
+    return title
+
+
+def _remove_draft_directory_block(text: str) -> str:
+    lines = (text or "").splitlines()
+    kept: list[str] = []
+    in_directory = False
+    saw_item = False
+    for line in lines:
+        stripped = line.strip()
+        if re.fullmatch(r"##\s+目录纲要", stripped):
+            in_directory = True
+            saw_item = False
+            continue
+        if in_directory:
+            if not stripped:
+                continue
+            if re.match(r"^[-*+]\s+", stripped):
+                saw_item = True
+                continue
+            if saw_item:
+                in_directory = False
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def _normalized_capture_body_text(text: str) -> str:
+    cleaned = _remove_draft_directory_block(text or "")
+    cleaned = re.sub(r"^#{1,6}\s+.+?$", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", cleaned)
+    return re.sub(r"\s+", "", cleaned)
 
 
 def _clean_xiaohongshu_author_content_text(text: str) -> str:
@@ -1864,6 +2493,41 @@ def _normalize_editable_card_suggestion(suggestion: dict) -> dict:
         "reason": reason,
         "cards": cards,
     }
+
+
+def _normalize_editable_title_source(value: str | None) -> str | None:
+    normalized = (value or "").strip().lower()
+    if normalized in {"ai", "user"}:
+        return normalized
+    return None
+
+
+def _editable_ai_suggestions_status(
+    metadata: dict,
+    *,
+    organize: bool,
+    title: str = "",
+    validate_title: bool = True,
+) -> str:
+    if not organize:
+        return "not_generated"
+    diagnostics = metadata.get("diagnostics") if isinstance(metadata, dict) else {}
+    if isinstance(diagnostics, dict) and diagnostics:
+        return "failed"
+    if validate_title and not _clean_semantic_title(title):
+        return "failed"
+    if not str(metadata.get("summary") or "").strip():
+        return "failed"
+    tags = metadata.get("tags") if isinstance(metadata, dict) else []
+    if not isinstance(tags, list) or not [str(tag).strip() for tag in tags if str(tag).strip()]:
+        return "failed"
+    folder_suggestion = metadata.get("folder_suggestion") if isinstance(metadata, dict) else {}
+    if not isinstance(folder_suggestion, dict) or not str(folder_suggestion.get("folder_path") or "").strip():
+        return "failed"
+    card_suggestion = metadata.get("card_suggestion") if isinstance(metadata, dict) else {}
+    if not isinstance(card_suggestion, dict) or not str(card_suggestion.get("reason") or "").strip():
+        return "failed"
+    return "generated"
 
 
 def _is_xiaohongshu_runtime_noise(line: str) -> bool:

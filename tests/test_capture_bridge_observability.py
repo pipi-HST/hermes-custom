@@ -73,8 +73,9 @@ def test_capture_content_records_run_ledger_and_strips_preamble(monkeypatch, tmp
 
     assert result["status"] == "success"
     assert "好的，我们开始" not in result["chat_preview"]
+    assert "原文已提取，已生成待确认初稿" in result["chat_preview"]
     draft_id = result["durable_artifacts"][0]["id"]
-    assert not agent.draft_repo.get_by_id(draft_id)["draft_text"].startswith("好的")
+    assert agent.draft_repo.get_by_id(draft_id)["draft_text"] == ""
 
     repo = AgentRunRepo(agent.conn)
     latest = repo.latest(limit=1)[0]
@@ -86,7 +87,7 @@ def test_capture_content_records_run_ledger_and_strips_preamble(monkeypatch, tmp
     assert latest["intent"] == "create_capture_draft"
     assert latest["status"] == "success"
     assert evidence["draft_id"] == draft_id
-    assert evidence["draft_status"] == "draft_ready"
+    assert evidence["draft_status"] == "raw_extracted"
     assert output["title"].startswith("AI产品评测")
     assert events == ["started", "completed"]
 
@@ -124,6 +125,8 @@ def test_capture_content_records_stage_timings(monkeypatch, tmp_path):
         "repo_update",
         "total",
     } <= set(timings)
+    assert timings["revision_llm"] == 0
+    assert timings["metadata_summary"] == 0
     assert all(isinstance(timings[key], int) and timings[key] >= 0 for key in timings)
 
 
@@ -132,7 +135,7 @@ def test_editable_draft_parse_diagnostics_reach_run_ledger(monkeypatch, tmp_path
     monkeypatch.setattr(
         agent.summarizer,
         "_call_llm",
-        lambda _prompt, *, max_tokens=4000: '{"title": "半截"',
+        lambda _prompt, *, max_tokens=4000, json_mode=False: '{"title": "半截"',
     )
 
     result = capture_bridge.create_editable_capture_draft(
@@ -146,6 +149,7 @@ def test_editable_draft_parse_diagnostics_reach_run_ledger(monkeypatch, tmp_path
     diagnostics = draft["capture_intent"]["diagnostics"]
     assert diagnostics["parse_error_kind"] == "json_parse_failed"
     assert diagnostics["response_len"] == len('{"title": "半截"')
+    assert diagnostics["response_head"].startswith("{")
     assert diagnostics["response_tail"].endswith('"半截"')
 
     latest = AgentRunRepo(agent.conn).latest(limit=1)[0]

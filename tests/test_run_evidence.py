@@ -110,6 +110,44 @@ def test_extracts_rag_source_evidence():
     assert result["evidence"]["used_index"] is True
 
 
+def test_extracts_capture_postprocess_pipeline_evidence():
+    envelope = success_envelope(
+        agent="capture",
+        intent="commit_capture_draft",
+        chat_preview="已存入知识库。",
+        durable_artifacts=[
+            artifact_ref(
+                type="capture_note",
+                id="cap1",
+                title="长文",
+                path="captures/a.md",
+                status="created",
+            )
+        ],
+        meta={
+            "capture_id": "cap1",
+            "library_postprocess": {
+                "pipeline": {
+                    "directory_rendered": True,
+                    "section_embedding_count": 3,
+                    "rag_section_ready": True,
+                    "outline_metadata_ready": True,
+                    "warnings": ["capture_body_noise_blocks_removed:2"],
+                }
+            },
+        },
+        warnings=["capture_body_noise_blocks_removed:2"],
+    )
+
+    result = extract_run_evidence("capture", "commit_capture_draft", envelope)
+
+    assert result["evidence"]["directory_rendered"] is True
+    assert result["evidence"]["section_embedding_count"] == 3
+    assert result["evidence"]["rag_section_ready"] is True
+    assert result["evidence"]["outline_metadata_ready"] is True
+    assert result["evidence"]["warning_count"] == 1
+
+
 def test_extracts_rag_source_names_paths_and_sections():
     envelope = success_envelope(
         agent="rag",

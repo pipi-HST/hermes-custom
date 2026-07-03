@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import zipfile
 
 import pytest
@@ -162,6 +162,28 @@ def test_create_draft_from_markdown_file_path(agent: CaptureAgent, tmp_path: Pat
     assert str(doc) not in result["raw_text"]
 
 
+def test_create_draft_from_generic_document_name_uses_body_title(
+    agent: CaptureAgent,
+    tmp_path: Path,
+):
+    """Generic uploaded filenames should not override the document's own first title line."""
+    doc = tmp_path / "整理稿_副本.md"
+    doc.write_text(
+        "Cursor 如何构建 Agent Harness\n\n"
+        "Cursor 的方法分为三层：定义理想体验、用评测和真实信号导航、"
+        "再用错误监控和自动化修复持续改进。这个文档继续展开说明，"
+        "理想体验不是抽象口号，而是工具调用、上下文策略、停止条件、"
+        "用户确认和自动修复闭环共同组成的产品合同。补充足够内容，"
+        "确保文档路径测试走完整的 Capture 草稿创建流程。",
+        encoding="utf-8",
+    )
+
+    result = agent.create_draft(str(doc))
+
+    assert result["title"] == "Cursor 如何构建 Agent Harness"
+    assert result["title"] != "整理稿_副本"
+
+
 def test_full_text_draft_from_markdown_file_uses_h1_title_and_exact_body(
     agent: CaptureAgent,
     tmp_path: Path,
@@ -188,14 +210,14 @@ def test_full_text_draft_from_markdown_file_uses_h1_title_and_exact_body(
 
     result = agent.create_draft(str(doc), instruction="全文入库，一字不改全文原文入库")
 
-    assert result["status"] == "draft_ready"
+    assert result["status"] == "raw_extracted"
     assert result["title"] == "智能问数项目的成功关键"
-    assert result["draft_text"] == original
+    assert result["draft_text"] == ""
     assert result["raw_text"] == original
 
 
 def test_create_draft_from_markdown_file_with_instruction(agent: CaptureAgent, tmp_path: Path, monkeypatch):
-    """File path + instruction should summarize the document body, not the path string."""
+    """File path + instruction should extract the document body for later confirmation."""
     doc = tmp_path / "整理稿.md"
     doc.write_text(
         "# 世界杯效应\n\n"
@@ -218,10 +240,10 @@ def test_create_draft_from_markdown_file_with_instruction(agent: CaptureAgent, t
 
     result = agent.create_draft(str(doc), instruction="整理文章核心内容，世界杯效应详细阐述")
 
-    assert result["status"] == "draft_ready"
-    assert "世界杯效应" in prompts[0]
-    assert str(doc) not in prompts[0]
-    assert result["draft_text"] == "世界杯效应：短线资金可能分流。"
+    assert result["status"] == "raw_extracted"
+    assert prompts == []
+    assert result["draft_text"] == ""
+    assert "世界杯可能带来短线资金分流" in result["raw_text"]
 
 
 def test_image_extractor_handles_local_jpg(tmp_path: Path):

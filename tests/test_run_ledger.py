@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from bridge.ai_cancel import AIOperationCancelled
 from bridge.result_envelope import success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.agent_run_repo import AgentRunRepo
@@ -95,4 +96,32 @@ def test_run_with_ledger_records_error_and_reraises(tmp_path):
     assert [event["event_type"] for event in AgentRunRepo(conn).events(latest["id"])] == [
         "started",
         "failed",
+    ]
+
+
+def test_run_with_ledger_records_cancelled_and_reraises(tmp_path):
+    conn = init_db(str(tmp_path / "captures.db"))
+
+    def cancel():
+        raise AIOperationCancelled(operation_id="op-1", stage="capture.commit.before_write")
+
+    with pytest.raises(AIOperationCancelled):
+        run_with_ledger(
+            conn,
+            agent="capture",
+            intent="commit_capture_draft",
+            trigger="dashboard",
+            input_ref={"draft_id": "draft-1"},
+            operation=cancel,
+        )
+
+    repo = AgentRunRepo(conn)
+    latest = repo.latest(limit=1)[0]
+    evidence = json.loads(latest["evidence_json"])
+    assert latest["status"] == "cancelled"
+    assert evidence["operation_id"] == "op-1"
+    assert evidence["cancelled_stage"] == "capture.commit.before_write"
+    assert [event["event_type"] for event in repo.events(latest["id"])] == [
+        "started",
+        "cancelled",
     ]

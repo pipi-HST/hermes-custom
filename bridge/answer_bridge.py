@@ -13,6 +13,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.capture_agent import load_config
+from bridge.ai_cancel import raise_if_cancelled
 from agents.summarizer import Summarizer
 from bridge.result_envelope import artifact_ref, error_envelope, next_action, success_envelope
 from bridge.run_ledger import run_with_ledger
@@ -198,6 +199,7 @@ def _revise_answer_draft(*, draft_id: str, instruction: str) -> dict:
         draft_text=draft.get("draft_text", ""),
         instruction=instruction,
     )
+    raise_if_cancelled("answer.revise.before_update")
     updated = repo.update_draft(
         draft_id,
         draft_text=revised_text.strip() + "\n",
@@ -330,6 +332,7 @@ def _save_answer_to_knowledge(
     )
     metadata = _generate_full_text_metadata(config, draft_text)
     title = _metadata_answer_draft_title(metadata, fallback=title)
+    raise_if_cancelled("answer.save.before_create_draft")
     session = repo.update_session(session["id"], source_title=title) or session
     draft_text = _build_answer_draft_text(
         title=title,
@@ -628,9 +631,11 @@ def _call_revision_llm(
         "max_tokens": 6000,
     }
     with httpx.Client(timeout=180) as client:
+        raise_if_cancelled("answer.revision.before_llm")
         resp = client.post(f"{base_url}/chat/completions", headers=headers, json=body)
         resp.raise_for_status()
         data = resp.json()
+    raise_if_cancelled("answer.revision.after_llm")
     return str(data["choices"][0]["message"]["content"]).strip()
 
 

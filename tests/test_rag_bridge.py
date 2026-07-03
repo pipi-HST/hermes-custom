@@ -5,6 +5,8 @@ import struct
 import json
 from pathlib import Path
 
+import pytest
+
 from agents.capture_agent import CaptureConfig
 from db.embedding_repo import CaptureEmbeddingRepo
 from db.schema import init_db
