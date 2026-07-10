@@ -30,6 +30,8 @@ cd /Users/pipi/hermes-custom
 .venv/bin/python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
 
+默认未配置 `HERMES_API_TOKEN` 时只接受回环地址请求，也不要把该无 token 服务接到对外反向代理后。若必须监听 `0.0.0.0` 或通过代理提供远程访问，请先设置高强度随机 `HERMES_API_TOKEN`，并让客户端通过 `Authorization: Bearer <token>` 发送。
+
 现在这个 API 只挂知识库接口：
 
 - 有 `/api/captures`

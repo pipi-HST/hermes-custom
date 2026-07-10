@@ -9,8 +9,10 @@ from pathlib import Path
 import httpx
 
 from .base import BaseExtractor, ExtractionResult
+from .http_safety import DownloadTooLarge, UnsafeURL, fetch_public_bytes
 
 logger = logging.getLogger(__name__)
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 IMAGE_PROMPT = """请对这张图片做两件事：
 1. 逐字提取图片中的所有可见文字（OCR），尽量保留原文顺序、段落和换行。不要总结、不要改写、不要只提标题。
@@ -56,7 +58,24 @@ class ImageExtractor(BaseExtractor):
                 source_url=kwargs.get("source_url", ""),
             )
 
-        image_data = self._resolve_image(source)
+        try:
+            image_data = self._resolve_image(source)
+        except UnsafeURL as exc:
+            return ExtractionResult.failed(
+                code="unsafe_source",
+                message=f"图片地址不安全: {exc}",
+                raw_text="[图片地址被安全策略拒绝]",
+                source_type="image",
+                source_url=source,
+            )
+        except DownloadTooLarge as exc:
+            return ExtractionResult.failed(
+                code="source_too_large",
+                message=f"图片内容过大: {exc}",
+                raw_text="[图片内容超过下载上限]",
+                source_type="image",
+                source_url=source,
+            )
         if not image_data:
             return ExtractionResult.failed(
                 code="network_error",
@@ -99,26 +118,38 @@ class ImageExtractor(BaseExtractor):
     def _resolve_image(self, source: str) -> str | None:
         """返回 base64 data URI 或 None。"""
         if source.startswith("data:image/"):
+            header, _, payload = source.partition(",")
+            max_payload_bytes = (
+                (MAX_IMAGE_BYTES * 4 // 3) + 4
+                if ";base64" in header.lower()
+                else MAX_IMAGE_BYTES
+            )
+            if len(payload.encode("utf-8")) > max_payload_bytes:
+                raise DownloadTooLarge(f"image exceeds {MAX_IMAGE_BYTES} bytes")
             return source
         if source.startswith("http"):
-            try:
-                with httpx.Client(timeout=15) as client:
-                    resp = client.get(source)
-                    resp.raise_for_status()
-                    ct = resp.headers.get("content-type", "image/png")
-                    b64 = base64.b64encode(resp.content).decode()
-                    return f"data:{ct};base64,{b64}"
-            except Exception as e:
-                logger.warning(f"Failed to download image: {e}")
+            _final_url, headers, content = fetch_public_bytes(
+                source,
+                timeout=15,
+                max_bytes=MAX_IMAGE_BYTES,
+            )
+            content_type = headers.get("content-type", "image/png").split(";", 1)[0]
+            if content_type and not content_type.lower().startswith("image/"):
                 return None
+            b64 = base64.b64encode(content).decode()
+            return f"data:{content_type or 'image/png'};base64,{b64}"
         if source.startswith("/"):
             try:
                 path = Path(source)
                 if path.exists():
+                    if path.stat().st_size > MAX_IMAGE_BYTES:
+                        raise DownloadTooLarge(f"image exceeds {MAX_IMAGE_BYTES} bytes")
                     ext = path.suffix.lower()
                     mime = {"jpg": "jpeg"}.get(ext.lstrip("."), ext.lstrip("."))
                     b64 = base64.b64encode(path.read_bytes()).decode()
                     return f"data:image/{mime};base64,{b64}"
+            except DownloadTooLarge:
+                raise
             except Exception as e:
                 logger.warning(f"Failed to read local image: {e}")
         return None

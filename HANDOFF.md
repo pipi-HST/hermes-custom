@@ -233,9 +233,13 @@ cd /Users/pipi/Downloads/hermes-agent-main
 cd /Users/pipi/hermes-custom
 .venv/bin/python -m pytest tests/ -q
 
-# 启动 FastAPI 后端（Dashboard API，port 8000）
+# 启动 FastAPI 后端（Dashboard API，默认仅本机，port 8000）
 cd /Users/pipi/hermes-custom
-.venv/bin/python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+.venv/bin/python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+
+# 如确需监听局域网，必须先设置高强度随机 token；客户端使用 Bearer token
+HERMES_API_TOKEN='<replace-with-random-token>' \
+  .venv/bin/python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 
 # 启动 Next.js 仪表盘（port 3000）
 cd /Users/pipi/hermes-custom/dashboard

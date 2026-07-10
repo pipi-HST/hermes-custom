@@ -2,11 +2,18 @@
 from __future__ import annotations
 
 import html as html_lib
-import logging, re
+import logging
+import re
 from .base import BaseExtractor, ExtractionResult
+from .http_safety import (
+    DownloadTooLarge,
+    UnsafeURL,
+    decode_http_text,
+    fetch_public_bytes,
+    validate_public_http_url,
+)
 
 try:
-    import httpx
     from readability import Document as ReadabilityDoc
     HAS_READABILITY = True
 except ImportError:
@@ -19,6 +26,7 @@ except ImportError:
     HAS_TRAFILATURA = False
 
 logger = logging.getLogger(__name__)
+MAX_HTML_BYTES = 5 * 1024 * 1024
 
 
 class LinkExtractor(BaseExtractor):
@@ -33,7 +41,8 @@ class LinkExtractor(BaseExtractor):
     @staticmethod
     def _extract_title(html: str) -> str:
         m = LinkExtractor.OG_TITLE_RE.search(html)
-        if m: return m.group(1).strip()
+        if m:
+            return m.group(1).strip()
         m = re.search(r'<title>([^<]+)</title>', html, re.IGNORECASE)
         return m.group(1).strip() if m else ""
 
@@ -43,6 +52,16 @@ class LinkExtractor(BaseExtractor):
     def extract(self, source: str, **kwargs) -> ExtractionResult:
         url_match = self.URL_RE.search(source)
         url = self._clean_url(url_match.group(0) if url_match else source)
+        try:
+            validate_public_http_url(url)
+        except UnsafeURL as exc:
+            return ExtractionResult.failed(
+                code="unsafe_source",
+                message=f"网页地址不安全: {exc}",
+                raw_text="[网页地址被安全策略拒绝]",
+                source_type="link",
+                source_url=url,
+            )
         ua = "Mozilla/5.0 (compatible; Hermes-Capture/1.0)"
         if self.WECHAT_RE.search(url):
             ua = ("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
@@ -50,23 +69,40 @@ class LinkExtractor(BaseExtractor):
         if self.BILIBILI_RE.search(url) or self.VIDEO_RE.search(url):
             return ExtractionResult(raw_text=f"[视频内容] {url}", source_type="video", source_url=url)
 
-        if self.WECHAT_RE.search(url):
-            result = self._try_wechat_article(url, ua)
+        try:
+            if self.WECHAT_RE.search(url):
+                result = self._try_wechat_article(url, ua)
+                if result and result.raw_text.strip():
+                    return result
+
+            # Level 1: readability
+            result = self._try_readability(url, ua)
             if result and result.raw_text.strip():
+                # Set title from og:title if available
+                if not result.title:
+                    result.title = ""
                 return result
 
-        # Level 1: readability
-        result = self._try_readability(url, ua)
-        if result and result.raw_text.strip():
-            # Set title from og:title if available
-            if not result.title:
-                result.title = ""
-            return result
-
-        # Level 2: trafilatura
-        result = self._try_trafilatura(url)
-        if result and result.raw_text.strip():
-            return result
+            # Level 2: trafilatura
+            result = self._try_trafilatura(url, ua)
+            if result and result.raw_text.strip():
+                return result
+        except DownloadTooLarge as exc:
+            return ExtractionResult.failed(
+                code="source_too_large",
+                message=f"网页内容过大: {exc}",
+                raw_text="[网页内容超过下载上限]",
+                source_type="link",
+                source_url=url,
+            )
+        except UnsafeURL as exc:
+            return ExtractionResult.failed(
+                code="unsafe_source",
+                message=f"网页地址不安全: {exc}",
+                raw_text="[网页地址被安全策略拒绝]",
+                source_type="link",
+                source_url=url,
+            )
 
         # Level 3: give up
         return ExtractionResult.failed(
@@ -82,10 +118,13 @@ class LinkExtractor(BaseExtractor):
         return (url or "").strip().rstrip("，。；;、,.!！?？)]）}】》\"'")
 
     def _fetch_html(self, url: str, ua: str) -> tuple[str, str]:
-        with httpx.Client(timeout=15, follow_redirects=True) as client:
-            resp = client.get(url, headers={"User-Agent": ua})
-            resp.raise_for_status()
-            return str(resp.url), resp.text
+        final_url, headers, content = fetch_public_bytes(
+            url,
+            timeout=15,
+            max_bytes=MAX_HTML_BYTES,
+            headers={"User-Agent": ua},
+        )
+        return final_url, decode_http_text(headers, content)
 
     def _try_wechat_article(self, url: str, ua: str) -> ExtractionResult | None:
         try:
@@ -99,6 +138,8 @@ class LinkExtractor(BaseExtractor):
                     source_url=final_url,
                     title=title,
                 )
+        except (UnsafeURL, DownloadTooLarge):
+            raise
         except Exception:
             return None
         return None
@@ -142,19 +183,23 @@ class LinkExtractor(BaseExtractor):
             content = re.sub(r'<[^>]+>', '', content)
             return ExtractionResult(raw_text=content.strip(), source_type="link",
                                     source_url=final_url, title=title)
+        except (UnsafeURL, DownloadTooLarge):
+            raise
         except Exception:
             return None
 
-    def _try_trafilatura(self, url: str) -> ExtractionResult | None:
+    def _try_trafilatura(self, url: str, ua: str) -> ExtractionResult | None:
         if not HAS_TRAFILATURA:
             return None
         try:
-            downloaded = trafilatura.fetch_url(url)
+            final_url, downloaded = self._fetch_html(url, ua)
             if downloaded:
                 content = trafilatura.extract(downloaded, include_links=False,
                                               include_images=False, output_format="markdown")
                 if content and len(content.strip()) > 100:
-                    return ExtractionResult(raw_text=content.strip(), source_type="link", source_url=url)
+                    return ExtractionResult(raw_text=content.strip(), source_type="link", source_url=final_url)
+        except (UnsafeURL, DownloadTooLarge):
+            raise
         except Exception:
             pass
         return None

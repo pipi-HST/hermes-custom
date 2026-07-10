@@ -9,12 +9,19 @@ import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-import httpx
-
 from .base import BaseExtractor, ExtractionResult
+from .http_safety import (
+    DownloadTooLarge,
+    UnsafeURL,
+    decode_http_text,
+    fetch_public_bytes,
+)
 from .image_extractor import ImageExtractor
 
 logger = logging.getLogger(__name__)
+MAX_HTML_BYTES = 5 * 1024 * 1024
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_TOTAL_IMAGE_BYTES = 30 * 1024 * 1024
 
 
 class XiaohongshuExtractor(BaseExtractor):
@@ -48,6 +55,22 @@ class XiaohongshuExtractor(BaseExtractor):
 
         try:
             final_url, page_html = self._fetch_url(url)
+        except UnsafeURL as exc:
+            return ExtractionResult.failed(
+                code="unsafe_source",
+                message=f"小红书地址不安全: {exc}",
+                raw_text="[小红书地址被安全策略拒绝]",
+                source_type="xiaohongshu",
+                source_url=url,
+            )
+        except DownloadTooLarge as exc:
+            return ExtractionResult.failed(
+                code="source_too_large",
+                message=f"小红书页面过大: {exc}",
+                raw_text="[小红书页面超过下载上限]",
+                source_type="xiaohongshu",
+                source_url=url,
+            )
         except Exception as exc:
             logger.warning("Xiaohongshu fetch failed: %s", exc)
             return self._failure(url, source_url=url)
@@ -87,10 +110,13 @@ class XiaohongshuExtractor(BaseExtractor):
             ),
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }
-        with httpx.Client(timeout=20, follow_redirects=True) as client:
-            resp = client.get(url, headers=headers)
-            resp.raise_for_status()
-            return str(resp.url), resp.text
+        final_url, response_headers, content = fetch_public_bytes(
+            url,
+            timeout=20,
+            max_bytes=MAX_HTML_BYTES,
+            headers=headers,
+        )
+        return final_url, decode_http_text(response_headers, content)
 
     def _description(self, page_html: str) -> str:
         candidates = self._meta_values(page_html, {"og:description", "description"})
@@ -113,11 +139,21 @@ class XiaohongshuExtractor(BaseExtractor):
 
     def _image_sections(self, image_urls: list[str], note_id: str) -> list[str]:
         sections = []
+        downloaded_bytes = 0
         for index, url in enumerate(image_urls, start=1):
             local_path = self._download_image(url, note_id, index)
             if not local_path:
                 sections.append(f"## 图片 {index}\n图片地址：{url}\n图片下载失败，无法 OCR。")
                 continue
+            file_size = local_path.stat().st_size if local_path.exists() else 0
+            if downloaded_bytes + file_size > MAX_TOTAL_IMAGE_BYTES:
+                local_path.unlink(missing_ok=True)
+                sections.append(
+                    f"## 图片 {index}\n图片地址：{url}\n"
+                    "图片总下载上限已达到，后续图片未处理。"
+                )
+                break
+            downloaded_bytes += file_size
             ocr = self.image_extractor.extract(str(local_path))
             text = (ocr.raw_text or "").strip()
             if not text:
@@ -135,17 +171,20 @@ class XiaohongshuExtractor(BaseExtractor):
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"{index:02d}{ext}"
         try:
-            with httpx.Client(timeout=20, follow_redirects=True) as client:
-                resp = client.get(
-                    url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Referer": "https://www.xiaohongshu.com/",
-                    },
-                )
-                resp.raise_for_status()
-                target.write_bytes(resp.content)
-                return target
+            _final_url, headers, content = fetch_public_bytes(
+                url,
+                timeout=20,
+                max_bytes=MAX_IMAGE_BYTES,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": "https://www.xiaohongshu.com/",
+                },
+            )
+            content_type = headers.get("content-type", "image/jpeg")
+            if content_type and not content_type.lower().startswith("image/"):
+                return None
+            target.write_bytes(content)
+            return target
         except Exception as exc:
             logger.warning("Xiaohongshu image download failed: %s", exc)
             return None
