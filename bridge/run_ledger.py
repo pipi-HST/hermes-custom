@@ -8,6 +8,7 @@ from typing import Any
 from agents.run_evidence import extract_input_object_refs, extract_run_evidence
 from bridge.ai_cancel import AIOperationCancelled
 from db.agent_run_repo import AgentRunRepo
+from db.concurrency import connection_lock
 
 
 def run_with_ledger(
@@ -17,6 +18,26 @@ def run_with_ledger(
     intent: str,
     trigger: str = "wechat",
     input_ref: dict[str, Any] | None = None,
+    operation: Callable[[], Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    with connection_lock(conn):
+        return _run_with_ledger_unlocked(
+            conn,
+            agent=agent,
+            intent=intent,
+            trigger=trigger,
+            input_ref=input_ref,
+            operation=operation,
+        )
+
+
+def _run_with_ledger_unlocked(
+    conn: sqlite3.Connection,
+    *,
+    agent: str,
+    intent: str,
+    trigger: str,
+    input_ref: dict[str, Any] | None,
     operation: Callable[[], Mapping[str, Any]],
 ) -> Mapping[str, Any]:
     repo = AgentRunRepo(conn)

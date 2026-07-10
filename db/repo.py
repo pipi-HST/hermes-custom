@@ -139,6 +139,87 @@ class CaptureDraftRepo:
             return None
         return self._row_to_dict(row)
 
+    def claim_for_commit(self, draft_id: str) -> Optional[dict]:
+        updated_at = datetime.now(timezone.utc).isoformat()
+        cursor = self.conn.execute(
+            """UPDATE capture_drafts
+               SET status = 'committing', updated_at = ?
+               WHERE id = ?
+                 AND (
+                    status IN ('raw_extracted', 'draft_ready', 'revision_requested')
+                    OR (
+                        status = 'committing'
+                        AND julianday(updated_at) <= julianday('now', '-15 minutes')
+                    )
+                 )""",
+            (updated_at, draft_id),
+        )
+        self.conn.commit()
+        if cursor.rowcount != 1:
+            return None
+        return self.get_by_id(draft_id)
+
+    def commit_claim_is_stale(self, draft_id: str) -> bool:
+        row = self.conn.execute(
+            """SELECT 1 FROM capture_drafts
+               WHERE id = ?
+                 AND status = 'committing'
+                 AND julianday(updated_at) <= julianday('now', '-15 minutes')""",
+            (draft_id,),
+        ).fetchone()
+        return row is not None
+
+    def restore_commit_status(self, draft_id: str, status: str) -> None:
+        self.conn.execute(
+            """UPDATE capture_drafts
+               SET status = ?, updated_at = ?
+               WHERE id = ? AND status = 'committing'""",
+            (status, datetime.now(timezone.utc).isoformat(), draft_id),
+        )
+        self.conn.commit()
+
+    def reserve_capture_for_commit(self, draft_id: str) -> str:
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            row = self.conn.execute(
+                """SELECT status, pending_capture_id
+                   FROM capture_drafts WHERE id = ?""",
+                (draft_id,),
+            ).fetchone()
+            if row is None or row["status"] != "committing":
+                raise RuntimeError("draft commit claim was lost")
+
+            capture_id = str(row["pending_capture_id"] or "")
+            if not capture_id:
+                capture_id = uuid.uuid4().hex[:12]
+                self.conn.execute(
+                    "INSERT INTO captures (id, file_path, raw_path) VALUES (?, '', '')",
+                    (capture_id,),
+                )
+                cursor = self.conn.execute(
+                    """UPDATE capture_drafts
+                       SET pending_capture_id = ?, updated_at = ?
+                       WHERE id = ? AND status = 'committing'""",
+                    (
+                        capture_id,
+                        datetime.now(timezone.utc).isoformat(),
+                        draft_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("draft commit claim was lost")
+            else:
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO captures (id, file_path, raw_path)
+                       VALUES (?, '', '')""",
+                    (capture_id,),
+                )
+            self.conn.commit()
+            return capture_id
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def get_latest_open(self) -> Optional[dict]:
         row = self.conn.execute(
             """SELECT * FROM capture_drafts
@@ -184,7 +265,7 @@ class CaptureDraftRepo:
         allowed = {
             "draft_text", "instruction", "capture_intent", "summary", "tags", "status",
             "committed_capture_id", "title", "source", "source_type",
-            "word_count", "raw_text",
+            "word_count", "raw_text", "pending_capture_id",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
