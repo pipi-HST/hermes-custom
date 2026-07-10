@@ -2550,7 +2550,12 @@ def test_commit_long_unstructured_full_text_preserves_body_without_directory(
     monkeypatch.setattr(
         agent,
         "_postprocess_committed_library",
-        lambda *args, **kwargs: pytest.fail("literal full text save should not rewrite the committed body"),
+        lambda *args, **kwargs: {
+            "pipeline": {
+                "directory_rendered": False,
+                "warnings": ["长文缺少目录纲要"],
+            }
+        },
     )
 
     draft = agent.create_draft(long_body, instruction="全文原文入库，一字不改保存正文")

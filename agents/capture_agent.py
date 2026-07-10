@@ -1494,7 +1494,6 @@ class CaptureAgent:
         capture_intent = draft.get("capture_intent") or {}
         is_editable_capture = capture_intent.get("entry_mode") == "editable_capture"
         is_raw_package = self._is_raw_package_intent(capture_intent)
-        is_literal_raw_save = self._is_literal_raw_save_intent(capture_intent)
         if not is_editable_capture and not is_raw_package and not summary and body.strip():
             tag_result = self.summarizer.summarize(body, self._get_existing_tags(vault_path))
             summary = tag_result.get("summary", "")
@@ -1553,17 +1552,10 @@ class CaptureAgent:
             }
         else:
             self._index_committed_identity(capture["id"], file_path)
-            if is_literal_raw_save:
-                library_postprocess = {
-                    "skipped": True,
-                    "reason": "literal_raw_save",
-                    "pipeline": {},
-                }
-            else:
-                library_postprocess = self._postprocess_committed_library(
-                    capture["id"],
-                    render_outline=True,
-                )
+            library_postprocess = self._postprocess_committed_library(
+                capture["id"],
+                render_outline=True,
+            )
         final_note = read_note(vault_path, file_path)
         if final_note is not None:
             _final_frontmatter, final_body = final_note
