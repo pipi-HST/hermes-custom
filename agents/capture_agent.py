@@ -420,7 +420,7 @@ class CaptureAgent:
                 title_hint=draft.get("title", ""),
             ).to_dict()
             _add_capture_stage_timing(timings, "intent_planning", stage_started)
-        if self._is_full_text_save_intent(capture_intent):
+        if self._is_raw_package_intent(capture_intent, instruction):
             source_text = draft.get("raw_text", "") or current_text
             draft_body = self._presentation_text(
                 draft.get("source_type", ""),
@@ -992,11 +992,10 @@ class CaptureAgent:
         text_len = len(source_text or "")
         if text_len >= CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD:
             return (
-                "- 这是长文入库整理：请你负责生成清晰的 Markdown 章节结构，"
-                "用 `##`/`###` heading 承接主要章节。\n"
-                "- 可以在正文开头生成 `## 目录纲要`，但目录只能列章节标题，"
+                "- 这是长文入库整理：必须使用 `##`/`###` heading 承接主要章节。\n"
+                "- 必须在正文开头生成 `## 目录纲要`，目录只能列章节标题，"
                 "不要写“标题：摘要”；目录中的每一项必须在正文后续位置有同名 `##`/`###` heading，方便点击跳转。\n"
-                "- 正文要按语义自然分段，避免把长文塞成一个巨大段落；可以克制地加粗原文已有的关键短语。\n"
+                "- 正文必须按语义自然分段，避免把长文塞成一个巨大段落；至少加粗一处原文已有的关键短语。\n"
             )
         return (
             "- 如果正文自然需要小标题，请使用 `##`/`###` Markdown heading；"
@@ -1041,7 +1040,7 @@ class CaptureAgent:
             source_type=source_type,
         )
         result = self._call_llm(prompt)
-        return self._retry_revision_for_directory_contract(result, prompt)
+        return self._retry_revision_for_directory_contract(result, prompt, source_text)
 
     def _should_use_chunked_reading(self, source_text: str, capture_intent: dict) -> bool:
         text_len = len(source_text or "")
@@ -1076,7 +1075,7 @@ class CaptureAgent:
             source_type=source_type,
         )
         result = self._call_llm(prompt)
-        return self._retry_revision_for_directory_contract(result, prompt)
+        return self._retry_revision_for_directory_contract(result, prompt, source_text)
 
     def _build_long_source_notes(
         self,
@@ -1330,19 +1329,20 @@ class CaptureAgent:
         self,
         result: str | LLMResult,
         original_prompt: str,
+        source_text: str,
     ) -> str | LLMResult:
         text = result.text if isinstance(result, LLMResult) else str(result)
         if isinstance(result, LLMResult) and result.incomplete:
             return result
-        warning = _directory_contract_warning(text)
+        warning = _capture_presentation_contract_warning(text, source_text)
         if not warning:
             return result
         retry_prompt = (
             f"{original_prompt}\n\n"
-            "上一次输出的目录/章节结构没有通过系统校验："
-            f"{warning}。请重新输出完整整理稿：如果保留 `## 目录纲要`，"
-            "目录必须只列标题，且每个目录项都要在正文中有同名 `##`/`###` heading；"
-            "如果无法保证跳转，请不要输出目录。"
+            "上一次输出没有通过正式 Capture 的可读性合同："
+            f"{warning}。请重新输出完整整理稿。长文必须包含 `## 目录纲要`、"
+            "与目录对应的 `##`/`###` heading、自然分段和至少一处原文重点加粗；"
+            "这些是入库硬合同，不能省略。"
         )
         return self._call_llm(retry_prompt)
 
@@ -1443,6 +1443,11 @@ class CaptureAgent:
             return draft
         if draft.get("status") == "draft_incomplete":
             return {"error": "草稿还没生成完整，请先继续整理后再存库"}
+
+        presentation_error = self._capture_presentation_error(draft)
+        if presentation_error:
+            self.draft_repo.update(draft_id, status="draft_incomplete")
+            return {"error": f"整理稿可读性合同未通过：{presentation_error}"}
 
         previous_status = str(draft.get("status") or "draft_ready")
         if previous_status == "committing":
@@ -1631,8 +1636,6 @@ class CaptureAgent:
     ) -> str:
         if self._is_raw_package_intent(capture_intent):
             return ""
-        if self._is_literal_raw_save_intent(capture_intent):
-            return ""
         if max(len(raw_text or ""), len(body or "")) < CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD:
             return ""
         if "## 目录纲要" not in (body or ""):
@@ -1682,7 +1685,7 @@ class CaptureAgent:
         if not raw_text.strip():
             return draft
         instruction = (draft.get("instruction") or capture_intent.get("user_request") or "").strip()
-        if self._is_full_text_save_intent(capture_intent):
+        if self._is_raw_package_intent(capture_intent, instruction):
             if draft.get("draft_text"):
                 return draft
             return self._finalize_verbatim_full_text_draft(draft, capture_intent, instruction)
@@ -1692,15 +1695,28 @@ class CaptureAgent:
             return {"error": overcompressed_error}
         if draft.get("draft_text"):
             return draft
-        if instruction:
-            revised = self.revise_draft(draft["id"], instruction, reuse_saved_intent=True)
-            if isinstance(revised, dict):
-                overcompressed_error = self._overcompressed_commit_error(revised)
-                if overcompressed_error:
-                    self.draft_repo.update(draft["id"], status="draft_incomplete")
-                    return {"error": overcompressed_error}
-            return revised
-        return draft
+        revised = self.revise_draft(
+            draft["id"],
+            instruction or "整理成可读的知识文件",
+            reuse_saved_intent=True,
+        )
+        if isinstance(revised, dict):
+            overcompressed_error = self._overcompressed_commit_error(revised)
+            if overcompressed_error:
+                self.draft_repo.update(draft["id"], status="draft_incomplete")
+                return {"error": overcompressed_error}
+        return revised
+
+    def _capture_presentation_error(self, draft: dict) -> str:
+        capture_intent = draft.get("capture_intent") if isinstance(draft.get("capture_intent"), dict) else {}
+        if capture_intent.get("entry_mode") == "editable_capture":
+            return ""
+        if self._is_raw_package_intent(capture_intent, str(draft.get("instruction") or "")):
+            return ""
+        return _capture_presentation_contract_warning(
+            str(draft.get("draft_text") or ""),
+            str(draft.get("raw_text") or ""),
+        )
 
     def _finalize_verbatim_full_text_draft(
         self,
@@ -2237,6 +2253,30 @@ def _directory_contract_warning(text: str) -> str:
     missing = [title for title in directory_titles if title not in heading_titles]
     if missing:
         return "目录项缺少同名正文 heading: " + ", ".join(missing[:3])
+    return ""
+
+
+def _capture_presentation_contract_warning(text: str, source_text: str) -> str:
+    if max(len(text or ""), len(source_text or "")) < CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD:
+        return ""
+    if "## 目录纲要" not in (text or ""):
+        return "长文缺少目录纲要"
+    if not _draft_heading_titles(text):
+        return "长文缺少正文分章节"
+    directory_warning = _directory_contract_warning(text)
+    if directory_warning:
+        return directory_warning
+    if not re.search(r"\*\*[^*\n]+\*\*", text or ""):
+        return "长文缺少重点加粗"
+    prose_blocks = [
+        block.strip()
+        for block in re.split(r"\n\s*\n", text or "")
+        if block.strip()
+        and not block.lstrip().startswith("#")
+        and not re.match(r"^[-*+]\s+", block.lstrip())
+    ]
+    if prose_blocks and max(len(block) for block in prose_blocks) > 1200:
+        return "长文缺少自然分段"
     return ""
 
 
