@@ -2386,7 +2386,6 @@ def test_commit_long_full_text_save_generates_clickable_sections_and_rag(
         "summarize",
         lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
     )
-
     draft = agent.create_draft(long_body, instruction="全文入库")
     committed = agent.commit_draft(draft["id"])
     result = read_note(tmp_path, committed["file_path"])
@@ -2548,8 +2547,13 @@ def test_commit_long_unstructured_full_text_preserves_body_without_directory(
         "summarize",
         lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
     )
+    monkeypatch.setattr(
+        agent,
+        "_postprocess_committed_library",
+        lambda *args, **kwargs: pytest.fail("literal full text save should not rewrite the committed body"),
+    )
 
-    draft = agent.create_draft(long_body, instruction="全文入库")
+    draft = agent.create_draft(long_body, instruction="全文原文入库，一字不改保存正文")
     committed = agent.commit_draft(draft["id"])
     updated = agent.draft_repo.get_by_id(draft["id"])
 
