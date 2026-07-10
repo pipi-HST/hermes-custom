@@ -1450,16 +1450,27 @@ def test_long_raw_package_skips_llm_library_and_embedding_processing(
     assert capture_text.split("---", 2)[2] == "\n\n" + raw_package
 
 
-def test_revise_draft_full_text_save_uses_existing_raw_without_llm(
+def test_revise_draft_full_text_save_runs_readability_revision(
     agent: CaptureAgent,
     monkeypatch,
 ):
     raw = TEST_CONTENT + "这是后续补充原文，也应该一起保留。"
     draft = agent.create_draft(raw)
+    calls: list[dict] = []
+
+    def fake_revise(**kwargs):
+        calls.append(kwargs)
+        return (
+            "## 目录纲要\n\n"
+            "- 全文主线\n\n"
+            "## 全文主线\n\n"
+            "这是经过可读性整理的全文，保留 **中国变压器供应链** 等原文重点。"
+        )
+
     monkeypatch.setattr(
         agent,
-        "_call_llm",
-        lambda prompt, *args, **kwargs: pytest.fail("full text save revision should not call LLM"),
+        "_revise_with_llm",
+        fake_revise,
     )
     monkeypatch.setattr(
         agent.summarizer,
@@ -1470,7 +1481,11 @@ def test_revise_draft_full_text_save_uses_existing_raw_without_llm(
     revised = agent.revise_draft(draft["id"], "整理过度了，要求全文入库")
 
     assert revised["status"] == "draft_ready"
-    assert revised["draft_text"] == draft["raw_text"]
+    assert len(calls) == 1
+    assert calls[0]["raw_text"] == draft["raw_text"]
+    assert "## 目录纲要" in revised["draft_text"]
+    assert "## 全文主线" in revised["draft_text"]
+    assert "**中国变压器供应链**" in revised["draft_text"]
     assert revised["raw_text"] == draft["raw_text"]
     assert revised["capture_intent"]["task_type"] == "capture"
     assert revised["capture_intent"]["material_intent"] == "verbatim_full_text"
@@ -1478,6 +1493,52 @@ def test_revise_draft_full_text_save_uses_existing_raw_without_llm(
     assert revised["capture_intent"]["draft_guidance"] == "verbatim"
     assert revised["capture_intent"]["compression"] == "none"
     assert revised["capture_intent"]["plan_source"] == "deterministic_full_text"
+
+
+def test_commit_long_capture_rejects_missing_bold_before_reserving_capture(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    body = (
+        "## 目录纲要\n\n"
+        "- 第一部分\n\n"
+        "## 第一部分\n\n"
+        + ("正文已经分段并且有目录，但没有任何重点加粗。" * 120)
+    )
+    draft = agent.draft_repo.create(
+        raw_text=body,
+        source_type="note",
+        title="缺少重点加粗",
+        draft_text=body,
+        status="draft_ready",
+        summary="摘要",
+        tags=["contract"],
+        capture_intent={"material_intent": "refined_note", "coverage": "full_article"},
+    )
+    monkeypatch.setattr(
+        agent.draft_repo,
+        "reserve_capture_for_commit",
+        lambda *_args, **_kwargs: pytest.fail("presentation contract must fail before capture reservation"),
+    )
+
+    result = agent.commit_draft(draft["id"])
+
+    assert result == {"error": "整理稿可读性合同未通过：长文缺少重点加粗"}
+    assert agent.draft_repo.get_by_id(draft["id"])["status"] == "draft_incomplete"
+
+
+def test_long_capture_prompt_makes_presentation_contract_mandatory(agent: CaptureAgent):
+    long_text = "长文正文。" * 500
+    prompt = agent._build_revision_prompt(
+        instruction="全文入库",
+        capture_intent=agent._build_capture_intent("全文入库").to_dict(),
+        current_text=long_text,
+        raw_text=long_text,
+    )
+
+    assert "必须在正文开头生成 `## 目录纲要`" in prompt
+    assert "必须使用 `##`/`###` heading" in prompt
+    assert "至少加粗一处" in prompt
 
 
 def test_capture_intent_classifies_four_material_contracts(agent: CaptureAgent):
