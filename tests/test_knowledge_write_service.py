@@ -1,3 +1,9 @@
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+import bridge.knowledge_write_service as knowledge_write_service
 from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest
 
 
@@ -44,3 +50,90 @@ def test_write_markdown_artifact_backs_up_existing_file(tmp_path):
     assert result.backup_path.startswith("_archive/write_backups/garden/card-")
     assert (tmp_path / result.backup_path).read_text(encoding="utf-8") == "old content"
     assert target.read_text(encoding="utf-8") == "new content"
+
+
+def test_write_markdown_artifact_does_not_overwrite_backup_created_in_same_second(
+    tmp_path, monkeypatch
+):
+    class FrozenDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 7, 10, 8, 0, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(knowledge_write_service, "datetime", FrozenDateTime)
+    target = tmp_path / "garden" / "card.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("original content", encoding="utf-8")
+    service = KnowledgeWriteService(vault_path=tmp_path)
+
+    first = service.write_markdown_artifact(
+        MarkdownWriteRequest(
+            kind="knowledge_card",
+            relative_path="garden/card.md",
+            content="first update",
+            requires_backup=True,
+        )
+    )
+    second = service.write_markdown_artifact(
+        MarkdownWriteRequest(
+            kind="knowledge_card",
+            relative_path="garden/card.md",
+            content="second update",
+            requires_backup=True,
+        )
+    )
+
+    assert first.backup_path != second.backup_path
+    assert (tmp_path / first.backup_path).read_text(encoding="utf-8") == "original content"
+    assert (tmp_path / second.backup_path).read_text(encoding="utf-8") == "first update"
+
+
+def test_write_markdown_artifact_rejects_symlink_escape_from_vault(tmp_path):
+    vault = tmp_path / "vault"
+    outside = tmp_path / "outside"
+    vault.mkdir()
+    outside.mkdir()
+    (vault / "linked").symlink_to(outside, target_is_directory=True)
+    service = KnowledgeWriteService(vault_path=vault)
+
+    with pytest.raises(ValueError, match="must stay inside"):
+        service.write_markdown_artifact(
+            MarkdownWriteRequest(
+                kind="knowledge_card",
+                relative_path="linked/escaped.md",
+                content="escaped content",
+            )
+        )
+
+    assert not (outside / "escaped.md").exists()
+
+
+def test_write_markdown_artifact_preserves_existing_file_when_replace_fails(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "garden" / "card.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("existing content", encoding="utf-8")
+    service = KnowledgeWriteService(vault_path=tmp_path)
+    replace_paths = []
+
+    def fail_replace(source, destination):
+        replace_paths.append((source, destination))
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(knowledge_write_service.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        service.write_markdown_artifact(
+            MarkdownWriteRequest(
+                kind="knowledge_card",
+                relative_path="garden/card.md",
+                content="new content",
+            )
+        )
+
+    assert len(replace_paths) == 1
+    source, destination = map(Path, replace_paths[0])
+    assert source.parent == target.parent
+    assert destination == target
+    assert target.read_text(encoding="utf-8") == "existing content"

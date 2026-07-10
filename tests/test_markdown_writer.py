@@ -192,12 +192,30 @@ def test_read_note_roundtrip(tmp_path: Path, sample_meta: NoteMeta) -> None:
 
     result = read_note(tmp_path, file_path)
     assert result is not None
-
     frontmatter, body_text = result
     assert frontmatter["id"] == sample_meta.id
     assert frontmatter["title"] == sample_meta.title
     assert frontmatter["tags"] == sample_meta.tags
     assert body_text == body
+
+
+def test_read_note_rejects_absolute_path_outside_vault(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside secret", encoding="utf-8")
+
+    assert read_note(vault, str(outside)) is None
+
+
+def test_read_note_rejects_symlink_escape_from_vault(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside secret", encoding="utf-8")
+    (vault / "linked.md").symlink_to(outside)
+
+    assert read_note(vault, "linked.md") is None
 
 
 # ── append_links ──

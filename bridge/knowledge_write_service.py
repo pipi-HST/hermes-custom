@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 
 @dataclass(frozen=True)
@@ -36,11 +39,13 @@ class KnowledgeWriteService:
     def write_markdown_artifact(self, request: MarkdownWriteRequest) -> KnowledgeWriteResult:
         relative_path = _safe_relative_path(request.relative_path)
         target = self.vault_path / relative_path
+        _ensure_path_inside_vault(self.vault_path, target, request.relative_path)
         backup_path = ""
         if request.requires_backup and target.exists():
             backup_path = self._backup_existing_file(target, relative_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(request.content, encoding="utf-8")
+        _ensure_path_inside_vault(self.vault_path, target, request.relative_path)
+        _atomic_write_text(target, request.content)
         return KnowledgeWriteResult(
             kind=request.kind,
             file_path=relative_path.as_posix(),
@@ -55,10 +60,12 @@ class KnowledgeWriteService:
             Path("_archive")
             / "write_backups"
             / relative_path.parent
-            / f"{relative_path.stem}-{timestamp}{relative_path.suffix}"
+            / f"{relative_path.stem}-{timestamp}-{uuid4().hex}{relative_path.suffix}"
         )
         backup = self.vault_path / backup_relative
+        _ensure_path_inside_vault(self.vault_path, backup, backup_relative.as_posix())
         backup.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_path_inside_vault(self.vault_path, backup, backup_relative.as_posix())
         shutil.copy2(target, backup)
         return backup_relative.as_posix()
 
@@ -70,3 +77,29 @@ def _safe_relative_path(value: str) -> Path:
     if not relative.as_posix().strip():
         raise ValueError("artifact path cannot be empty")
     return relative
+
+
+def _ensure_path_inside_vault(vault_path: Path, target: Path, display_path: str) -> None:
+    try:
+        target.resolve().relative_to(vault_path.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"artifact path must stay inside Knowledge File storage: {display_path}"
+        ) from exc
+
+
+def _atomic_write_text(target: Path, content: str) -> None:
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as temporary_file:
+            temporary_file.write(content)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, target)
+    finally:
+        temporary_path.unlink(missing_ok=True)

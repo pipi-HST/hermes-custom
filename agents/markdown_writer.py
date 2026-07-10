@@ -173,7 +173,15 @@ def read_note(
     vault_path: Path, file_path: str
 ) -> tuple[dict, str] | None:
     """Read a note file. Returns ``(frontmatter_dict, body_text)`` or ``None``."""
-    full_path = vault_path / file_path
+    candidate = Path(file_path)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        return None
+    try:
+        resolved_vault = vault_path.expanduser().resolve()
+        full_path = (resolved_vault / candidate).resolve()
+        full_path.relative_to(resolved_vault)
+    except (OSError, ValueError):
+        return None
     if not full_path.exists():
         return None
 
