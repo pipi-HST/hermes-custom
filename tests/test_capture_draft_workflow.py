@@ -1047,14 +1047,15 @@ def test_planned_detail_policy_becomes_explicit_prompt_rule(agent: CaptureAgent)
     assert "全文正常整理，用户点名的世界杯效应部分重点展开。" in prompt
 
 
-def test_full_text_save_is_deterministic_and_never_calls_llm(
+def test_full_text_save_keeps_full_coverage_and_builds_readable_capture(
     agent: CaptureAgent,
     monkeypatch,
 ):
+    readable_body = "## 正文\n\n**中国变压器供应链** 是全文中的关键内容。\n\n" + TEST_CONTENT
     monkeypatch.setattr(
         agent,
-        "_call_llm",
-        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
+        "_revise_with_llm",
+        lambda **kwargs: readable_body,
     )
     monkeypatch.setattr(
         agent.summarizer,
@@ -1082,12 +1083,15 @@ def test_full_text_save_is_deterministic_and_never_calls_llm(
     updated = agent.draft_repo.get_by_id(draft["id"])
 
     assert committed["status"] == "committed"
-    assert updated["draft_text"] == TEST_CONTENT
+    assert "## 目录纲要" in updated["draft_text"]
+    assert "## 正文" in updated["draft_text"]
+    assert "**中国变压器供应链**" in updated["draft_text"]
+    assert TEST_CONTENT in updated["draft_text"]
     assert updated["summary"] == "全文保存。"
     assert updated["tags"] == ["source-archive"]
 
 
-def test_full_text_save_uses_original_extracted_text_not_cleaned_text(
+def test_full_text_save_keeps_original_archive_and_formats_capture_text(
     agent: CaptureAgent,
     monkeypatch,
 ):
@@ -1113,10 +1117,16 @@ def test_full_text_save_uses_original_extracted_text_not_cleaned_text(
             )
 
     agent.extractors = [FakeExtractor()]
+    observed: dict[str, str] = {}
+
+    def fake_revise(**kwargs):
+        observed["raw_text"] = kwargs["raw_text"]
+        return "## 正文\n\n**第一段原文** 保留完整证据，同时整理正式正文。"
+
     monkeypatch.setattr(
         agent,
-        "_call_llm",
-        lambda prompt, *args, **kwargs: pytest.fail("literal raw save should not call LLM"),
+        "_revise_with_llm",
+        fake_revise,
     )
     monkeypatch.setattr(
         agent.summarizer,
@@ -1129,10 +1139,15 @@ def test_full_text_save_uses_original_extracted_text_not_cleaned_text(
     assert draft["raw_text"] == extracted_text
     assert draft["draft_text"] == ""
 
-    agent.commit_draft(draft["id"])
+    committed = agent.commit_draft(draft["id"])
     updated = agent.draft_repo.get_by_id(draft["id"])
 
-    assert updated["draft_text"] == updated["raw_text"]
+    assert observed["raw_text"] == extracted_text
+    assert updated["raw_text"] == extracted_text
+    assert updated["draft_text"] != updated["raw_text"]
+    raw_note = read_note(Path(agent.config.vault_path), committed["raw_path"])
+    assert raw_note is not None
+    assert raw_note[1].strip() == extracted_text.strip()
 
 
 def test_long_literal_raw_save_adds_directory_without_changing_raw(
@@ -1174,6 +1189,17 @@ def test_long_literal_raw_save_adds_directory_without_changing_raw(
     first = "\n\n".join(["第一部分原文一字不改。" * 12 for _ in range(8)])
     second = "\n\n".join(["第二部分原文一字不改。" * 12 for _ in range(8)])
     raw_text = first + "\n\n" + second
+    readable_body = (
+        "## 目录纲要\n\n"
+        "- 第一部分\n"
+        "- 第二部分\n\n"
+        "## 第一部分\n\n"
+        "**第一部分原文**\n\n"
+        f"{first}\n\n"
+        "## 第二部分\n\n"
+        "**第二部分原文**\n\n"
+        f"{second}"
+    )
 
     class FakeExtractor:
         def can_handle(self, _source: str) -> bool:
@@ -1193,8 +1219,8 @@ def test_long_literal_raw_save_adds_directory_without_changing_raw(
     monkeypatch.setattr("agents.capture_agent.Embedder", FakeEmbedder, raising=False)
     monkeypatch.setattr(
         agent,
-        "_call_llm",
-        lambda prompt, *args, **kwargs: pytest.fail("literal raw save should not call revision LLM"),
+        "_revise_with_llm",
+        lambda **kwargs: readable_body,
     )
     monkeypatch.setattr(
         agent.summarizer,
@@ -1260,8 +1286,12 @@ def test_xiaohongshu_full_text_save_keeps_raw_evidence_but_hides_local_paths(
     agent.extractors = [FakeExtractor()]
     monkeypatch.setattr(
         agent,
-        "_call_llm",
-        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
+        "_revise_with_llm",
+        lambda **kwargs: (
+            "## 正文\n\n"
+            "作者正文足够长，讨论 **subagent 委派策略** 和模型训练分布之间的关系。\n\n"
+            "图片里的正文继续展开 Codex、Claude Code、Cursor 的差异。"
+        ),
     )
     monkeypatch.setattr(
         agent.summarizer,
@@ -2005,7 +2035,7 @@ def test_revise_draft_retries_once_when_directory_cannot_jump(
 
     assert revised["draft_text"] == good_body
     assert len(calls) == 2
-    assert "目录/章节结构没有通过系统校验" in calls[1]
+    assert "没有通过正式 Capture 的可读性合同" in calls[1]
 
 
 def test_commit_high_fidelity_full_article_blocks_overcompressed_draft(
@@ -2303,9 +2333,14 @@ def test_commit_draft_runs_targeted_library_postprocess(
             ]
 
     long_body = (
+        "## 目录纲要\n\n"
+        "- Codex 路线\n"
+        "- Claude 路线\n\n"
         "## Codex 路线\n\n"
+        "**Codex 的显式触发路径**\n\n"
         + ("Codex 要求用户显式触发 subagent，避免奖励归因模糊。" * 30)
         + "\n\n## Claude 路线\n\n"
+        + "**Claude 的主动委派路径**\n\n"
         + ("Claude Code 把上下文视为稀缺资源，让模型主动判断何时委派。" * 30)
     )
     agent.config.qwen_api_key = "sk-test-qwen"
@@ -2369,11 +2404,8 @@ def test_commit_short_full_text_save_writes_high_fidelity_capture(
     tmp_path: Path,
     monkeypatch,
 ):
-    monkeypatch.setattr(
-        agent,
-        "_call_llm",
-        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
-    )
+    readable_body = "## 正文\n\n**中国变压器供应链** 是全文重点。\n\n" + TEST_CONTENT
+    monkeypatch.setattr(agent, "_revise_with_llm", lambda **kwargs: readable_body)
     monkeypatch.setattr(
         agent.summarizer,
         "summarize",
@@ -2386,9 +2418,11 @@ def test_commit_short_full_text_save_writes_high_fidelity_capture(
 
     assert result is not None
     frontmatter, body = result
-    assert body == TEST_CONTENT
+    assert "## 目录纲要" in body
+    assert "## 正文" in body
+    assert "**中国变压器供应链**" in body
+    assert TEST_CONTENT in body
     assert "outline" not in frontmatter
-    assert "## 目录纲要" not in body
 
 
 def test_commit_long_full_text_save_generates_clickable_sections_and_rag(
@@ -2434,14 +2468,21 @@ def test_commit_long_full_text_save_generates_clickable_sections_and_rag(
         "第二部分继续保留作者的完整表达、例子和结论。" * 35,
     ]
     long_body = "# 长文标题\n\n" + "\n\n".join(first_chunks + second_chunks)
+    readable_body = (
+        "## 目录纲要\n\n"
+        "- 第一部分\n"
+        "- 第二部分\n\n"
+        "## 第一部分\n\n"
+        "**第一部分重点**\n\n"
+        + "\n\n".join(first_chunks)
+        + "\n\n## 第二部分\n\n"
+        "**第二部分重点**\n\n"
+        + "\n\n".join(second_chunks)
+    )
     agent.config.qwen_api_key = "sk-test-qwen"
     monkeypatch.setattr("agents.capture_agent.Outliner", FakeOutliner, raising=False)
     monkeypatch.setattr("agents.capture_agent.Embedder", FakeEmbedder, raising=False)
-    monkeypatch.setattr(
-        agent,
-        "_call_llm",
-        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
-    )
+    monkeypatch.setattr(agent, "_revise_with_llm", lambda **kwargs: readable_body)
     monkeypatch.setattr(
         agent.summarizer,
         "summarize",
@@ -2517,14 +2558,21 @@ def test_commit_long_capture_repairs_directory_to_cover_primary_headings(
         "## 第二部分\n\n"
         f"{second}"
     )
+    readable_body = (
+        "## 目录纲要\n\n"
+        "- 第一部分\n"
+        "- 第二部分\n\n"
+        "## 第一部分\n\n"
+        "**第一部分重点**\n\n"
+        f"{first}\n\n"
+        "## 第二部分\n\n"
+        "**第二部分重点**\n\n"
+        f"{second}"
+    )
     agent.config.qwen_api_key = "sk-test-qwen"
     monkeypatch.setattr("agents.capture_agent.Outliner", FakeOutliner, raising=False)
     monkeypatch.setattr("agents.capture_agent.Embedder", FakeEmbedder, raising=False)
-    monkeypatch.setattr(
-        agent,
-        "_call_llm",
-        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
-    )
+    monkeypatch.setattr(agent, "_revise_with_llm", lambda **kwargs: readable_body)
     monkeypatch.setattr(
         agent.summarizer,
         "summarize",
@@ -2551,23 +2599,15 @@ def test_commit_long_capture_repairs_directory_to_cover_primary_headings(
     assert {row["section_title"] for row in section_rows} == {"第一部分", "第二部分"}
 
 
-def test_commit_long_capture_warning_keeps_created_capture_and_draft_consistent(
+def test_commit_long_capture_contract_fails_before_capture_is_created(
     agent: CaptureAgent,
     monkeypatch,
 ):
     long_body = "\n\n".join(["长文正文没有目录。" * 40 for _ in range(10)])
     monkeypatch.setattr(
-        agent,
-        "_postprocess_committed_library",
-        lambda capture_id, render_outline=True: {
-            "pipeline": {
-                "directory_rendered": False,
-                "outline_metadata_ready": True,
-                "section_embedding_count": 0,
-                "rag_section_ready": False,
-                "warnings": ["长文缺少目录纲要"],
-            }
-        },
+        agent.draft_repo,
+        "reserve_capture_for_commit",
+        lambda *_args, **_kwargs: pytest.fail("invalid presentation must fail before capture creation"),
     )
     draft = agent.draft_repo.create(
         raw_text=long_body,
@@ -2580,45 +2620,41 @@ def test_commit_long_capture_warning_keeps_created_capture_and_draft_consistent(
         capture_intent={"material_intent": "refined_note"},
     )
 
-    committed = agent.commit_draft(draft["id"])
+    result = agent.commit_draft(draft["id"])
     updated = agent.draft_repo.get_by_id(draft["id"])
 
-    assert committed["status"] == "committed"
-    assert "error" not in committed
-    assert committed["warnings"] == ["入库后验收警告：长文缺少目录纲要"]
-    assert agent.repo.get_by_id(committed["capture_id"]) is not None
-    assert updated["status"] == "committed"
-    assert updated["committed_capture_id"] == committed["capture_id"]
-    assert updated["pending_capture_id"] == ""
+    assert result == {"error": "整理稿可读性合同未通过：长文缺少目录纲要"}
+    assert updated["status"] == "draft_incomplete"
+    assert updated["committed_capture_id"] == ""
 
 
-def test_commit_long_unstructured_full_text_preserves_body_without_directory(
+def test_commit_long_unstructured_full_text_builds_readable_capture(
     agent: CaptureAgent,
     tmp_path: Path,
     monkeypatch,
 ):
-    long_body = "# 长文标题\n\n" + ("第一部分原文内容，不应该被压缩。" * 180)
-    monkeypatch.setattr(
-        agent,
-        "_call_llm",
-        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
+    first = "第一部分原文内容，不应该被压缩。" * 90
+    second = "第二部分原文内容，也不应该被压缩。" * 90
+    first_paragraphs = "\n\n".join(["第一部分原文内容，不应该被压缩。" * 45] * 2)
+    second_paragraphs = "\n\n".join(["第二部分原文内容，也不应该被压缩。" * 45] * 2)
+    long_body = "# 长文标题\n\n" + first + second
+    readable_body = (
+        "## 目录纲要\n\n"
+        "- 第一部分\n"
+        "- 第二部分\n\n"
+        "## 第一部分\n\n"
+        "**第一部分重点**\n\n"
+        f"{first_paragraphs}\n\n"
+        "## 第二部分\n\n"
+        "**第二部分重点**\n\n"
+        f"{second_paragraphs}"
     )
+    monkeypatch.setattr(agent, "_revise_with_llm", lambda **kwargs: readable_body)
     monkeypatch.setattr(
         agent.summarizer,
         "summarize",
         lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
     )
-    monkeypatch.setattr(
-        agent,
-        "_postprocess_committed_library",
-        lambda *args, **kwargs: {
-            "pipeline": {
-                "directory_rendered": False,
-                "warnings": ["长文缺少目录纲要"],
-            }
-        },
-    )
-
     draft = agent.create_draft(long_body, instruction="全文原文入库，一字不改保存正文")
     committed = agent.commit_draft(draft["id"])
     updated = agent.draft_repo.get_by_id(draft["id"])
@@ -2631,8 +2667,12 @@ def test_commit_long_unstructured_full_text_preserves_body_without_directory(
     note = read_note(tmp_path, committed["file_path"])
     assert note is not None
     _frontmatter, body = note
-    assert body == long_body
-    assert "## 目录纲要" not in body
+    assert "## 目录纲要" in body
+    assert "## 第一部分" in body
+    assert "## 第二部分" in body
+    assert "**第一部分重点**" in body
+    assert body.count("第一部分原文内容，不应该被压缩。") == 90
+    assert body.count("第二部分原文内容，也不应该被压缩。") == 90
 
 
 def test_revise_committed_capture_id_creates_revision_draft(

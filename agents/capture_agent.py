@@ -2257,15 +2257,15 @@ def _directory_contract_warning(text: str) -> str:
 
 
 def _capture_presentation_contract_warning(text: str, source_text: str) -> str:
+    directory_warning = _directory_contract_warning(text)
+    if directory_warning:
+        return directory_warning
     if max(len(text or ""), len(source_text or "")) < CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD:
         return ""
     if "## 目录纲要" not in (text or ""):
         return "长文缺少目录纲要"
     if not _draft_heading_titles(text):
         return "长文缺少正文分章节"
-    directory_warning = _directory_contract_warning(text)
-    if directory_warning:
-        return directory_warning
     if not re.search(r"\*\*[^*\n]+\*\*", text or ""):
         return "长文缺少重点加粗"
     prose_blocks = [

@@ -134,7 +134,8 @@ def test_hermes_capture_schema_preserves_full_text_save_instruction():
 
     assert "全文保存" in description
     assert "全文存进数据库" in description
-    assert "全文原文入库" in description
+    assert "全文入库表示覆盖全文，不等于一字不改原样保存" in description
+    assert "正式 Capture 始终需要可读性整理" in description
     assert "精炼整理稿" in description
     assert "重点定向整理" in description
     assert "原文增强版笔记" in description
