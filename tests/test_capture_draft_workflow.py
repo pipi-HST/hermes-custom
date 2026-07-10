@@ -2491,7 +2491,7 @@ def test_commit_long_capture_repairs_directory_to_cover_primary_headings(
     assert {row["section_title"] for row in section_rows} == {"第一部分", "第二部分"}
 
 
-def test_commit_long_capture_does_not_report_success_without_directory(
+def test_commit_long_capture_warning_keeps_created_capture_and_draft_consistent(
     agent: CaptureAgent,
     monkeypatch,
 ):
@@ -2523,14 +2523,18 @@ def test_commit_long_capture_does_not_report_success_without_directory(
     committed = agent.commit_draft(draft["id"])
     updated = agent.draft_repo.get_by_id(draft["id"])
 
-    assert committed["error"].startswith("入库后验收失败")
-    assert "长文缺少目录纲要" in committed["error"]
-    assert updated["status"] == "draft_incomplete"
+    assert committed["status"] == "committed"
+    assert "error" not in committed
+    assert committed["warnings"] == ["入库后验收警告：长文缺少目录纲要"]
+    assert agent.repo.get_by_id(committed["capture_id"]) is not None
+    assert updated["status"] == "committed"
     assert updated["committed_capture_id"] == committed["capture_id"]
+    assert updated["pending_capture_id"] == ""
 
 
-def test_commit_long_unstructured_full_text_fails_without_calling_llm(
+def test_commit_long_unstructured_full_text_preserves_body_without_directory(
     agent: CaptureAgent,
+    tmp_path: Path,
     monkeypatch,
 ):
     long_body = "# 长文标题\n\n" + ("第一部分原文内容，不应该被压缩。" * 180)
@@ -2549,8 +2553,16 @@ def test_commit_long_unstructured_full_text_fails_without_calling_llm(
     committed = agent.commit_draft(draft["id"])
     updated = agent.draft_repo.get_by_id(draft["id"])
 
-    assert committed["error"].startswith("入库后验收失败")
-    assert updated["status"] == "draft_incomplete"
+    assert committed["status"] == "committed"
+    assert "error" not in committed
+    assert updated["status"] == "committed"
+    assert updated["committed_capture_id"] == committed["capture_id"]
+    assert updated["pending_capture_id"] == ""
+    note = read_note(tmp_path, committed["file_path"])
+    assert note is not None
+    _frontmatter, body = note
+    assert body == long_body
+    assert "## 目录纲要" not in body
 
 
 def test_revise_committed_capture_id_creates_revision_draft(
