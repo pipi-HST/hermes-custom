@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from typing import Optional
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from api.routes._bridge_response import bridge_result_response
 from db.repo import CaptureDraftRepo
 
 
@@ -14,29 +16,29 @@ from db.repo import CaptureDraftRepo
 # ---------------------------------------------------------------------------
 
 class CreateCaptureDraftRequest(BaseModel):
-    content: str
-    instruction: str = ""
-    source: str = ""
-    source_type: str = ""
+    content: str = Field(max_length=5_000_000)
+    instruction: str = Field(default="", max_length=20_000)
+    source: str = Field(default="", max_length=4096)
+    source_type: str = Field(default="", max_length=100)
 
 
 class CreateEditableCaptureDraftRequest(BaseModel):
-    content: str
-    instruction: str = ""
-    source: str = ""
-    source_type: str = "manual"
-    title: str = ""
-    folder_path: str = ""
+    content: str = Field(max_length=5_000_000)
+    instruction: str = Field(default="", max_length=20_000)
+    source: str = Field(default="", max_length=4096)
+    source_type: str = Field(default="manual", max_length=100)
+    title: str = Field(default="", max_length=500)
+    folder_path: str = Field(default="", max_length=1000)
     organize: bool = True
     existing_folders: list[str] = []
 
 
 class UpdateEditableCaptureDraftRequest(BaseModel):
-    content: str
-    title: str = ""
+    content: str = Field(max_length=5_000_000)
+    title: str = Field(default="", max_length=500)
     summary: Optional[str] = None
     tags: Optional[list[str]] = None
-    folder_path: str = ""
+    folder_path: Optional[str] = None
     folder_suggestion: Optional[dict] = None
     card_suggestion: Optional[dict] = None
     organize: bool = True
@@ -70,13 +72,19 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
     def create_capture_draft(body: CreateCaptureDraftRequest):
         from bridge import capture_bridge
 
+        if _is_local_file_input(body.content):
+            raise HTTPException(
+                status_code=400,
+                detail="local file capture is not allowed through the API",
+            )
+
         result = capture_bridge.capture_content(
             content=body.content,
             instruction=body.instruction,
             source=body.source,
             source_type=body.source_type,
         )
-        return result
+        return bridge_result_response(result)
 
     @router.post("/capture-drafts/editable")
     def create_editable_capture_draft(body: CreateEditableCaptureDraftRequest):
@@ -92,7 +100,7 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
             organize=body.organize,
             existing_folders=body.existing_folders,
         )
-        return result
+        return bridge_result_response(result)
 
     @router.patch("/capture-drafts/{draft_id}/editable")
     def update_editable_capture_draft(
@@ -113,7 +121,7 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
             organize=body.organize,
             existing_folders=body.existing_folders,
         )
-        return result
+        return bridge_result_response(result)
 
     @router.post("/capture-drafts/{draft_id}/revise")
     def revise_capture_draft(draft_id: str, body: ReviseCaptureDraftRequest):
@@ -123,7 +131,7 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
             draft_id=draft_id,
             instruction=body.instruction,
         )
-        return result
+        return bridge_result_response(result)
 
     @router.post("/capture-drafts/{draft_id}/commit")
     def commit_capture_draft(draft_id: str):
@@ -133,6 +141,16 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
             draft_id=draft_id,
             confirmation_source="dashboard",
         )
-        return result
+        return bridge_result_response(result)
 
     return router
+
+
+def _is_local_file_input(content: str) -> bool:
+    value = (content or "").strip()
+    if value.lower().startswith("file://"):
+        return True
+    try:
+        return Path(value).expanduser().is_file()
+    except (OSError, ValueError):
+        return False

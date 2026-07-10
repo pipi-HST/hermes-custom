@@ -1009,7 +1009,7 @@ def test_apply_inserts_markdown_headings_from_valid_paragraph_indexes(
     assert note is not None
     _frontmatter, updated_body = note
     assert report["updated"] == 1
-    assert "- [开篇判断](#开篇判断)：提出主问题。" in updated_body
+    assert "- [开篇判断](#开篇判断)" in updated_body
     assert "## 开篇判断\n\n第一段提出 subagent 的核心问题。" in updated_body
     assert "## Codex 路线\n\n第三段解释 Codex 为什么被动触发。" in updated_body
     assert "## Claude 路线\n\n第四段解释 Claude 为什么主动委派。" in updated_body
@@ -1082,8 +1082,8 @@ def test_markdown_heading_scan_ignores_code_fences() -> None:
         [{"level": 1, "title": "正文标题", "summary": "真实章节。"}],
     )
 
-    assert "- [正文标题](#正文标题)：真实章节。" in result.capture_body
-    assert "代码里的标题" not in result.outline_metadata[0].get("title", "")
+    assert "- [正文标题](#正文标题)" in result.capture_body
+    assert all(item.get("title") != "代码里的标题" for item in result.outline_metadata)
     assert "capture_body_unbound_outline_items" not in ",".join(result.warnings)
 
 

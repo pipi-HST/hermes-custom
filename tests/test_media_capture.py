@@ -385,7 +385,7 @@ def test_create_draft_from_image_path(agent: CaptureAgent, tmp_path: Path):
 
 
 def test_create_draft_from_image_with_instruction(agent: CaptureAgent, tmp_path: Path, monkeypatch):
-    """Image path + instruction → OCR then LLM processing → draft_ready."""
+    """Image path + instruction stores a raw draft for explicit commit-time processing."""
     img = tmp_path / "xhs.jpg"
     img.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
 
@@ -403,10 +403,10 @@ def test_create_draft_from_image_with_instruction(agent: CaptureAgent, tmp_path:
         )
         result = agent.create_draft(str(img), instruction="提炼书单")
 
-    assert result["status"] == "draft_ready"
-    assert "书单" in result["draft_text"]
-    assert result["summary"] == "AI时代推荐的三本书"
-    assert result["tags"] == ["ai", "reading"]
+    assert result["status"] == "raw_extracted"
+    assert result["instruction"] == "提炼书单"
+    assert "AI时代" in result["raw_text"]
+    assert result["draft_text"] == ""
 
 
 # ── Voice text capture (iLink already transcribed) ──

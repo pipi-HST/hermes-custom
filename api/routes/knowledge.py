@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from agents.knowledge_graph import KnowledgeGraphService
+from api.routes._bridge_response import bridge_result_response
 from db.reading_repo import ReadingRepo
 from db.repo import CaptureRepo
 
@@ -45,7 +46,7 @@ def create_knowledge_router(
             sources=body.sources,
             target_capture_id=body.target_capture_id,
         )
-        return result
+        return bridge_result_response(result)
 
     @router.get("/knowledge/drafts")
     def list_drafts(limit: int = Query(default=50, le=200)):
@@ -68,14 +69,14 @@ def create_knowledge_router(
         from bridge import answer_bridge
 
         result = answer_bridge.revise_answer_draft(draft_id, body.instruction)
-        return result
+        return bridge_result_response(result)
 
     @router.post("/knowledge/drafts/{draft_id}/commit")
     def commit_draft(draft_id: str):
         from bridge import reading_bridge
 
         result = reading_bridge.commit_reading_artifact(draft_id)
-        return result
+        return bridge_result_response(result)
 
     @router.get("/knowledge/garden-cards")
     def list_garden_cards(limit: int = Query(default=50, le=200)):

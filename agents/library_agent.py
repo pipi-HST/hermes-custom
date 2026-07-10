@@ -2069,8 +2069,9 @@ def _augment_outline_with_explicit_sections(body: str, outline: list[dict]) -> l
     }
     lines = body.splitlines()
     directory_indexes = _directory_line_indexes(lines)
+    code_indexes = _code_fence_line_indexes(lines)
     for index, line in enumerate(lines):
-        if index in directory_indexes:
+        if index in directory_indexes or index in code_indexes:
             continue
         if supplement_primary_headings_only and _explicit_section_level_from_line(line) > 1:
             continue

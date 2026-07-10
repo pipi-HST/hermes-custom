@@ -43,6 +43,7 @@ from bridge.research.results import (
     mark_sufficient_evidence_status,
     missing_required_preferred_result,
     research_provider_status,
+    web_research_result,
 )
 from bridge.research.search_infra import (
     _direct_mentioned_url_candidates,

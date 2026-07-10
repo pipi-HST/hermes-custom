@@ -283,6 +283,9 @@ def capture_content(
     content: str,
     instruction: str = "",
     context: KnowledgeContext | None = None,
+    *,
+    source: str = "",
+    source_type: str = "",
 ) -> dict:
     """提取内容并生成可确认的草稿；不直接写入 Knowledge File 正式库。"""
     _, agent = _agent_from_context(context)
@@ -293,8 +296,16 @@ def capture_content(
             "content_length": len(content or ""),
             "content_preview": _clip_text(content or "", 120),
             "instruction": instruction,
+            "source": source,
+            "source_type": source_type,
         },
-        lambda: _capture_content(agent, content, instruction),
+        lambda: _capture_content(
+            agent,
+            content,
+            instruction,
+            source=source,
+            source_type=source_type,
+        ),
     )
 
 
@@ -537,8 +548,20 @@ def _update_editable_capture_draft(
     )
 
 
-def _capture_content(agent, content: str, instruction: str = "") -> dict:
-    result = agent.create_draft(content, instruction=instruction)
+def _capture_content(
+    agent,
+    content: str,
+    instruction: str = "",
+    *,
+    source: str = "",
+    source_type: str = "",
+) -> dict:
+    result = agent.create_draft(
+        content,
+        instruction=instruction,
+        source_url=source,
+        source_type=source_type,
+    )
     if "error" in result:
         hint = result.get("hint", "")
         return error_envelope(

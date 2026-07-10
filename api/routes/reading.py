@@ -6,6 +6,7 @@ import json
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from api.routes._bridge_response import bridge_result_response
 from db.reading_repo import ReadingRepo
 
 
@@ -66,7 +67,7 @@ def create_reading_router(reading_repo: ReadingRepo, config: dict) -> APIRouter:
             output_type=body.output_type,
             instruction=body.instruction,
         )
-        return result
+        return bridge_result_response(result)
 
     @router.get("/reading/drafts")
     def list_reading_drafts(
@@ -94,14 +95,14 @@ def create_reading_router(reading_repo: ReadingRepo, config: dict) -> APIRouter:
             draft_id=draft_id,
             instruction=body.instruction,
         )
-        return result
+        return bridge_result_response(result)
 
     @router.post("/reading/drafts/{draft_id}/commit")
     def commit_reading_draft(draft_id: str):
         from bridge import reading_bridge  # late import to avoid circular deps
 
         result = reading_bridge.commit_reading_artifact(draft_id)
-        return result
+        return bridge_result_response(result)
 
     return router
 

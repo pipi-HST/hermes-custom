@@ -1047,17 +1047,15 @@ def test_planned_detail_policy_becomes_explicit_prompt_rule(agent: CaptureAgent)
     assert "全文正常整理，用户点名的世界杯效应部分重点展开。" in prompt
 
 
-def test_create_draft_full_text_save_defers_llm_until_commit(
+def test_full_text_save_is_deterministic_and_never_calls_llm(
     agent: CaptureAgent,
     monkeypatch,
 ):
-    llm_calls: list[str] = []
-
-    def fake_llm(prompt, *args, **kwargs):
-        llm_calls.append(prompt)
-        return TEST_CONTENT
-
-    monkeypatch.setattr(agent, "_call_llm", fake_llm)
+    monkeypatch.setattr(
+        agent,
+        "_call_llm",
+        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
+    )
     monkeypatch.setattr(
         agent.summarizer,
         "summarize",
@@ -1071,7 +1069,6 @@ def test_create_draft_full_text_save_defers_llm_until_commit(
 
     assert draft["status"] == "raw_extracted"
     assert draft["draft_text"] == ""
-    assert llm_calls == []
     assert draft["summary"] == ""
     assert draft["tags"] == []
     assert draft["capture_intent"]["task_type"] == "capture"
@@ -1085,8 +1082,6 @@ def test_create_draft_full_text_save_defers_llm_until_commit(
     updated = agent.draft_repo.get_by_id(draft["id"])
 
     assert committed["status"] == "committed"
-    assert len(llm_calls) == 1
-    assert "全文高保真入库" in llm_calls[0] or "全文存进数据库" in llm_calls[0]
     assert updated["draft_text"] == TEST_CONTENT
     assert updated["summary"] == "全文保存。"
     assert updated["tags"] == ["source-archive"]
@@ -1266,13 +1261,7 @@ def test_xiaohongshu_full_text_save_keeps_raw_evidence_but_hides_local_paths(
     monkeypatch.setattr(
         agent,
         "_call_llm",
-        lambda prompt, *args, **kwargs: (
-            "## 正文文案\n\n"
-            "作者正文足够长，讨论 subagent 委派策略和模型训练分布之间的关系。"
-            "这里继续补充主线、证据和结论，确保内容质量检测通过。\n\n"
-            "## 图片文字\n\n"
-            "图片里的正文继续展开 Codex、Claude Code、Cursor 的差异。"
-        ),
+        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
     )
     monkeypatch.setattr(
         agent.summarizer,
@@ -1383,9 +1372,14 @@ def test_xiaohongshu_raw_package_request_preserves_ocr_structure(
 
     agent.extractors = [FakeExtractor()]
     monkeypatch.setattr(
+        agent,
+        "_call_llm",
+        lambda prompt, *args, **kwargs: pytest.fail("raw package save should not call LLM"),
+    )
+    monkeypatch.setattr(
         agent.summarizer,
         "summarize",
-        lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
+        lambda text, existing_tags=None: pytest.fail("raw package save should not summarize with LLM"),
     )
 
     draft = agent.create_draft("ignored", instruction="保留原始 OCR 抓取包并入库")
@@ -1399,6 +1393,61 @@ def test_xiaohongshu_raw_package_request_preserves_ocr_structure(
     assert "## 图片 1" in updated["draft_text"]
     assert "本地图片：/tmp/01.jpg" in updated["draft_text"]
     assert "图片 OCR 结果为空。" in updated["draft_text"]
+
+
+def test_long_raw_package_skips_llm_library_and_embedding_processing(
+    agent: CaptureAgent,
+    tmp_path: Path,
+    monkeypatch,
+):
+    raw_package = (
+        "# 原始 OCR 抓取包\n\n"
+        "## 图片 1\n本地图片：/tmp/01.jpg\n"
+        + "OCR 原始行，必须逐行保留。\n" * 180
+    )
+
+    class FakeExtractor:
+        def can_handle(self, _source: str) -> bool:
+            return True
+
+        def extract(self, _source: str, **_kwargs) -> ExtractionResult:
+            return ExtractionResult(
+                raw_text=raw_package,
+                source_type="xiaohongshu",
+                source_url="https://www.xiaohongshu.com/explore/test",
+                title="原始 OCR 抓取包",
+            )
+
+    agent.extractors = [FakeExtractor()]
+    agent.config.qwen_api_key = "sk-test-qwen"
+    monkeypatch.setattr(
+        agent,
+        "_call_llm",
+        lambda prompt, *args, **kwargs: pytest.fail("raw package save should not call LLM"),
+    )
+    monkeypatch.setattr(
+        agent.summarizer,
+        "summarize",
+        lambda text, existing_tags=None: pytest.fail("raw package save should not summarize with LLM"),
+    )
+    monkeypatch.setattr(
+        "agents.capture_agent.Outliner",
+        lambda **kwargs: pytest.fail("raw package save should not create an outliner"),
+    )
+    monkeypatch.setattr(
+        "agents.capture_agent.Embedder",
+        lambda **kwargs: pytest.fail("raw package save should not create an embedder"),
+    )
+
+    draft = agent.create_draft("ignored", instruction="保留原始 OCR 抓取包并入库")
+    committed = agent.commit_draft(draft["id"])
+    capture_text = (tmp_path / committed["file_path"]).read_text(encoding="utf-8")
+
+    assert committed["status"] == "committed"
+    assert committed["summary"] == ""
+    assert committed["tags"] == []
+    assert committed["library_postprocess"]["reason"] == "raw_package_verbatim"
+    assert capture_text.split("---", 2)[2] == "\n\n" + raw_package
 
 
 def test_revise_draft_full_text_save_uses_existing_raw_without_llm(
@@ -1507,7 +1556,7 @@ def test_prompt_allows_model_to_choose_draft_strategy(agent: CaptureAgent, monke
     assert "先在内部判断用户真正想要的整理方式" in prompt
     assert "由你决定最终整理稿的详略和结构" in prompt
     assert "不要把内部计划输出给用户" in prompt
-    assert "不要输出标签、摘要、提纲、目录或任务合同" in prompt
+    assert "不要输出标签、摘要或任务合同" in prompt
     assert "必须保留全文的主要脉络和其他关键要点" not in prompt
     assert "输出应是可入库的完整整理稿" not in prompt
     assert "30%" not in prompt
@@ -2262,7 +2311,7 @@ def test_commit_short_full_text_save_writes_high_fidelity_capture(
     monkeypatch.setattr(
         agent,
         "_call_llm",
-        lambda prompt, *args, **kwargs: TEST_CONTENT,
+        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
     )
     monkeypatch.setattr(
         agent.summarizer,
@@ -2292,8 +2341,18 @@ def test_commit_long_full_text_save_generates_clickable_sections_and_rag(
 
         def generate(self, _body: str, _length: int):
             return [
-                {"level": 1, "title": "第一部分", "summary": "LLM 生成的目录摘要。"},
-                {"level": 1, "title": "第二部分", "summary": "LLM 生成的目录摘要。"},
+                {
+                    "level": 1,
+                    "title": "第一部分",
+                    "start_paragraph_index": 1,
+                    "summary": "LLM 生成的目录摘要。",
+                },
+                {
+                    "level": 1,
+                    "title": "第二部分",
+                    "start_paragraph_index": 3,
+                    "summary": "LLM 生成的目录摘要。",
+                },
             ]
 
     class FakeEmbedder:
@@ -2314,23 +2373,13 @@ def test_commit_long_full_text_save_generates_clickable_sections_and_rag(
         "第二部分继续保留作者的完整表达、例子和结论。" * 35,
     ]
     long_body = "# 长文标题\n\n" + "\n\n".join(first_chunks + second_chunks)
-    rendered_body = (
-        "## 目录纲要\n\n"
-        "- 第一部分\n"
-        "- 第二部分\n\n"
-        "## 第一部分\n\n"
-        + "\n\n".join(first_chunks)
-        + "\n\n"
-        "## 第二部分\n\n"
-        + "\n\n".join(second_chunks)
-    )
     agent.config.qwen_api_key = "sk-test-qwen"
     monkeypatch.setattr("agents.capture_agent.Outliner", FakeOutliner, raising=False)
     monkeypatch.setattr("agents.capture_agent.Embedder", FakeEmbedder, raising=False)
     monkeypatch.setattr(
         agent,
         "_call_llm",
-        lambda prompt, *args, **kwargs: rendered_body,
+        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
     )
     monkeypatch.setattr(
         agent.summarizer,
@@ -2401,10 +2450,8 @@ def test_commit_long_capture_repairs_directory_to_cover_primary_headings(
 
     first = "\n\n".join(["第一部分正文需要被目录覆盖。" * 12 for _ in range(10)])
     second = "\n\n".join(["第二部分正文也需要被目录覆盖。" * 12 for _ in range(10)])
-    raw_body = "# 长文标题\n\n" + first + "\n\n" + second
-    rendered_body = (
-        "## 目录纲要\n\n"
-        "- 第二部分\n\n"
+    raw_body = (
+        "# 长文标题\n\n"
         "## 第一部分\n\n"
         f"{first}\n\n"
         "## 第二部分\n\n"
@@ -2413,7 +2460,11 @@ def test_commit_long_capture_repairs_directory_to_cover_primary_headings(
     agent.config.qwen_api_key = "sk-test-qwen"
     monkeypatch.setattr("agents.capture_agent.Outliner", FakeOutliner, raising=False)
     monkeypatch.setattr("agents.capture_agent.Embedder", FakeEmbedder, raising=False)
-    monkeypatch.setattr(agent, "_call_llm", lambda prompt, *args, **kwargs: rendered_body)
+    monkeypatch.setattr(
+        agent,
+        "_call_llm",
+        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
+    )
     monkeypatch.setattr(
         agent.summarizer,
         "summarize",
@@ -2478,19 +2529,16 @@ def test_commit_long_capture_does_not_report_success_without_directory(
     assert updated["committed_capture_id"] == committed["capture_id"]
 
 
-def test_commit_long_full_text_save_rejects_unreadable_llm_output(
+def test_commit_long_unstructured_full_text_fails_without_calling_llm(
     agent: CaptureAgent,
-    tmp_path: Path,
     monkeypatch,
 ):
     long_body = "# 长文标题\n\n" + ("第一部分原文内容，不应该被压缩。" * 180)
-    calls = {"count": 0}
-
-    def fake_llm(prompt, *args, **kwargs):
-        calls["count"] += 1
-        return long_body
-
-    monkeypatch.setattr(agent, "_call_llm", fake_llm)
+    monkeypatch.setattr(
+        agent,
+        "_call_llm",
+        lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
+    )
     monkeypatch.setattr(
         agent.summarizer,
         "summarize",
@@ -2501,10 +2549,8 @@ def test_commit_long_full_text_save_rejects_unreadable_llm_output(
     committed = agent.commit_draft(draft["id"])
     updated = agent.draft_repo.get_by_id(draft["id"])
 
-    assert calls["count"] == 2
-    assert committed["error"].startswith("整理稿未通过入库验收")
+    assert committed["error"].startswith("入库后验收失败")
     assert updated["status"] == "draft_incomplete"
-    assert not (tmp_path / "captures").exists()
 
 
 def test_revise_committed_capture_id_creates_revision_draft(

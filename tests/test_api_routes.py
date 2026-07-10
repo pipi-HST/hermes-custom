@@ -515,6 +515,82 @@ def test_get_capture_draft_not_found(client):
     assert resp.status_code == 404
 
 
+def test_create_capture_draft_preserves_source_metadata(client, monkeypatch):
+    """POST /api/capture-drafts forwards source metadata to CaptureAgent."""
+    from bridge import capture_bridge
+
+    calls = []
+
+    class FakeCaptureAgent:
+        conn = None
+
+        def create_draft(
+            self,
+            content,
+            instruction="",
+            source_url="",
+            source_type="",
+        ):
+            calls.append((content, instruction, source_url, source_type))
+            return {
+                "id": "draft1",
+                "title": "Example",
+                "summary": "Summary",
+                "draft_text": "Captured body",
+                "status": "draft_ready",
+                "word_count": 13,
+                "tags": [],
+            }
+
+    monkeypatch.setattr(
+        capture_bridge,
+        "_agent_from_context",
+        lambda _context: (None, FakeCaptureAgent()),
+    )
+
+    resp = client.post(
+        "/api/capture-drafts",
+        json={
+            "content": "Captured body",
+            "instruction": "Keep the source",
+            "source": "https://example.com/article",
+            "source_type": "url",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "success"
+    assert calls == [
+        (
+            "Captured body",
+            "Keep the source",
+            "https://example.com/article",
+            "url",
+        )
+    ]
+
+
+def test_create_capture_draft_rejects_local_file_input(client, tmp_path, monkeypatch):
+    secret_file = tmp_path / "secret.txt"
+    secret_file.write_text("must not be read through the API", encoding="utf-8")
+
+    from bridge import capture_bridge
+
+    monkeypatch.setattr(
+        capture_bridge,
+        "capture_content",
+        lambda **_kwargs: pytest.fail("local file input must be rejected before bridge execution"),
+    )
+
+    response = client.post(
+        "/api/capture-drafts",
+        json={"content": str(secret_file)},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "local file capture is not allowed through the API"
+
+
 def test_create_editable_capture_draft_calls_bridge(client):
     """POST /api/capture-drafts/editable delegates to editable Capture bridge."""
     mock_result = {
@@ -593,7 +669,7 @@ def test_update_editable_capture_draft_calls_bridge(client, draft_repo):
         title="用户标题",
         summary=None,
         tags=None,
-        folder_path="",
+        folder_path=None,
         folder_suggestion=None,
         card_suggestion=None,
         organize=False,
@@ -662,3 +738,99 @@ def test_commit_capture_draft_calls_bridge(client, draft_repo):
         draft_id=draft["id"],
         confirmation_source="dashboard",
     )
+
+
+@pytest.mark.parametrize(
+    ("patch_target", "path", "payload", "error", "expected_status"),
+    [
+        (
+            "bridge.capture_bridge.capture_content",
+            "/api/capture-drafts",
+            {"content": ""},
+            "内容不能为空",
+            400,
+        ),
+        (
+            "bridge.capture_bridge.revise_capture_draft",
+            "/api/capture-drafts/missing/revise",
+            {"instruction": "shorter"},
+            "草稿不存在",
+            404,
+        ),
+        (
+            "bridge.capture_bridge.commit_capture_draft",
+            "/api/capture-drafts/committed/commit",
+            None,
+            "草稿已入库，不能重复确认",
+            409,
+        ),
+        (
+            "bridge.reading_bridge.summarize_reading_session",
+            "/api/reading/drafts",
+            {"session_id": "missing", "output_type": "summary", "instruction": ""},
+            "阅读会话不存在",
+            404,
+        ),
+        (
+            "bridge.answer_bridge.revise_answer_draft",
+            "/api/reading/drafts/missing/revise",
+            {"instruction": "shorter"},
+            "没有找到阅读草稿",
+            404,
+        ),
+        (
+            "bridge.reading_bridge.commit_reading_artifact",
+            "/api/reading/drafts/committed/commit",
+            None,
+            "阅读整理草稿已是 committed 状态，不能重复确认",
+            409,
+        ),
+        (
+            "bridge.answer_bridge.save_answer_to_knowledge",
+            "/api/knowledge/answer-drafts",
+            {},
+            "回答内容不能为空",
+            400,
+        ),
+        (
+            "bridge.answer_bridge.revise_answer_draft",
+            "/api/knowledge/drafts/missing/revise",
+            {"instruction": "shorter"},
+            "草稿不存在",
+            404,
+        ),
+        (
+            "bridge.reading_bridge.commit_reading_artifact",
+            "/api/knowledge/drafts/committed/commit",
+            None,
+            "阅读整理草稿已是 committed 状态，不能重复确认",
+            409,
+        ),
+    ],
+)
+def test_bridge_error_envelopes_return_4xx(
+    client,
+    patch_target,
+    path,
+    payload,
+    error,
+    expected_status,
+):
+    result = {
+        "status": "error",
+        "agent": "test",
+        "intent": "test",
+        "chat_preview": error,
+        "durable_artifacts": [],
+        "source_map": [],
+        "next_actions": [],
+        "warnings": [],
+        "errors": [error],
+        "meta": {},
+    }
+
+    with patch(patch_target, return_value=result):
+        resp = client.post(path, json=payload) if payload is not None else client.post(path)
+
+    assert resp.status_code == expected_status
+    assert resp.json() == result

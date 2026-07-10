@@ -308,7 +308,7 @@ def _scenario_link_stage_timings(agent: CaptureAgent) -> dict[str, Any]:
     }
     checks = [
         result["status"] == "success",
-        evidence.get("draft_status") == "draft_ready",
+        evidence.get("draft_status") == "raw_extracted",
         required <= set(timings),
         all(isinstance(timings.get(key), int) and timings.get(key) >= 0 for key in required),
     ]
