@@ -1494,6 +1494,7 @@ class CaptureAgent:
         capture_intent = draft.get("capture_intent") or {}
         is_editable_capture = capture_intent.get("entry_mode") == "editable_capture"
         is_raw_package = self._is_raw_package_intent(capture_intent)
+        is_literal_raw_save = self._is_literal_raw_save_intent(capture_intent)
         if not is_editable_capture and not is_raw_package and not summary and body.strip():
             tag_result = self.summarizer.summarize(body, self._get_existing_tags(vault_path))
             summary = tag_result.get("summary", "")
@@ -1552,10 +1553,17 @@ class CaptureAgent:
             }
         else:
             self._index_committed_identity(capture["id"], file_path)
-            library_postprocess = self._postprocess_committed_library(
-                capture["id"],
-                render_outline=True,
-            )
+            if is_literal_raw_save:
+                library_postprocess = {
+                    "skipped": True,
+                    "reason": "literal_raw_save",
+                    "pipeline": {},
+                }
+            else:
+                library_postprocess = self._postprocess_committed_library(
+                    capture["id"],
+                    render_outline=True,
+                )
         final_note = read_note(vault_path, file_path)
         if final_note is not None:
             _final_frontmatter, final_body = final_note
@@ -1577,14 +1585,16 @@ class CaptureAgent:
                 draft_id,
                 draft_text=draft_body_after_commit,
                 word_count=len(draft_body_after_commit),
-                status="draft_incomplete",
+                status="committed",
                 committed_capture_id=capture["id"],
+                pending_capture_id="",
                 summary=summary,
                 tags=tags,
             )
+            if summary:
+                self._enrich_async(capture["id"], summary)
             return _attach_capture_stage_timings({
-                "error": f"入库后验收失败：{pipeline_error}",
-                "status": "draft_incomplete",
+                "status": "committed",
                 "draft_id": draft_id,
                 "capture_id": capture["id"],
                 "title": meta.title,
@@ -1593,6 +1603,7 @@ class CaptureAgent:
                 "raw_path": raw_path,
                 "file_path": file_path,
                 "library_postprocess": library_postprocess,
+                "warnings": [f"入库后验收警告：{pipeline_error}"],
             }, timings, total_started)
         self.draft_repo.update(
             draft_id,
@@ -1627,6 +1638,8 @@ class CaptureAgent:
         capture_intent: dict,
     ) -> str:
         if self._is_raw_package_intent(capture_intent):
+            return ""
+        if self._is_literal_raw_save_intent(capture_intent):
             return ""
         if max(len(raw_text or ""), len(body or "")) < CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD:
             return ""
