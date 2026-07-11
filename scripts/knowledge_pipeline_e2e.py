@@ -14,6 +14,7 @@ import re
 import socket
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -22,17 +23,22 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_ROOT = Path("/Users/pipi/Downloads/hermes-agent-main")
 E2E_SIGNAL = "HERMES-E2E-PIPELINE-SIGNAL"
 
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 
 def run_pipeline_e2e(
     *,
     work_dir: str | Path | None = None,
     faults: set[str] | None = None,
+    live_providers: bool = False,
 ) -> dict[str, Any]:
     temp_dir = None
     if work_dir is None:
@@ -42,16 +48,30 @@ def run_pipeline_e2e(
         root = Path(work_dir).expanduser()
         root.mkdir(parents=True, exist_ok=True)
 
-    fake_server = _FakeProviderServer(faults=faults or set())
+    if live_providers and faults:
+        raise ValueError("fault injection is only available with local providers")
+    fake_server = None if live_providers else _FakeProviderServer(faults=faults or set())
     processes: list[subprocess.Popen] = []
     logs: list[Any] = []
     started = time.perf_counter()
     try:
-        fake_server.start()
-        paths = _prepare_isolated_root(root, fake_server.base_url)
+        if fake_server is not None:
+            fake_server.start()
+            provider_settings = {
+                "provider": "openai",
+                "model": "hermes-e2e-model",
+                "base_url": fake_server.base_url,
+                "api_key": "e2e-key",
+                "qwen_api_key": "e2e-embedding-key",
+            }
+            embedding_base_url = fake_server.base_url
+        else:
+            provider_settings = _live_provider_settings()
+            embedding_base_url = ""
+        paths = _prepare_isolated_root(root, provider_settings)
         api_port = _free_port()
         runtime_port = _free_port()
-        env = _subprocess_env(paths, fake_server.base_url)
+        env = _subprocess_env(paths, embedding_base_url)
         api_process, api_log = _start_process(
             [
                 str(PROJECT_ROOT / ".venv/bin/python"),
@@ -121,8 +141,8 @@ def run_pipeline_e2e(
             "work_dir": str(root),
             "pipelines": pipelines,
             "external_boundaries": {
-                "llm": "local_openai_compatible_http",
-                "embeddings": "local_openai_compatible_http",
+                "llm": "live_provider" if live_providers else "local_openai_compatible_http",
+                "embeddings": "live_provider" if live_providers else "local_openai_compatible_http",
             },
         }
     except Exception as exc:
@@ -142,7 +162,8 @@ def run_pipeline_e2e(
             _stop_process(process)
         for handle in logs:
             handle.close()
-        fake_server.stop()
+        if fake_server is not None:
+            fake_server.stop()
         if temp_dir is not None:
             temp_dir.cleanup()
 
@@ -204,7 +225,7 @@ def _capture_pipeline(client: httpx.Client, api_base: str, paths: dict[str, Path
         _check("capture_row_created", bool(capture_row), capture_id),
         _check("raw_file_written", raw_path.is_file() and E2E_SIGNAL in raw_text, str(raw_path)),
         _check("capture_file_written", capture_path.is_file() and E2E_SIGNAL in capture_text, str(capture_path)),
-        _check("presentation_contract", all(token in capture_text for token in ("## 目录纲要", "## 正文", "**")), None),
+        _check("presentation_contract", _presentation_contract_ready(capture_text), None),
         _check("capture_api_readback", E2E_SIGNAL in str(capture_item.get("body") or ""), capture_item.get("id")),
         _check("outline_metadata_written", bool(metadata_row and metadata_row[0]), None),
         _check("identity_and_section_embeddings_written", {"identity", "section"} <= embedding_kinds, sorted(embedding_kinds)),
@@ -240,12 +261,17 @@ def _runtime_visibility_pipeline(
     detail_payload = _json_response(detail_response) if detail_response is not None else {}
     drafts = drafts_payload.get("drafts") or []
     items = library_payload.get("items") or []
+    capture_item = next(
+        (item for item in items if str(item.get("id") or "") == capture_id),
+        {},
+    )
     detail_text = json.dumps(detail_payload, ensure_ascii=False)
     checks = [
         _check("runtime_drafts_http_success", drafts_response.status_code == 200, drafts_payload),
         _check("committed_draft_visible", any(str(item.get("id") or "") == draft_id and item.get("status") == "committed" for item in drafts), draft_id),
         _check("runtime_library_http_success", library_response.status_code == 200, library_payload),
-        _check("capture_visible_in_library", any(str(item.get("id") or "") == capture_id for item in items), capture_id),
+        _check("capture_visible_in_library", bool(capture_item), capture_id),
+        _check("runtime_library_reports_indexed", capture_item.get("indexed") is True, capture_item.get("indexed")),
         _check("runtime_detail_contains_capture_body", detail_response is not None and detail_response.status_code == 200 and E2E_SIGNAL in detail_text, None),
     ]
     return _pipeline("runtime_library_visibility", checks, {"draft_id": draft_id, "capture_id": capture_id})
@@ -263,8 +289,12 @@ def _reading_pipeline(
         headers=headers,
         json={
             "hermes_session_id": "pipeline-e2e",
-            "user_message": "怎样验证 Reading Pipeline？",
-            "assistant_answer": f"保留问题、判断和行动项。{E2E_SIGNAL}-READING",
+            "user_message": "怎样验证知识库端到端 Pipeline？",
+            "assistant_answer": (
+                "端到端测试必须验证真实 HTTP、SQLite、Markdown、"
+                "identity/section embedding、Runtime 已入库可见性和 RAG 索引检索，"
+                f"不能只检查 status=success。{E2E_SIGNAL}-READING"
+            ),
             "instruction": "存成学习笔记",
             "output_type": "local_learning_note",
             "sources": [],
@@ -476,7 +506,7 @@ def _graph_pipeline(
     )
 
 
-def _prepare_isolated_root(root: Path, fake_base_url: str) -> dict[str, Path]:
+def _prepare_isolated_root(root: Path, provider_settings: dict[str, str]) -> dict[str, Path]:
     custom_root = root / "custom-root"
     custom_root.mkdir(parents=True, exist_ok=True)
     for name in ("agents", "api", "bridge", "db", "scripts"):
@@ -489,37 +519,56 @@ def _prepare_isolated_root(root: Path, fake_base_url: str) -> dict[str, Path]:
     vault.mkdir(exist_ok=True)
     db_path = root / "captures.db"
     (custom_root / "config.yaml").write_text(
-        "\n".join(
-            [
-                "llm:",
-                "  provider: openai",
-                "  model: hermes-e2e-model",
-                f"  base_url: {fake_base_url}",
-                "  api_key: e2e-key",
-                "qwen:",
-                "  api_key: e2e-embedding-key",
-                "vault:",
-                f"  path: {vault}",
-                "database:",
-                f"  path: {db_path}",
-            ]
-        )
-        + "\n",
+        yaml.safe_dump(
+            {
+                "llm": {
+                    "provider": provider_settings["provider"],
+                    "model": provider_settings["model"],
+                    "base_url": provider_settings["base_url"],
+                    "api_key": provider_settings["api_key"],
+                },
+                "qwen": {"api_key": provider_settings["qwen_api_key"]},
+                "vault": {"path": str(vault)},
+                "database": {"path": str(db_path)},
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
         encoding="utf-8",
     )
     return {"root": root, "custom_root": custom_root, "vault": vault, "db_path": db_path}
 
 
-def _subprocess_env(paths: dict[str, Path], fake_base_url: str) -> dict[str, str]:
+def _subprocess_env(paths: dict[str, Path], embedding_base_url: str) -> dict[str, str]:
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(paths["custom_root"]), str(RUNTIME_ROOT), env.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
     env["HERMES_CUSTOM_ROOT"] = str(paths["custom_root"])
     env["HERMES_KNOWLEDGE_DB"] = str(paths["db_path"])
-    env["DASHSCOPE_BASE_URL"] = fake_base_url
+    if embedding_base_url:
+        env["DASHSCOPE_BASE_URL"] = embedding_base_url
+    else:
+        env.pop("DASHSCOPE_BASE_URL", None)
     env.pop("HERMES_API_TOKEN", None)
     return env
+
+
+def _live_provider_settings() -> dict[str, str]:
+    from agents.capture_agent import load_config
+
+    config = load_config(str(PROJECT_ROOT / "config.yaml"))
+    settings = {
+        "provider": str(config.llm_provider or "openai"),
+        "model": str(config.llm_model or ""),
+        "base_url": str(config.llm_base_url or "https://api.deepseek.com"),
+        "api_key": str(config.llm_api_key or ""),
+        "qwen_api_key": str(config.qwen_api_key or ""),
+    }
+    missing = [key for key in ("model", "api_key", "qwen_api_key") if not settings[key]]
+    if missing:
+        raise RuntimeError("live provider configuration missing: " + ", ".join(missing))
+    return settings
 
 
 def _start_process(
@@ -593,6 +642,21 @@ def _json_response(response: httpx.Response | None) -> dict[str, Any]:
 def _table_count(db_path: Path, table: str) -> int:
     with sqlite3.connect(db_path) as conn:
         return int(conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
+
+
+def _presentation_contract_ready(text: str) -> bool:
+    if "## 目录纲要" not in (text or ""):
+        return False
+    headings = [
+        title.strip()
+        for title in re.findall(r"^#{2,3}\s+(.+?)\s*$", text or "", flags=re.MULTILINE)
+        if title.strip() != "目录纲要"
+    ]
+    return bool(
+        headings
+        and re.search(r"^[-*+]\s+\[[^\]]+\]\(#[^)]+\)\s*$", text or "", flags=re.MULTILINE)
+        and re.search(r"\*\*[^*\n]+\*\*", text or "")
+    )
 
 
 def _result_from_subprocess(stdout: str) -> dict[str, Any]:
@@ -778,8 +842,12 @@ def _fake_completion(prompt: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run isolated cross-process Hermes Knowledge E2E pipelines.")
     parser.add_argument("--work-dir", default="", help="Optional workspace to keep for diagnostics.")
+    parser.add_argument("--live-providers", action="store_true", help="Use configured DeepSeek/Qwen providers.")
     args = parser.parse_args(argv)
-    result = run_pipeline_e2e(work_dir=args.work_dir or None)
+    result = run_pipeline_e2e(
+        work_dir=args.work_dir or None,
+        live_providers=args.live_providers,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["ok"] else 1
 

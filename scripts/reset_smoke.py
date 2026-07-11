@@ -75,7 +75,11 @@ def _run_smoke_in(root: Path, *, include_card: bool) -> dict[str, Any]:
     )
     agent = CaptureAgent(config, conn=conn)
     agent.extractors = [TextExtractor()]
-    agent._call_llm = lambda _prompt: "整理稿：reset_smoke_workflow 保留 Knowledge Workflow 能力。"
+    agent._call_llm = lambda _prompt: (
+        "## 目录纲要\n\n- [工作流验证](#工作流验证)\n\n"
+        "## 工作流验证\n\n"
+        "**reset_smoke_workflow** 保留 Knowledge Workflow 能力。"
+    )
     agent.summarizer.summarize = lambda _text, existing_tags=None: {
         "title": "reset_smoke Knowledge Workflow",
         "summary": "验证空库下 Capture、Knowledge File、索引和 RAG 仍能工作。",

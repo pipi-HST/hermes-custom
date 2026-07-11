@@ -37,7 +37,14 @@ def test_long_material_capture_smoke_creates_draft_commits_and_writes_artifacts(
     agent = CaptureAgent(config)
     agent.extractors = [TextExtractor()]
     monkeypatch.setattr(capture_bridge, "_init", lambda: (config, agent))
-    monkeypatch.setattr(agent, "_call_llm", lambda _prompt: "整理稿：长材料的关键判断。")
+    monkeypatch.setattr(
+        agent,
+        "_call_llm",
+        lambda _prompt: (
+            "## 目录纲要\n\n- [关键判断](#关键判断)\n\n"
+            "## 关键判断\n\n**长材料的关键判断**需要经过完整入库链路验证。"
+        ),
+    )
     monkeypatch.setattr(
         agent.summarizer,
         "summarize",

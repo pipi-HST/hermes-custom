@@ -216,7 +216,13 @@ class TestBridgeToMarkdownE2E:
     def test_reprocess_updates_draft_and_commit_writes_markdown(self, mock_summarize, monkeypatch):
         # Mock LLM call to avoid real API call
         monkeypatch.setattr(self.agent, "_call_llm",
-                           lambda prompt: "1. 信息捕获是第一步\n2. 知识整理是第二步\n3. 知识内化是第三步")
+                           lambda prompt: (
+                               "## 目录纲要\n\n- [知识处理流程](#知识处理流程)\n\n"
+                               "## 知识处理流程\n\n"
+                               "1. **信息捕获**是第一步\n"
+                               "2. 知识整理是第二步\n"
+                               "3. 知识内化是第三步"
+                           ))
 
         # First capture
         result = self.agent.create_draft(TEST_CONTENT)
@@ -225,12 +231,12 @@ class TestBridgeToMarkdownE2E:
         # Reprocess/revise updates only the draft.
         reprocessed = self.agent.reprocess(draft_id, "提取三个核心观点")
         assert reprocessed is not None
-        assert "1. 信息捕获" in reprocessed["draft_text"]
+        assert "1. **信息捕获**" in reprocessed["draft_text"]
         assert not (self.vault_path / "captures").exists()
 
         committed = self.agent.commit_draft(draft_id)
         updated = (self.vault_path / committed["file_path"]).read_text(encoding="utf-8")
-        assert "1. 信息捕获" in updated
+        assert "1. **信息捕获**" in updated
 
     def test_reprocess_nonexistent_id(self):
         result = self.agent.reprocess("nonexistent", "test")
