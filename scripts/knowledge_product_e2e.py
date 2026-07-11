@@ -52,7 +52,7 @@ def run_real_browser_acceptance(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         check=False,
-        timeout=180,
+        timeout=300,
     )
     return {
         "ok": completed.returncode == 0,

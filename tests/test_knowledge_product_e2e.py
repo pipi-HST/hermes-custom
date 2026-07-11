@@ -153,3 +153,27 @@ def test_ci_runs_real_browser_product_pipeline_for_deterministic_and_live_jobs()
         "run: .venv/bin/python scripts/knowledge_product_e2e.py --live-providers"
         in workflow
     )
+
+
+def test_real_browser_runner_allows_live_provider_latency(monkeypatch, tmp_path):
+    observed = {}
+
+    def fake_run(command, **kwargs):
+        observed["command"] = command
+        observed["timeout"] = kwargs["timeout"]
+        return SimpleNamespace(returncode=0, stdout="browser passed")
+
+    monkeypatch.setattr(knowledge_product_e2e.subprocess, "run", fake_run)
+
+    result = knowledge_product_e2e.run_real_browser_acceptance(
+        runtime_base="http://127.0.0.1:9119",
+        runtime_headers={},
+        paths={"root": tmp_path},
+        env={},
+    )
+
+    assert observed == {
+        "command": ["npm", "run", "test:knowledge:product"],
+        "timeout": 300,
+    }
+    assert result["ok"] is True
