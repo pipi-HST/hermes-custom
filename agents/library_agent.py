@@ -180,6 +180,7 @@ class LibraryAgent:
         *,
         apply: bool = False,
         render_outline: bool = True,
+        force_directory: bool = False,
     ) -> dict[str, Any]:
         """Run Library maintenance only for one newly committed capture."""
         report = {
@@ -263,6 +264,7 @@ class LibraryAgent:
                         apply,
                         report["outlines"],
                         render_outline=render_outline,
+                        force_directory=force_directory,
                     )
                 except Exception as exc:  # pragma: no cover - defensive per-note isolation
                     report["outlines"]["errors"] += 1
@@ -686,6 +688,7 @@ class LibraryAgent:
         report: dict[str, Any],
         *,
         render_outline: bool = True,
+        force_directory: bool = False,
     ) -> None:
         parsed = _read_markdown_parts(note_path)
         if parsed is None:
@@ -699,7 +702,7 @@ class LibraryAgent:
         legacy_outline = frontmatter.get("outline") or []
         is_short = len(body) < self.min_outline_chars
         has_markdown_sections = _has_real_markdown_sections(body)
-        if is_short and not legacy_outline and not has_markdown_sections:
+        if is_short and not force_directory and not legacy_outline and not has_markdown_sections:
             report["skipped_short"] += 1
             return
 
@@ -776,7 +779,7 @@ class LibraryAgent:
             return
         outline = _augment_outline_with_explicit_sections(body, outline)
         render_result = (
-            render_capture_body(body, outline, render_directory=not is_short)
+            render_capture_body(body, outline, render_directory=force_directory or not is_short)
             if render_outline
             else None
         )

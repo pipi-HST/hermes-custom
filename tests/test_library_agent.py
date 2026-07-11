@@ -1288,6 +1288,29 @@ def test_short_capture_is_skipped_without_calling_outliner(tmp_path: Path) -> No
     assert outliner.calls == []
 
 
+def test_short_organized_capture_renders_directory_when_source_was_long(tmp_path: Path) -> None:
+    body = "## 核心判断\n\n**模型会压缩内容，但代码必须保留目录合同。**"
+    rel_path = _write_capture(tmp_path, name="compressed.md", body=body)
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("compressed", rel_path))
+    conn.commit()
+
+    report = LibraryAgent(
+        tmp_path,
+        outliner=FakeOutliner(),
+        min_outline_chars=2000,
+        db_conn=conn,
+    ).maintain_capture("compressed", apply=True, force_directory=True)
+
+    note = read_note(tmp_path, rel_path)
+    assert note is not None
+    _frontmatter, updated_body = note
+    assert "## 目录纲要" in updated_body
+    assert "- [核心判断](#核心判断)" in updated_body
+    assert "## 核心判断" in updated_body
+    assert report["pipeline"]["directory_rendered"] is True
+
+
 def test_short_capture_legacy_outline_is_migrated_without_directory(
     tmp_path: Path,
 ) -> None:

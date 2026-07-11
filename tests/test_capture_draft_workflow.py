@@ -197,7 +197,9 @@ def test_commit_removes_leading_duplicate_body_title(agent: CaptureAgent, monkey
     monkeypatch.setattr(
         agent,
         "_postprocess_committed_library",
-        lambda capture_id, render_outline=True: {"pipeline": {"directory_rendered": False}},
+        lambda capture_id, render_outline=True, force_directory=False: {
+            "pipeline": {"directory_rendered": False}
+        },
     )
     draft = agent.draft_repo.create(
         raw_text="Cursor 如何构建 Agent Harness\n\n原文正文。",
@@ -1576,6 +1578,46 @@ def test_commit_long_capture_rejects_missing_bold_before_reserving_capture(
 
     assert result == {"error": "整理稿可读性合同未通过：正式 Capture 缺少重点加粗"}
     assert agent.draft_repo.get_by_id(draft["id"])["status"] == "draft_incomplete"
+
+
+def test_commit_forces_directory_when_long_source_was_compressed(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    observed = {}
+
+    def fake_postprocess(capture_id, *, render_outline=True, force_directory=False):
+        observed.update(
+            capture_id=capture_id,
+            render_outline=render_outline,
+            force_directory=force_directory,
+        )
+        return {}
+
+    monkeypatch.setattr(agent, "_postprocess_committed_library", fake_postprocess)
+    organized = (
+        "## 目录纲要\n\n"
+        "- [核心判断](#核心判断)\n\n"
+        "## 核心判断\n\n"
+        "**模型负责压缩语义，代码负责保留目录合同。**"
+    )
+    draft = agent.draft_repo.create(
+        raw_text="长原文。" * 500,
+        source_type="document",
+        title="长原文压缩整理",
+        draft_text=organized,
+        status="draft_ready",
+        summary="长原文被压缩后的整理稿。",
+        tags=["contract"],
+        capture_intent={"material_intent": "refined_note", "coverage": "full_article"},
+    )
+
+    committed = agent.commit_draft(draft["id"])
+
+    assert committed["status"] == "committed"
+    assert observed["capture_id"] == committed["capture_id"]
+    assert observed["render_outline"] is True
+    assert observed["force_directory"] is True
 
 
 def test_long_capture_prompt_makes_presentation_contract_mandatory(agent: CaptureAgent):

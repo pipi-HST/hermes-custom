@@ -1550,9 +1550,14 @@ class CaptureAgent:
             }
         else:
             self._index_committed_identity(capture["id"], file_path)
+            force_directory = max(
+                len(str(draft.get("raw_text") or "")),
+                len(body_to_write),
+            ) >= 2000
             library_postprocess = self._postprocess_committed_library(
                 capture["id"],
                 render_outline=True,
+                force_directory=force_directory,
             )
         final_note = read_note(vault_path, file_path)
         if final_note is not None:
@@ -1840,7 +1845,13 @@ class CaptureAgent:
         except Exception as exc:
             logger.warning(f"Identity embedding failed for {capture_id}: {exc}")
 
-    def _postprocess_committed_library(self, capture_id: str, *, render_outline: bool = True) -> dict:
+    def _postprocess_committed_library(
+        self,
+        capture_id: str,
+        *,
+        render_outline: bool = True,
+        force_directory: bool = False,
+    ) -> dict:
         """Run one-capture Library maintenance after a successful commit."""
         try:
             outliner = Outliner(
@@ -1859,7 +1870,12 @@ class CaptureAgent:
                 ),
                 min_outline_chars=2000,
             )
-            return agent.maintain_capture(capture_id, apply=True, render_outline=render_outline)
+            return agent.maintain_capture(
+                capture_id,
+                apply=True,
+                render_outline=render_outline,
+                force_directory=force_directory,
+            )
         except Exception as exc:
             logger.warning(f"Library postprocess failed for {capture_id}: {exc}")
             return {"error": str(exc)}
