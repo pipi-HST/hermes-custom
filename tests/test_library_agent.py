@@ -30,6 +30,16 @@ def test_rendered_body_restores_llm_emphasis_without_changing_words():
     assert updated.replace("**", "") == rendered
 
 
+def test_rendered_body_adds_deterministic_emphasis_fallback():
+    source = "## 正文\n\n端到端测试必须检查最终产物和下游可见性。\n"
+    rendered = "## 正文\n\n端到端测试必须检查最终产物和下游可见性。\n"
+
+    updated = _restore_readability_emphasis(source, rendered, ensure_fallback=True)
+
+    assert "**端到端测试必须检查最终产物和下游可见性**。" in updated
+    assert updated.replace("**", "") == rendered
+
+
 class FakeOutliner:
     def __init__(self, outline: list[dict] | None = None, fail: bool = False) -> None:
         self.outline = outline or [

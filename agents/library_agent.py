@@ -779,7 +779,12 @@ class LibraryAgent:
             return
         outline = _augment_outline_with_explicit_sections(body, outline)
         render_result = (
-            render_capture_body(body, outline, render_directory=force_directory or not is_short)
+            render_capture_body(
+                body,
+                outline,
+                render_directory=force_directory or not is_short,
+                ensure_emphasis=force_directory,
+            )
             if render_outline
             else None
         )
@@ -833,6 +838,7 @@ def render_capture_body(
     outline: list[dict],
     *,
     render_directory: bool = True,
+    ensure_emphasis: bool = False,
 ) -> CaptureBodyRenderResult:
     """Render a readable Capture Body without changing source prose."""
     warnings: list[str] = []
@@ -875,7 +881,11 @@ def render_capture_body(
     if validation_warnings:
         updated_body = _remove_directory_block(cleaned_body).strip()
         bound_outline = []
-    updated_body = _restore_readability_emphasis(cleaned_body, updated_body)
+    updated_body = _restore_readability_emphasis(
+        cleaned_body,
+        updated_body,
+        ensure_fallback=ensure_emphasis,
+    )
     return CaptureBodyRenderResult(
         updated_body,
         _outline_metadata_for_storage(outline_metadata, bound_outline),
@@ -885,7 +895,12 @@ def render_capture_body(
     )
 
 
-def _restore_readability_emphasis(source_body: str, rendered_body: str) -> str:
+def _restore_readability_emphasis(
+    source_body: str,
+    rendered_body: str,
+    *,
+    ensure_fallback: bool = False,
+) -> str:
     if re.search(r"\*\*[^*\n]+\*\*", rendered_body or ""):
         return rendered_body
     source_phrases = [
@@ -893,9 +908,8 @@ def _restore_readability_emphasis(source_body: str, rendered_body: str) -> str:
         for match in re.finditer(r"\*\*([^*\n]+)\*\*", source_body or "")
         if match.group(1).strip()
     ]
-    if not source_phrases:
+    if not source_phrases and not ensure_fallback:
         return rendered_body
-
     lines = (rendered_body or "").splitlines()
     prose_indexes = [
         index
