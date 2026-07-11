@@ -1,9 +1,13 @@
 import importlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from scripts import knowledge_pipeline_e2e
 from scripts import knowledge_product_e2e
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_runtime_root_can_be_overridden_by_environment(monkeypatch, tmp_path):
@@ -124,3 +128,13 @@ def test_browser_rag_queries_the_browser_capture_signal(monkeypatch, tmp_path):
 
     assert knowledge_pipeline_e2e.BROWSER_E2E_SIGNAL in observed["code"]
     assert pipeline["ok"] is True
+
+
+def test_ci_installs_custom_dependencies_into_runtime_environment():
+    workflow = (
+        PROJECT_ROOT / ".github/workflows/knowledge-product-e2e.yml"
+    ).read_text(encoding="utf-8")
+
+    assert workflow.count(
+        "uv pip install --python .venv/bin/python -r ../requirements.txt"
+    ) == 2
