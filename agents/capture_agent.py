@@ -1533,6 +1533,8 @@ class CaptureAgent:
             if self._is_full_text_save_intent(capture_intent)
             else _remove_redundant_capture_title(body, capture_meta.title)
         )
+        if not is_raw_package:
+            body_to_write = _ensure_capture_readability_emphasis(body_to_write)
         file_path = self._write_capture_note(
             vault_path,
             capture_meta,
@@ -2136,6 +2138,51 @@ def _remove_redundant_capture_title(body: str, title: str) -> str:
     cleaned = _remove_redundant_directory_root_title(cleaned, title)
     cleaned = _remove_first_duplicate_markdown_heading(cleaned, title)
     return cleaned
+
+
+def _ensure_capture_readability_emphasis(body: str) -> str:
+    if re.search(r"\*\*[^*\n]+\*\*", body or ""):
+        return body
+    if "## 目录纲要" not in (body or "") or not _draft_heading_titles(body):
+        return body
+
+    lines = (body or "").splitlines()
+    in_fence = False
+    in_directory = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if re.fullmatch(r"##\s+目录纲要", stripped):
+            in_directory = True
+            continue
+        if in_directory and re.match(r"^#{2,6}\s+", stripped):
+            in_directory = False
+        if (
+            in_directory
+            or not stripped
+            or re.match(r"^(?:#{1,6}\s+|[-*+]\s+|>\s*|\|)", stripped)
+            or re.match(r"^\d+[.)、]\s*", stripped)
+        ):
+            continue
+
+        phrase = re.split(r"[。！？!?；;]", stripped, maxsplit=1)[0].strip()
+        if len(phrase) > 48:
+            phrase = phrase[:48].rstrip()
+        if len(phrase) < 4:
+            continue
+        start = line.find(phrase)
+        if start < 0:
+            continue
+        lines[index] = f"{line[:start]}**{phrase}**{line[start + len(phrase):]}"
+        result = "\n".join(lines)
+        if body.endswith("\n"):
+            result += "\n"
+        return result
+    return body
 
 
 def _remove_redundant_directory_root_title(body: str, title: str) -> str:
