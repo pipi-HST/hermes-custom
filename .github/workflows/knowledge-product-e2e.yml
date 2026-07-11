@@ -66,6 +66,21 @@ jobs:
           path: runtime
           persist-credentials: false
 
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: runtime/web/package-lock.json
+
+      - name: Install Runtime web dependencies
+        working-directory: runtime/web
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: runtime/web
+        run: npx playwright install --with-deps chromium
+
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
 
@@ -84,8 +99,8 @@ jobs:
           uv pip install --python .venv/bin/python -e ".[web]"
           uv pip install --python .venv/bin/python numpy==2.4.6
 
-      - name: Run deterministic cross-process Pipeline
-        run: .venv/bin/python scripts/knowledge_pipeline_e2e.py
+      - name: Run deterministic real-browser product Pipeline
+        run: .venv/bin/python scripts/knowledge_product_e2e.py
 
   live-provider-pipeline:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
@@ -119,6 +134,21 @@ jobs:
           token: ${{ secrets.HERMES_CI_REPO_TOKEN }}
           path: runtime
           persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: runtime/web/package-lock.json
+
+      - name: Install Runtime web dependencies
+        working-directory: runtime/web
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: runtime/web
+        run: npx playwright install --with-deps chromium
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
@@ -168,5 +198,5 @@ jobs:
           )
           PY
 
-      - name: Run live DeepSeek and Qwen Pipeline
-        run: .venv/bin/python scripts/knowledge_pipeline_e2e.py --live-providers
+      - name: Run live DeepSeek and Qwen real-browser product Pipeline
+        run: .venv/bin/python scripts/knowledge_product_e2e.py --live-providers

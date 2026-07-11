@@ -138,3 +138,18 @@ def test_ci_installs_bridge_dependency_into_runtime_environment():
     assert workflow.count(
         "uv pip install --python .venv/bin/python numpy==2.4.6"
     ) == 2
+
+
+def test_ci_runs_real_browser_product_pipeline_for_deterministic_and_live_jobs():
+    workflow = (
+        PROJECT_ROOT / ".github/workflows/knowledge-product-e2e.yml"
+    ).read_text(encoding="utf-8")
+
+    assert workflow.count("cache-dependency-path: runtime/web/package-lock.json") == 2
+    assert workflow.count("working-directory: runtime/web") == 4
+    assert workflow.count("run: npx playwright install --with-deps chromium") == 2
+    assert "run: .venv/bin/python scripts/knowledge_product_e2e.py\n" in workflow
+    assert (
+        "run: .venv/bin/python scripts/knowledge_product_e2e.py --live-providers"
+        in workflow
+    )
