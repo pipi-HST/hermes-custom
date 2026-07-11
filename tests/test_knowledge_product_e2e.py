@@ -1,4 +1,5 @@
 import importlib
+import json
 from types import SimpleNamespace
 
 from scripts import knowledge_pipeline_e2e
@@ -26,16 +27,27 @@ def test_runtime_root_can_be_overridden_by_environment(monkeypatch, tmp_path):
 def test_complete_product_e2e_requires_service_and_browser_layers(monkeypatch, tmp_path):
     calls = {}
 
-    def fake_service(*, work_dir, live_providers):
-        calls["service"] = {"work_dir": work_dir, "live_providers": live_providers}
-        return {"ok": True, "pipelines": [{"name": "capture", "ok": True}]}
+    def fake_browser_runner(**_kwargs):
+        raise AssertionError("service orchestrator owns browser runner execution")
 
-    def fake_run(command, **kwargs):
-        calls["browser"] = {"command": command, "cwd": kwargs["cwd"]}
-        return SimpleNamespace(returncode=0, stdout="6 passed")
+    def fake_service(*, work_dir, live_providers, product_runner):
+        calls["service"] = {
+            "work_dir": work_dir,
+            "live_providers": live_providers,
+            "product_runner": product_runner,
+        }
+        return {
+            "ok": True,
+            "pipelines": [{"name": "capture", "ok": True}],
+            "product_acceptance": {"ok": True, "pipelines": [{"name": "browser", "ok": True}]},
+        }
 
     monkeypatch.setattr(knowledge_product_e2e, "run_pipeline_e2e", fake_service)
-    monkeypatch.setattr(knowledge_product_e2e.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        knowledge_product_e2e,
+        "run_real_browser_acceptance",
+        fake_browser_runner,
+    )
 
     result = knowledge_product_e2e.run_knowledge_product_e2e(
         work_dir=tmp_path,
@@ -43,24 +55,72 @@ def test_complete_product_e2e_requires_service_and_browser_layers(monkeypatch, t
     )
 
     assert result["ok"] is True
-    assert calls["service"] == {"work_dir": tmp_path, "live_providers": True}
-    assert calls["browser"]["command"] == ["npm", "run", "test:knowledge:complete"]
-    assert calls["browser"]["cwd"] == knowledge_product_e2e.RUNTIME_ROOT / "web"
+    assert calls["service"] == {
+        "work_dir": tmp_path,
+        "live_providers": True,
+        "product_runner": fake_browser_runner,
+    }
+    assert result["layers"]["browser_workbench"] == {
+        "ok": True,
+        "pipelines": [{"name": "browser", "ok": True}],
+    }
 
 
 def test_complete_product_e2e_fails_when_browser_layer_fails(monkeypatch):
     monkeypatch.setattr(
         knowledge_product_e2e,
         "run_pipeline_e2e",
-        lambda **_kwargs: {"ok": True, "pipelines": []},
-    )
-    monkeypatch.setattr(
-        knowledge_product_e2e.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="browser failed"),
+        lambda **_kwargs: {
+            "ok": False,
+            "pipelines": [],
+            "product_acceptance": {
+                "ok": False,
+                "pipelines": [{"name": "browser", "ok": False}],
+            },
+        },
     )
 
     result = knowledge_product_e2e.run_knowledge_product_e2e()
 
     assert result["ok"] is False
-    assert result["layers"]["browser_workbench"]["output_tail"] == "browser failed"
+    assert result["layers"]["browser_workbench"] == {
+        "ok": False,
+        "pipelines": [{"name": "browser", "ok": False}],
+    }
+
+
+def test_browser_rag_queries_the_browser_capture_signal(monkeypatch, tmp_path):
+    observed = {}
+    result = {
+        "status": "success",
+        "source_map": [{"id": "browser-capture"}],
+        "meta": {
+            "result_count": 1,
+            "used_index": True,
+            "trace": {},
+            "citation_validation": {
+                "valid": True,
+                "missing_citations": False,
+                "cited_source_ids": ["browser-capture"],
+            },
+        },
+    }
+
+    def fake_run(command, **_kwargs):
+        observed["code"] = command[-1]
+        return SimpleNamespace(
+            returncode=0,
+            stdout="E2E_RESULT=" + json.dumps(result),
+            stderr="",
+        )
+
+    monkeypatch.setattr(knowledge_pipeline_e2e.subprocess, "run", fake_run)
+    pipeline = knowledge_pipeline_e2e._rag_pipeline(
+        {"custom_root": tmp_path},
+        {},
+        {"details": {"capture_id": "browser-capture"}},
+        query_signal=knowledge_pipeline_e2e.BROWSER_E2E_SIGNAL,
+    )
+
+    assert knowledge_pipeline_e2e.BROWSER_E2E_SIGNAL in observed["code"]
+    assert pipeline["ok"] is True

@@ -24,7 +24,43 @@ RUNTIME_ROOT = Path(
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.knowledge_pipeline_e2e import run_pipeline_e2e
+from scripts.knowledge_pipeline_e2e import (
+    BROWSER_E2E_SIGNAL,
+    BROWSER_E2E_TITLE,
+    run_pipeline_e2e,
+)
+
+
+def run_real_browser_acceptance(
+    *,
+    runtime_base: str,
+    runtime_headers: dict[str, str],
+    paths: dict[str, Path],
+    env: dict[str, str],
+) -> dict[str, Any]:
+    del runtime_headers, paths
+    browser_env = dict(env)
+    browser_env["HERMES_REAL_E2E_BASE_URL"] = runtime_base
+    browser_env["HERMES_REAL_E2E_SIGNAL"] = BROWSER_E2E_SIGNAL
+    browser_env["HERMES_REAL_E2E_TITLE"] = BROWSER_E2E_TITLE
+    started = time.perf_counter()
+    completed = subprocess.run(
+        ["npm", "run", "test:knowledge:product"],
+        cwd=RUNTIME_ROOT / "web",
+        env=browser_env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+        timeout=180,
+    )
+    return {
+        "ok": completed.returncode == 0,
+        "returncode": completed.returncode,
+        "elapsed_seconds": round(time.perf_counter() - started, 3),
+        "command": "npm run test:knowledge:product",
+        "output_tail": "\n".join(completed.stdout.splitlines()[-120:]),
+    }
 
 
 def run_knowledge_product_e2e(
@@ -36,22 +72,12 @@ def run_knowledge_product_e2e(
     service_layer = run_pipeline_e2e(
         work_dir=work_dir,
         live_providers=live_providers,
+        product_runner=run_real_browser_acceptance,
     )
-    browser_started = time.perf_counter()
-    browser_process = subprocess.run(
-        ["npm", "run", "test:knowledge:complete"],
-        cwd=RUNTIME_ROOT / "web",
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
-    browser_layer = {
-        "ok": browser_process.returncode == 0,
-        "returncode": browser_process.returncode,
-        "elapsed_seconds": round(time.perf_counter() - browser_started, 3),
-        "command": "npm run test:knowledge:complete",
-        "output_tail": "\n".join(browser_process.stdout.splitlines()[-80:]),
+    browser_layer = service_layer.get("product_acceptance") or {
+        "ok": False,
+        "pipelines": [],
+        "error": "real browser acceptance did not run",
     }
     return {
         "ok": bool(service_layer.get("ok")) and browser_layer["ok"],

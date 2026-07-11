@@ -20,7 +20,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 import yaml
@@ -34,6 +34,10 @@ RUNTIME_ROOT = Path(
     )
 ).expanduser()
 E2E_SIGNAL = "HERMES-E2E-PIPELINE-SIGNAL"
+BROWSER_E2E_SIGNAL = "HERMES-E2E-BROWSER-SIGNAL"
+BROWSER_E2E_TITLE = "Browser Real Pipeline Article"
+
+ProductRunner = Callable[..., dict[str, Any]]
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -44,6 +48,7 @@ def run_pipeline_e2e(
     work_dir: str | Path | None = None,
     faults: set[str] | None = None,
     live_providers: bool = False,
+    product_runner: ProductRunner | None = None,
 ) -> dict[str, Any]:
     temp_dir = None
     if work_dir is None:
@@ -140,11 +145,41 @@ def run_pipeline_e2e(
             graph = _graph_pipeline(client, api_base, capture, garden)
 
         pipelines = [capture, runtime_visibility, reading, garden, rag, theme, review, canvas, graph]
+        product_acceptance: dict[str, Any] | None = None
+        if product_runner is not None:
+            runner_result = product_runner(
+                runtime_base=runtime_base,
+                runtime_headers=runtime_headers,
+                paths=paths,
+                env=env,
+            )
+            with httpx.Client(timeout=90) as client:
+                browser_capture = _browser_created_capture_pipeline(
+                    client,
+                    runtime_base,
+                    runtime_headers,
+                    paths,
+                    runner_result,
+                )
+            browser_rag = _rag_pipeline(
+                paths,
+                env,
+                browser_capture,
+                query_signal=BROWSER_E2E_SIGNAL,
+            )
+            browser_rag["name"] = "browser_created_capture_rag"
+            pipelines.extend([browser_capture, browser_rag])
+            product_acceptance = {
+                "ok": browser_capture["ok"] and browser_rag["ok"],
+                "runner": runner_result,
+                "pipelines": [browser_capture, browser_rag],
+            }
         return {
             "ok": all(item["ok"] for item in pipelines),
             "elapsed_seconds": round(time.perf_counter() - started, 3),
             "work_dir": str(root),
             "pipelines": pipelines,
+            "product_acceptance": product_acceptance,
             "external_boundaries": {
                 "llm": "live_provider" if live_providers else "local_openai_compatible_http",
                 "embeddings": "live_provider" if live_providers else "local_openai_compatible_http",
@@ -282,6 +317,91 @@ def _runtime_visibility_pipeline(
     return _pipeline("runtime_library_visibility", checks, {"draft_id": draft_id, "capture_id": capture_id})
 
 
+def _browser_created_capture_pipeline(
+    client: httpx.Client,
+    runtime_base: str,
+    headers: dict[str, str],
+    paths: dict[str, Path],
+    runner_result: dict[str, Any],
+) -> dict[str, Any]:
+    capture_path = next(
+        (
+            path
+            for path in sorted((paths["vault"] / "captures").glob("*.md"))
+            if BROWSER_E2E_SIGNAL in path.read_text(encoding="utf-8", errors="replace")
+        ),
+        None,
+    )
+    capture_text = capture_path.read_text(encoding="utf-8") if capture_path is not None else ""
+    relative_path = capture_path.relative_to(paths["vault"]).as_posix() if capture_path is not None else ""
+    capture_id = ""
+    draft_row = None
+    metadata_row = None
+    embedding_kinds: set[str] = set()
+    with sqlite3.connect(paths["db_path"]) as conn:
+        capture_row = conn.execute(
+            "SELECT id FROM captures WHERE file_path = ?",
+            (relative_path,),
+        ).fetchone() if relative_path else None
+        capture_id = str(capture_row[0]) if capture_row else ""
+        draft_row = conn.execute(
+            "SELECT status, committed_capture_id FROM capture_drafts WHERE committed_capture_id = ?",
+            (capture_id,),
+        ).fetchone() if capture_id else None
+        metadata_row = conn.execute(
+            "SELECT outline_json FROM capture_metadata WHERE capture_id = ?",
+            (capture_id,),
+        ).fetchone() if capture_id else None
+        embedding_kinds = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT DISTINCT kind FROM capture_embeddings WHERE capture_id = ? AND embedding IS NOT NULL",
+                (capture_id,),
+            ).fetchall()
+        } if capture_id else set()
+
+    library_response = client.get(
+        f"{runtime_base}/api/knowledge/library/items",
+        headers=headers,
+        params={"search": BROWSER_E2E_TITLE, "limit": 50},
+    )
+    library_payload = _json_response(library_response)
+    library_items = library_payload.get("items") or []
+    detail_response = client.get(
+        f"{runtime_base}/api/knowledge/library/items/capture/{capture_id}",
+        headers=headers,
+    ) if capture_id else None
+    detail_payload = _json_response(detail_response) if detail_response is not None else {}
+    checks = [
+        _check("real_browser_process_succeeded", runner_result.get("ok") is True, runner_result.get("output_tail")),
+        _check("browser_capture_file_written", capture_path is not None and capture_path.is_file(), relative_path),
+        _check("browser_capture_signal_preserved", BROWSER_E2E_SIGNAL in capture_text, relative_path),
+        _check("browser_capture_row_created", bool(capture_id), capture_id),
+        _check("browser_draft_committed", bool(draft_row and draft_row[0] == "committed" and draft_row[1] == capture_id), draft_row),
+        _check("browser_presentation_contract", _presentation_contract_ready(capture_text), None),
+        _check("browser_outline_metadata_written", bool(metadata_row and metadata_row[0]), None),
+        _check("browser_identity_and_section_embeddings_written", {"identity", "section"} <= embedding_kinds, sorted(embedding_kinds)),
+        _check(
+            "browser_capture_visible_in_runtime_library",
+            library_response.status_code == 200
+            and any(str(item.get("id") or "") == capture_id for item in library_items),
+            capture_id,
+        ),
+        _check(
+            "browser_runtime_detail_contains_capture",
+            detail_response is not None
+            and detail_response.status_code == 200
+            and BROWSER_E2E_SIGNAL in json.dumps(detail_payload, ensure_ascii=False),
+            None,
+        ),
+    ]
+    return _pipeline(
+        "browser_real_capture_to_library",
+        checks,
+        {"capture_id": capture_id, "file_path": relative_path},
+    )
+
+
 def _reading_pipeline(
     client: httpx.Client,
     runtime_base: str,
@@ -369,12 +489,14 @@ def _rag_pipeline(
     paths: dict[str, Path],
     env: dict[str, str],
     capture: dict[str, Any],
+    *,
+    query_signal: str = E2E_SIGNAL,
 ) -> dict[str, Any]:
     capture_id = str(capture.get("details", {}).get("capture_id") or "")
     code = (
         "import json; "
         "from bridge.rag_bridge import search_knowledge_base; "
-        f"result=search_knowledge_base('{E2E_SIGNAL} 的端到端验收结论是什么？'); "
+        f"result=search_knowledge_base('{query_signal} 的端到端验收结论是什么？'); "
         "print('E2E_RESULT='+json.dumps(result, ensure_ascii=False))"
     )
     completed = subprocess.run(
@@ -778,6 +900,7 @@ class _FakeProviderHandler(BaseHTTPRequestHandler):
 
 
 def _fake_completion(prompt: str) -> str:
+    active_signal = BROWSER_E2E_SIGNAL if BROWSER_E2E_SIGNAL in prompt else E2E_SIGNAL
     if "Capture Agent 的内部任务规划器" in prompt:
         return json.dumps(
             {
@@ -829,7 +952,7 @@ def _fake_completion(prompt: str) -> str:
                 "title": "E2E Pipeline Article",
                 "summary": "端到端验收材料。",
                 "tags": ["testing"],
-                "body_markdown": f"## 正文\n\n**端到端测试** 必须保留 {E2E_SIGNAL}。",
+                "body_markdown": f"## 正文\n\n**端到端测试** 必须保留 {active_signal}。",
                 "folder_suggestion": {"mode": "existing", "folder_path": "Inbox", "reason": "验收材料"},
                 "card_suggestion": {"should_generate": True, "reason": "可复用方法", "cards": []},
                 "warnings": [],
@@ -852,7 +975,7 @@ def _fake_completion(prompt: str) -> str:
         "## 目录纲要\n\n"
         "- 正文\n\n"
         "## 正文\n\n"
-        f"**端到端测试** 必须保留 {E2E_SIGNAL}。\n\n"
+        f"**端到端测试** 必须保留 {active_signal}。\n\n"
         "这篇材料验证 HTTP、Bridge、Agent、SQLite、Markdown、Library 和 RAG 是否真正连通。"
     )
 
