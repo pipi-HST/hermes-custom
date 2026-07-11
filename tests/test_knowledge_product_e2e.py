@@ -1,6 +1,26 @@
+import importlib
 from types import SimpleNamespace
 
+from scripts import knowledge_pipeline_e2e
 from scripts import knowledge_product_e2e
+
+
+def test_runtime_root_can_be_overridden_by_environment(monkeypatch, tmp_path):
+    original_pipeline_root = knowledge_pipeline_e2e.RUNTIME_ROOT
+    original_product_root = knowledge_product_e2e.RUNTIME_ROOT
+
+    with monkeypatch.context() as scoped:
+        scoped.setenv("HERMES_RUNTIME_ROOT", str(tmp_path))
+        importlib.reload(knowledge_pipeline_e2e)
+        importlib.reload(knowledge_product_e2e)
+
+        assert knowledge_pipeline_e2e.RUNTIME_ROOT == tmp_path
+        assert knowledge_product_e2e.RUNTIME_ROOT == tmp_path
+
+    importlib.reload(knowledge_pipeline_e2e)
+    importlib.reload(knowledge_product_e2e)
+    assert knowledge_pipeline_e2e.RUNTIME_ROOT == original_pipeline_root
+    assert knowledge_product_e2e.RUNTIME_ROOT == original_product_root
 
 
 def test_complete_product_e2e_requires_service_and_browser_layers(monkeypatch, tmp_path):

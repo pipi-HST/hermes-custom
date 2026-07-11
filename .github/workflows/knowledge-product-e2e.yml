@@ -1,0 +1,170 @@
+name: Knowledge Product E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agents/**'
+      - 'api/**'
+      - 'bridge/**'
+      - 'db/**'
+      - 'scripts/knowledge_pipeline_e2e.py'
+      - 'scripts/knowledge_product_e2e.py'
+      - 'tests/test_knowledge_product_e2e.py'
+      - 'requirements.txt'
+      - '.github/workflows/knowledge-product-e2e.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'agents/**'
+      - 'api/**'
+      - 'bridge/**'
+      - 'db/**'
+      - 'scripts/knowledge_pipeline_e2e.py'
+      - 'scripts/knowledge_product_e2e.py'
+      - 'tests/test_knowledge_product_e2e.py'
+      - 'requirements.txt'
+      - '.github/workflows/knowledge-product-e2e.yml'
+  schedule:
+    - cron: '0 20 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: knowledge-product-e2e-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  HERMES_RUNTIME_ROOT: ${{ github.workspace }}/runtime
+
+jobs:
+  deterministic-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Require private Runtime checkout token
+        env:
+          HERMES_CI_REPO_TOKEN: ${{ secrets.HERMES_CI_REPO_TOKEN }}
+        run: |
+          if [ -z "$HERMES_CI_REPO_TOKEN" ]; then
+            echo "::error::HERMES_CI_REPO_TOKEN is required to checkout pipi-HST/hermes-agent-main"
+            exit 1
+          fi
+
+      - name: Checkout custom repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout Runtime repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          repository: pipi-HST/hermes-agent-main
+          token: ${{ secrets.HERMES_CI_REPO_TOKEN }}
+          path: runtime
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install custom dependencies
+        run: |
+          uv venv .venv --python 3.11
+          uv pip install --python .venv/bin/python -r requirements.txt
+
+      - name: Install Runtime dependencies
+        working-directory: runtime
+        run: |
+          uv venv .venv --python 3.11
+          uv pip install --python .venv/bin/python -e ".[web]"
+
+      - name: Run deterministic cross-process Pipeline
+        run: .venv/bin/python scripts/knowledge_pipeline_e2e.py
+
+  live-provider-pipeline:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Require CI and provider secrets
+        env:
+          HERMES_CI_REPO_TOKEN: ${{ secrets.HERMES_CI_REPO_TOKEN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+        run: |
+          missing=""
+          [ -n "$HERMES_CI_REPO_TOKEN" ] || missing="$missing HERMES_CI_REPO_TOKEN"
+          [ -n "$DEEPSEEK_API_KEY" ] || missing="$missing DEEPSEEK_API_KEY"
+          [ -n "$QWEN_API_KEY" ] || missing="$missing QWEN_API_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Required secrets are missing:$missing"
+            exit 1
+          fi
+
+      - name: Checkout custom repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout Runtime repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          repository: pipi-HST/hermes-agent-main
+          token: ${{ secrets.HERMES_CI_REPO_TOKEN }}
+          path: runtime
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install custom dependencies
+        run: |
+          uv venv .venv --python 3.11
+          uv pip install --python .venv/bin/python -r requirements.txt
+
+      - name: Install Runtime dependencies
+        working-directory: runtime
+        run: |
+          uv venv .venv --python 3.11
+          uv pip install --python .venv/bin/python -e ".[web]"
+
+      - name: Write provider configuration
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from pathlib import Path
+
+          import yaml
+
+          Path("config.yaml").write_text(
+              yaml.safe_dump(
+                  {
+                      "llm": {
+                          "provider": "deepseek",
+                          "model": "deepseek-v4-pro",
+                          "base_url": "https://api.deepseek.com",
+                          "api_key": os.environ["DEEPSEEK_API_KEY"],
+                      },
+                      "qwen": {"api_key": os.environ["QWEN_API_KEY"]},
+                      "vault": {"path": "./data/knowledge"},
+                      "database": {"path": "./data/captures.db"},
+                  },
+                  sort_keys=False,
+              ),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Run live DeepSeek and Qwen Pipeline
+        run: .venv/bin/python scripts/knowledge_pipeline_e2e.py --live-providers

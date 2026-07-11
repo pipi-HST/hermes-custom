@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -13,7 +14,12 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_ROOT = Path("/Users/pipi/Downloads/hermes-agent-main")
+RUNTIME_ROOT = Path(
+    os.environ.get(
+        "HERMES_RUNTIME_ROOT",
+        "/Users/pipi/Downloads/hermes-agent-main",
+    )
+).expanduser()
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))

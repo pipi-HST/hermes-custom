@@ -27,7 +27,12 @@ import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_ROOT = Path("/Users/pipi/Downloads/hermes-agent-main")
+RUNTIME_ROOT = Path(
+    os.environ.get(
+        "HERMES_RUNTIME_ROOT",
+        "/Users/pipi/Downloads/hermes-agent-main",
+    )
+).expanduser()
 E2E_SIGNAL = "HERMES-E2E-PIPELINE-SIGNAL"
 
 if str(PROJECT_ROOT) not in sys.path:
