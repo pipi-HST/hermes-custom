@@ -872,6 +872,7 @@ def render_capture_body(
     if validation_warnings:
         updated_body = _remove_directory_block(cleaned_body).strip()
         bound_outline = []
+    updated_body = _restore_readability_emphasis(cleaned_body, updated_body)
     return CaptureBodyRenderResult(
         updated_body,
         _outline_metadata_for_storage(outline_metadata, bound_outline),
@@ -879,6 +880,56 @@ def render_capture_body(
         directory_rendered=_has_directory(updated_body),
         heading_count=len(_markdown_section_titles(updated_body)),
     )
+
+
+def _restore_readability_emphasis(source_body: str, rendered_body: str) -> str:
+    if re.search(r"\*\*[^*\n]+\*\*", rendered_body or ""):
+        return rendered_body
+    source_phrases = [
+        match.group(1).strip()
+        for match in re.finditer(r"\*\*([^*\n]+)\*\*", source_body or "")
+        if match.group(1).strip()
+    ]
+    if not source_phrases:
+        return rendered_body
+
+    lines = (rendered_body or "").splitlines()
+    prose_indexes = [
+        index
+        for index, line in enumerate(lines)
+        if line.strip()
+        and not re.match(r"^(?:#{1,6}\s+|[-*+]\s+|>\s*|\|)", line.strip())
+        and not re.match(r"^\d+[.)、]\s*", line.strip())
+    ]
+    for phrase in source_phrases:
+        for index in prose_indexes:
+            start = lines[index].find(phrase)
+            if start >= 0:
+                lines[index] = (
+                    f"{lines[index][:start]}**{phrase}**"
+                    f"{lines[index][start + len(phrase):]}"
+                )
+                return _join_rendered_lines(lines, rendered_body)
+
+    for index in prose_indexes:
+        stripped = lines[index].strip()
+        phrase = re.split(r"[。！？!?；;]", stripped, maxsplit=1)[0].strip()
+        if len(phrase) > 48:
+            phrase = phrase[:48].rstrip()
+        if len(phrase) < 4:
+            continue
+        start = lines[index].find(phrase)
+        lines[index] = (
+            f"{lines[index][:start]}**{phrase}**"
+            f"{lines[index][start + len(phrase):]}"
+        )
+        return _join_rendered_lines(lines, rendered_body)
+    return rendered_body
+
+
+def _join_rendered_lines(lines: list[str], original: str) -> str:
+    result = "\n".join(lines)
+    return result + "\n" if original.endswith("\n") else result
 
 
 def _read_markdown_parts(path: Path) -> tuple[dict[str, Any], str] | None:

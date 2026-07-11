@@ -15,8 +15,19 @@ from agents.library_agent import (
     _has_directory_primary_heading_coverage_gap,
     _render_directory,
     render_capture_body,
+    _restore_readability_emphasis,
 )
 from db.schema import init_db
+
+
+def test_rendered_body_restores_llm_emphasis_without_changing_words():
+    source = "## 正文\n\n**端到端测试** 必须检查最终产物和下游可见性。\n"
+    rendered = "## 正文\n\n端到端测试必须检查最终产物和下游可见性。\n"
+
+    updated = _restore_readability_emphasis(source, rendered)
+
+    assert "**端到端测试**必须检查最终产物和下游可见性。" in updated
+    assert updated.replace("**", "") == rendered
 
 
 class FakeOutliner:
@@ -325,7 +336,7 @@ def test_outline_repair_removes_adjacent_bold_pseudo_heading_duplicate(tmp_path:
     assert report["updated"] == 1
     assert "### 2. 学会用 git" in updated_body
     assert "**2. 学会用 git**" not in updated_body
-    assert "正文说明 git 为什么重要。" in updated_body
+    assert "正文说明 git 为什么重要。" in updated_body.replace("**", "")
 
 
 def test_existing_directory_with_partial_headings_gets_missing_outline_headings(tmp_path: Path) -> None:

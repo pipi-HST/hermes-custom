@@ -5,13 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agents.capture_agent import (
-    CaptureAgent,
-    CaptureConfig,
-    CaptureIntent,
-    LLMResult,
-    _ensure_capture_readability_emphasis,
-)
+from agents.capture_agent import CaptureAgent, CaptureConfig, CaptureIntent, LLMResult
 from agents.extractors.base import ExtractionFailure, ExtractionResult
 from agents.extractors.text_extractor import TextExtractor
 from agents.markdown_writer import read_note
@@ -31,20 +25,6 @@ READABLE_CAPTURE_BODY = (
     "## 正文\n\n"
     "**AI 电力基础设施** 是整理稿的核心内容。"
 )
-
-
-def test_readability_emphasis_fallback_formats_prose_without_changing_words():
-    body = (
-        "## 目录纲要\n\n"
-        "- [正文](#正文)\n\n"
-        "## 正文\n\n"
-        "端到端测试必须检查最终产物和下游可见性。第二句保持原样。\n"
-    )
-
-    updated = _ensure_capture_readability_emphasis(body)
-
-    assert "**端到端测试必须检查最终产物和下游可见性**。第二句保持原样。" in updated
-    assert updated.replace("**", "") == body
 
 
 @pytest.fixture
