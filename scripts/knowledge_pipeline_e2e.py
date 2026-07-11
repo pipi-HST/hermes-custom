@@ -119,7 +119,12 @@ def run_pipeline_e2e(
         api_base = f"http://127.0.0.1:{api_port}"
         runtime_base = f"http://127.0.0.1:{runtime_port}"
         _wait_for_http(f"{api_base}/docs", api_process, root / "knowledge-api.log")
-        _wait_for_http(f"{runtime_base}/knowledge-chat", runtime_process, root / "runtime-dashboard.log")
+        _wait_for_http(
+            f"{runtime_base}/knowledge-chat",
+            runtime_process,
+            root / "runtime-dashboard.log",
+            timeout=90,
+        )
         runtime_headers = _runtime_headers(runtime_base)
 
         with httpx.Client(timeout=90) as client:
@@ -681,6 +686,7 @@ def _prepare_isolated_root(root: Path, provider_settings: dict[str, str]) -> dic
 
 def _subprocess_env(paths: dict[str, Path], embedding_base_url: str) -> dict[str, str]:
     env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONPATH"] = os.pathsep.join(
         [str(paths["custom_root"]), str(RUNTIME_ROOT), env.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
