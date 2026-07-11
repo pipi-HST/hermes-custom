@@ -988,18 +988,12 @@ class CaptureAgent:
             return "- 这是精炼整理稿：目标是形成可读、可信、便于入库的整理笔记。\n"
         return ""
 
-    def _build_capture_body_structure_rule(self, source_text: str) -> str:
-        text_len = len(source_text or "")
-        if text_len >= CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD:
-            return (
-                "- 这是长文入库整理：必须使用 `##`/`###` heading 承接主要章节。\n"
-                "- 必须在正文开头生成 `## 目录纲要`，目录只能列章节标题，"
-                "不要写“标题：摘要”；目录中的每一项必须在正文后续位置有同名 `##`/`###` heading，方便点击跳转。\n"
-                "- 正文必须按语义自然分段，避免把长文塞成一个巨大段落；至少加粗一处原文已有的关键短语。\n"
-            )
+    def _build_capture_body_structure_rule(self) -> str:
         return (
-            "- 如果正文自然需要小标题，请使用 `##`/`###` Markdown heading；"
-            "如果生成 `## 目录纲要`，目录项也必须能对应到正文同名 heading。\n"
+            "- 正式 Capture 必须使用 `##`/`###` heading 承接正文内容。\n"
+            "- 必须在正文开头生成 `## 目录纲要`，目录只能列章节标题，"
+            "不要写“标题：摘要”；目录中的每一项必须在正文后续位置有同名 `##`/`###` heading，方便点击跳转。\n"
+            "- 正文必须按语义自然分段，避免塞成一个巨大段落；至少加粗一处原文已有的关键短语。\n"
         )
 
     def _clip_source_text(self, text: str) -> str:
@@ -1040,7 +1034,7 @@ class CaptureAgent:
             source_type=source_type,
         )
         result = self._call_llm(prompt)
-        return self._retry_revision_for_directory_contract(result, prompt, source_text)
+        return self._retry_revision_for_presentation_contract(result, prompt)
 
     def _should_use_chunked_reading(self, source_text: str, capture_intent: dict) -> bool:
         text_len = len(source_text or "")
@@ -1075,7 +1069,7 @@ class CaptureAgent:
             source_type=source_type,
         )
         result = self._call_llm(prompt)
-        return self._retry_revision_for_directory_contract(result, prompt, source_text)
+        return self._retry_revision_for_presentation_contract(result, prompt)
 
     def _build_long_source_notes(
         self,
@@ -1268,7 +1262,7 @@ class CaptureAgent:
             f"{self._build_density_rule(capture_intent)}"
             f"{self._build_detail_policy_rule(capture_intent)}"
             f"{self._build_material_intent_rule(capture_intent)}"
-            f"{self._build_capture_body_structure_rule(section_notes)}"
+            f"{self._build_capture_body_structure_rule()}"
             "- 基于分段笔记直接写最终整理稿，由你决定详略、结构和自然小标题。\n"
             "- 不要机械套模板；不要输出内部计划；不要输出标签、摘要或任务合同。\n"
             "- 不要逐段搬运分段笔记；把它们综合成一篇可读的整理稿。\n"
@@ -1313,7 +1307,7 @@ class CaptureAgent:
             f"{self._build_density_rule(capture_intent)}"
             f"{self._build_detail_policy_rule(capture_intent)}"
             f"{self._build_material_intent_rule(capture_intent)}"
-            f"{self._build_capture_body_structure_rule(source_text)}"
+            f"{self._build_capture_body_structure_rule()}"
             "- 由你决定最终整理稿的详略和结构：可以精炼，可以保留必要细节，也可以使用少量自然小标题。\n"
             "- 不要逐段搬运原文；不要为了格式而格式化；不要机械套用固定模板。\n"
             "- 不要输出标签、摘要或任务合同；这些元信息由系统另行处理。\n"
@@ -1325,22 +1319,21 @@ class CaptureAgent:
             "请直接输出最终整理稿。"
         )
 
-    def _retry_revision_for_directory_contract(
+    def _retry_revision_for_presentation_contract(
         self,
         result: str | LLMResult,
         original_prompt: str,
-        source_text: str,
     ) -> str | LLMResult:
         text = result.text if isinstance(result, LLMResult) else str(result)
         if isinstance(result, LLMResult) and result.incomplete:
             return result
-        warning = _capture_presentation_contract_warning(text, source_text)
+        warning = _capture_presentation_contract_warning(text)
         if not warning:
             return result
         retry_prompt = (
             f"{original_prompt}\n\n"
             "上一次输出没有通过正式 Capture 的可读性合同："
-            f"{warning}。请重新输出完整整理稿。长文必须包含 `## 目录纲要`、"
+            f"{warning}。请重新输出完整整理稿。正式 Capture 必须包含 `## 目录纲要`、"
             "与目录对应的 `##`/`###` heading、自然分段和至少一处原文重点加粗；"
             "这些是入库硬合同，不能省略。"
         )
@@ -1636,21 +1629,22 @@ class CaptureAgent:
     ) -> str:
         if self._is_raw_package_intent(capture_intent):
             return ""
-        if max(len(raw_text or ""), len(body or "")) < CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD:
-            return ""
+        is_long = max(len(raw_text or ""), len(body or "")) >= CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD
         if "## 目录纲要" not in (body or ""):
-            return "长文缺少目录纲要"
+            return "正式 Capture 缺少目录纲要"
         directory_warning = _directory_contract_warning(body)
         if directory_warning:
             return directory_warning
         if _has_capture_processing_note(body):
-            return "长文正文仍包含整理说明"
+            return "正式 Capture 正文仍包含整理说明"
         if not _directory_absolute_url_free(body):
-            return "长文目录包含绝对链接"
+            return "正式 Capture 目录包含绝对链接"
         if _has_directory_content_heading_coverage_gap(body):
-            return "长文目录未覆盖全部正文主章节"
+            return "正式 Capture 目录未覆盖全部正文主章节"
         if not _directory_links_match_content_headings(body):
-            return "长文目录链接未匹配正文 heading"
+            return "正式 Capture 目录链接未匹配正文 heading"
+        if not is_long:
+            return ""
         pipeline = (
             library_postprocess.get("pipeline")
             if isinstance(library_postprocess, dict)
@@ -1713,10 +1707,7 @@ class CaptureAgent:
             return ""
         if self._is_raw_package_intent(capture_intent, str(draft.get("instruction") or "")):
             return ""
-        return _capture_presentation_contract_warning(
-            str(draft.get("draft_text") or ""),
-            str(draft.get("raw_text") or ""),
-        )
+        return _capture_presentation_contract_warning(str(draft.get("draft_text") or ""))
 
     def _finalize_verbatim_full_text_draft(
         self,
@@ -2256,18 +2247,16 @@ def _directory_contract_warning(text: str) -> str:
     return ""
 
 
-def _capture_presentation_contract_warning(text: str, source_text: str) -> str:
+def _capture_presentation_contract_warning(text: str) -> str:
     directory_warning = _directory_contract_warning(text)
     if directory_warning:
         return directory_warning
-    if max(len(text or ""), len(source_text or "")) < CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD:
-        return ""
     if "## 目录纲要" not in (text or ""):
-        return "长文缺少目录纲要"
+        return "正式 Capture 缺少目录纲要"
     if not _draft_heading_titles(text):
-        return "长文缺少正文分章节"
+        return "正式 Capture 缺少正文分章节"
     if not re.search(r"\*\*[^*\n]+\*\*", text or ""):
-        return "长文缺少重点加粗"
+        return "正式 Capture 缺少重点加粗"
     prose_blocks = [
         block.strip()
         for block in re.split(r"\n\s*\n", text or "")
@@ -2276,7 +2265,7 @@ def _capture_presentation_contract_warning(text: str, source_text: str) -> str:
         and not re.match(r"^[-*+]\s+", block.lstrip())
     ]
     if prose_blocks and max(len(block) for block in prose_blocks) > 1200:
-        return "长文缺少自然分段"
+        return "正式 Capture 缺少自然分段"
     return ""
 
 

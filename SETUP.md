@@ -97,6 +97,15 @@ cd /Users/pipi/hermes-custom
 .venv/bin/python -m pytest tests/ -q
 ```
 
+跨进程 Pipeline E2E（真实启动 Knowledge API 和 Hermes Runtime，共用隔离的临时数据库与 Knowledge vault；只用本地 HTTP 服务替代外部 LLM/Embedding 供应商）：
+
+```bash
+cd /Users/pipi/hermes-custom
+.venv/bin/python scripts/knowledge_pipeline_e2e.py --work-dir /tmp/hermes-pipeline-e2e
+```
+
+该报告逐项验证 Capture、Runtime 已入库可见性、Reading、Knowledge Card、RAG、Theme、Review、Canvas 和 Knowledge Graph。返回 `ok: true` 只表示所有阶段合同、数据库状态、Markdown 产物及下游对象均通过，不以单个函数返回 `success` 作为通过标准。
+
 Life 测试在独立仓库：
 
 ```bash

@@ -225,7 +225,13 @@ def _run_matrix_in(root: Path) -> dict[str, Any]:
 
 
 def _install_capture_fakes(agent: CaptureAgent) -> None:
-    agent._call_llm = lambda *_a, **_k: "## 修订草稿\n\n保留原文信息，只改善可读性。"
+    agent._call_llm = lambda *_a, **_k: (
+        "## 目录纲要\n\n"
+        "- 正文\n\n"
+        "## 正文\n\n"
+        "**保留原文信息**，只改善可读性。\n\n"
+        "这是一篇用于验收链接入库的文章。"
+    )
     agent.summarizer.summarize = lambda *_a, **_k: {
         "title": "Pipeline 验收",
         "summary": "验收矩阵应覆盖真实写入路径。",

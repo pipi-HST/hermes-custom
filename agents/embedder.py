@@ -1,13 +1,17 @@
 """千问 text-embedding-v4 封装 + numpy 向量化 cosine 相似度计算."""
 from __future__ import annotations
 
+import os
 import struct
 from typing import Optional
 
 import httpx
 import numpy as np
 
-DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DASHSCOPE_BASE = os.environ.get(
+    "DASHSCOPE_BASE_URL",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+).rstrip("/")
 MODEL = "text-embedding-v4"
 DIM = 1024
 

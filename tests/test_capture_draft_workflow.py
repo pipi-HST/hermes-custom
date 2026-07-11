@@ -19,6 +19,13 @@ TEST_CONTENT = (
     "会直接影响数据中心扩张速度。补充文字确保内容长度足够通过质量检测。"
 )
 
+READABLE_CAPTURE_BODY = (
+    "## 目录纲要\n\n"
+    "- 正文\n\n"
+    "## 正文\n\n"
+    "**AI 电力基础设施** 是整理稿的核心内容。"
+)
+
 
 @pytest.fixture
 def agent(tmp_path: Path) -> CaptureAgent:
@@ -202,7 +209,7 @@ def test_commit_removes_leading_duplicate_body_title(agent: CaptureAgent, monkey
             "- Cursor 如何构建 Agent Harness\n"
             "  - 三层方法\n\n"
             "## Cursor 如何构建 Agent Harness\n\n"
-            "## 三层方法\n\n正文。"
+            "## 三层方法\n\n**正文重点**。"
         ),
         status="draft_ready",
         capture_intent={"material_intent": "refined_note", "output_shape": ["natural_draft"]},
@@ -653,7 +660,7 @@ def test_commit_draft_generates_summary_and_tags_when_missing(
         source_type="manual",
         title="待入库草稿",
         word_count=4,
-        draft_text="正式正文",
+        draft_text=READABLE_CAPTURE_BODY,
         summary="",
         tags=[],
         status="draft_ready",
@@ -1051,7 +1058,13 @@ def test_full_text_save_keeps_full_coverage_and_builds_readable_capture(
     agent: CaptureAgent,
     monkeypatch,
 ):
-    readable_body = "## 正文\n\n**中国变压器供应链** 是全文中的关键内容。\n\n" + TEST_CONTENT
+    readable_body = (
+        "## 目录纲要\n\n"
+        "- 正文\n\n"
+        "## 正文\n\n"
+        "**中国变压器供应链** 是全文中的关键内容。\n\n"
+        + TEST_CONTENT
+    )
     monkeypatch.setattr(
         agent,
         "_revise_with_llm",
@@ -1121,7 +1134,12 @@ def test_full_text_save_keeps_original_archive_and_formats_capture_text(
 
     def fake_revise(**kwargs):
         observed["raw_text"] = kwargs["raw_text"]
-        return "## 正文\n\n**第一段原文** 保留完整证据，同时整理正式正文。"
+        return (
+            "## 目录纲要\n\n"
+            "- 正文\n\n"
+            "## 正文\n\n"
+            "**第一段原文** 保留完整证据，同时整理正式正文。"
+        )
 
     monkeypatch.setattr(
         agent,
@@ -1347,7 +1365,7 @@ def test_commit_raw_extracted_refined_note_generates_draft_with_saved_intent(
 
     def fake_revise(**kwargs):
         revision_calls.append(kwargs)
-        return "整理稿：保留原文结构，轻度总结。"
+        return READABLE_CAPTURE_BODY
 
     monkeypatch.setattr(agent, "_build_capture_intent_with_planning", fake_plan)
     monkeypatch.setattr(agent, "_revise_with_llm", fake_revise)
@@ -1370,7 +1388,10 @@ def test_commit_raw_extracted_refined_note_generates_draft_with_saved_intent(
     assert planning_calls["count"] == 1
     assert len(revision_calls) == 1
     assert revision_calls[0]["capture_intent"]["plan_source"] == "llm"
-    assert updated["draft_text"] == "整理稿：保留原文结构，轻度总结。"
+    assert "## 目录纲要" in updated["draft_text"]
+    assert "- [正文](#正文)" in updated["draft_text"]
+    assert "## 正文" in updated["draft_text"]
+    assert "**AI 电力基础设施**" in updated["draft_text"]
     assert updated["summary"] == "整理稿摘要。"
 
 
@@ -1553,7 +1574,7 @@ def test_commit_long_capture_rejects_missing_bold_before_reserving_capture(
 
     result = agent.commit_draft(draft["id"])
 
-    assert result == {"error": "整理稿可读性合同未通过：长文缺少重点加粗"}
+    assert result == {"error": "整理稿可读性合同未通过：正式 Capture 缺少重点加粗"}
     assert agent.draft_repo.get_by_id(draft["id"])["status"] == "draft_incomplete"
 
 
@@ -1569,6 +1590,46 @@ def test_long_capture_prompt_makes_presentation_contract_mandatory(agent: Captur
     assert "必须在正文开头生成 `## 目录纲要`" in prompt
     assert "必须使用 `##`/`###` heading" in prompt
     assert "至少加粗一处" in prompt
+
+
+def test_short_capture_prompt_makes_presentation_contract_mandatory(agent: CaptureAgent):
+    prompt = agent._build_revision_prompt(
+        instruction="全文入库",
+        capture_intent=agent._build_capture_intent("全文入库").to_dict(),
+        current_text="短文正文。",
+        raw_text="短文正文。",
+    )
+
+    assert "必须在正文开头生成 `## 目录纲要`" in prompt
+    assert "必须使用 `##`/`###` heading" in prompt
+    assert "至少加粗一处" in prompt
+
+
+def test_commit_short_capture_rejects_missing_presentation_contract(
+    agent: CaptureAgent,
+    monkeypatch,
+):
+    body = "只有一段短正文，没有目录、章节和重点加粗。"
+    draft = agent.draft_repo.create(
+        raw_text=body,
+        source_type="note",
+        title="短文展示合同",
+        draft_text=body,
+        status="draft_ready",
+        summary="摘要",
+        tags=["contract"],
+        capture_intent={"material_intent": "refined_note", "coverage": "full_article"},
+    )
+    monkeypatch.setattr(
+        agent.draft_repo,
+        "reserve_capture_for_commit",
+        lambda *_args, **_kwargs: pytest.fail("presentation contract must fail before capture reservation"),
+    )
+
+    result = agent.commit_draft(draft["id"])
+
+    assert result == {"error": "整理稿可读性合同未通过：正式 Capture 缺少目录纲要"}
+    assert agent.draft_repo.get_by_id(draft["id"])["status"] == "draft_incomplete"
 
 
 def test_capture_intent_classifies_four_material_contracts(agent: CaptureAgent):
@@ -2185,7 +2246,7 @@ def test_revise_draft_uses_raw_text_and_updates_current_draft(agent: CaptureAgen
 
 
 def test_commit_draft_writes_raw_and_capture_files(agent: CaptureAgent, tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(agent, "_call_llm", lambda prompt: "最终草稿：AI瓶颈在电力。")
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: READABLE_CAPTURE_BODY)
     monkeypatch.setattr(
         agent.summarizer,
         "summarize",
@@ -2237,7 +2298,7 @@ def test_commit_draft_uses_shared_write_service_for_raw_and_capture_files(
             )
 
     monkeypatch.setattr("agents.capture_agent.KnowledgeWriteService", RecordingWriteService, raising=False)
-    monkeypatch.setattr(agent, "_call_llm", lambda prompt: "最终草稿：AI瓶颈在电力。")
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: READABLE_CAPTURE_BODY)
     monkeypatch.setattr(
         agent.summarizer,
         "summarize",
@@ -2277,7 +2338,7 @@ def test_commit_draft_builds_identity_embedding_index(
 
     agent.config.qwen_api_key = "sk-test-qwen"
     monkeypatch.setattr("agents.capture_agent.Embedder", FakeEmbedder, raising=False)
-    monkeypatch.setattr(agent, "_call_llm", lambda prompt: "最终草稿：AI瓶颈在电力。")
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: READABLE_CAPTURE_BODY)
     monkeypatch.setattr(
         agent.summarizer,
         "summarize",
@@ -2404,7 +2465,13 @@ def test_commit_short_full_text_save_writes_high_fidelity_capture(
     tmp_path: Path,
     monkeypatch,
 ):
-    readable_body = "## 正文\n\n**中国变压器供应链** 是全文重点。\n\n" + TEST_CONTENT
+    readable_body = (
+        "## 目录纲要\n\n"
+        "- 正文\n\n"
+        "## 正文\n\n"
+        "**中国变压器供应链** 是全文重点。\n\n"
+        + TEST_CONTENT
+    )
     monkeypatch.setattr(agent, "_revise_with_llm", lambda **kwargs: readable_body)
     monkeypatch.setattr(
         agent.summarizer,
@@ -2623,7 +2690,7 @@ def test_commit_long_capture_contract_fails_before_capture_is_created(
     result = agent.commit_draft(draft["id"])
     updated = agent.draft_repo.get_by_id(draft["id"])
 
-    assert result == {"error": "整理稿可读性合同未通过：长文缺少目录纲要"}
+    assert result == {"error": "整理稿可读性合同未通过：正式 Capture 缺少目录纲要"}
     assert updated["status"] == "draft_incomplete"
     assert updated["committed_capture_id"] == ""
 
@@ -2683,7 +2750,9 @@ def test_revise_committed_capture_id_creates_revision_draft(
 
     def fake_llm(prompt: str) -> str:
         calls.append(prompt)
-        return "修订稿：重点放在电力基础设施。"
+        if "重新提取重点" in prompt:
+            return "修订稿：重点放在电力基础设施。"
+        return READABLE_CAPTURE_BODY
 
     monkeypatch.setattr(agent, "_call_llm", fake_llm)
     monkeypatch.setattr(
@@ -2710,7 +2779,7 @@ def test_revise_committed_capture_id_creates_revision_draft(
 
 def test_revise_committed_draft_rejected(agent: CaptureAgent, monkeypatch):
     """已入库的草稿不允许再修改。"""
-    monkeypatch.setattr(agent, "_call_llm", lambda prompt: "草稿内容")
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: READABLE_CAPTURE_BODY)
     monkeypatch.setattr(
         agent.summarizer, "summarize",
         lambda text, existing_tags=None: {"summary": "摘要", "tags": ["test"]},
@@ -2726,7 +2795,7 @@ def test_revise_committed_draft_rejected(agent: CaptureAgent, monkeypatch):
 
 def test_commit_already_committed_draft_rejected(agent: CaptureAgent, monkeypatch):
     """已入库的草稿不允许重复提交。"""
-    monkeypatch.setattr(agent, "_call_llm", lambda prompt: "草稿内容")
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: READABLE_CAPTURE_BODY)
     monkeypatch.setattr(
         agent.summarizer, "summarize",
         lambda text, existing_tags=None: {"summary": "摘要", "tags": ["test"]},
@@ -2760,7 +2829,7 @@ def test_discard_committed_capture_draft_rejected(agent: CaptureAgent, monkeypat
     """已入库草稿不能删除。"""
     from bridge import capture_bridge
 
-    monkeypatch.setattr(agent, "_call_llm", lambda prompt: "草稿内容")
+    monkeypatch.setattr(agent, "_call_llm", lambda prompt: READABLE_CAPTURE_BODY)
     monkeypatch.setattr(
         agent.summarizer, "summarize",
         lambda text, existing_tags=None: {"summary": "摘要", "tags": ["test"]},
