@@ -289,11 +289,13 @@ def _reading_pipeline(
         headers=headers,
         json={
             "hermes_session_id": "pipeline-e2e",
-            "user_message": "怎样验证知识库端到端 Pipeline？",
+            "user_message": "E2E Pipeline Article 应该怎样验证？",
             "assistant_answer": (
-                "端到端测试必须验证真实 HTTP、SQLite、Markdown、"
-                "identity/section embedding、Runtime 已入库可见性和 RAG 索引检索，"
-                f"不能只检查 status=success。{E2E_SIGNAL}-READING"
+                f"{E2E_SIGNAL}。这篇材料验证 Capture 从 HTTP 入口生成草稿，"
+                "确认后写入原始证据和正式正文。正式正文需要目录、章节、自然分段和重点加粗，"
+                "并能够被下游检索；验收还必须检查 SQLite、identity/section embedding、"
+                "Runtime 已入库可见性和 RAG 索引检索，不能只检查 status=success。"
+                f"测试副本标识：{E2E_SIGNAL}-READING"
             ),
             "instruction": "存成学习笔记",
             "output_type": "local_learning_note",
@@ -380,13 +382,24 @@ def _rag_pipeline(
     )
     result = _result_from_subprocess(completed.stdout)
     meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    citation_validation = (
+        meta.get("citation_validation")
+        if isinstance(meta.get("citation_validation"), dict)
+        else {}
+    )
     source_ids = {str(item.get("id") or "") for item in result.get("source_map") or [] if isinstance(item, dict)}
     checks = [
         _check("rag_process_succeeded", completed.returncode == 0, completed.stderr[-1000:]),
         _check("rag_envelope_success", result.get("status") == "success", result.get("errors")),
         _check("rag_found_capture", int(meta.get("result_count") or 0) > 0 and capture_id in source_ids, sorted(source_ids)),
         _check("rag_used_index", meta.get("used_index") is True, meta.get("trace")),
-        _check("rag_answer_cited_source", "[1]" in str(meta.get("answer") or ""), meta.get("citation_validation")),
+        _check(
+            "rag_answer_cited_source",
+            citation_validation.get("valid") is True
+            and citation_validation.get("missing_citations") is False
+            and bool(citation_validation.get("cited_source_ids")),
+            citation_validation,
+        ),
     ]
     return _pipeline("rag_retrieval", checks, {"capture_id": capture_id, "retrieval": (meta.get("trace") or {}).get("retrieval")})
 
