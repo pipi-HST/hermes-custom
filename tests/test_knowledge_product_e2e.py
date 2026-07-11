@@ -130,11 +130,11 @@ def test_browser_rag_queries_the_browser_capture_signal(monkeypatch, tmp_path):
     assert pipeline["ok"] is True
 
 
-def test_ci_installs_custom_dependencies_into_runtime_environment():
+def test_ci_installs_bridge_dependency_into_runtime_environment():
     workflow = (
         PROJECT_ROOT / ".github/workflows/knowledge-product-e2e.yml"
     ).read_text(encoding="utf-8")
 
     assert workflow.count(
-        "uv pip install --python .venv/bin/python -r ../requirements.txt"
+        "uv pip install --python .venv/bin/python numpy==2.4.6"
     ) == 2

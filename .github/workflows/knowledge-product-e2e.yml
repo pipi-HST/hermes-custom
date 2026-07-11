@@ -82,7 +82,7 @@ jobs:
         run: |
           uv venv .venv --python 3.11
           uv pip install --python .venv/bin/python -e ".[web]"
-          uv pip install --python .venv/bin/python -r ../requirements.txt
+          uv pip install --python .venv/bin/python numpy==2.4.6
 
       - name: Run deterministic cross-process Pipeline
         run: .venv/bin/python scripts/knowledge_pipeline_e2e.py
@@ -136,7 +136,7 @@ jobs:
         run: |
           uv venv .venv --python 3.11
           uv pip install --python .venv/bin/python -e ".[web]"
-          uv pip install --python .venv/bin/python -r ../requirements.txt
+          uv pip install --python .venv/bin/python numpy==2.4.6
 
       - name: Write provider configuration
         env:
