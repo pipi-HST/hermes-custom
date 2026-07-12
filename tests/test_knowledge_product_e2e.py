@@ -3,6 +3,9 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
+import yaml
+
 from scripts import knowledge_pipeline_e2e
 from scripts import knowledge_product_e2e
 
@@ -128,6 +131,76 @@ def test_browser_rag_queries_the_browser_capture_signal(monkeypatch, tmp_path):
 
     assert knowledge_pipeline_e2e.BROWSER_E2E_SIGNAL in observed["code"]
     assert pipeline["ok"] is True
+
+
+def test_pipeline_subprocesses_use_isolated_hermes_home(tmp_path):
+    paths = knowledge_pipeline_e2e._prepare_isolated_root(
+        tmp_path,
+        {
+            "provider": "openai",
+            "model": "hermes-e2e-model",
+            "base_url": "http://127.0.0.1:43210",
+            "api_key": "e2e-key",
+            "qwen_api_key": "e2e-embedding-key",
+        },
+    )
+
+    env = knowledge_pipeline_e2e._subprocess_env(paths, "")
+
+    assert env["HERMES_HOME"] == str(tmp_path / "hermes-home")
+    assert (tmp_path / "hermes-home").is_dir()
+    runtime_config = yaml.safe_load((tmp_path / "hermes-home" / "config.yaml").read_text())
+    assert runtime_config["model"] == {
+        "provider": "custom",
+        "default": "hermes-e2e-model",
+        "base_url": "http://127.0.0.1:43210",
+        "api_key": "e2e-key",
+        "api_mode": "chat_completions",
+    }
+
+
+def test_fake_provider_streams_local_rag_tool_call_and_cited_answer():
+    server = knowledge_pipeline_e2e._FakeProviderServer(faults=set())
+    server.start()
+    try:
+        user_prompt = (
+            "【Hermes Knowledge 检索模式：仅知识库（mode=local_only）】\n"
+            f"请检索 {knowledge_pipeline_e2e.BROWSER_E2E_SIGNAL}。"
+        )
+        with httpx.stream(
+            "POST",
+            f"{server.base_url}/v1/chat/completions",
+            json={
+                "model": "hermes-e2e-model",
+                "stream": True,
+                "messages": [{"role": "user", "content": user_prompt}],
+            },
+        ) as response:
+            first_body = response.read().decode()
+
+        first_event = json.loads(first_body.splitlines()[0].removeprefix("data: "))
+        tool_call = first_event["choices"][0]["delta"]["tool_calls"][0]
+        assert tool_call["function"]["name"] == "research_with_web"
+        assert json.loads(tool_call["function"]["arguments"])["mode"] == "local_only"
+
+        with httpx.stream(
+            "POST",
+            f"{server.base_url}/v1/chat/completions",
+            json={
+                "model": "hermes-e2e-model",
+                "stream": True,
+                "messages": [
+                    {"role": "user", "content": user_prompt},
+                    {"role": "tool", "tool_call_id": "call-e2e-rag", "content": "knowledge result"},
+                ],
+            },
+        ) as response:
+            second_body = response.read().decode()
+
+        assert knowledge_pipeline_e2e.BROWSER_E2E_SIGNAL in second_body
+        assert "[K1]" in second_body
+    finally:
+        server.stop()
 
 
 def test_ci_installs_bridge_dependency_into_runtime_environment():

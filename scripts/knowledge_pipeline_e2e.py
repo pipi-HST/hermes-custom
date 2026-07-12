@@ -663,6 +663,8 @@ def _prepare_isolated_root(root: Path, provider_settings: dict[str, str]) -> dic
     vault = root / "knowledge"
     vault.mkdir(exist_ok=True)
     db_path = root / "captures.db"
+    hermes_home = root / "hermes-home"
+    hermes_home.mkdir(exist_ok=True)
     (custom_root / "config.yaml").write_text(
         yaml.safe_dump(
             {
@@ -681,17 +683,42 @@ def _prepare_isolated_root(root: Path, provider_settings: dict[str, str]) -> dic
         ),
         encoding="utf-8",
     )
-    return {"root": root, "custom_root": custom_root, "vault": vault, "db_path": db_path}
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "provider": "custom",
+                    "default": provider_settings["model"],
+                    "base_url": provider_settings["base_url"],
+                    "api_key": provider_settings["api_key"],
+                    "api_mode": "chat_completions",
+                }
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "root": root,
+        "custom_root": custom_root,
+        "vault": vault,
+        "db_path": db_path,
+        "hermes_home": hermes_home,
+    }
 
 
 def _subprocess_env(paths: dict[str, Path], embedding_base_url: str) -> dict[str, str]:
     env = dict(os.environ)
+    hermes_home = paths.get("hermes_home") or paths["root"] / "hermes-home"
+    hermes_home.mkdir(parents=True, exist_ok=True)
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONPATH"] = os.pathsep.join(
         [str(paths["custom_root"]), str(RUNTIME_ROOT), env.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
     env["HERMES_CUSTOM_ROOT"] = str(paths["custom_root"])
     env["HERMES_KNOWLEDGE_DB"] = str(paths["db_path"])
+    env["HERMES_HOME"] = str(hermes_home)
     if embedding_base_url:
         env["DASHSCOPE_BASE_URL"] = embedding_base_url
     else:
@@ -881,6 +908,29 @@ class _FakeProviderHandler(BaseHTTPRequestHandler):
             return
         messages = payload.get("messages") or []
         prompt = "\n".join(str(item.get("content") or "") for item in messages if isinstance(item, dict))
+        if payload.get("stream"):
+            has_tool_result = any(
+                isinstance(item, dict) and item.get("role") == "tool"
+                for item in messages
+            )
+            if BROWSER_E2E_SIGNAL in prompt and "mode=local_only" in prompt and not has_tool_result:
+                self._send_sse_tool_call(
+                    "research_with_web",
+                    {
+                        "query": f"{BROWSER_E2E_SIGNAL} 这篇文章强调了什么？",
+                        "mode": "local_only",
+                        "export_file": False,
+                    },
+                )
+                return
+            content = (
+                f"《{BROWSER_E2E_TITLE}》强调端到端测试必须验证最终产物和下游可见性，"
+                f"并保留 {BROWSER_E2E_SIGNAL}。[K1]"
+                if BROWSER_E2E_SIGNAL in prompt and has_tool_result
+                else _fake_completion(prompt)
+            )
+            self._send_sse_content(content)
+            return
         content = _fake_completion(prompt)
         self._send_json(
             {
@@ -903,6 +953,84 @@ class _FakeProviderHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_sse_content(self, content: str) -> None:
+        self._send_sse(
+            [
+                {
+                    "id": "chatcmpl-e2e",
+                    "object": "chat.completion.chunk",
+                    "created": 0,
+                    "model": "hermes-e2e-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": content},
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": "chatcmpl-e2e",
+                    "object": "chat.completion.chunk",
+                    "created": 0,
+                    "model": "hermes-e2e-model",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                },
+            ]
+        )
+
+    def _send_sse_tool_call(self, name: str, arguments: dict[str, Any]) -> None:
+        self._send_sse(
+            [
+                {
+                    "id": "chatcmpl-e2e",
+                    "object": "chat.completion.chunk",
+                    "created": 0,
+                    "model": "hermes-e2e-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call-e2e-rag",
+                                        "type": "function",
+                                        "function": {
+                                            "name": name,
+                                            "arguments": json.dumps(arguments, ensure_ascii=False),
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": "chatcmpl-e2e",
+                    "object": "chat.completion.chunk",
+                    "created": 0,
+                    "model": "hermes-e2e-model",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                },
+            ]
+        )
+
+    def _send_sse(self, events: list[dict[str, Any]]) -> None:
+        body = "".join(
+            f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            for event in events
+        ) + "data: [DONE]\n\n"
+        encoded = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
 
 
 def _fake_completion(prompt: str) -> str:
