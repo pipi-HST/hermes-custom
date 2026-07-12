@@ -65,6 +65,8 @@ def plan_research(
     mode: str = "local_web",
     article_context: dict[str, Any] | None = None,
     selection_context: dict[str, Any] | None = None,
+    history: list[dict[str, str]] | None = None,
+    history_summary: str = "",
     query_planner_adapter: ResearchQueryPlannerAdapter | None = None,
 ) -> dict[str, Any]:
     """Plan research: determine queries, source preferences, and evidence requirements."""
@@ -75,6 +77,8 @@ def plan_research(
         mode=normalized_mode,
         article_context=article_context,
         selection_context=selection_context,
+        history=history,
+        history_summary=history_summary,
         query_planner_adapter=query_planner_adapter,
     )
     if plan:
@@ -203,6 +207,8 @@ def _planned_research_plan(
     mode: str,
     article_context: dict[str, Any] | None = None,
     selection_context: dict[str, Any] | None = None,
+    history: list[dict[str, str]] | None = None,
+    history_summary: str = "",
     query_planner_adapter: ResearchQueryPlannerAdapter | None = None,
 ) -> dict[str, Any] | None:
     plan, _diagnostics = _planned_research_plan_with_diagnostics(
@@ -210,6 +216,8 @@ def _planned_research_plan(
         mode=mode,
         article_context=article_context,
         selection_context=selection_context,
+        history=history,
+        history_summary=history_summary,
         query_planner_adapter=query_planner_adapter,
     )
     return plan
@@ -221,6 +229,8 @@ def _planned_research_plan_with_diagnostics(
     mode: str,
     article_context: dict[str, Any] | None = None,
     selection_context: dict[str, Any] | None = None,
+    history: list[dict[str, str]] | None = None,
+    history_summary: str = "",
     query_planner_adapter: ResearchQueryPlannerAdapter | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     import sys
@@ -230,7 +240,7 @@ def _planned_research_plan_with_diagnostics(
     diagnostics = _empty_planner_diagnostics()
     started = time.monotonic()
     try:
-        raw = adapter(_query_planner_payload(query, mode, article_context, selection_context))
+        raw = adapter(_query_planner_payload(query, mode, article_context, selection_context, history, history_summary))
     except Exception as exc:
         diagnostics["planner_elapsed_ms"] = _elapsed_ms(started)
         diagnostics["planner_error"] = _planner_error_message(exc)
@@ -296,6 +306,8 @@ def _query_planner_payload(
     mode: str,
     article_context: dict[str, Any] | None,
     selection_context: dict[str, Any] | None,
+    history: list[dict[str, str]] | None = None,
+    history_summary: str = "",
 ) -> dict[str, Any]:
     article_context = article_context or {}
     selection_context = selection_context or {}
@@ -309,7 +321,26 @@ def _query_planner_payload(
         "heading_path": selection_context.get("heading_path") or [],
         "article_title": _clip_text(str(article_context.get("title") or ""), 120),
         "article_summary": _clip_text(str(article_context.get("summary") or ""), 260),
+        "history_summary": _clip_text(str(history_summary or ""), 1000),
+        "history": _planner_history_rows(history),
     }
+
+
+def _planner_history_rows(history: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    if not isinstance(history, list):
+        return rows
+    for item in history[-12:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = _clip_text(str(item.get("content") or ""), 600)
+        if not content:
+            continue
+        rows.append({"role": role, "content": content})
+    return rows
 
 
 def _default_query_planner(payload: dict[str, Any]) -> str | list[str] | dict[str, Any]:
@@ -376,6 +407,8 @@ def _build_query_planner_prompt(payload: dict[str, Any]) -> str:
             f"标题路径：{' > '.join(payload.get('heading_path') or [])}",
             f"文章标题：{payload.get('article_title')}",
             f"文章摘要：{payload.get('article_summary')}",
+            f"长期摘要：{payload.get('history_summary')}",
+            f"最近历史：{json.dumps(payload.get('history') or [], ensure_ascii=False)}",
         ]
     )
 

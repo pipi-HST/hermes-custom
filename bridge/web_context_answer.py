@@ -52,6 +52,11 @@ WEB_CONTEXT_SURROUNDING_CHARS = 500
 DEFAULT_WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS = 18.0
 WEB_CONTEXT_SELECTION_TIMEOUT_SECONDS = 8
 WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS = 35
+WEB_CONTEXT_SUMMARY_TIMEOUT_SECONDS = 30
+WEB_CONTEXT_HISTORY_SUMMARY_CHARS = 1000
+WEB_CONTEXT_HISTORY_MESSAGES = 12
+WEB_CONTEXT_HISTORY_MESSAGE_CHARS = 1200
+WEB_CONTEXT_HISTORY_OVERFLOW_MESSAGES = 40
 
 WEB_CONTEXT_ANSWER_STYLE_CONTRACT_LINES = (
     "回答应以解决用户问题为第一目标，而不是展示检索过程或追求形式整齐。",
@@ -101,6 +106,11 @@ def web_context_answer(
     synthesize_adapter: ResearchSynthesizeAdapter | None = None,
     answer_delta_callback: AnswerDeltaCallback | None = None,
     progress_callback: ProgressCallback | None = None,
+    history: list[dict[str, str]] | None = None,
+    history_summary: str = "",
+    history_summary_version: int = 0,
+    history_overflow: list[dict[str, str]] | None = None,
+    force_web: bool = False,
 ) -> dict[str, Any]:
     started = time.monotonic()
     clean_query = (query or "").strip()
@@ -116,19 +126,39 @@ def web_context_answer(
     warnings: list[str] = []
     selection_context = selection_context or {}
     article_context = _normalized_article_context(article_context or {}, selection_context, warnings)
+    history_messages = _normalized_history_messages(history)
+    history_summary = _clip_text(str(history_summary or ""), WEB_CONTEXT_HISTORY_SUMMARY_CHARS)
     stage_timings = _empty_web_context_stage_timings()
 
-    planning_started = time.monotonic()
-    research_plan = plan_research(
-        clean_query,
-        mode=normalized_mode,
-        article_context=article_context,
-        selection_context=selection_context,
-    )
-    _add_web_context_stage_timing(stage_timings, "planning_ms", planning_started)
+    if normalized_mode == "current_article_only":
+        research_plan = _direct_article_plan(normalized_mode)
+    else:
+        planning_started = time.monotonic()
+        plan_kwargs: dict[str, Any] = {}
+        if history_messages or history_summary:
+            plan_kwargs["history"] = history_messages
+            plan_kwargs["history_summary"] = history_summary
+        research_plan = plan_research(
+            clean_query,
+            mode=normalized_mode,
+            article_context=article_context,
+            selection_context=selection_context,
+            **plan_kwargs,
+        )
+        _add_web_context_stage_timing(stage_timings, "planning_ms", planning_started)
     use_local = _mode_needs_local(normalized_mode)
     use_web = _mode_needs_web(normalized_mode, research_plan)
     planned_queries = [str(item or "").strip() for item in research_plan.get("queries") or [] if str(item or "").strip()]
+    if force_web and normalized_mode == "local_web":
+        use_web = True
+        if not planned_queries:
+            planned_queries = [clean_query]
+        research_plan = {
+            **research_plan,
+            "needs_web": True,
+            "queries": planned_queries,
+            "plan_status": f"{research_plan.get('plan_status') or 'planned'}_web_forced_by_request",
+        }
     query_cap = _query_cap(normalized_mode, research_plan)
     web_queries = planned_queries[:query_cap]
     skipped_query_statuses = (
@@ -144,6 +174,7 @@ def web_context_answer(
         needs_web=use_web,
         needs_local=use_local,
         queries=web_queries or planned_queries,
+        force_web=bool(force_web and normalized_mode == "local_web"),
         intent_label=research_plan.get("intent_label"),
         answer_depth=research_plan.get("answer_depth"),
     )
@@ -251,10 +282,13 @@ def web_context_answer(
         web_sources=web_sources,
         web_queries=web_queries,
         material_plan=material_plan,
+        history=history_messages,
+        history_summary=history_summary,
     )
     retrieved_knowledge_sources = list(knowledge_sources)
     material_web_sources = list(web_sources)
     synthesis_skipped = False
+    reasoning_capture: dict[str, Any] = {}
     synthesis_started = time.monotonic()
     if use_web and not _has_synthesis_material(synthesis_input):
         warnings.append("没有可用材料，已跳过空材料回答生成。")
@@ -264,7 +298,12 @@ def web_context_answer(
         answer = (
             synthesize_adapter(synthesis_input)
             if synthesize_adapter
-            else _generate_answer(synthesis_input, warnings, answer_delta_callback=answer_delta_callback)
+            else _generate_answer(
+                synthesis_input,
+                warnings,
+                answer_delta_callback=answer_delta_callback,
+                reasoning_capture=reasoning_capture,
+            )
         )
     _add_web_context_stage_timing(stage_timings, "synthesis_ms", synthesis_started)
     if normalized_mode == "current_article_only":
@@ -293,6 +332,14 @@ def web_context_answer(
     )
     total_elapsed_ms = int((time.monotonic() - started) * 1000)
     provider_status["total_elapsed_ms"] = total_elapsed_ms
+    summary_update = _updated_history_summary(
+        history_summary=history_summary,
+        history_summary_version=history_summary_version,
+        history_overflow=history_overflow,
+        warnings=warnings,
+    )
+    provider_status["warnings"] = list(warnings)
+    reasoning_trace = _reasoning_trace_from_capture(reasoning_capture)
     research_trace = {
         "path": "web_context",
         "legacy_research": False,
@@ -306,7 +353,12 @@ def web_context_answer(
         "answer_contract": research_plan.get("answer_contract") or {},
         "needs_web": use_web,
         "needs_local": use_local,
+        "force_web": bool(force_web and normalized_mode == "local_web"),
         "queries": web_queries or planned_queries,
+        "selected_text_present": bool(str(selection_context.get("selected_text") or "").strip()),
+        "selected_text_chars": len(str(selection_context.get("selected_text") or "").strip()),
+        "history_message_count": len(history_messages),
+        "history_summary_version": _coerced_summary_version(history_summary_version),
         "article_context_source": article_context.get("context_source"),
         "context_warnings": article_context.get("context_warnings") or [],
         "used_article_context": bool(article_context.get("context_text") or article_context.get("body")),
@@ -361,11 +413,14 @@ def web_context_answer(
             "rewritten_web_queries": [],
             "provider_status": provider_status,
             "research_trace": research_trace,
+            "reasoning_trace": reasoning_trace,
+            **summary_update,
             "research_plan": {
                 **research_plan,
                 "path": "web_context",
                 "needs_web": use_web,
                 "needs_local": use_local,
+                "force_web": bool(force_web and normalized_mode == "local_web"),
                 "mode": normalized_mode,
                 "queries": web_queries,
             },
@@ -385,6 +440,11 @@ async def async_web_context_answer(
     local_search_adapter: LocalSearchAdapter | None = None,
     synthesize_adapter: ResearchSynthesizeAdapter | None = None,
     event_callback: ResearchEventCallback | None = None,
+    history: list[dict[str, str]] | None = None,
+    history_summary: str = "",
+    history_summary_version: int = 0,
+    history_overflow: list[dict[str, str]] | None = None,
+    force_web: bool = False,
 ) -> dict[str, Any]:
     clean_query = (query or "").strip()
     await _emit(event_callback, "planning_start", path="web_context", mode=_normalize_mode(mode))
@@ -432,6 +492,11 @@ async def async_web_context_answer(
         synthesize_adapter=synthesize_adapter,
         answer_delta_callback=None if synthesize_adapter else answer_delta_callback,
         progress_callback=emit_from_thread,
+        history=history,
+        history_summary=history_summary,
+        history_summary_version=history_summary_version,
+        history_overflow=history_overflow,
+        force_web=force_web,
     )
     if delta_buffer:
         buffered = "".join(delta_buffer)
@@ -451,6 +516,14 @@ async def async_web_context_answer(
     synthesis_skipped = bool(trace.get("synthesis_skipped") or provider_status.get("synthesis_skipped"))
     if not streaming_started and not synthesis_skipped:
         await _emit(event_callback, "synthesis_start", path="web_context")
+    if meta.get("updated_history_summary"):
+        await _emit(
+            event_callback,
+            "summary_updated",
+            path="web_context",
+            updated_history_summary=meta.get("updated_history_summary"),
+            updated_history_summary_version=meta.get("updated_history_summary_version"),
+        )
     return result
 
 
@@ -562,6 +635,141 @@ def _local_search_query(
     if summary and article_context.get("context_source") != "full_article":
         parts.append(f"文章摘要：\n{_clip_text(summary, 500)}")
     return "\n\n".join(parts)
+
+
+def _normalized_history_messages(history: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    if not isinstance(history, list):
+        return []
+    messages: list[dict[str, str]] = []
+    for item in history[-WEB_CONTEXT_HISTORY_MESSAGES:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = _clip_text(str(item.get("content") or ""), WEB_CONTEXT_HISTORY_MESSAGE_CHARS)
+        if content:
+            messages.append({"role": role, "content": content})
+    return messages
+
+
+def _history_prompt_block(history: list[dict[str, str]], history_summary: str) -> str:
+    rows = [
+        {
+            "role": item.get("role"),
+            "content": _clip_text(str(item.get("content") or ""), 900),
+        }
+        for item in history
+        if str(item.get("content") or "").strip()
+    ]
+    return "\n".join(
+        [
+            f"长期摘要：{_clip_text(history_summary, WEB_CONTEXT_HISTORY_SUMMARY_CHARS)}",
+            f"最近历史：{json.dumps(rows, ensure_ascii=False)}",
+        ]
+    )
+
+
+def _direct_article_plan(mode: str) -> dict[str, Any]:
+    return {
+        "intent_label": "direct_article",
+        "needs_web": False,
+        "mode": mode,
+        "subject": {},
+        "selection_role": "context_only",
+        "risk_level": "low",
+        "freshness_sensitive": False,
+        "answer_depth": "normal",
+        "queries": [],
+        "answer_claims_needed": [],
+        "claim_requirements": {},
+        "evidence_contract": {},
+        "source_preferences": {},
+        "answer_contract": {},
+        "privacy": {"may_use_selection_text": False, "allowed_context_terms": []},
+        "plan_status": "direct_no_planner",
+    }
+
+
+def _updated_history_summary(
+    *,
+    history_summary: str,
+    history_summary_version: int,
+    history_overflow: list[dict[str, str]] | None,
+    warnings: list[str],
+) -> dict[str, Any]:
+    overflow = _normalized_history_messages_for_summary(history_overflow)
+    if not overflow:
+        return {}
+    try:
+        next_summary = _summarize_history(history_summary, overflow)
+    except Exception as exc:
+        warnings.append(f"长期记忆压缩失败，已使用最近历史继续：{exc}")
+        return {
+            "history_summary_failed": True,
+            "history_summary_error": _clip_text(str(exc), 240),
+        }
+    return {
+        "updated_history_summary": next_summary,
+        "updated_history_summary_version": _coerced_summary_version(history_summary_version) + 1,
+    }
+
+
+def _normalized_history_messages_for_summary(history: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    if not isinstance(history, list):
+        return []
+    messages: list[dict[str, str]] = []
+    for item in history[-WEB_CONTEXT_HISTORY_OVERFLOW_MESSAGES:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = _clip_text(str(item.get("content") or ""), 1200)
+        if content:
+            messages.append({"role": role, "content": content})
+    return messages
+
+
+def _coerced_summary_version(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _summarize_history(history_summary: str, overflow: list[dict[str, str]]) -> str:
+    prompt = "\n".join(
+        [
+            "你是 Hermes 文章侧边栏 AI 的长期记忆压缩器。",
+            "把旧摘要和新增成功问答压缩为自然语言摘要，最多约 1000 个中文字符。",
+            "保留讨论主题、已确认结论、重要实体/术语和未解决问题。",
+            "不要保留用户偏好、完整用户原话、reasoning_trace、research trace、sources 或 warnings。",
+            "不要写来源边界，不要解释压缩过程，只输出摘要正文。",
+            f"旧摘要：{_clip_text(history_summary, WEB_CONTEXT_HISTORY_SUMMARY_CHARS)}",
+            "新增成功问答：",
+            json.dumps(overflow, ensure_ascii=False),
+        ]
+    )
+    summary = _call_text_llm(
+        prompt,
+        timeout_seconds=WEB_CONTEXT_SUMMARY_TIMEOUT_SECONDS,
+        max_tokens=900,
+    )
+    summary = summary.strip()
+    if not summary:
+        raise RuntimeError("summary provider returned empty content")
+    return _clip_text(summary, WEB_CONTEXT_HISTORY_SUMMARY_CHARS)
+
+
+def _reasoning_trace_from_capture(capture: dict[str, Any]) -> dict[str, Any]:
+    value = capture.get("api_reasoning")
+    if value:
+        return {"source": "api", "api_reasoning": value}
+    return {
+        "source": "missing",
+        "fallback_reason": "模型未返回可展示推理字段。",
+    }
 
 
 def _prioritize_article_sources(
@@ -905,12 +1113,16 @@ def _synthesis_payload(
     web_sources: list[dict[str, Any]],
     web_queries: list[str],
     material_plan: dict[str, Any],
+    history: list[dict[str, str]],
+    history_summary: str,
 ) -> dict[str, Any]:
     return {
         "query": query,
         "mode": mode,
         "article_context": article_context,
         "selection_context": selection_context,
+        "history": history,
+        "history_summary": history_summary,
         "research_plan": research_plan,
         "local_answer": local_answer,
         "knowledge_sources": knowledge_sources,
@@ -927,6 +1139,7 @@ def _generate_answer(
     warnings: list[str],
     *,
     answer_delta_callback: AnswerDeltaCallback | None = None,
+    reasoning_capture: dict[str, Any] | None = None,
 ) -> str:
     source_rows = [
         {
@@ -947,20 +1160,26 @@ def _generate_answer(
     ]
     selection_block = _selection_context_prompt_block(payload.get("selection_context") or {}, selected_limit=600, surrounding_limit=1200)
     article_block = _article_context_prompt_block(payload.get("article_context") or {}, body_limit=4000)
+    history_block = _history_prompt_block(
+        list(payload.get("history") or []),
+        str(payload.get("history_summary") or ""),
+    )
     prompt = "\n".join(
         [
             "你是知识工作台里的文章理解辅助模块。",
             *WEB_CONTEXT_ANSWER_STYLE_CONTRACT_LINES,
+            *_direct_answer_context_contract_lines(str(payload.get("mode") or "")),
             "如果用户问的是短词、英文术语或指代性问题，必须优先解释它在当前文章、当前选区和前后文里的具体含义；不要只给通用词典释义。",
             "即使当前选区只有一个英文词、缩写或术语，也要把它当作有效选区；不要说看不到选中内容，也不要要求用户重新框选。",
-            "不要自动继承上一轮对话；只根据本轮问题和本轮给定上下文回答。",
+            "可以参考长期摘要和最近历史回答上下文追问，但本轮选区只以当前选区字段为准；不要自动继承上一轮选区。",
             "如果本地材料明显不能回答用户问题，应直接忽略，不要解释那些不相关材料在讲什么。",
             "优先识别一手来源、官方说明、媒体报道、论坛/博客各自的用途；弱来源可以作为背景或观点材料，但不要包装成官方结论。",
             "引用只能使用给定编号，如 [W1] 或 [K1]。",
-            "如果当前模式是 current_article_only，不要输出 [K] 或 [W] 引用，也不要声称做了知识库检索或联网搜索。",
+            "如果当前模式是 current_article_only，不要输出任何 [字母+数字] 形式的来源编号，也不要声称做了知识库检索或联网搜索。",
             "如果联网材料参与回答，应在对应结论附近使用可用 [W] 引用；不要只在文末泛泛列来源。",
             f"当前模式：{payload.get('mode')}",
             f"用户问题：{payload['query']}",
+            history_block,
             selection_block,
             article_block,
             f"本地材料：{_clip_text(str(payload.get('local_answer') or ''), 1000)}",
@@ -974,11 +1193,23 @@ def _generate_answer(
                 prompt,
                 timeout_seconds=WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS,
                 answer_delta_callback=answer_delta_callback,
+                reasoning_capture=reasoning_capture,
             )
         return _call_text_llm(prompt, timeout_seconds=WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS)
     except Exception as exc:
         warnings.append(f"回答生成失败，已使用材料摘要：{exc}")
         return _fallback_answer(payload)
+
+
+def _direct_answer_context_contract_lines(mode: str) -> list[str]:
+    if mode != "current_article_only":
+        return []
+    return [
+        "直出模式上下文优先级：本轮问题 > 本轮选区 > 最近历史 > 长期摘要 > 当前文章。",
+        "最近历史里的 [当轮选区: ...] 是历史选区，不是本轮选区；只能用于理解追问指代。",
+        "如果本轮没有选区且用户用“这些、他们、它、上面、刚才、区别、联系、表格”等方式追问，优先根据最近历史判断指代对象。",
+        "如果最近历史仍不足以判断指代对象，要直接说明不确定并请用户补充，不要跳到文章里的其他主题。",
+    ]
 
 
 def _has_answer_material(payload: dict[str, Any]) -> bool:
@@ -1066,6 +1297,7 @@ def _call_text_llm_stream(
     *,
     timeout_seconds: float,
     answer_delta_callback: AnswerDeltaCallback,
+    reasoning_capture: dict[str, Any] | None = None,
     max_tokens: int = 1600,
 ) -> str:
     config = load_config(str(Path(__file__).resolve().parent.parent / "config.yaml"))
@@ -1104,7 +1336,11 @@ def _call_text_llm_stream(
                     continue
                 payload = json.loads(data)
                 choice = (payload.get("choices") or [{}])[0]
-                delta = (choice.get("delta") or {}).get("content") or ""
+                delta_payload = choice.get("delta") or {}
+                reasoning_value = _extract_reasoning_value(delta_payload) or _extract_reasoning_value(choice)
+                if reasoning_value:
+                    _append_reasoning_capture(reasoning_capture, reasoning_value)
+                delta = delta_payload.get("content") or ""
                 if not delta:
                     continue
                 pieces.append(str(delta))
@@ -1113,6 +1349,26 @@ def _call_text_llm_stream(
     if not answer:
         raise RuntimeError("empty streamed response")
     return answer
+
+
+def _extract_reasoning_value(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return None
+    for key in ("reasoning", "reasoning_content", "reasoning_summary", "thoughts", "trace"):
+        value = payload.get(key)
+        if value:
+            return value
+    return None
+
+
+def _append_reasoning_capture(capture: dict[str, Any] | None, value: Any) -> None:
+    if capture is None:
+        return
+    if isinstance(value, str):
+        previous = capture.get("api_reasoning")
+        capture["api_reasoning"] = f"{previous or ''}{value}"
+        return
+    capture["api_reasoning"] = value
 
 
 def _normalized_extract_map(extracted: dict[str, str]) -> dict[str, str]:
@@ -1155,7 +1411,7 @@ def _repair_answer_refs(answer: str, knowledge_sources: list[dict[str, Any]], we
 
 
 def _strip_answer_refs(answer: str) -> str:
-    return re.sub(r"\s*\\?\[([WK]\d+)\]", "", answer or "", flags=re.I).strip()
+    return re.sub(r"\s*\\?\[[A-Za-z]{1,3}\d+\\?\]", "", answer or "").strip()
 
 
 def _normalize_answer_refs(answer: str) -> str:

@@ -1040,6 +1040,32 @@ def test_planner_source_kinds_do_not_add_domain_hints_in_code():
     assert plan["source_preferences"]["preferred_source_kinds"] == ["encyclopedia", "profile", "reputable_media"]
 
 
+def test_planner_receives_clipped_recent_history_and_summary():
+    observed = {}
+
+    def planner(payload):
+        observed.update(payload)
+        return {"needs_web": False, "queries": []}
+
+    research_bridge.plan_research(
+        "继续比较",
+        mode="local_web",
+        history=[
+            {"role": "system", "content": "不应透传"},
+            {"role": "user", "content": "上一问"},
+            {"role": "assistant", "content": "上一答"},
+        ],
+        history_summary="长期摘要",
+        query_planner_adapter=planner,
+    )
+
+    assert observed["history"] == [
+        {"role": "user", "content": "上一问"},
+        {"role": "assistant", "content": "上一答"},
+    ]
+    assert observed["history_summary"] == "长期摘要"
+
+
 def test_official_domain_guardrails_are_planner_supplied_not_code_inferred():
     plan = research_bridge.plan_research(
         "美联储主席是谁",

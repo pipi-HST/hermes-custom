@@ -523,7 +523,7 @@ def test_current_article_mode_strips_refs_and_uses_no_sources(monkeypatch):
         search_adapter=lambda *args: search_calls.append(args) or {"results": []},
         extract_adapter=lambda _urls: {"results": []},
         local_search_adapter=lambda query, _warnings: local_calls.append(query) or ("本地答案", [{"ref": "K1"}]),
-        synthesize_adapter=lambda _payload: "这里的 skills 是能力说明 [K1][W1]。",
+        synthesize_adapter=lambda _payload: "这里的 skills 是能力说明 [K1][W1][C1]\\[A12\\]。",
     )
 
     assert result["chat_preview"] == "这里的 skills 是能力说明。"
@@ -533,8 +533,59 @@ def test_current_article_mode_strips_refs_and_uses_no_sources(monkeypatch):
     assert result["meta"]["web_search_attempted"] is False
     assert result["meta"]["used_local"] is False
     assert result["meta"]["used_web"] is False
+    trace = result["meta"]["research_trace"]
+    assert trace["selected_text_present"] is True
+    assert trace["selected_text_chars"] == len("skills")
+    assert trace["history_message_count"] == 0
+    assert trace["history_summary_version"] == 0
+    assert trace["needs_web"] is False
+    assert trace["needs_local"] is False
+    assert trace["queries"] == []
     assert search_calls == []
     assert local_calls == []
+
+
+def test_current_article_prompt_prioritizes_history_for_followups(monkeypatch):
+    prompts = []
+
+    def fake_call_text_llm(prompt, **_kwargs):
+        prompts.append(prompt)
+        return "表格对比 Cursor、OpenAI、Claude、OpenCode。"
+
+    monkeypatch.setattr(web_context_answer, "_call_text_llm", fake_call_text_llm)
+
+    result = web_context_answer.web_context_answer(
+        query="画个表格对比他们的区别和联系",
+        mode="current_article_only",
+        article_context={
+            "title": "Agent Harness",
+            "body": "文章还讨论中途切换主模型和使用 Subagent 的区别。",
+        },
+        selection_context={"selected_text": ""},
+        history=[
+            {"role": "user", "content": "[当轮选区: Cursor、OpenAI、Claude、OpenCode] 这些有什么区别吗"},
+            {"role": "assistant", "content": "Cursor 和 OpenCode 是 Agent 产品，OpenAI 和 Claude 是模型相关对象。"},
+        ],
+        history_summary="上一轮讨论了 Cursor、OpenAI、Claude、OpenCode 的区别。",
+        history_summary_version=3,
+        search_adapter=lambda *_args: {"results": []},
+        extract_adapter=lambda _urls: {"results": []},
+    )
+
+    assert prompts
+    answer_prompt = prompts[-1]
+    assert "直出模式上下文优先级：本轮问题 > 本轮选区 > 最近历史 > 长期摘要 > 当前文章。" in answer_prompt
+    assert "最近历史里的 [当轮选区: ...] 是历史选区，不是本轮选区；只能用于理解追问指代。" in answer_prompt
+    assert "优先根据最近历史判断指代对象" in answer_prompt
+    assert "[当轮选区: Cursor、OpenAI、Claude、OpenCode] 这些有什么区别吗" in answer_prompt
+    trace = result["meta"]["research_trace"]
+    assert trace["selected_text_present"] is False
+    assert trace["selected_text_chars"] == 0
+    assert trace["history_message_count"] == 2
+    assert trace["history_summary_version"] == 3
+    assert trace["needs_web"] is False
+    assert trace["needs_local"] is False
+    assert trace["queries"] == []
 
 
 def test_local_only_forces_local_and_forbids_web(monkeypatch):
@@ -608,6 +659,85 @@ def test_local_web_can_skip_web_and_records_skipped_queries(monkeypatch):
             "error": "web_not_requested",
         }
     ]
+
+
+def test_local_web_force_web_runs_search_even_when_planner_skips(monkeypatch):
+    search_calls = []
+    patch_research_plan(monkeypatch, queries=[], needs_web=False)
+
+    result = web_context_answer.web_context_answer(
+        query="补充最新公开资料",
+        mode="local_web",
+        force_web=True,
+        search_adapter=lambda query, limit: search_calls.append((query, limit)) or {
+            "results": [
+                {
+                    "title": "官方更新",
+                    "url": "https://example.com/update",
+                    "description": "最新公开资料。",
+                }
+            ]
+        },
+        extract_adapter=lambda _urls: {"results": []},
+        local_search_adapter=lambda _query, _warnings: ("本地材料", []),
+        synthesize_adapter=lambda _payload: "已补充最新公开资料 [W1]。",
+    )
+
+    assert search_calls == [
+        ("补充最新公开资料", web_context_answer.WEB_CONTEXT_RESULTS_PER_QUERY)
+    ]
+    assert result["meta"]["web_search_attempted"] is True
+    assert result["meta"]["research_trace"]["force_web"] is True
+    assert result["meta"]["research_plan"]["force_web"] is True
+
+
+def test_history_overflow_updates_summary_version(monkeypatch):
+    monkeypatch.setattr(
+        web_context_answer,
+        "_summarize_history",
+        lambda previous, overflow: f"{previous} 已压缩 {len(overflow)} 条。".strip(),
+    )
+
+    result = web_context_answer.web_context_answer(
+        query="继续解释",
+        mode="current_article_only",
+        article_context={"title": "测试文章", "body": "正文"},
+        history_summary="旧摘要。",
+        history_summary_version=2,
+        history_overflow=[
+            {"role": "user", "content": "旧问题"},
+            {"role": "assistant", "content": "旧回答"},
+        ],
+        search_adapter=lambda *_args: {"results": []},
+        extract_adapter=lambda _urls: {"results": []},
+        synthesize_adapter=lambda _payload: "当前回答。",
+    )
+
+    assert result["meta"]["updated_history_summary"] == "旧摘要。 已压缩 2 条。"
+    assert result["meta"]["updated_history_summary_version"] == 3
+    assert result["meta"].get("history_summary_failed") is not True
+
+
+def test_history_summary_failure_is_visible_without_breaking_answer(monkeypatch):
+    monkeypatch.setattr(web_context_answer, "_call_text_llm", lambda *_args, **_kwargs: "")
+
+    result = web_context_answer.web_context_answer(
+        query="继续解释",
+        mode="current_article_only",
+        article_context={"title": "测试文章", "body": "正文"},
+        history_overflow=[
+            {"role": "user", "content": "旧问题"},
+            {"role": "assistant", "content": "旧回答"},
+        ],
+        search_adapter=lambda *_args: {"results": []},
+        extract_adapter=lambda _urls: {"results": []},
+        synthesize_adapter=lambda _payload: "当前回答。",
+    )
+
+    assert result["chat_preview"] == "当前回答。"
+    assert result["meta"]["history_summary_failed"] is True
+    assert "summary provider returned empty content" in result["meta"]["history_summary_error"]
+    assert any("长期记忆压缩失败" in warning for warning in result["warnings"])
 
 
 def test_async_web_context_answer_emits_candidate_trace(monkeypatch):
@@ -727,6 +857,52 @@ def test_async_web_context_answer_streams_answer_delta(monkeypatch):
     deltas = [event["delta"] for event in events if event["type"] == "answer_delta"]
     assert "".join(deltas) == "Coding agent 是能处理代码任务的 AI 系统 [W1]"
     assert result["chat_preview"] == "Coding agent 是能处理代码任务的 AI 系统 [W1]"
+
+
+def test_async_web_context_answer_emits_summary_update(monkeypatch):
+    events = []
+    monkeypatch.setattr(web_context_answer, "_summarize_history", lambda _previous, _overflow: "长期摘要 v1")
+
+    result = asyncio.run(
+        web_context_answer.async_web_context_answer(
+            query="继续",
+            mode="current_article_only",
+            article_context={"title": "测试文章", "body": "正文"},
+            history_overflow=[
+                {"role": "user", "content": "旧问题"},
+                {"role": "assistant", "content": "旧回答"},
+            ],
+            search_adapter=lambda *_args: {"results": []},
+            extract_adapter=lambda _urls: {"results": []},
+            synthesize_adapter=lambda _payload: "当前回答。",
+            event_callback=lambda event: events.append(event),
+        )
+    )
+
+    summary_events = [event for event in events if event["type"] == "summary_updated"]
+    assert result["meta"]["updated_history_summary"] == "长期摘要 v1"
+    assert summary_events == [
+        {
+            "type": "summary_updated",
+            "path": "web_context",
+            "updated_history_summary": "长期摘要 v1",
+            "updated_history_summary_version": 1,
+        }
+    ]
+
+
+def test_reasoning_capture_preserves_provider_reasoning_fields():
+    capture = {}
+
+    web_context_answer._append_reasoning_capture(capture, "第一段")
+    web_context_answer._append_reasoning_capture(capture, "第二段")
+
+    assert web_context_answer._extract_reasoning_value({"reasoning_content": "推理"}) == "推理"
+    assert web_context_answer._reasoning_trace_from_capture(capture) == {
+        "source": "api",
+        "api_reasoning": "第一段第二段",
+    }
+    assert web_context_answer._reasoning_trace_from_capture({})["source"] == "missing"
 
 
 def test_web_context_answer_prompt_uses_generic_answer_contract(monkeypatch):

@@ -463,6 +463,11 @@ def web_assist_answer(
     search_adapter: ResearchSearchAdapter | None = None,
     extract_adapter: ResearchExtractAdapter | None = None,
     synthesize_adapter: ResearchSynthesizeAdapter | None = None,
+    history: list[dict[str, str]] | None = None,
+    history_summary: str = "",
+    history_summary_version: int = 0,
+    history_overflow: list[dict[str, str]] | None = None,
+    force_web: bool = False,
 ) -> dict[str, Any]:
     """Answer with the product-default web assist path.
 
@@ -479,6 +484,11 @@ def web_assist_answer(
         extract_adapter=extract_adapter or _default_web_extract,
         local_search_adapter=_web_context_local_search,
         synthesize_adapter=synthesize_adapter,
+        history=history,
+        history_summary=history_summary,
+        history_summary_version=history_summary_version,
+        history_overflow=history_overflow,
+        force_web=force_web,
     )
     result["intent"] = "web_assist_answer"
     return result
@@ -614,6 +624,11 @@ async def async_web_assist_answer(
     extract_adapter: ResearchExtractAdapter | None = None,
     synthesize_adapter: ResearchSynthesizeAdapter | None = None,
     event_callback: ResearchEventCallback | None = None,
+    history: list[dict[str, str]] | None = None,
+    history_summary: str = "",
+    history_summary_version: int = 0,
+    history_overflow: list[dict[str, str]] | None = None,
+    force_web: bool = False,
 ) -> dict[str, Any]:
     """Async product-default web assist answer for dashboard callers."""
     result = await _async_web_context_answer(
@@ -626,6 +641,11 @@ async def async_web_assist_answer(
         local_search_adapter=_web_context_local_search,
         synthesize_adapter=synthesize_adapter,
         event_callback=event_callback,
+        history=history,
+        history_summary=history_summary,
+        history_summary_version=history_summary_version,
+        history_overflow=history_overflow,
+        force_web=force_web,
     )
     result["intent"] = "web_assist_answer"
     return result
