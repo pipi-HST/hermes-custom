@@ -243,7 +243,10 @@ def test_librarian_apply_runs_confirmed_repairs(monkeypatch) -> None:
         lambda *args, **kwargs: "data/repair_reports/librarian-applied.json",
     )
 
-    envelope = librarian_bridge.run_librarian_audit(apply=True)
+    envelope = librarian_bridge.run_librarian_audit(
+        apply=True,
+        confirmation_source="manual",
+    )
 
     assert envelope["status"] == "success"
     assert envelope["intent"] == "apply_librarian_repair"
@@ -260,6 +263,33 @@ def test_librarian_apply_runs_confirmed_repairs(monkeypatch) -> None:
         {"method": "property_gaps", "apply": True},
         {"method": "embedding_index", "apply": True},
     ]
+
+
+def test_librarian_apply_requires_explicit_confirmation(monkeypatch) -> None:
+    from bridge import librarian_bridge
+
+    FakeLibraryAgent.calls = []
+    monkeypatch.setattr(librarian_bridge, "LibraryAgent", FakeLibraryAgent)
+    monkeypatch.setattr(
+        librarian_bridge,
+        "load_config",
+        lambda _path: type(
+            "Config",
+            (),
+            {
+                "vault_path": "/tmp/vault",
+                "db_path": "data/captures.db",
+                "llm_api_key": "sk-test",
+                "llm_base_url": "https://example.com",
+            },
+        )(),
+    )
+
+    envelope = librarian_bridge.run_librarian_audit(apply=True)
+
+    assert envelope["status"] == "error"
+    assert "确认修复" in envelope["chat_preview"]
+    assert FakeLibraryAgent.calls == []
 
 
 def test_librarian_bridge_reports_embedding_index_status(monkeypatch) -> None:

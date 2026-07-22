@@ -19,6 +19,7 @@ from agents.garden_agent import (
 )
 from agents.garden_duplicates import find_garden_duplicate
 from bridge.ai_cancel import AIOperationCancelled, raise_if_cancelled
+from bridge.confirmation import confirmation_error
 from bridge.file_artifacts import write_markdown_export
 from bridge.context import KnowledgeContext
 from bridge.result_envelope import artifact_ref, error_envelope, next_action, success_envelope
@@ -572,15 +573,31 @@ def _revise_garden_draft(
     )
 
 
-def commit_garden_draft(draft_id: str = "", context: KnowledgeContext | None = None) -> dict:
+def commit_garden_draft(
+    draft_id: str = "",
+    confirmation: str = "",
+    confirmation_source: str = "agent",
+    context: KnowledgeContext | None = None,
+) -> dict:
     """确认 Knowledge Card Draft，写入 garden_cards 结构化记录。"""
     config, repo = _config_repo(context)
+    confirmation_failure = confirmation_error(
+        "commit_garden_draft",
+        confirmation=confirmation,
+        confirmation_source=confirmation_source,
+    )
+    if confirmation_failure:
+        return error_envelope(
+            agent="garden",
+            intent="commit_garden_draft",
+            error=confirmation_failure,
+        )
     write_jobs = KnowledgeWriteJobRepo(repo.conn)
     job_id = write_jobs.start(
         intent="commit_garden_draft",
         object_type="garden_draft",
         object_id=draft_id,
-        payload={"draft_id": draft_id},
+        payload={"draft_id": draft_id, "confirmation_source": confirmation_source},
     )
 
     def operation() -> dict:
@@ -629,7 +646,7 @@ def commit_garden_draft(draft_id: str = "", context: KnowledgeContext | None = N
         agent="garden",
         intent="commit_garden_draft",
         trigger="wechat",
-        input_ref={"draft_id": draft_id},
+        input_ref={"draft_id": draft_id, "confirmation_source": confirmation_source},
         operation=operation,
     )
 

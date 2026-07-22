@@ -515,7 +515,7 @@ def test_commit_garden_draft_creates_structured_card_and_marks_draft(repo, tmp_p
             llm_model="test",
             llm_base_url="http://test",
         )
-        result = commit_garden_draft(draft_id)
+        result = commit_garden_draft(draft_id, confirmation_source="manual")
 
     assert result["status"] == "success"
     artifact = result["durable_artifacts"][0]
@@ -609,7 +609,7 @@ def test_commit_theme_origin_garden_card_marks_question_without_theme_markdown(r
             llm_model="test",
             llm_base_url="http://test",
         )
-        result = commit_garden_draft(draft_id)
+        result = commit_garden_draft(draft_id, confirmation_source="manual")
 
     assert result["status"] == "success"
     assert result["durable_artifacts"][0].get("path", "") == ""
@@ -666,7 +666,7 @@ def test_commit_garden_draft_persists_card_payload_without_markdown(repo, tmp_pa
             llm_model="test",
             llm_base_url="http://test",
         )
-        result = commit_garden_draft(draft_id)
+        result = commit_garden_draft(draft_id, confirmation_source="manual")
 
     assert result["durable_artifacts"][0].get("path", "") == ""
     assert not (tmp_path / "garden").exists()
@@ -704,7 +704,7 @@ def test_commit_garden_draft_rejects_internal_prompt_markdown(repo, tmp_path):
             llm_model="test",
             llm_base_url="http://test",
         )
-        result = commit_garden_draft(draft_id)
+        result = commit_garden_draft(draft_id, confirmation_source="manual")
 
     assert result["status"] == "error"
     assert "内部模板" in result["chat_preview"]
@@ -716,6 +716,36 @@ def test_commit_garden_draft_rejects_internal_prompt_markdown(repo, tmp_path):
     ).fetchone()
     assert draft["status"] == "draft_ready"
     assert draft["committed_card_id"] == ""
+
+
+def test_commit_garden_draft_requires_explicit_confirmation(repo, tmp_path):
+    from agents.garden_agent import create_garden_draft
+    from bridge.garden_bridge import commit_garden_draft
+
+    draft_id = create_garden_draft(repo, {
+        "title": "待确认卡片",
+        "one_liner": "不能由模型直接入库。",
+        "core_arguments": [],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": "# 待确认卡片\n",
+        "capture_ids": [],
+    })
+    db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
+
+    with patch("bridge.garden_bridge.load_config") as mock_cfg:
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        result = commit_garden_draft(draft_id)
+
+    assert result["status"] == "error"
+    assert "确认卡片" in result["chat_preview"]
+    assert repo.conn.execute("SELECT count(*) FROM garden_cards").fetchone()[0] == 0
 
 
 def test_revise_garden_draft_updates_latest_open_draft(repo, tmp_path):

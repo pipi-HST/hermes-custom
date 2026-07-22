@@ -180,8 +180,8 @@ def test_fake_provider_streams_local_rag_tool_call_and_cited_answer():
 
         first_event = json.loads(first_body.splitlines()[0].removeprefix("data: "))
         tool_call = first_event["choices"][0]["delta"]["tool_calls"][0]
-        assert tool_call["function"]["name"] == "research_with_web"
-        assert json.loads(tool_call["function"]["arguments"])["mode"] == "local_only"
+        assert tool_call["function"]["name"] == "search_my_notes"
+        assert json.loads(tool_call["function"]["arguments"])["export_file"] is False
 
         with httpx.stream(
             "POST",

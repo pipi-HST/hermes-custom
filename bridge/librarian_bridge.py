@@ -13,13 +13,32 @@ from agents.capture_agent import load_config
 from agents.embedder import Embedder
 from agents.library_agent import LibraryAgent
 from agents.outliner import Outliner
+from bridge.confirmation import confirmation_error
 from bridge.file_artifacts import write_markdown_export
-from bridge.result_envelope import artifact_ref, next_action, success_envelope
+from bridge.result_envelope import artifact_ref, error_envelope, next_action, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.schema import init_db
 
 
-def run_librarian_audit(*, apply: bool = False, export_file: bool = False) -> dict[str, Any]:
+def run_librarian_audit(
+    *,
+    apply: bool = False,
+    export_file: bool = False,
+    confirmation: str = "",
+    confirmation_source: str = "agent",
+) -> dict[str, Any]:
+    if apply:
+        confirmation_failure = confirmation_error(
+            "apply_librarian_repair",
+            confirmation=confirmation,
+            confirmation_source=confirmation_source,
+        )
+        if confirmation_failure:
+            return error_envelope(
+                agent="librarian",
+                intent="apply_librarian_repair",
+                error=confirmation_failure,
+            )
     config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
     conn = init_db(config.db_path)
     return run_with_ledger(
@@ -27,7 +46,11 @@ def run_librarian_audit(*, apply: bool = False, export_file: bool = False) -> di
         agent="librarian",
         intent="apply_librarian_repair" if apply else "audit_library",
         trigger="wechat",
-        input_ref={"apply": apply, "export_file": export_file},
+        input_ref={
+            "apply": apply,
+            "export_file": export_file,
+            "confirmation_source": confirmation_source,
+        },
         operation=lambda: _run_librarian_audit(config, apply=apply, export_file=export_file),
     )
 

@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import re
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import CaptureAgent, load_config
 from bridge.ai_cancel import AIOperationCancelled
+from bridge.confirmation import confirmation_error
 from bridge.context import KnowledgeContext
 from bridge.file_artifacts import write_markdown_export
 from bridge.result_envelope import (
@@ -23,7 +23,6 @@ _config = None
 _agent = None
 PREVIEW_LIMIT = 1500
 DRAFT_PAGE_SIZE = 1400
-AGENT_COMMIT_REVIEW_WINDOW_SECONDS = 120
 
 def _init():
     global _config, _agent
@@ -1166,37 +1165,11 @@ def _commit_review_gate(
     confirmation: str = "",
     confirmation_source: str = "agent",
 ) -> str:
-    if confirmation_source in {"dashboard", "api", "manual"}:
-        return ""
-    if draft.get("status") not in {"raw_extracted", "draft_ready", "revision_requested"}:
-        return ""
-    created_at = _parse_datetime(draft.get("created_at", ""))
-    if created_at is None:
-        return ""
-    age = (datetime.now(timezone.utc) - created_at).total_seconds()
-    if age > AGENT_COMMIT_REVIEW_WINDOW_SECONDS:
-        return ""
-    instruction = (draft.get("instruction") or "").strip()
-    confirmation_text = (confirmation or "").strip()
-    if confirmation_text and confirmation_text != instruction:
-        return ""
-    return (
-        "草稿刚生成，还没有经过独立确认。请先审阅待审草稿；"
-        "如果满意，请在下一条消息单独回复「确认存库」或在前端点击「确认入库」。"
+    return confirmation_error(
+        "commit_capture_draft",
+        confirmation=confirmation,
+        confirmation_source=confirmation_source,
     )
-
-
-def _parse_datetime(value: str) -> datetime | None:
-    if not value:
-        return None
-    text = str(value).replace("Z", "+00:00")
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def refine_capture(

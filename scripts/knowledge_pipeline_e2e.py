@@ -915,10 +915,9 @@ class _FakeProviderHandler(BaseHTTPRequestHandler):
             )
             if BROWSER_E2E_SIGNAL in prompt and "mode=local_only" in prompt and not has_tool_result:
                 self._send_sse_tool_call(
-                    "research_with_web",
+                    "search_my_notes",
                     {
                         "query": f"{BROWSER_E2E_SIGNAL} 这篇文章强调了什么？",
-                        "mode": "local_only",
                         "export_file": False,
                     },
                 )

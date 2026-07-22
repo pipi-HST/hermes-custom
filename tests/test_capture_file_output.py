@@ -1,5 +1,5 @@
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 def test_capture_draft_file_artifact_contains_full_draft(tmp_path):
@@ -119,7 +119,7 @@ def test_commit_capture_draft_blocks_same_turn_agent_commit(monkeypatch):
     envelope = capture_bridge.commit_capture_draft("d1")
 
     assert envelope["status"] == "error"
-    assert "草稿刚生成" in envelope["chat_preview"]
+    assert "确认存库" in envelope["chat_preview"]
 
 
 def test_commit_capture_draft_allows_dashboard_confirmation(monkeypatch):
@@ -162,3 +162,74 @@ def test_commit_capture_draft_allows_dashboard_confirmation(monkeypatch):
     assert envelope["meta"]["capture_id"] == "c1"
     assert envelope["next_actions"][0]["intent"] == "synthesize_garden"
     assert envelope["next_actions"][0]["payload"] == {"capture_ids": ["c1"]}
+
+
+def test_commit_capture_draft_does_not_age_out_confirmation_requirement(monkeypatch):
+    from bridge import capture_bridge
+
+    class DraftRepo:
+        def get_by_id(self, draft_id):
+            return {
+                "id": draft_id,
+                "title": "旧草稿",
+                "draft_text": "正文",
+                "raw_text": "正文",
+                "status": "draft_ready",
+                "instruction": "整理材料",
+                "created_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+            }
+
+        def get_latest_open(self):
+            return self.get_by_id("d1")
+
+    class Agent:
+        draft_repo = DraftRepo()
+
+        def commit_draft(self, draft_id):
+            raise AssertionError("old drafts still require explicit confirmation")
+
+    monkeypatch.setattr(capture_bridge, "_init", lambda: (None, Agent()))
+
+    envelope = capture_bridge.commit_capture_draft("d1")
+
+    assert envelope["status"] == "error"
+    assert "确认存库" in envelope["chat_preview"]
+
+
+def test_commit_capture_draft_allows_explicit_agent_confirmation(monkeypatch):
+    from bridge import capture_bridge
+
+    class DraftRepo:
+        def get_by_id(self, draft_id):
+            return {
+                "id": draft_id,
+                "title": "草稿",
+                "draft_text": "正文",
+                "raw_text": "正文",
+                "status": "draft_ready",
+                "instruction": "整理材料",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+        def get_latest_open(self):
+            return self.get_by_id("d1")
+
+    class Agent:
+        draft_repo = DraftRepo()
+
+        def commit_draft(self, draft_id):
+            return {
+                "capture_id": "c1",
+                "draft_id": draft_id,
+                "title": "草稿",
+                "summary": "摘要",
+                "tags": [],
+                "raw_path": "_archive/raw/草稿.md",
+                "file_path": "captures/草稿.md",
+            }
+
+    monkeypatch.setattr(capture_bridge, "_init", lambda: (None, Agent()))
+
+    envelope = capture_bridge.commit_capture_draft("d1", confirmation="确认存库")
+
+    assert envelope["status"] == "success"

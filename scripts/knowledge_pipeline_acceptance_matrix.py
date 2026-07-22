@@ -583,7 +583,11 @@ def _scenario_garden_draft_commit(ctx: KnowledgeContext) -> dict[str, Any]:
     meta = _create_committed_capture(ctx, "Garden 来源")
     draft = garden_bridge.synthesize_garden(capture_ids=[meta["capture_id"]], context=ctx)
     draft_id = draft.get("meta", {}).get("draft_id", "")
-    committed = garden_bridge.commit_garden_draft(draft_id, context=ctx)
+    committed = garden_bridge.commit_garden_draft(
+        draft_id,
+        confirmation_source="manual",
+        context=ctx,
+    )
     card_id = committed.get("meta", {}).get("card_id", "")
     row = ctx.conn.execute("SELECT * FROM garden_cards WHERE id=?", (card_id,)).fetchone()
     return _scenario_result(
@@ -601,7 +605,11 @@ def _scenario_garden_draft_commit(ctx: KnowledgeContext) -> dict[str, Any]:
 def _scenario_garden_duplicate_blocks_creation(ctx: KnowledgeContext) -> dict[str, Any]:
     meta = _create_committed_capture(ctx, "Garden 重复来源")
     draft = garden_bridge.synthesize_garden(capture_ids=[meta["capture_id"]], title="重复卡片", context=ctx)
-    committed = garden_bridge.commit_garden_draft(draft["meta"]["draft_id"], context=ctx)
+    committed = garden_bridge.commit_garden_draft(
+        draft["meta"]["draft_id"],
+        confirmation_source="manual",
+        context=ctx,
+    )
     before = ctx.conn.execute("SELECT count(*) FROM garden_cards").fetchone()[0]
     duplicate = garden_bridge.synthesize_garden(capture_ids=[meta["capture_id"]], title="重复卡片", context=ctx)
     after = ctx.conn.execute("SELECT count(*) FROM garden_cards").fetchone()[0]
