@@ -4,8 +4,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+
+STALE_RUNNING_SECONDS = 3600
 
 
 class AgentRunRepo:
@@ -20,6 +23,7 @@ class AgentRunRepo:
         trigger: str = "",
         input_ref: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        self.recover_stale_running()
         run_id = uuid.uuid4().hex
         now = _now()
         self.conn.execute(
@@ -45,6 +49,56 @@ class AgentRunRepo:
             "status": "running",
             "input_json": _json(input_ref or {}),
         }
+
+    def recover_stale_running(self, *, max_age_seconds: int = STALE_RUNNING_SECONDS) -> int:
+        max_age_seconds = max(1, int(max_age_seconds))
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(seconds=max_age_seconds)).isoformat()
+        stale_rows = self.conn.execute(
+            """SELECT id FROM agent_runs
+               WHERE status = 'running'
+                 AND julianday(updated_at) < julianday(?)""",
+            (cutoff,),
+        ).fetchall()
+        if not stale_rows:
+            return 0
+
+        recovered_at = now.isoformat()
+        error = f"stale running run recovered after exceeding {max_age_seconds} seconds"
+        evidence = {
+            "has_envelope": False,
+            "recovered_stale": True,
+            "stale_after_seconds": max_age_seconds,
+        }
+        recovered_ids = []
+        for row in stale_rows:
+            run_id = row["id"]
+            cursor = self.conn.execute(
+                """UPDATE agent_runs
+                   SET status = 'error',
+                       evidence_json = ?,
+                       errors_json = ?,
+                       updated_at = ?,
+                       completed_at = ?
+                   WHERE id = ? AND status = 'running'""",
+                (_json(evidence), _json([error]), recovered_at, recovered_at, run_id),
+            )
+            if cursor.rowcount:
+                recovered_ids.append(run_id)
+        self.conn.executemany(
+            """INSERT INTO agent_run_events (run_id, event_type, payload_json, created_at)
+               VALUES (?, 'recovered_stale', ?, ?)""",
+            [
+                (
+                    run_id,
+                    _json({"error": error, "stale_after_seconds": max_age_seconds}),
+                    recovered_at,
+                )
+                for run_id in recovered_ids
+            ],
+        )
+        self.conn.commit()
+        return len(recovered_ids)
 
     def record_event(
         self,
