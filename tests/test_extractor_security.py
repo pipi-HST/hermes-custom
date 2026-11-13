@@ -156,3 +156,20 @@ def _public_getaddrinfo(host, port, *_args, **_kwargs):
             ("93.184.216.34", port),
         )
     ]
+
+
+def test_document_extractor_treats_long_text_as_content_not_a_path():
+    """A long chat message must not be stat()ed as a filename.
+
+    On Linux ``Path.is_file()`` raises OSError(ENAMETOOLONG) for names longer
+    than 255 bytes, so capture used to crash for any long CJK message.  The
+    extractor must decline such inputs without touching the filesystem.
+    """
+    from agents.extractors.document_extractor import DocumentExtractor
+
+    extractor = DocumentExtractor()
+    long_cjk = "知识管理的核心是将碎片信息转化为可复用的认知资产。" * 6
+    assert extractor.can_handle(long_cjk) is False
+    assert extractor.can_handle("a" * 2000) is False
+    assert extractor.can_handle("first line\nsecond line") is False
+    assert extractor.can_handle("") is False

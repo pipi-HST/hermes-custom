@@ -28,9 +28,23 @@ DOCUMENT_SUFFIXES = TEXT_SUFFIXES | {".docx", ".pdf"}
 class DocumentExtractor(BaseExtractor):
     """Read supported local document paths into raw text for Capture."""
 
+    # A real path is short; user content can be thousands of characters.  On
+    # Linux a stat() on an over-long name raises OSError(ENAMETOOLONG) instead
+    # of returning "not a file" (pathlib only ignores ENOENT/ENOTDIR/EBADF/
+    # ELOOP), which used to crash capture for any long text input.
+    _MAX_PATH_CHARS = 1024
+
     def can_handle(self, source: str) -> bool:
-        path = Path((source or "").strip())
-        return path.is_file() and path.suffix.lower() in DOCUMENT_SUFFIXES
+        candidate = (source or "").strip()
+        if not candidate or len(candidate) > self._MAX_PATH_CHARS:
+            return False
+        if any(char in candidate for char in ("\n", "\r", "\x00")):
+            return False
+        path = Path(candidate)
+        try:
+            return path.is_file() and path.suffix.lower() in DOCUMENT_SUFFIXES
+        except OSError:
+            return False
 
     def extract(self, source: str, **kwargs) -> ExtractionResult:
         path = Path(source).expanduser()

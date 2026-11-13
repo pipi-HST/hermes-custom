@@ -34,6 +34,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Prepare runtime config
+        # Some bridge/agent tests need a config.yaml at the repo root; the
+        # example config points at ~/Hermes/knowledge, which is writable here.
+        run: cp config.example.yaml config.yaml
+
       - name: Run unit tests
         env:
           HERMES_API_TOKEN: ""
