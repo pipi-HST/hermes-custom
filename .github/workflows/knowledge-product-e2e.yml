@@ -10,7 +10,7 @@ on:
       - 'db/**'
       - 'scripts/knowledge_pipeline_e2e.py'
       - 'scripts/knowledge_product_e2e.py'
-      - 'tests/test_knowledge_product_e2e.py'
+      - 'tests/**'
       - 'requirements.txt'
       - '.github/workflows/knowledge-product-e2e.yml'
   pull_request:
@@ -22,7 +22,7 @@ on:
       - 'db/**'
       - 'scripts/knowledge_pipeline_e2e.py'
       - 'scripts/knowledge_product_e2e.py'
-      - 'tests/test_knowledge_product_e2e.py'
+      - 'tests/**'
       - 'requirements.txt'
       - '.github/workflows/knowledge-product-e2e.yml'
   schedule:
