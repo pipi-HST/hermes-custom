@@ -91,47 +91,74 @@ def create_capture_router(
         body: UpdateCaptureRequest,
         background_tasks: BackgroundTasks,
     ):
-        item = repo.get_by_id(capture_id)
-        if item is None:
-            raise HTTPException(status_code=404, detail="not found")
-        file_path = str(item.get("file_path") or "")
-        if not file_path:
-            raise HTTPException(status_code=400, detail="capture has no editable note")
-        note = read_note(vault, file_path)
-        if note is None:
-            raise HTTPException(status_code=404, detail="capture note file not found")
-
-        frontmatter, current_body = note
-        updated_body = (body.body or current_body or "").strip()
-        if not updated_body:
-            raise HTTPException(status_code=400, detail="body cannot be empty")
-        if body.title.strip():
-            frontmatter["title"] = body.title.strip()
-            frontmatter["title_source"] = "user"
-        if body.folder_path is not None:
-            frontmatter["folder_path"] = body.folder_path.strip() or "Inbox"
-        frontmatter["word_count"] = len(updated_body)
-
-        write_result = KnowledgeWriteService(vault).write_markdown_artifact(
-            MarkdownWriteRequest(
-                kind="capture_note",
-                relative_path=file_path,
-                content=_render_markdown(frontmatter, updated_body),
-                db_object_id=capture_id,
-                db_table="captures",
-                requires_backup=True,
-            )
-        )
-        repo.log_change(
-            "capture",
+        return apply_capture_update(
+            repo,
+            vault,
+            config,
             capture_id,
-            "body",
-            old_value="",
-            new_value="updated via capture API",
-            source="api",
+            body=body.body,
+            title=body.title,
+            folder_path=body.folder_path,
+            background_tasks=background_tasks,
         )
-        # Library maintenance calls an LLM with a 120s timeout. Keep it off the
-        # request path so it cannot block every other API call.
+
+    return router
+
+
+def apply_capture_update(
+    repo: CaptureRepo,
+    vault: Path,
+    config: CaptureConfig | dict[str, Any] | None,
+    capture_id: str,
+    *,
+    body: str = "",
+    title: str = "",
+    folder_path: str | None = None,
+    background_tasks: BackgroundTasks | None = None,
+) -> dict:
+    """Shared implementation of ``PATCH /captures/{id}`` and library updates."""
+    item = repo.get_by_id(capture_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="not found")
+    file_path = str(item.get("file_path") or "")
+    if not file_path:
+        raise HTTPException(status_code=400, detail="capture has no editable note")
+    note = read_note(vault, file_path)
+    if note is None:
+        raise HTTPException(status_code=404, detail="capture note file not found")
+
+    frontmatter, current_body = note
+    updated_body = (body or current_body or "").strip()
+    if not updated_body:
+        raise HTTPException(status_code=400, detail="body cannot be empty")
+    if (title or "").strip():
+        frontmatter["title"] = title.strip()
+        frontmatter["title_source"] = "user"
+    if folder_path is not None:
+        frontmatter["folder_path"] = folder_path.strip() or "Inbox"
+    frontmatter["word_count"] = len(updated_body)
+
+    write_result = KnowledgeWriteService(vault).write_markdown_artifact(
+        MarkdownWriteRequest(
+            kind="capture_note",
+            relative_path=file_path,
+            content=_render_markdown(frontmatter, updated_body),
+            db_object_id=capture_id,
+            db_table="captures",
+            requires_backup=True,
+        )
+    )
+    repo.log_change(
+        "capture",
+        capture_id,
+        "body",
+        old_value="",
+        new_value="updated via capture API",
+        source="api",
+    )
+    # Library maintenance calls an LLM with a 120s timeout. Keep it off the
+    # request path so it cannot block every other API call.
+    if background_tasks is not None:
         background_tasks.add_task(
             _maintain_capture_after_edit,
             repo,
@@ -139,15 +166,13 @@ def create_capture_router(
             capture_id,
             config,
         )
-        return {
-            "capture_id": capture_id,
-            "file_path": file_path,
-            "backup_path": write_result.backup_path,
-            "library_postprocess": {"status": "queued"},
-            "item": _strip_binary(_hydrate_capture(vault, repo.get_by_id(capture_id) or item)),
-        }
-
-    return router
+    return {
+        "capture_id": capture_id,
+        "file_path": file_path,
+        "backup_path": write_result.backup_path,
+        "library_postprocess": {"status": "queued"},
+        "item": _strip_binary(_hydrate_capture(vault, repo.get_by_id(capture_id) or item)),
+    }
 
 
 def _strip_binary(d: dict) -> dict:

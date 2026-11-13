@@ -18,6 +18,7 @@ from api.routes.reading import create_reading_router
 from api.routes.knowledge import create_knowledge_router
 from api.routes.capture_drafts import create_capture_draft_router
 from api.routes.health import create_health_router
+from api.routes.library import create_library_router
 from agents.capture_agent import load_config
 
 DB_PATH = str(Path(__file__).parent.parent / "data" / "captures.db")
@@ -122,6 +123,16 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
         prefix="/api",
     )
     app.include_router(create_health_router(conn, config.vault_path), prefix="/api")
+    app.include_router(
+        create_library_router(
+            repo,
+            draft_repo,
+            reading_repo,
+            config.vault_path,
+            config=config,
+        ),
+        prefix="/api",
+    )
 
     return app
 
