@@ -8,13 +8,43 @@ detect an incompatible/older service instead of seeing a connection error).
 """
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter
 
 KNOWLEDGE_SERVICE_NAME = "hermes-knowledge"
 KNOWLEDGE_CONTRACT_VERSION = 1
-KNOWLEDGE_SERVICE_VERSION = "1.0"
+
+
+def _service_version() -> str:
+    """Return a short build/version string for monitoring.
+
+    ``HERMES_KNOWLEDGE_VERSION`` wins (deployments can pin it), otherwise the
+    short git sha of the checkout is used and ``"1.0"`` is the last resort for
+    source archives.  Computed once per process.
+    """
+    override = (os.environ.get("HERMES_KNOWLEDGE_VERSION") or "").strip()
+    if override:
+        return override
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(Path(__file__).resolve().parents[2]),
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        sha = (result.stdout or "").strip()
+        if result.returncode == 0 and sha:
+            return sha
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "1.0"
+
+
+KNOWLEDGE_SERVICE_VERSION = _service_version()
 
 
 def create_health_router(conn, vault_path: str | Path) -> APIRouter:

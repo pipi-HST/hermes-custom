@@ -32,6 +32,8 @@ cd /Users/pipi/hermes-custom
 
 默认未配置 `HERMES_API_TOKEN` 时只接受回环地址请求，也不要把该无 token 服务接到对外反向代理后。若必须监听 `0.0.0.0` 或通过代理提供远程访问，请先设置高强度随机 `HERMES_API_TOKEN`，并让客户端通过 `Authorization: Bearer <token>` 发送。
 
+监控探活：`GET /api/health` 默认同样需要 token。要让 k8s/uptime 之类无凭证探针访问，设置 `HERMES_HEALTH_PUBLIC=1`（只放行 GET/HEAD `/api/health`，其余路由仍需 token）；`HERMES_KNOWLEDGE_VERSION` 可覆盖 health 返回的 `version`（默认取 git 短 sha）。
+
 现在这个 API 只挂知识库接口：
 
 - 有 `/api/captures`

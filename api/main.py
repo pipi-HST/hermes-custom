@@ -62,6 +62,8 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
                 status_code=400,
             )
         if api_token:
+            if _health_probe_is_public(request):
+                return await call_next(request)
             authorization = request.headers.get("authorization", "")
             scheme, _, provided_token = authorization.partition(" ")
             if scheme.lower() != "bearer" or not secrets.compare_digest(
@@ -238,6 +240,24 @@ def _client_is_loopback(request, trusted_proxies: frozenset[str]) -> bool:
         if first_hop:
             return _is_loopback_client(first_hop)
     return _is_loopback_client(peer)
+
+
+def _health_probe_is_public(request) -> bool:
+    """Allow unauthenticated ``GET /api/health`` when explicitly enabled.
+
+    Monitoring probes usually cannot carry a bearer token.  The endpoint only
+    exposes the service name, contract/build version and a coarse status (no
+    paths, no data), and stays authenticated by default; set
+    ``HERMES_HEALTH_PUBLIC=1`` to open it up.
+    """
+    if (os.environ.get("HERMES_HEALTH_PUBLIC") or "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return False
+    return request.method in {"GET", "HEAD"} and request.url.path.rstrip("/") == "/api/health"
 
 
 def _request_body_too_large(content_length: str) -> bool:

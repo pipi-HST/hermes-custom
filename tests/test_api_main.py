@@ -237,3 +237,50 @@ def test_missing_host_header_is_rejected():
     assert api_main._host_header_allowed("", None) is False
     assert api_main._host_header_allowed("   ", None) is False
     assert api_main._host_header_allowed("", frozenset({"localhost"})) is False
+
+
+def test_health_probe_can_be_public_when_enabled(tmp_path, monkeypatch):
+    """Monitoring probes may call /api/health without a token (opt-in)."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("HERMES_API_TOKEN", "secret-token")
+    monkeypatch.setattr(
+        api_main,
+        "load_config",
+        lambda _path: SimpleNamespace(
+            db_path=str(tmp_path / "captures.db"),
+            vault_path=str(tmp_path / "vault"),
+        ),
+    )
+
+    # Default: authenticated like every other route.
+    monkeypatch.delenv("HERMES_HEALTH_PUBLIC", raising=False)
+    app = api_main.create_app()
+    with TestClient(app) as client:
+        assert client.get("/api/health").status_code == 401
+
+    # Opt-in: GET/HEAD /api/health is open, everything else still needs the token.
+    monkeypatch.setenv("HERMES_HEALTH_PUBLIC", "1")
+    app = api_main.create_app()
+    with TestClient(app) as client:
+        health = client.get("/api/health")
+        assert health.status_code == 200
+        assert health.json()["service"] == "hermes-knowledge"
+        assert client.get("/api/captures").status_code == 401
+        assert (
+            client.get(
+                "/api/health", headers={"Authorization": "Bearer secret-token"}
+            ).status_code
+            == 200
+        )
+
+
+def test_health_service_version_can_be_overridden(monkeypatch):
+    from api.routes.health import _service_version
+
+    monkeypatch.setenv("HERMES_KNOWLEDGE_VERSION", "2026.11.14-test")
+    assert _service_version() == "2026.11.14-test"
+
+    monkeypatch.delenv("HERMES_KNOWLEDGE_VERSION", raising=False)
+    version = _service_version()
+    assert isinstance(version, str) and version.strip()
