@@ -20,6 +20,7 @@ from api.routes.capture_drafts import create_capture_draft_router
 from api.routes.health import create_health_router
 from api.routes.library import create_library_router
 from api.routes.garden import create_garden_router
+from api.routes.tools import create_tools_router
 from agents.capture_agent import load_config
 
 DB_PATH = str(Path(__file__).parent.parent / "data" / "captures.db")
@@ -136,6 +137,10 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
     )
     app.include_router(
         create_garden_router(repo, config.vault_path, config=config),
+        prefix="/api",
+    )
+    app.include_router(
+        create_tools_router(repo, config.vault_path, config=config),
         prefix="/api",
     )
 
