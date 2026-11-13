@@ -434,8 +434,54 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute(CREATE_KNOWLEDGE_EDGES_TABLE)
     conn.execute(CREATE_KNOWLEDGE_EDGES_LOOKUP_INDEX)
     conn.execute(CREATE_KNOWLEDGE_EDGES_RELATION_INDEX)
+    _migrate_timestamp_formats(conn)
     conn.commit()
     return conn
+
+
+
+_TIMESTAMP_COLUMNS = frozenset(
+    {
+        "created_at",
+        "updated_at",
+        "last_reviewed",
+        "next_review",
+        "theme_scanned_at",
+        "issued_at",
+        "expires_at",
+        "used_at",
+        "last_viewed",
+        "directory_rendered_at",
+    }
+)
+
+
+def _migrate_timestamp_formats(conn: sqlite3.Connection) -> None:
+    """Normalise SQLite-default timestamps ("YYYY-MM-DD HH:MM:SS") to ISO-8601.
+
+    Timestamps written by Python already use ``datetime.isoformat()``; rows that
+    kept the SQLite ``datetime('now')`` default were a different format, which
+    forced ``replace(substr(...))`` sorting hacks in the repositories.  This
+    migration is idempotent and only touches the legacy space-separated form.
+    """
+    tables = [
+        str(row["name"])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    ]
+    for table in tables:
+        columns = {
+            str(row["name"])
+            for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+        }
+        for column in columns & _TIMESTAMP_COLUMNS:
+            conn.execute(
+                f'UPDATE "{table}" '
+                f'SET "{column}" = strftime(?, "{column}") '
+                f'WHERE "{column}" GLOB ?',
+                ("%Y-%m-%dT%H:%M:%SZ", "????-??-?? ??:??:??*"),
+            )
 
 
 def _migrate_captures_table(conn: sqlite3.Connection) -> None:

@@ -926,3 +926,67 @@ def test_commit_error_envelope_still_maps_to_409(client, draft_repo):
         )
 
     assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Library permanent delete (Knowledge Service contract)
+# ---------------------------------------------------------------------------
+
+def _capture_with_file(capture_repo, tmp_path, name="note.md"):
+    capture = capture_repo.insert(file_path=f"captures/{name}", raw_path="")
+    target = tmp_path / "captures" / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("---\ntitle: note\n---\nbody", encoding="utf-8")
+    return capture, target
+
+
+def test_permanent_delete_requires_confirmation_token(client, capture_repo, tmp_path):
+    capture, target = _capture_with_file(capture_repo, tmp_path)
+
+    resp = client.request(
+        "DELETE",
+        f"/api/knowledge/library/items/capture/{capture['id']}/permanent",
+        json={},
+    )
+
+    assert resp.status_code == 403
+    assert target.exists()
+
+
+def test_permanent_delete_removes_rows_and_file(client, capture_repo, tmp_path):
+    capture, target = _capture_with_file(capture_repo, tmp_path)
+    token = client.post(
+        f"/api/knowledge/library/items/capture/{capture['id']}/confirmation"
+    ).json()["token"]
+
+    resp = client.request(
+        "DELETE",
+        f"/api/knowledge/library/items/capture/{capture['id']}/permanent",
+        json={"confirmation_token": token},
+    )
+
+    assert resp.status_code == 200
+    assert capture_repo.get_by_id(capture["id"]) is None
+    assert not target.exists()
+
+
+def test_permanent_delete_blocks_referenced_capture(client, capture_repo, db, tmp_path):
+    capture, target = _capture_with_file(capture_repo, tmp_path)
+    db.execute(
+        "INSERT INTO garden_cards (id, title, capture_ids) VALUES (?, ?, ?)",
+        ("gc1", "card", '["' + capture["id"] + '"]'),
+    )
+    db.commit()
+    token = client.post(
+        f"/api/knowledge/library/items/capture/{capture['id']}/confirmation"
+    ).json()["token"]
+
+    resp = client.request(
+        "DELETE",
+        f"/api/knowledge/library/items/capture/{capture['id']}/permanent",
+        json={"confirmation_token": token},
+    )
+
+    assert resp.status_code == 409
+    assert capture_repo.get_by_id(capture["id"]) is not None
+    assert target.exists()

@@ -1,6 +1,7 @@
 """Captures API routes."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Optional
 
@@ -218,7 +219,8 @@ def _maintain_capture_after_edit(
             embedder=embedder,
         ).maintain_capture(capture_id, apply=True)
     except Exception as exc:  # pragma: no cover - defensive API degradation
-        return {"error": str(exc)}
+        logging.getLogger(__name__).exception("post-edit library maintenance failed")
+        return {"error": str(exc), "error_type": type(exc).__name__}
 
 
 def _capture_route_config(config: CaptureConfig | dict[str, Any] | None) -> dict[str, str]:
