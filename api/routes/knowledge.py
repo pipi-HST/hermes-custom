@@ -191,6 +191,21 @@ def create_knowledge_router(
             "warnings": warnings,
         }
 
+    @router.get("/knowledge/search")
+    def search_knowledge_base(
+        q: str = Query(min_length=1, max_length=200),
+        limit: int = Query(default=10, ge=1, le=50),
+    ):
+        from bridge.knowledge_search import search_captures
+
+        items = search_captures(vault_path, capture_repo, q, limit=limit)
+        return {
+            "query": q,
+            "limit": limit,
+            "total": len(items),
+            "items": [_strip_binary(item) for item in items],
+        }
+
     @router.get("/knowledge/garden-cards")
     def list_garden_cards(limit: int = Query(default=50, le=200)):
         rows = capture_repo.conn.execute(

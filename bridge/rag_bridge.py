@@ -7,7 +7,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from agents.markdown_writer import read_note
 from agents.capture_agent import load_config
 from agents.managed_sections import is_managed_section_title
 from agents.rag_agent import RagAgent, format_answer
@@ -15,8 +14,10 @@ from agents.rag_citations import validate_citations
 from agents.rag_context import build_rag_context_pack
 from agents.rag_graph import build_graph_retrieval
 from agents.embedder import Embedder
+from bridge.capture_view import build_capture_view, read_capture_note
 from bridge.file_artifacts import write_markdown_export
 from bridge.context import KnowledgeContext
+from bridge.knowledge_search import search_captures
 from bridge.result_envelope import artifact_ref, source_ref, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.embedding_repo import CaptureEmbeddingRepo
@@ -364,27 +365,19 @@ def _indexed_search(
 
 
 def _hydrate_capture(vault_path: str, row: dict) -> dict:
-    vault = Path(vault_path).expanduser()
-    file_path = row.get("file_path") or row.get("raw_path") or ""
-    frontmatter: dict = {}
-    body = ""
-    if file_path:
-        note = read_note(vault, file_path)
-        if note:
-            frontmatter, body = note
+    """RAG view: the shared capture view plus the aliases the prompt uses."""
+    frontmatter, body = read_capture_note(vault_path, row)
+    item = build_capture_view(row, frontmatter, body)
     section_title = row.get("section_title", "")
     if row.get("matched_kind") == "section" and section_title:
-        body = _extract_section_body(body, section_title) or body
+        item["body"] = _extract_section_body(body, section_title) or body
     return {
-        **row,
-        "title": frontmatter.get("title", ""),
+        **item,
         "story": frontmatter.get("story", ""),
-        "tags": frontmatter.get("tags", []),
         "source_kind": str(frontmatter.get("source_kind") or frontmatter.get("source_type") or ""),
         "reading_session_id": str(frontmatter.get("reading_session_id") or ""),
         "reading_draft_id": str(frontmatter.get("reading_draft_id") or ""),
         "output_type": str(frontmatter.get("output_type") or ""),
-        "body": body,
     }
 
 
@@ -414,18 +407,4 @@ def _extract_section_body(body: str, section_title: str) -> str:
 
 
 def _fallback_text_search(query: str, vault_path: str, repo: CaptureRepo) -> list[dict]:
-    terms = [term.lower() for term in query.split() if term.strip()]
-    if not terms:
-        return []
-    matches = []
-    for row in repo.list_all(limit=200):
-        item = _hydrate_capture(vault_path, row)
-        haystack = " ".join(
-            str(item.get(key, ""))
-            for key in ("title", "story", "body")
-        ).lower()
-        score = sum(1 for term in terms if term in haystack)
-        if score:
-            matches.append((score, item))
-    matches.sort(key=lambda pair: pair[0], reverse=True)
-    return [item for _, item in matches[:5]]
+    return search_captures(vault_path, repo, query, limit=5)
