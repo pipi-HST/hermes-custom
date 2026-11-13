@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from api import main as api_main
+from db.repo import CaptureRepo
+from db.schema import init_db
 
 
 def test_create_app_does_not_mount_life_routes(tmp_path, monkeypatch) -> None:
@@ -150,3 +152,88 @@ def test_forwarded_for_only_counts_from_trusted_proxy():
 
 def test_ipv4_mapped_loopback_is_recognised():
     assert api_main._is_loopback_client("::ffff:127.0.0.1")
+
+
+# ---------------------------------------------------------------------------
+# Chunked (no Content-Length) request bodies
+# ---------------------------------------------------------------------------
+
+def _insert_capture(db_path: str) -> str:
+    conn = init_db(db_path)
+    try:
+        capture = CaptureRepo(conn).insert(file_path="")
+    finally:
+        conn.close()
+    return capture["id"]
+
+
+def _issue_permanent_delete_token(client, capture_id: str) -> str:
+    response = client.post(
+        f"/api/knowledge/library/items/capture/{capture_id}/confirmation"
+    )
+    assert response.status_code == 200
+    return response.json()["token"]
+
+
+def test_chunked_delete_body_is_parsed_by_the_route(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_TOKEN", raising=False)
+    app = _app(tmp_path, monkeypatch)
+    capture_id = _insert_capture(str(tmp_path / "captures.db"))
+    url = f"/api/knowledge/library/items/capture/{capture_id}/permanent"
+
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        token = _issue_permanent_delete_token(client, capture_id)
+
+        def chunks():
+            # No Content-Length is sent: httpx streams this as chunked.
+            yield b'{"confirmation_token": "'
+            yield token.encode()
+            yield b'"}'
+
+        response = client.request(
+            "DELETE",
+            url,
+            content=chunks(),
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "permanently_deleted"
+
+
+def test_oversized_chunked_delete_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_TOKEN", raising=False)
+    app = _app(tmp_path, monkeypatch)
+    db_path = str(tmp_path / "captures.db")
+    capture_id = _insert_capture(db_path)
+    url = f"/api/knowledge/library/items/capture/{capture_id}/permanent"
+
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        token = _issue_permanent_delete_token(client, capture_id)
+
+        def oversized_chunks():
+            yield ('{"confirmation_token": "%s", "padding": "' % token).encode()
+            for _ in range(11):
+                yield b"x" * (1024 * 1024)
+            yield b'"}'
+
+        response = client.request(
+            "DELETE",
+            url,
+            content=oversized_chunks(),
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 413
+
+    conn = init_db(db_path)
+    try:
+        assert CaptureRepo(conn).get_by_id(capture_id) is not None
+    finally:
+        conn.close()
+
+
+def test_missing_host_header_is_rejected():
+    assert api_main._host_header_allowed("", None) is False
+    assert api_main._host_header_allowed("   ", None) is False
+    assert api_main._host_header_allowed("", frozenset({"localhost"})) is False

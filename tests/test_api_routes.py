@@ -1,6 +1,8 @@
 """Tests for the reading and knowledge API routes."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -990,3 +992,272 @@ def test_permanent_delete_blocks_referenced_capture(client, capture_repo, db, tm
     assert resp.status_code == 409
     assert capture_repo.get_by_id(capture["id"]) is not None
     assert target.exists()
+
+
+# ---------------------------------------------------------------------------
+# Library permanent delete: dependent rows, backup files and partial status
+# ---------------------------------------------------------------------------
+
+def _issue_permanent_delete_token(client, capture_id: str) -> str:
+    response = client.post(
+        f"/api/knowledge/library/items/capture/{capture_id}/confirmation"
+    )
+    assert response.status_code == 200
+    return response.json()["token"]
+
+
+def _permanent_delete(client, capture_id: str, token: str):
+    return client.request(
+        "DELETE",
+        f"/api/knowledge/library/items/capture/{capture_id}/permanent",
+        json={"confirmation_token": token},
+    )
+
+
+def test_permanent_delete_detaches_committed_capture_draft(
+    client, capture_repo, draft_repo, db, tmp_path
+):
+    capture, target = _capture_with_file(capture_repo, tmp_path, name="draft-source.md")
+    draft = draft_repo.create(raw_text="正文", draft_text="正文", status="draft_ready")
+    db.execute(
+        """UPDATE capture_drafts
+           SET status = 'committed', committed_capture_id = ?, pending_capture_id = ?
+           WHERE id = ?""",
+        (capture["id"], capture["id"], draft["id"]),
+    )
+    db.commit()
+
+    token = _issue_permanent_delete_token(client, capture["id"])
+    resp = _permanent_delete(client, capture["id"], token)
+
+    assert resp.status_code == 200
+    row = db.execute(
+        "SELECT committed_capture_id, pending_capture_id, status "
+        "FROM capture_drafts WHERE id = ?",
+        (draft["id"],),
+    ).fetchone()
+    assert row["committed_capture_id"] == ""
+    assert row["pending_capture_id"] == ""
+    assert row["status"] == "abandoned"
+
+
+def test_permanent_delete_checks_garden_references_inside_transaction(
+    client, capture_repo, tmp_path, monkeypatch
+):
+    from api.routes import knowledge as knowledge_routes
+
+    capture, target = _capture_with_file(capture_repo, tmp_path, name="tx-check.md")
+    observed: dict[str, bool] = {}
+    original = knowledge_routes._garden_card_references
+
+    def spy(conn, capture_id):
+        observed["in_transaction"] = conn.in_transaction
+        return original(conn, capture_id)
+
+    monkeypatch.setattr(knowledge_routes, "_garden_card_references", spy)
+
+    token = _issue_permanent_delete_token(client, capture["id"])
+    resp = _permanent_delete(client, capture["id"], token)
+
+    assert resp.status_code == 200
+    assert observed["in_transaction"] is True
+
+
+def test_permanent_delete_removes_review_items_and_capture_run_objects(
+    client, capture_repo, db, tmp_path
+):
+    capture, target = _capture_with_file(capture_repo, tmp_path, name="reviewed.md")
+    capture_id = capture["id"]
+    db.execute(
+        """INSERT INTO review_items (id, object_type, object_id, capture_id, section_id, title)
+           VALUES ('ri-by-capture', 'capture', ?, ?, '', 'capture column')""",
+        (capture_id, capture_id),
+    )
+    db.execute(
+        """INSERT INTO review_items (id, object_type, object_id, capture_id, section_id, title)
+           VALUES ('ri-by-object', 'capture', ?, '', 'sec-1', 'object columns')""",
+        (capture_id,),
+    )
+    db.execute(
+        """INSERT INTO review_items (id, object_type, object_id, capture_id, section_id, title)
+           VALUES ('ri-keep', 'note', 'other-note', '', '', 'unrelated')"""
+    )
+    db.execute(
+        """INSERT INTO agent_run_objects (run_id, object_type, object_id)
+           VALUES ('run-capture', 'capture', ?)""",
+        (capture_id,),
+    )
+    db.execute(
+        """INSERT INTO agent_run_objects (run_id, object_type, object_id)
+           VALUES ('run-note', 'note', ?)""",
+        (capture_id,),
+    )
+    db.commit()
+
+    token = _issue_permanent_delete_token(client, capture_id)
+    resp = _permanent_delete(client, capture_id, token)
+
+    assert resp.status_code == 200
+    review_ids = {
+        row["id"] for row in db.execute("SELECT id FROM review_items").fetchall()
+    }
+    assert review_ids == {"ri-keep"}
+    run_objects = [
+        (row["run_id"], row["object_type"])
+        for row in db.execute("SELECT run_id, object_type FROM agent_run_objects").fetchall()
+    ]
+    assert run_objects == [("run-note", "note")]
+
+
+def test_permanent_delete_cleans_capture_dependents(
+    client, capture_repo, reading_repo, db, tmp_path
+):
+    capture, target = _capture_with_file(capture_repo, tmp_path, name="deps.md")
+    capture_id = capture["id"]
+    session = reading_repo.create_session(
+        source_type="url", source_url="https://example.test"
+    )
+    reading_draft = reading_repo.create_draft(
+        session_id=session["id"],
+        output_type="summary",
+        target_capture_id=capture_id,
+    )
+    reading_repo.add_evidence(
+        session_id=session["id"],
+        source_kind="capture",
+        source_id=capture_id,
+        title="linked",
+    )
+    reading_repo.add_evidence(
+        session_id=session["id"],
+        source_kind="url",
+        source_id="https://example.test",
+        title="keep",
+    )
+    db.execute(
+        """INSERT INTO knowledge_edges
+           (id, source_kind, source_id, target_kind, target_id, relation_type)
+           VALUES ('edge-src', 'capture', ?, 'note', 'n1', 'mentions')""",
+        (capture_id,),
+    )
+    db.execute(
+        """INSERT INTO knowledge_edges
+           (id, source_kind, source_id, target_kind, target_id, relation_type)
+           VALUES ('edge-dst', 'note', 'n2', 'capture', ?, 'mentions')""",
+        (capture_id,),
+    )
+    db.execute(
+        """INSERT INTO knowledge_edges
+           (id, source_kind, source_id, target_kind, target_id, relation_type)
+           VALUES ('edge-keep', 'note', 'n3', 'note', 'n4', 'mentions')"""
+    )
+    db.execute(
+        """INSERT INTO pending_questions
+           (id, agent_type, question_text, related_capture_ids, expires_at)
+           VALUES ('pq-mixed', 'capture', 'q?', ?, '2030-01-01T00:00:00+00:00')""",
+        (json.dumps([capture_id, "keep-me"]),),
+    )
+    db.execute(
+        """INSERT INTO pending_questions
+           (id, agent_type, question_text, related_capture_ids, expires_at)
+           VALUES ('pq-only', 'capture', 'q?', ?, '2030-01-01T00:00:00+00:00')""",
+        (json.dumps([capture_id]),),
+    )
+    db.commit()
+
+    token = _issue_permanent_delete_token(client, capture_id)
+    resp = _permanent_delete(client, capture_id, token)
+
+    assert resp.status_code == 200
+    assert db.execute(
+        "SELECT target_capture_id FROM reading_drafts WHERE id = ?",
+        (reading_draft["id"],),
+    ).fetchone()["target_capture_id"] == ""
+    evidence = db.execute(
+        "SELECT source_kind, source_id FROM reading_evidence WHERE session_id = ?",
+        (session["id"],),
+    ).fetchall()
+    assert [(row["source_kind"], row["source_id"]) for row in evidence] == [
+        ("url", "https://example.test")
+    ]
+    edge_ids = [
+        row["id"]
+        for row in db.execute("SELECT id FROM knowledge_edges ORDER BY id").fetchall()
+    ]
+    assert edge_ids == ["edge-keep"]
+    mixed = db.execute(
+        "SELECT related_capture_ids FROM pending_questions WHERE id = 'pq-mixed'"
+    ).fetchone()["related_capture_ids"]
+    assert json.loads(mixed) == ["keep-me"]
+    only = db.execute(
+        "SELECT related_capture_ids FROM pending_questions WHERE id = 'pq-only'"
+    ).fetchone()["related_capture_ids"]
+    assert json.loads(only) == []
+
+
+def test_permanent_delete_removes_backup_files(
+    client, capture_repo, reading_repo, tmp_path
+):
+    capture, target = _capture_with_file(capture_repo, tmp_path, name="backed.md")
+    sibling = target.with_name(target.name + ".bak-long-directory-20260101120000")
+    sibling.write_text("previous version", encoding="utf-8")
+    backup_relative = "_archive/write_backups/captures/backed-20260101T000000Z-abc123.md"
+    backup_file = tmp_path / backup_relative
+    backup_file.parent.mkdir(parents=True, exist_ok=True)
+    backup_file.write_text("snapshot", encoding="utf-8")
+    reading_repo.record_capture_backup(
+        capture_id=capture["id"],
+        reading_draft_id="",
+        backup_file_path=backup_relative,
+    )
+
+    token = _issue_permanent_delete_token(client, capture["id"])
+    resp = _permanent_delete(client, capture["id"], token)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "permanently_deleted"
+    assert body["warnings"] == []
+    assert not target.exists()
+    assert not sibling.exists()
+    assert not backup_file.exists()
+
+
+def test_permanent_delete_reports_partial_when_unlink_fails(
+    client, capture_repo, tmp_path, monkeypatch
+):
+    capture, target = _capture_with_file(capture_repo, tmp_path, name="locked.md")
+    original_unlink = Path.unlink
+
+    def flaky_unlink(self, missing_ok: bool = False):
+        if self.name == "locked.md":
+            raise OSError("file is locked by another process")
+        return original_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    token = _issue_permanent_delete_token(client, capture["id"])
+    resp = _permanent_delete(client, capture["id"], token)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "partially_deleted"
+    assert body["warnings"]
+    assert body["deleted"]["knowledge_file"] == ""
+    assert target.exists()
+    assert capture_repo.get_by_id(capture["id"]) is None
+
+
+def test_permanent_delete_does_not_report_a_missing_file_as_deleted(
+    client, capture_repo, tmp_path
+):
+    capture = capture_repo.insert(file_path="captures/already-gone.md", raw_path="")
+
+    token = _issue_permanent_delete_token(client, capture["id"])
+    resp = _permanent_delete(client, capture["id"], token)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "permanently_deleted"
+    assert body["warnings"] == []
+    assert body["deleted"]["knowledge_file"] == ""

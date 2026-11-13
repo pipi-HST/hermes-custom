@@ -21,6 +21,9 @@ from agents.capture_agent import load_config
 
 DB_PATH = str(Path(__file__).parent.parent / "data" / "captures.db")
 MAX_API_REQUEST_BYTES = 10 * 1024 * 1024
+# Methods whose request bodies can carry durable-intent data (e.g. the
+# ``confirmation_token`` of a permanent delete travels in a DELETE body).
+_BODY_READING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 LOCAL_DASHBOARD_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -76,16 +79,17 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
                 {"detail": "request body too large"},
                 status_code=413,
             )
-        if not request.headers.get("content-length") and request.method in {"POST", "PUT", "PATCH"}:
-            body = b""
-            async for chunk in request.stream():
-                body += chunk
-                if len(body) > MAX_API_REQUEST_BYTES:
-                    return JSONResponse(
-                        {"detail": "request body too large"},
-                        status_code=413,
-                    )
-            request._body = body
+        if not request.headers.get("content-length") and request.method in _BODY_READING_METHODS:
+            # Chunked requests carry no Content-Length, so the size guard has to
+            # see the assembled body.  ``Request.body()`` (unlike a hand-rolled
+            # stream read) caches into the public Starlette API, so the route
+            # still receives the payload.
+            body = await request.body()
+            if len(body) > MAX_API_REQUEST_BYTES:
+                return JSONResponse(
+                    {"detail": "request body too large"},
+                    status_code=413,
+                )
         return await call_next(request)
 
     app.add_middleware(
@@ -180,11 +184,12 @@ def _host_header_allowed(host_header: str, allowed: frozenset[str] | None) -> bo
 
     By default only loopback names, IP literals and the test client host are
     accepted.  Deployments behind a hostname must set
-    ``HERMES_API_ALLOWED_HOSTS`` explicitly.
+    ``HERMES_API_ALLOWED_HOSTS`` explicitly.  A missing Host header (HTTP/1.1
+    requires one) is rejected instead of fail-open.
     """
     host = (host_header or "").strip()
     if not host:
-        return True
+        return False
     if host.startswith("["):
         close = host.find("]")
         host_only = host[1:close] if close != -1 else host.strip("[]")

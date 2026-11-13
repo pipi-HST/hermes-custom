@@ -17,11 +17,12 @@ from db.repo import CaptureRepo
 
 COMMIT_KNOWLEDGE_DRAFT_INTENT = "commit_reading_artifact"
 PERMANENT_DELETE_INTENT = "permanent_delete_library_item"
-_DELETABLE_TABLES = (
+# Tables whose ``capture_id`` column points only at captures, so a plain delete
+# is enough.  Other dependents (drafts, edges, questions, run objects, review
+# items) need narrower predicates and live in ``_delete_capture_dependents``.
+_DELETABLE_CAPTURE_TABLES = (
     ("capture_embeddings", "capture_id"),
     ("capture_metadata", "capture_id"),
-    ("review_items", "capture_id"),
-    ("agent_run_objects", "object_id"),
     ("capture_version_backups", "capture_id"),
 )
 
@@ -152,31 +153,37 @@ def create_knowledge_router(
             object_id=_delete_object_id(kind, item_id),
             token=body.confirmation_token if body else "",
         )
-        row = capture_repo.get_by_id(item_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail="not found")
-        references = _garden_card_references(capture_repo.conn, item_id)
-        if references:
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "referenced", "message": "capture is referenced by knowledge cards", "references": references},
-            )
+        conn = capture_repo.conn
+        # Reference check and deletes share one transaction: a card created
+        # between the check and the delete must not lose its source silently.
+        with transaction(conn):
+            row = capture_repo.get_by_id(item_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="not found")
+            references = _garden_card_references(conn, item_id)
+            if references:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "referenced", "message": "capture is referenced by knowledge cards", "references": references},
+                )
+            backup_paths = _capture_backup_paths(conn, item_id)
+            _delete_capture_dependents(conn, item_id)
+            conn.execute("DELETE FROM captures WHERE id = ?", (item_id,))
 
+        vault = Path(vault_path).expanduser()
         file_path = str(row.get("file_path") or "")
         raw_path = str(row.get("raw_path") or "")
-        with transaction(capture_repo.conn):
-            for table, column in _DELETABLE_TABLES:
-                capture_repo.conn.execute(f"DELETE FROM {table} WHERE {column} = ?", (item_id,))
-            capture_repo.conn.execute("DELETE FROM captures WHERE id = ?", (item_id,))
-
         warnings: list[str] = []
-        deleted_file = _unlink_inside_vault(Path(vault_path).expanduser(), file_path, warnings)
+        deleted_file = _unlink_inside_vault(vault, file_path, warnings)
         deleted_raw = ""
         if raw_path and raw_path != file_path:
-            deleted_raw = _unlink_inside_vault(Path(vault_path).expanduser(), raw_path, warnings)
+            deleted_raw = _unlink_inside_vault(vault, raw_path, warnings)
+        for backup_path in backup_paths:
+            _unlink_inside_vault(vault, backup_path, warnings)
+        _delete_sibling_backups(vault, file_path, warnings)
         return {
             "ok": True,
-            "status": "permanently_deleted",
+            "status": "partially_deleted" if warnings else "permanently_deleted",
             "id": item_id,
             "deleted": {"knowledge_file": deleted_file, "raw_file": deleted_raw},
             "warnings": warnings,
@@ -238,6 +245,141 @@ def _garden_card_references(conn, capture_id: str) -> list[str]:
         return [str(row["id"]) for row in rows]
 
 
+def _table_columns(conn, table: str) -> set[str]:
+    rows = conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def _capture_backup_paths(conn, capture_id: str) -> list[str]:
+    """Collect the vault-relative backup files recorded for this capture."""
+    rows = conn.execute(
+        "SELECT backup_file_path FROM capture_version_backups WHERE capture_id = ?",
+        (capture_id,),
+    ).fetchall()
+    return [
+        str(row["backup_file_path"])
+        for row in rows
+        if str(row["backup_file_path"] or "").strip()
+    ]
+
+
+def _delete_capture_dependents(conn, capture_id: str) -> None:
+    """Delete or unlink every row that points at the capture.
+
+    Runs inside the caller's transaction and before the captures row itself is
+    removed, so the database never keeps dangling references to a deleted
+    capture.
+    """
+    conn.execute(
+        """UPDATE capture_drafts
+           SET committed_capture_id = '',
+               pending_capture_id = '',
+               status = CASE WHEN status = 'committed' THEN 'abandoned' ELSE status END
+           WHERE committed_capture_id = ? OR pending_capture_id = ?""",
+        (capture_id, capture_id),
+    )
+    conn.execute(
+        "UPDATE reading_drafts SET target_capture_id = '' WHERE target_capture_id = ?",
+        (capture_id,),
+    )
+    conn.execute(
+        "DELETE FROM reading_evidence WHERE source_kind = 'capture' AND source_id = ?",
+        (capture_id,),
+    )
+    conn.execute(
+        """DELETE FROM knowledge_edges
+           WHERE (source_kind = 'capture' AND source_id = ?)
+              OR (target_kind = 'capture' AND target_id = ?)""",
+        (capture_id, capture_id),
+    )
+    _remove_capture_from_pending_questions(conn, capture_id)
+    for table, column in _DELETABLE_CAPTURE_TABLES:
+        conn.execute(f"DELETE FROM {table} WHERE {column} = ?", (capture_id,))
+
+    run_object_columns = _table_columns(conn, "agent_run_objects")
+    if "object_type" in run_object_columns:
+        conn.execute(
+            "DELETE FROM agent_run_objects "
+            "WHERE object_type = 'capture' AND object_id = ?",
+            (capture_id,),
+        )
+    elif "object_id" in run_object_columns:
+        conn.execute(
+            "DELETE FROM agent_run_objects WHERE object_id = ?",
+            (capture_id,),
+        )
+
+    review_columns = _table_columns(conn, "review_items")
+    if "capture_id" in review_columns and "object_type" in review_columns and "object_id" in review_columns:
+        conn.execute(
+            """DELETE FROM review_items
+               WHERE capture_id = ?
+                  OR (object_type = 'capture' AND object_id = ?)""",
+            (capture_id, capture_id),
+        )
+    elif "capture_id" in review_columns:
+        conn.execute("DELETE FROM review_items WHERE capture_id = ?", (capture_id,))
+
+
+def _remove_capture_from_pending_questions(conn, capture_id: str) -> None:
+    """Drop the capture id from the JSON array in pending_questions."""
+    conn.execute(
+        """UPDATE pending_questions
+           SET related_capture_ids = COALESCE(
+               (
+                   SELECT json_group_array(je.value)
+                   FROM json_each(
+                       CASE
+                           WHEN json_valid(pending_questions.related_capture_ids)
+                           THEN pending_questions.related_capture_ids
+                           ELSE '[]'
+                       END
+                   ) AS je
+                   WHERE je.value <> ?
+               ),
+               '[]'
+           )
+           WHERE EXISTS (
+               SELECT 1 FROM json_each(
+                   CASE
+                       WHEN json_valid(pending_questions.related_capture_ids)
+                       THEN pending_questions.related_capture_ids
+                       ELSE '[]'
+                   END
+               ) AS je
+               WHERE je.value = ?
+           )""",
+        (capture_id, capture_id),
+    )
+
+
+def _delete_sibling_backups(vault: Path, file_path: str, warnings: list[str]) -> None:
+    """Remove ``<note>.<ext>.bak-*`` copies kept next to the knowledge file.
+
+    ``LibraryAgent._backup_markdown_file`` writes those siblings; they would
+    otherwise outlive the note they belong to.
+    """
+    from bridge.atomic_io import resolve_inside
+
+    if not file_path:
+        return
+    try:
+        target = resolve_inside(vault, file_path)
+    except ValueError:
+        return
+    try:
+        siblings = sorted(target.parent.glob(f"{target.name}.bak-*"))
+    except OSError as exc:
+        warnings.append(f"could not list backups for {file_path}: {exc}")
+        return
+    for sibling in siblings:
+        try:
+            if sibling.is_file():
+                sibling.unlink()
+        except OSError as exc:
+            warnings.append(f"could not delete backup {sibling.name}: {exc}")
+
+
 def _unlink_inside_vault(vault: Path, file_path: str, warnings: list[str]) -> str:
     from bridge.atomic_io import resolve_inside
 
@@ -251,6 +393,10 @@ def _unlink_inside_vault(vault: Path, file_path: str, warnings: list[str]) -> st
     try:
         if target.is_file():
             target.unlink()
+        else:
+            # Report only files that really went away; a missing file is not a
+            # deletion (the old code echoed the path anyway).
+            return ""
     except OSError as exc:
         warnings.append(f"could not delete {file_path}: {exc}")
         return ""
