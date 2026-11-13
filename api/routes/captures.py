@@ -38,7 +38,7 @@ def create_capture_router(
     @router.get("/captures")
     def list_captures(
         limit: int = Query(default=50, le=200),
-        offset: int = Query(default=0),
+        offset: int = Query(default=0, ge=0),
         tag: str = Query(default=""),
         search: str = Query(default=""),
         folder: str = Query(default=""),
@@ -61,8 +61,21 @@ def create_capture_router(
             if len(rows) < CAPTURE_SCAN_PAGE_SIZE:
                 break
         items = matched[offset:offset + limit]
-        total = len(matched) if has_filters else repo.count()
-        return {"items": [_strip_binary(i) for i in items], "total": total}
+        if has_filters:
+            total = len(matched)
+            # The scan stops once the requested page is full or at the row cap,
+            # so a filtered total may be an undercount of all matching rows.
+            total_is_lower_bound = (
+                len(matched) >= needed or scanned >= CAPTURE_MAX_SCAN_ROWS
+            )
+        else:
+            total = repo.count()
+            total_is_lower_bound = False
+        return {
+            "items": [_strip_binary(i) for i in items],
+            "total": total,
+            "total_is_lower_bound": total_is_lower_bound,
+        }
 
     @router.get("/captures/{capture_id}")
     def get_capture(capture_id: str):

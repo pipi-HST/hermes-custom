@@ -40,7 +40,7 @@ class CaptureRepo:
         # callers that know the vault path.  Accept them here so older API code
         # does not crash against the slim DB repository.
         rows = self.conn.execute(
-            "SELECT * FROM captures ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM captures ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -48,7 +48,7 @@ class CaptureRepo:
     def get_latest(self) -> Optional[dict]:
         return fetch_dict(
             self.conn,
-            "SELECT * FROM captures ORDER BY created_at DESC LIMIT 1",
+            "SELECT * FROM captures ORDER BY created_at DESC, id DESC LIMIT 1",
         )
 
     def count(self) -> int:
@@ -219,7 +219,8 @@ class CaptureDraftRepo:
             """SELECT * FROM capture_drafts
                WHERE status IN ('raw_extracted', 'draft_ready', 'revision_requested', 'draft_incomplete')
                ORDER BY datetime(replace(substr(created_at, 1, 19), 'T', ' ')) DESC,
-                        rowid DESC
+                        rowid DESC,
+                        id DESC
                LIMIT 1"""
         ).fetchone()
         if row is None:
@@ -247,7 +248,8 @@ class CaptureDraftRepo:
                         ELSE 2
                     END,
                     datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
-                    rowid DESC
+                    rowid DESC,
+                    id DESC
                 LIMIT 1""",
             values,
         ).fetchone()
@@ -282,7 +284,8 @@ class CaptureDraftRepo:
             """SELECT * FROM capture_drafts
                WHERE status IN ('raw_extracted', 'draft_ready', 'revision_requested', 'draft_incomplete')
                ORDER BY datetime(replace(substr(created_at, 1, 19), 'T', ' ')) DESC,
-                        rowid DESC
+                        rowid DESC,
+                        id DESC
                LIMIT ?""",
             (limit,),
         ).fetchall()

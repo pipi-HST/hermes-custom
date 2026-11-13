@@ -31,7 +31,7 @@ def build_rag_prompt(
     *,
     context_pack: dict | None = None,
 ) -> str:
-    from bridge.confirmation import redact_confirmation_phrases
+    from bridge.prompt_safety import sanitize_untrusted_text
 
     parts = [f"用户问题：{question}\n"]
     orientation = _format_orientation_context(context_pack or {})
@@ -42,8 +42,11 @@ def build_rag_prompt(
         parts.append(orientation)
     parts.append("\n知识库相关内容（只用这些 [编号] 作为答案来源）：\n")
     for i, c in enumerate(captures, 1):
-        title = str(c.get("title") or "无标题").replace('"', "'")
-        text = redact_confirmation_phrases(c.get("body") or c.get("story", ""))
+        # Captures carry imported/web text: escaping keeps it from closing the
+        # <source> delimiter, and the quote substitution keeps it inside the
+        # attribute.  The question itself is the caller's own turn.
+        title = sanitize_untrusted_text(c.get("title") or "无标题").replace('"', "'")
+        text = sanitize_untrusted_text(c.get("body") or c.get("story", ""))
         parts.append(
             f'<source id="{i}" title="{title}">\n{_source_prompt_excerpt(text)}\n</source>\n'
         )

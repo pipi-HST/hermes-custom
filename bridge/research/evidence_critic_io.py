@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.capture_agent import load_config
+from bridge.prompt_safety import sanitize_untrusted_text
 from bridge.research.synthesis import _call_llm
 from bridge.research.types import (
     EVIDENCE_CRITIC_RESERVE_SECONDS,
@@ -86,7 +87,33 @@ def _default_evidence_critic(payload: dict[str, Any]) -> str | dict[str, Any]:
     )
 
 
+def _prompt_safe_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy candidate sources with untrusted page text escaped for the prompt.
+
+    The payload keeps raw values (it is also inspected outside the prompt); only
+    this prompt copy is escaped so a page cannot forge prompt sections or smuggle
+    confirmation phrases.
+    """
+    safe: list[dict[str, Any]] = []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        safe.append(
+            {
+                **source,
+                "title": sanitize_untrusted_text(source.get("title") or ""),
+                "description": sanitize_untrusted_text(source.get("description") or ""),
+                "excerpt": sanitize_untrusted_text(source.get("excerpt") or ""),
+            }
+        )
+    return safe
+
+
 def _build_evidence_critic_prompt(payload: dict[str, Any]) -> str:
+    sources_json = json.dumps(
+        _prompt_safe_sources(payload.get("sources") or []),
+        ensure_ascii=False,
+    )
     if payload.get("minimal_critic"):
         return "\n".join(
             [
@@ -109,7 +136,7 @@ def _build_evidence_critic_prompt(payload: dict[str, Any]) -> str:
                 f"claims：{json.dumps(payload.get('answer_claims_needed') or [], ensure_ascii=False)}",
                 f"证据合同：{json.dumps(payload.get('evidence_contract') or {}, ensure_ascii=False)}",
                 "候选来源：",
-                json.dumps(payload.get("sources") or [], ensure_ascii=False),
+                sources_json,
             ]
         )
     return "\n".join(
@@ -159,7 +186,7 @@ def _build_evidence_critic_prompt(payload: dict[str, Any]) -> str:
             f"证据合同：{json.dumps(payload.get('evidence_contract') or {}, ensure_ascii=False)}",
             f"最低来源修复：{json.dumps(payload.get('minimum_source_repair') or {}, ensure_ascii=False)}",
             "候选来源：",
-            json.dumps(payload.get("sources") or [], ensure_ascii=False),
+            sources_json,
         ]
     )
 

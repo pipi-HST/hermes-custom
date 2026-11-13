@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.capture_agent import load_config
+from bridge.prompt_safety import sanitize_untrusted_text
 
 from bridge.research.adapters import _default_search_backend
 from bridge.research.results import research_provider_status, web_research_result
@@ -715,10 +716,13 @@ def _build_candidate_selection_prompt(
         rows.append(
             {
                 "ref": source.get("ref"),
-                "title": source.get("title") or "",
+                # Search titles/descriptions are untrusted page metadata.
+                "title": sanitize_untrusted_text(source.get("title") or ""),
                 "url": source.get("url") or "",
                 "domain": source.get("domain") or _domain(source.get("url") or ""),
-                "description": _clip_text(str(source.get("description") or source.get("excerpt") or ""), 360),
+                "description": sanitize_untrusted_text(
+                    _clip_text(str(source.get("description") or source.get("excerpt") or ""), 360)
+                ),
             }
         )
     return "\n".join(

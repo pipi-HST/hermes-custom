@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from agents.capture_agent import load_config
+from bridge.prompt_safety import sanitize_untrusted_text
 from bridge.research.types import (
     MAX_DYNAMIC_EXTRACT_URLS,
     MAX_WEB_QUERIES,
@@ -202,20 +203,29 @@ def _build_synthesis_prompt(payload: dict[str, Any]) -> str:
     if payload.get("knowledge_sources"):
         parts.append("\n本地知识库来源：")
         for source in payload["knowledge_sources"]:
-            parts.append(f"[{source['ref']}] {source.get('title', '')} {source.get('section', '')}".strip())
+            title = sanitize_untrusted_text(source.get("title", ""))
+            section = sanitize_untrusted_text(source.get("section", ""))
+            parts.append(f"[{source['ref']}] {title} {section}".strip())
     if payload.get("web_sources"):
         parts.append("\n联网资料：")
         for source in payload["web_sources"]:
             usage = ",".join(source.get("allowed_usage") or [])
             role = source.get("evidence_role") or source.get("source_role") or ""
+            # Web titles/snippets/bodies are untrusted: escape them so they can
+            # never impersonate prompt sections.  Contracts/plan JSON above is
+            # left untouched on purpose.
+            title = sanitize_untrusted_text(source.get("title", ""))
+            excerpt = sanitize_untrusted_text(
+                _clip_text(source.get("excerpt", "") or source.get("description", ""), 1800)
+            )
             parts.append(
-                f"[{source['ref']}] {source.get('title', '')}\n"
+                f"[{source['ref']}] {title}\n"
                 f"URL: {source.get('url', '')}\n"
                 f"证据角色：{role}; 权威类型：{source.get('source_authority') or ''}; 可用于：{usage or '未标注'}; 置信度：{source.get('confidence') or ''}\n"
                 f"支持的 claims：{json.dumps(source.get('supports_claims') or [], ensure_ascii=False)}\n"
                 f"不支持的 claims：{json.dumps(source.get('unsupported_claims') or [], ensure_ascii=False)}\n"
                 f"逐 claim 裁判：{json.dumps(source.get('claim_support') or [], ensure_ascii=False)}\n"
-                f"摘录：{_clip_text(source.get('excerpt', '') or source.get('description', ''), 1800)}"
+                f"摘录：{excerpt}"
             )
     return "\n".join(parts)
 

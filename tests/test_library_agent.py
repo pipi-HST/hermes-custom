@@ -1689,3 +1689,49 @@ def test_library_agent_apply_reports_missing_embedder_without_crashing(tmp_path:
     assert report["updated"] == 0
     assert report["items"][0]["action"] == "embedding_error"
     assert "embedder_not_configured" in report["items"][0]["error"]
+
+class _ConcurrentEditOutliner(FakeOutliner):
+    """Simulates a second editor touching the note during the LLM window."""
+
+    def __init__(self, note_path: Path, replacement: str) -> None:
+        super().__init__()
+        self.note_path = note_path
+        self.replacement = replacement
+
+    def generate(self, cleaned_text: str, word_count: int) -> list[dict]:
+        text = self.note_path.read_text(encoding="utf-8")
+        self.note_path.write_text(
+            text.replace("正文段落。", self.replacement, 1),
+            encoding="utf-8",
+        )
+        return super().generate(cleaned_text, word_count)
+
+
+def test_apply_skips_rewrite_when_note_changed_during_outline(tmp_path: Path) -> None:
+    body = "# 测试长文\n\n" + "正文段落。\n\n" * 80
+    rel_path = _write_capture(tmp_path, body=body)
+    conn = init_db(str(tmp_path / "test.db"))
+    conn.execute("INSERT INTO captures (id, file_path) VALUES (?, ?)", ("long", rel_path))
+    conn.commit()
+    outliner = _ConcurrentEditOutliner(tmp_path / rel_path, "维护期间的新编辑。")
+
+    report = LibraryAgent(
+        tmp_path,
+        outliner=outliner,
+        min_outline_chars=100,
+        db_conn=conn,
+    ).maintain_outlines(apply=True)
+
+    note = read_note(tmp_path, rel_path)
+    assert note is not None
+    frontmatter, updated_body = note
+    # The concurrent edit wins: maintenance must not write its stale body.
+    assert "维护期间的新编辑。" in updated_body
+    assert "正文段落。" in updated_body
+    assert report["updated"] == 0
+    assert report["items"][0]["action"] == "skipped_body_changed"
+    # A skipped pass writes neither a backup nor stale outline metadata.
+    assert not list((tmp_path / "captures").glob(f"{Path(rel_path).name}.bak-*"))
+    assert conn.execute(
+        "SELECT 1 FROM capture_metadata WHERE capture_id = ?", ("long",)
+    ).fetchone() is None

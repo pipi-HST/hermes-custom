@@ -1261,3 +1261,37 @@ def test_permanent_delete_does_not_report_a_missing_file_as_deleted(
     assert body["status"] == "permanently_deleted"
     assert body["warnings"] == []
     assert body["deleted"]["knowledge_file"] == ""
+
+# ---------------------------------------------------------------------------
+# Capture list pagination metadata
+# ---------------------------------------------------------------------------
+
+def test_capture_list_reports_total_as_lower_bound_when_filtered_page_fills(
+    client, capture_repo
+):
+    for index in range(3):
+        capture_repo.insert(file_path=f"captures/page-{index}.md")
+
+    truncated = client.get("/api/captures", params={"folder": "Inbox", "limit": 1})
+    assert truncated.status_code == 200
+    truncated_body = truncated.json()
+    assert truncated_body["total"] == 1
+    assert truncated_body["total_is_lower_bound"] is True
+
+    complete = client.get("/api/captures", params={"folder": "Inbox", "limit": 10})
+    assert complete.status_code == 200
+    complete_body = complete.json()
+    assert complete_body["total"] == 3
+    assert complete_body["total_is_lower_bound"] is False
+
+    unfiltered = client.get("/api/captures")
+    assert unfiltered.status_code == 200
+    unfiltered_body = unfiltered.json()
+    assert unfiltered_body["total"] == 3
+    assert unfiltered_body["total_is_lower_bound"] is False
+
+
+def test_capture_list_rejects_negative_offset(client):
+    resp = client.get("/api/captures", params={"offset": -1})
+
+    assert resp.status_code == 422

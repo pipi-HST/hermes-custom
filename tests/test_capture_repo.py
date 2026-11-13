@@ -116,3 +116,41 @@ def test_get_latest_open_prefers_latest_created_draft_over_updated_old_draft(dra
 
     open_draft = draft_repo.get_latest_open()
     assert open_draft["id"] == new["id"]
+
+def _freeze_capture_timestamps(repo, capture_ids, tie="2026-01-02T03:04:05+00:00"):
+    for capture_id in capture_ids:
+        repo.conn.execute(
+            "UPDATE captures SET created_at = ? WHERE id = ?",
+            (tie, capture_id),
+        )
+    repo.conn.commit()
+
+
+def test_list_all_paginates_stably_when_timestamps_tie(repo):
+    captures = [repo.insert(file_path=f"captures/{index}.md") for index in range(5)]
+    explicit_ids = [f"cap-{index:02d}" for index in range(5)]
+    for capture, explicit_id in zip(captures, explicit_ids):
+        repo.conn.execute(
+            "UPDATE captures SET id = ? WHERE id = ?",
+            (explicit_id, capture["id"]),
+        )
+    _freeze_capture_timestamps(repo, explicit_ids)
+
+    seen = []
+    for offset in range(5):
+        seen.extend(row["id"] for row in repo.list_all(limit=1, offset=offset))
+
+    # ``id DESC`` is the documented tiebreaker, so pages never repeat/skip rows.
+    assert seen == ["cap-04", "cap-03", "cap-02", "cap-01", "cap-00"]
+
+def test_get_latest_is_deterministic_when_timestamps_tie(repo):
+    captures = [repo.insert(file_path=f"captures/{index}.md") for index in range(3)]
+    explicit_ids = ["cap-aaa", "cap-mmm", "cap-zzz"]
+    for capture, explicit_id in zip(captures, explicit_ids):
+        repo.conn.execute(
+            "UPDATE captures SET id = ? WHERE id = ?",
+            (explicit_id, capture["id"]),
+        )
+    _freeze_capture_timestamps(repo, explicit_ids)
+
+    assert repo.get_latest()["id"] == "cap-zzz"

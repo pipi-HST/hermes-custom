@@ -699,6 +699,10 @@ class LibraryAgent:
             return
 
         frontmatter, body = parsed
+        # Maintenance is queued as a background task and calls an LLM, so the
+        # note may be edited again before we write.  Remember which body this
+        # pass is based on and refuse to overwrite a newer one (lost update).
+        body_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
         legacy_outline = frontmatter.get("outline") or []
         is_short = len(body) < self.min_outline_chars
         has_markdown_sections = _has_real_markdown_sections(body)
@@ -792,11 +796,21 @@ class LibraryAgent:
             render_result = _ensure_directory_covers_markdown_headings(render_result)
         metadata_outline = render_result.outline_metadata if render_result else outline
 
+        if self._body_changed_since_read(note_path, body_hash):
+            report["items"].append(
+                {
+                    "file_path": rel_path,
+                    "action": "skipped_body_changed",
+                    "body_chars": len(body),
+                }
+            )
+            return
+
         if metadata_repo and capture_id:
             metadata_repo.upsert_outline(
                 capture_id,
                 metadata_outline,
-                source_hash=hashlib.sha256(body.encode("utf-8")).hexdigest(),
+                source_hash=body_hash,
                 directory_rendered_at=(
                     datetime.now(timezone.utc).isoformat()
                     if render_result and _has_directory(render_result.capture_body)
@@ -835,6 +849,22 @@ class LibraryAgent:
         if render_result.warnings:
             item["warnings"] = render_result.warnings
         report["items"].append(item)
+
+    def _body_changed_since_read(self, note_path: Path, expected_hash: str) -> bool:
+        """Return True when the note body no longer matches what this pass read.
+
+        Maintenance runs asynchronously: the body captured before the LLM call
+        must not overwrite an edit that arrived meanwhile.  Any unreadable or
+        unparsable file is treated as "changed" so we skip instead of clobbering.
+        """
+        try:
+            parsed = _read_markdown_parts(note_path)
+        except (OSError, UnicodeDecodeError):
+            return True
+        if parsed is None:
+            return True
+        _, current_body = parsed
+        return hashlib.sha256(current_body.encode("utf-8")).hexdigest() != expected_hash
 
 
 def render_capture_body(
