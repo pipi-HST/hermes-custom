@@ -40,3 +40,6 @@ dashboard/.playwright-cli/
 /.playwright-cli/
 
 .superpowers/
+
+# pytest temp dirs created inside the repo
+pytest-of-*/

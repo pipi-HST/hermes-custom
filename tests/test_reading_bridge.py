@@ -184,7 +184,7 @@ def test_summarize_reading_session_metadata_uses_full_draft_text(reading_config)
                     session_id=session["meta"]["reading_session_id"],
                     output_type="local_learning_note",
                 )
-                result = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"])
+                result = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"], confirmation="确认整理")
 
     assert "TAIL_ONLY_SIGNAL" in captured["markdown"]
     text = (Path(reading_config.vault_path) / result["durable_artifacts"][0]["path"]).read_text(encoding="utf-8")
@@ -251,9 +251,7 @@ def test_commit_learning_note_writes_capture_note_file(reading_config):
                 session_id=session["meta"]["reading_session_id"],
                 output_type="local_learning_note",
             )
-            result = reading_bridge.commit_reading_artifact(
-                draft["meta"]["reading_draft_id"]
-            )
+            result = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"], confirmation="确认整理")
 
     assert result["status"] == "success"
     artifact = result["durable_artifacts"][0]
@@ -317,9 +315,7 @@ def test_commit_learning_note_warns_when_library_postprocess_fails(reading_confi
                 session_id=session["meta"]["reading_session_id"],
                 output_type="local_learning_note",
             )
-            result = reading_bridge.commit_reading_artifact(
-                draft["meta"]["reading_draft_id"]
-            )
+            result = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"], confirmation="确认整理")
 
     assert result["status"] == "success"
     assert "已加入知识库检索索引" not in result["chat_preview"]
@@ -347,9 +343,7 @@ def test_commit_knowledge_card_creates_structured_card_without_markdown(reading_
                 session_id=session["meta"]["reading_session_id"],
                 output_type="knowledge_card",
             )
-            result = reading_bridge.commit_reading_artifact(
-                draft["meta"]["reading_draft_id"]
-            )
+            result = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"], confirmation="确认整理")
 
     assert result["status"] == "success"
     artifact = result["durable_artifacts"][0]
@@ -423,9 +417,7 @@ def test_commit_enhanced_capture_backs_up_and_rewrites_capture(reading_config):
             session_id=session["meta"]["reading_session_id"],
             output_type="enhance_capture",
         )
-        result = reading_bridge.commit_reading_artifact(
-            draft["meta"]["reading_draft_id"]
-        )
+        result = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"], confirmation="确认整理")
 
     assert result["status"] == "success"
     assert result["durable_artifacts"][0]["type"] == "capture_note"

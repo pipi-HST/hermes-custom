@@ -32,10 +32,32 @@ def test_ambiguous_or_negative_messages_are_rejected(intent, confirmation):
     assert confirmation_error(intent, confirmation=confirmation)
 
 
-def test_trusted_dashboard_action_is_accepted_without_chat_phrase():
+def test_non_agent_source_requires_a_verified_token():
+    """HTTP callers cannot bypass the gate with a 'trusted source' string."""
     from bridge.confirmation import confirmation_error
 
     assert confirmation_error(
         "commit_capture_draft",
         confirmation_source="dashboard",
-    ) == ""
+    )
+    assert confirmation_error(
+        "commit_capture_draft",
+        confirmation_source="api",
+    )
+    # Only a route that has already burnt a single-use token may pass this flag.
+    assert (
+        confirmation_error(
+            "commit_capture_draft",
+            confirmation_source="api",
+            token_verified=True,
+        )
+        == ""
+    )
+
+
+def test_reading_commit_requires_explicit_confirmation():
+    from bridge.confirmation import confirmation_error
+
+    assert confirmation_error("commit_reading_artifact")
+    assert confirmation_error("commit_reading_artifact", confirmation="继续修改")
+    assert confirmation_error("commit_reading_artifact", confirmation="确认整理") == ""

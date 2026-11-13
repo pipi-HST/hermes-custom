@@ -515,7 +515,7 @@ def test_commit_garden_draft_creates_structured_card_and_marks_draft(repo, tmp_p
             llm_model="test",
             llm_base_url="http://test",
         )
-        result = commit_garden_draft(draft_id, confirmation_source="manual")
+        result = commit_garden_draft(draft_id, confirmation="确认卡片")
 
     assert result["status"] == "success"
     artifact = result["durable_artifacts"][0]
@@ -609,7 +609,7 @@ def test_commit_theme_origin_garden_card_marks_question_without_theme_markdown(r
             llm_model="test",
             llm_base_url="http://test",
         )
-        result = commit_garden_draft(draft_id, confirmation_source="manual")
+        result = commit_garden_draft(draft_id, confirmation="确认卡片")
 
     assert result["status"] == "success"
     assert result["durable_artifacts"][0].get("path", "") == ""
@@ -666,7 +666,7 @@ def test_commit_garden_draft_persists_card_payload_without_markdown(repo, tmp_pa
             llm_model="test",
             llm_base_url="http://test",
         )
-        result = commit_garden_draft(draft_id, confirmation_source="manual")
+        result = commit_garden_draft(draft_id, confirmation="确认卡片")
 
     assert result["durable_artifacts"][0].get("path", "") == ""
     assert not (tmp_path / "garden").exists()
@@ -704,7 +704,7 @@ def test_commit_garden_draft_rejects_internal_prompt_markdown(repo, tmp_path):
             llm_model="test",
             llm_base_url="http://test",
         )
-        result = commit_garden_draft(draft_id, confirmation_source="manual")
+        result = commit_garden_draft(draft_id, confirmation="确认卡片")
 
     assert result["status"] == "error"
     assert "内部模板" in result["chat_preview"]

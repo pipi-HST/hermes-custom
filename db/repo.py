@@ -8,6 +8,8 @@ import json
 from datetime import datetime, timezone
 from typing import Optional
 
+from db.concurrency import fetch_dict, fetch_dicts, transaction
+
 
 class CaptureRepo:
     def __init__(self, conn: sqlite3.Connection):
@@ -23,12 +25,7 @@ class CaptureRepo:
         return self.get_by_id(capture_id)
 
     def get_by_id(self, capture_id: str) -> Optional[dict]:
-        row = self.conn.execute(
-            "SELECT * FROM captures WHERE id = ?", (capture_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_dict(row)
+        return fetch_dict(self.conn, "SELECT * FROM captures WHERE id = ?", (capture_id,))
 
     def list_all(
         self,
@@ -46,15 +43,13 @@ class CaptureRepo:
             "SELECT * FROM captures ORDER BY created_at DESC LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
-        return [self._row_to_dict(r) for r in rows]
+        return [dict(r) for r in rows]
 
     def get_latest(self) -> Optional[dict]:
-        row = self.conn.execute(
-            "SELECT * FROM captures ORDER BY created_at DESC LIMIT 1"
-        ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_dict(row)
+        return fetch_dict(
+            self.conn,
+            "SELECT * FROM captures ORDER BY created_at DESC LIMIT 1",
+        )
 
     def update(self, capture_id: str, **kwargs) -> Optional[dict]:
         allowed = {
@@ -179,8 +174,7 @@ class CaptureDraftRepo:
         self.conn.commit()
 
     def reserve_capture_for_commit(self, draft_id: str) -> str:
-        try:
-            self.conn.execute("BEGIN IMMEDIATE")
+        with transaction(self.conn):
             row = self.conn.execute(
                 """SELECT status, pending_capture_id
                    FROM capture_drafts WHERE id = ?""",
@@ -214,11 +208,7 @@ class CaptureDraftRepo:
                        VALUES (?, '', '')""",
                     (capture_id,),
                 )
-            self.conn.commit()
             return capture_id
-        except Exception:
-            self.conn.rollback()
-            raise
 
     def get_latest_open(self) -> Optional[dict]:
         row = self.conn.execute(

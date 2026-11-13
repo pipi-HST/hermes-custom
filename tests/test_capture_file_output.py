@@ -122,7 +122,7 @@ def test_commit_capture_draft_blocks_same_turn_agent_commit(monkeypatch):
     assert "确认存库" in envelope["chat_preview"]
 
 
-def test_commit_capture_draft_allows_dashboard_confirmation(monkeypatch):
+def test_commit_capture_draft_allows_verified_http_confirmation(monkeypatch):
     from bridge import capture_bridge
 
     class DraftRepo:
@@ -156,7 +156,9 @@ def test_commit_capture_draft_allows_dashboard_confirmation(monkeypatch):
 
     monkeypatch.setattr(capture_bridge, "_init", lambda: (None, Agent()))
 
-    envelope = capture_bridge.commit_capture_draft("d1", confirmation_source="dashboard")
+    envelope = capture_bridge.commit_capture_draft(
+        "d1", confirmation_source="api", token_verified=True
+    )
 
     assert envelope["status"] == "success"
     assert envelope["meta"]["capture_id"] == "c1"

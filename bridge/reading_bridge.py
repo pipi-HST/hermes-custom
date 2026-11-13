@@ -472,8 +472,28 @@ def _summarize_reading_session(
     )
 
 
-def commit_reading_artifact(draft_id: str = "", context: KnowledgeContext | None = None) -> dict:
+def commit_reading_artifact(
+    draft_id: str = "",
+    confirmation: str = "",
+    confirmation_source: str = "agent",
+    token_verified: bool = False,
+    context: KnowledgeContext | None = None,
+) -> dict:
     """Commit a Reading Draft after user confirmation."""
+    from bridge.confirmation import confirmation_error
+
+    gate_error = confirmation_error(
+        "commit_reading_artifact",
+        confirmation=confirmation,
+        confirmation_source=confirmation_source,
+        token_verified=token_verified,
+    )
+    if gate_error:
+        return error_envelope(
+            agent="reading",
+            intent="commit_reading_artifact",
+            error=gate_error,
+        )
     _, _, capture_repo = _init(context)
     write_jobs = KnowledgeWriteJobRepo(capture_repo.conn)
     job_id = write_jobs.start(

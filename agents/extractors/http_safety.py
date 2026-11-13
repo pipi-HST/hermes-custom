@@ -145,3 +145,24 @@ def _validate_connected_peer(response: httpx.Response) -> None:
         raise UnsafeURL("connected peer address is invalid") from exc
     if not peer_ip.is_global:
         raise UnsafeURL("connected peer is local or private")
+
+
+def fetch_public_text(
+    url: str,
+    *,
+    timeout: float,
+    max_bytes: int,
+    headers: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    """Fetch an http(s) URL safely and decode the body as text.
+
+    Returns ``(final_url, text)``.  Raises :class:`UnsafeURL` when the target
+    resolves to a non-public address at any point of the redirect chain.
+    """
+    final_url, response_headers, content = fetch_public_bytes(
+        url,
+        timeout=timeout,
+        max_bytes=max_bytes,
+        headers=headers,
+    )
+    return final_url, decode_http_text(response_headers, content)

@@ -231,7 +231,9 @@ def test_save_answer_summary_uses_clean_first_conclusion(answer_config, monkeypa
     assert "市场调整与结构分化" not in row["summary"]
     assert row["summary"].endswith("。")
 
-    committed = reading_bridge.commit_reading_artifact(result["meta"]["reading_draft_id"])
+    committed = reading_bridge.commit_reading_artifact(
+        result["meta"]["reading_draft_id"], confirmation="确认整理"
+    )
     text = (Path(answer_config.vault_path) / committed["durable_artifacts"][0]["path"]).read_text(encoding="utf-8")
     frontmatter = text.split("---", 2)[1]
     assert "story:" in frontmatter
@@ -296,7 +298,9 @@ def test_save_answer_metadata_uses_full_draft_text(answer_config, monkeypatch):
     assert "《市场结构分化与风险估值》" in result["chat_preview"]
     assert result["durable_artifacts"][0]["title"] == "市场结构分化与风险估值"
 
-    committed = reading_bridge.commit_reading_artifact(result["meta"]["reading_draft_id"])
+    committed = reading_bridge.commit_reading_artifact(
+        result["meta"]["reading_draft_id"], confirmation="确认整理"
+    )
     text = (Path(answer_config.vault_path) / committed["durable_artifacts"][0]["path"]).read_text(encoding="utf-8")
     frontmatter = text.split("---", 2)[1]
     assert "story: 这是基于全文生成的摘要。" in frontmatter
@@ -329,7 +333,9 @@ def test_saved_answer_commit_uses_reading_write_service(answer_config, monkeypat
         sources=[{"type": "capture_note", "id": "cap_a", "title": "材料 A"}],
     )
 
-    committed = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"])
+    committed = reading_bridge.commit_reading_artifact(
+        draft["meta"]["reading_draft_id"], confirmation="确认整理"
+    )
 
     assert committed["status"] == "success"
     assert committed["meta"]["write_service"] == "knowledge_write_service"

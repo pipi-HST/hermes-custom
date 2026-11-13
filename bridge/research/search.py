@@ -151,12 +151,17 @@ def _fetch_url_summary(url: str) -> dict[str, str] | None:
     if not _direct_probe_budget_available():
         return None
     try:
-        with httpx.Client(timeout=_direct_probe_timeout(), follow_redirects=True) as client:
-            response = client.get(url, headers={"User-Agent": "HermesResearchBot/1.0"})
-            response.raise_for_status()
+        from agents.extractors.http_safety import fetch_public_text
+
+        _, text = fetch_public_text(
+            url,
+            timeout=_direct_probe_timeout(),
+            max_bytes=1_000_000,
+            headers={"User-Agent": "HermesResearchBot/1.0"},
+        )
     except Exception:
         return None
-    text = response.text or ""
+    text = text or ""
     title_match = re.search(r"<title[^>]*>(.*?)</title>", text, re.I | re.S)
     description_match = re.search(
         r'<meta[^>]+name=["\']description["\'][^>]+content=["\'](.*?)["\']',

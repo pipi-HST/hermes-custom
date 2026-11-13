@@ -404,13 +404,23 @@ def test_commit_draft_calls_bridge(client, reading_repo):
         "bridge.reading_bridge.commit_reading_artifact",
         return_value=mock_result,
     ) as mock_commit:
-        resp = client.post(f"/api/reading/drafts/{draft['id']}/commit")
+        token_resp = client.post(f"/api/reading/drafts/{draft['id']}/confirmation")
+        assert token_resp.status_code == 200
+        token = token_resp.json()["token"]
+        resp = client.post(
+            f"/api/reading/drafts/{draft['id']}/commit",
+            json={"confirmation_token": token},
+        )
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
     assert body["action"] == "committed"
-    mock_commit.assert_called_once_with(draft["id"])
+    mock_commit.assert_called_once_with(
+        draft["id"],
+        confirmation_source="api",
+        token_verified=True,
+    )
 
 
 def test_save_answer_draft_calls_bridge(client):
@@ -729,14 +739,21 @@ def test_commit_capture_draft_calls_bridge(client, draft_repo):
         "bridge.capture_bridge.commit_capture_draft",
         return_value=mock_result,
     ) as mock_commit:
-        resp = client.post(f"/api/capture-drafts/{draft['id']}/commit")
+        token_resp = client.post(f"/api/capture-drafts/{draft['id']}/confirmation")
+        assert token_resp.status_code == 200
+        token = token_resp.json()["token"]
+        resp = client.post(
+            f"/api/capture-drafts/{draft['id']}/commit",
+            json={"confirmation_token": token},
+        )
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
     mock_commit.assert_called_once_with(
         draft_id=draft["id"],
-        confirmation_source="dashboard",
+        confirmation_source="api",
+        token_verified=True,
     )
 
 
@@ -758,32 +775,11 @@ def test_commit_capture_draft_calls_bridge(client, draft_repo):
             404,
         ),
         (
-            "bridge.capture_bridge.commit_capture_draft",
-            "/api/capture-drafts/committed/commit",
-            None,
-            "草稿已入库，不能重复确认",
-            409,
-        ),
-        (
             "bridge.reading_bridge.summarize_reading_session",
             "/api/reading/drafts",
             {"session_id": "missing", "output_type": "summary", "instruction": ""},
             "阅读会话不存在",
             404,
-        ),
-        (
-            "bridge.answer_bridge.revise_answer_draft",
-            "/api/reading/drafts/missing/revise",
-            {"instruction": "shorter"},
-            "没有找到阅读草稿",
-            404,
-        ),
-        (
-            "bridge.reading_bridge.commit_reading_artifact",
-            "/api/reading/drafts/committed/commit",
-            None,
-            "阅读整理草稿已是 committed 状态，不能重复确认",
-            409,
         ),
         (
             "bridge.answer_bridge.save_answer_to_knowledge",
@@ -794,17 +790,17 @@ def test_commit_capture_draft_calls_bridge(client, draft_repo):
         ),
         (
             "bridge.answer_bridge.revise_answer_draft",
+            "/api/reading/drafts/missing/revise",
+            {"instruction": "shorter"},
+            "没有找到阅读草稿",
+            404,
+        ),
+        (
+            "bridge.answer_bridge.revise_answer_draft",
             "/api/knowledge/drafts/missing/revise",
             {"instruction": "shorter"},
             "草稿不存在",
             404,
-        ),
-        (
-            "bridge.reading_bridge.commit_reading_artifact",
-            "/api/knowledge/drafts/committed/commit",
-            None,
-            "阅读整理草稿已是 committed 状态，不能重复确认",
-            409,
         ),
     ],
 )
@@ -834,3 +830,99 @@ def test_bridge_error_envelopes_return_4xx(
 
     assert resp.status_code == expected_status
     assert resp.json() == result
+
+
+# ---------------------------------------------------------------------------
+# Confirmation tokens (durable writes must be confirmed server-side)
+# ---------------------------------------------------------------------------
+
+def test_capture_commit_requires_confirmation_token(client, draft_repo):
+    draft = draft_repo.create(
+        raw_text="Content.",
+        title="To commit",
+        draft_text="Final draft.",
+        status="draft_ready",
+    )
+
+    resp = client.post(f"/api/capture-drafts/{draft['id']}/commit", json={})
+
+    assert resp.status_code == 403
+    detail = resp.json()["detail"]
+    assert detail["code"] == "confirmation_required"
+
+
+def test_reading_commit_requires_confirmation_token(client, reading_repo):
+    session = reading_repo.create_session(source_type="url")
+    draft = reading_repo.create_draft(
+        session_id=session["id"],
+        output_type="summary",
+        title="To commit",
+        draft_text="Content.",
+    )
+
+    resp = client.post(f"/api/reading/drafts/{draft['id']}/commit", json={})
+
+    assert resp.status_code == 403
+
+
+def test_confirmation_token_is_single_use(client, draft_repo):
+    draft = draft_repo.create(
+        raw_text="Content.",
+        title="To commit",
+        draft_text="Final draft.",
+        status="draft_ready",
+    )
+    token = client.post(f"/api/capture-drafts/{draft['id']}/confirmation").json()["token"]
+
+    with patch(
+        "bridge.capture_bridge.commit_capture_draft",
+        return_value={"status": "ok", "chat_preview": "ok"},
+    ):
+        first = client.post(
+            f"/api/capture-drafts/{draft['id']}/commit",
+            json={"confirmation_token": token},
+        )
+        second = client.post(
+            f"/api/capture-drafts/{draft['id']}/commit",
+            json={"confirmation_token": token},
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 403
+
+
+def test_confirmation_token_is_bound_to_the_draft(client, draft_repo):
+    first = draft_repo.create(raw_text="a", title="A", draft_text="a", status="draft_ready")
+    second = draft_repo.create(raw_text="b", title="B", draft_text="b", status="draft_ready")
+    token = client.post(f"/api/capture-drafts/{first['id']}/confirmation").json()["token"]
+
+    resp = client.post(
+        f"/api/capture-drafts/{second['id']}/commit",
+        json={"confirmation_token": token},
+    )
+
+    assert resp.status_code == 403
+
+
+def test_commit_error_envelope_still_maps_to_409(client, draft_repo):
+    draft = draft_repo.create(
+        raw_text="Content.",
+        title="Done",
+        draft_text="Final.",
+        status="committed",
+    )
+    token = client.post(f"/api/capture-drafts/{draft['id']}/confirmation").json()["token"]
+    error = "草稿已入库，不能重复确认"
+    result = {
+        "status": "error",
+        "chat_preview": error,
+        "errors": [error],
+    }
+
+    with patch("bridge.capture_bridge.commit_capture_draft", return_value=result):
+        resp = client.post(
+            f"/api/capture-drafts/{draft['id']}/commit",
+            json={"confirmation_token": token},
+        )
+
+    assert resp.status_code == 409

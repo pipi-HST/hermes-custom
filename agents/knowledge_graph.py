@@ -33,27 +33,31 @@ class KnowledgeGraphService:
 
     def refresh(self) -> dict[str, Any]:
         edges = self._build_edges()
-        self.conn.execute("DELETE FROM knowledge_edges WHERE generated_by = 'auto'")
-        for edge in edges:
-            self.conn.execute(
+        from db.concurrency import transaction
+
+        with transaction(self.conn):
+            self.conn.execute("DELETE FROM knowledge_edges WHERE generated_by = 'auto'")
+            self.conn.executemany(
                 """INSERT INTO knowledge_edges
                    (id, source_kind, source_id, target_kind, target_id,
                     relation_type, score, evidence_json, generated_by, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'auto', ?, ?)""",
-                (
-                    edge["id"],
-                    edge["source_kind"],
-                    edge["source_id"],
-                    edge["target_kind"],
-                    edge["target_id"],
-                    edge["relation_type"],
-                    edge["score"],
-                    json.dumps(edge["evidence"], ensure_ascii=False),
-                    edge["created_at"],
-                    edge["updated_at"],
-                ),
+                [
+                    (
+                        edge["id"],
+                        edge["source_kind"],
+                        edge["source_id"],
+                        edge["target_kind"],
+                        edge["target_id"],
+                        edge["relation_type"],
+                        edge["score"],
+                        json.dumps(edge["evidence"], ensure_ascii=False),
+                        edge["created_at"],
+                        edge["updated_at"],
+                    )
+                    for edge in edges
+                ],
             )
-        self.conn.commit()
         node_keys = {
             (edge["source_kind"], edge["source_id"])
             for edge in edges

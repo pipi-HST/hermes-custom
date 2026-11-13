@@ -204,10 +204,15 @@ def _local_web_extract(urls: list[str], *, extract_backend: str = "") -> dict[st
 
     def fetch(index: int, url: str) -> tuple[int, dict[str, Any]]:
         try:
-            with httpx.Client(timeout=timeout_seconds, follow_redirects=True, headers=headers) as client:
-                response = client.get(url)
-                response.raise_for_status()
-                content = _extract_readable_text(response.text, url=url)
+            from agents.extractors.http_safety import fetch_public_text
+
+            _, text = fetch_public_text(
+                url,
+                timeout=timeout_seconds,
+                max_bytes=2_000_000,
+                headers=headers,
+            )
+            content = _extract_readable_text(text, url=url)
             if not content:
                 raise RuntimeError("empty extracted content")
             return index, {"url": url, "content": content}

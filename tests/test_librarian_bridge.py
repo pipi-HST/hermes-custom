@@ -245,7 +245,7 @@ def test_librarian_apply_runs_confirmed_repairs(monkeypatch) -> None:
 
     envelope = librarian_bridge.run_librarian_audit(
         apply=True,
-        confirmation_source="manual",
+        confirmation="确认修复",
     )
 
     assert envelope["status"] == "success"

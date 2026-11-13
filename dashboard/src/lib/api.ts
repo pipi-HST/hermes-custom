@@ -21,6 +21,17 @@ async function fetchJsonOrNull<T>(url: string): Promise<T | null> {
   }
 }
 
+/**
+ * Durable Knowledge writes require a server-side confirmation token.
+ * Ask for a single-use token bound to this draft, then present it on commit.
+ */
+async function requestConfirmationToken(resource: string, draftId: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/${resource}/${draftId}/confirmation`, { method: 'POST' })
+  if (!res.ok) throw new Error(`Failed to request confirmation: ${res.statusText}`)
+  const data = await res.json()
+  return String(data?.token || '')
+}
+
 // ─── Capture ──────────────────────────────────────────────────────────────────
 
 export interface Capture {
@@ -190,9 +201,11 @@ export async function reviseReadingDraft(
 }
 
 export async function commitReadingDraft(draftId: string): Promise<Record<string, unknown>> {
+  const confirmationToken = await requestConfirmationToken('reading/drafts', draftId)
   const res = await fetch(`${API_BASE}/reading/drafts/${draftId}/commit`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmation_token: confirmationToken }),
   })
   if (!res.ok) throw new Error(`Failed to commit draft: ${res.statusText}`)
   return res.json()
@@ -238,9 +251,11 @@ export async function reviseKnowledgeDraft(
 }
 
 export async function commitKnowledgeDraft(draftId: string): Promise<Record<string, unknown>> {
+  const confirmationToken = await requestConfirmationToken('knowledge/drafts', draftId)
   const res = await fetch(`${API_BASE}/knowledge/drafts/${draftId}/commit`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmation_token: confirmationToken }),
   })
   if (!res.ok) throw new Error(`Failed to commit draft: ${res.statusText}`)
   return res.json()
@@ -354,9 +369,11 @@ export async function reviseCaptureDraft(draftId: string, instruction: string): 
 }
 
 export async function commitCaptureDraft(draftId: string): Promise<Record<string, unknown>> {
+  const confirmationToken = await requestConfirmationToken('capture-drafts', draftId)
   const res = await fetch(`${API_BASE}/capture-drafts/${draftId}/commit`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmation_token: confirmationToken }),
   })
   if (!res.ok) throw new Error(`Failed to commit: ${res.statusText}`)
   return res.json()

@@ -4,10 +4,14 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from api.routes._bridge_response import bridge_result_response
+from api.routes._confirmation import issue_confirmation_token, require_confirmation_token
+from db.confirmation_repo import ConfirmationRepo
 from db.reading_repo import ReadingRepo
+
+COMMIT_READING_ARTIFACT_INTENT = "commit_reading_artifact"
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +26,10 @@ class CreateDraftRequest(BaseModel):
 
 class ReviseDraftRequest(BaseModel):
     instruction: str
+
+
+class CommitReadingDraftRequest(BaseModel):
+    confirmation_token: str = Field(default="", max_length=200)
 
 
 # ---------------------------------------------------------------------------
@@ -97,11 +105,35 @@ def create_reading_router(reading_repo: ReadingRepo, config: dict) -> APIRouter:
         )
         return bridge_result_response(result)
 
+    @router.post("/reading/drafts/{draft_id}/confirmation")
+    def issue_reading_draft_confirmation(draft_id: str):
+        draft = reading_repo.get_draft(draft_id)
+        if draft is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return issue_confirmation_token(
+            ConfirmationRepo(reading_repo.conn),
+            intent=COMMIT_READING_ARTIFACT_INTENT,
+            object_id=draft_id,
+        )
+
     @router.post("/reading/drafts/{draft_id}/commit")
-    def commit_reading_draft(draft_id: str):
+    def commit_reading_draft(
+        draft_id: str,
+        body: CommitReadingDraftRequest | None = None,
+    ):
         from bridge import reading_bridge  # late import to avoid circular deps
 
-        result = reading_bridge.commit_reading_artifact(draft_id)
+        require_confirmation_token(
+            ConfirmationRepo(reading_repo.conn),
+            intent=COMMIT_READING_ARTIFACT_INTENT,
+            object_id=draft_id,
+            token=body.confirmation_token if body else "",
+        )
+        result = reading_bridge.commit_reading_artifact(
+            draft_id,
+            confirmation_source="api",
+            token_verified=True,
+        )
         return bridge_result_response(result)
 
     return router

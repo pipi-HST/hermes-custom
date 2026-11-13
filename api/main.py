@@ -36,7 +36,13 @@ LOCAL_DASHBOARD_ORIGINS = [
 ]
 
 
-def create_app() -> FastAPI:
+def create_app(config_path: str | None = None, config: object | None = None) -> FastAPI:
+    """Build the API app.
+
+    The app is created explicitly (factory) so that importing this module has no
+    side effects: no config file is read and no database connection is opened.
+    Use ``uvicorn api.main:create_app --factory`` to serve it.
+    """
     app = FastAPI(title="Hermes Knowledge API")
     request_lock = asyncio.Lock()
     api_token = os.environ.get("HERMES_API_TOKEN", "").strip()
@@ -77,8 +83,11 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
-    db_path = config.db_path or DB_PATH
+    if config is None:
+        config = load_config(_resolve_config_path(config_path))
+    db_path = str(Path(config.db_path or DB_PATH).expanduser())
+    if not Path(db_path).is_absolute():
+        db_path = str((Path(__file__).parent.parent / db_path).resolve())
     conn = init_db(db_path)
     repo = CaptureRepo(conn)
     draft_repo = CaptureDraftRepo(conn)
@@ -117,6 +126,15 @@ def _request_body_too_large(content_length: str) -> bool:
         return True
 
 
+def _resolve_config_path(config_path: str | None) -> str:
+    if config_path:
+        return config_path
+    env_path = os.environ.get("HERMES_CONFIG_PATH", "").strip()
+    if env_path:
+        return env_path
+    return str(Path(__file__).parent.parent / "config.yaml")
+
+
 def _uses_shared_api_connection(method: str, path: str) -> bool:
     normalized_method = (method or "").upper()
     if normalized_method == "GET" and path.startswith("/api/"):
@@ -126,4 +144,7 @@ def _uses_shared_api_connection(method: str, path: str) -> bool:
     return normalized_method == "POST" and path == "/api/knowledge/graph/refresh"
 
 
-app = create_app()
+# NOTE: no module-level ``app`` on purpose. Importing this module must not read
+# config.yaml nor open the SQLite database; serve with:
+#   uvicorn api.main:create_app --factory
+

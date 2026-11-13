@@ -806,6 +806,8 @@ class LibraryAgent:
         if not render_outline:
             if legacy_outline:
                 frontmatter.pop("outline", None)
+                if note_path.exists():
+                    _backup_markdown_file(note_path, "outline-metadata")
                 _write_markdown_parts(note_path, frontmatter, body)
             report["updated"] += 1
             report["items"].append(
@@ -821,6 +823,8 @@ class LibraryAgent:
             render_result = render_capture_body(body, outline, render_directory=not is_short)
             render_result = _ensure_directory_covers_markdown_headings(render_result)
         updated_body = render_result.capture_body
+        if note_path.exists():
+            _backup_markdown_file(note_path, "outline")
         _write_markdown_parts(note_path, frontmatter, updated_body)
         report["updated"] += 1
         item = {
@@ -974,7 +978,9 @@ def _write_markdown_parts(path: Path, frontmatter: dict[str, Any], body: str) ->
         + "---\n\n"
         + body
     )
-    path.write_text(content, encoding="utf-8")
+    from bridge.atomic_io import atomic_write_text
+
+    atomic_write_text(path, content)
 
 
 def _backup_markdown_file(path: Path, label: str) -> Path:
@@ -990,7 +996,7 @@ def _sync_committed_capture_drafts(
     body: str,
 ) -> int:
     columns = {
-        row[1]
+        row["name"]
         for row in conn.execute("PRAGMA table_info(capture_drafts)").fetchall()
     }
     if not {"committed_capture_id", "draft_text", "word_count"}.issubset(columns):
@@ -2292,6 +2298,8 @@ def _apply_property_backfill(vault_path: Path, action: dict[str, Any]) -> bool:
             changed = True
 
     if changed:
+        if path.exists():
+            _backup_markdown_file(path, "frontmatter")
         _write_markdown_parts(path, frontmatter, body)
     return changed
 

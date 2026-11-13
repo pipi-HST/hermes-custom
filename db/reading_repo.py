@@ -103,10 +103,10 @@ class ReadingRepo:
     ) -> dict:
         turn_id = uuid.uuid4().hex[:12]
         row = self.conn.execute(
-            "SELECT COALESCE(MAX(turn_index), 0) FROM reading_turns WHERE session_id = ?",
+            "SELECT COALESCE(MAX(turn_index), 0) AS max_turn FROM reading_turns WHERE session_id = ?",
             (session_id,),
         ).fetchone()
-        turn_index = int(row[0] or 0) + 1
+        turn_index = int(row["max_turn"] or 0) + 1
         now = _now()
         self.conn.execute(
             """INSERT INTO reading_turns

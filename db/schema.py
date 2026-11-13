@@ -336,6 +336,23 @@ CREATE TABLE IF NOT EXISTS knowledge_write_jobs (
 )
 """
 
+CREATE_CONFIRMATION_TOKENS_TABLE = """
+CREATE TABLE IF NOT EXISTS confirmation_tokens (
+    token_hash TEXT PRIMARY KEY,
+    intent TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    issued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    issued_to TEXT NOT NULL DEFAULT 'api'
+)
+"""
+
+CREATE_CONFIRMATION_TOKENS_OBJECT_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_confirmation_tokens_object
+ON confirmation_tokens(intent, object_id)
+"""
+
 CREATE_KNOWLEDGE_EDGES_TABLE = """
 CREATE TABLE IF NOT EXISTS knowledge_edges (
     id TEXT PRIMARY KEY,
@@ -364,17 +381,29 @@ ON knowledge_edges (relation_type, score)
 """
 
 
+def _dict_row(cursor: sqlite3.Cursor, row: tuple) -> dict:
+    """Materialise rows as plain dicts at fetch time.
+
+    Kept for callers that opt in via ``db.concurrency.fetch_dict``; the shared
+    connection itself keeps ``sqlite3.Row`` because a lot of code still reads
+    columns positionally.
+    """
+    return {column[0]: row[index] for index, column in enumerate(cursor.description)}
+
+
 def init_db(db_path: str) -> sqlite3.Connection:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(
         str(path),
         check_same_thread=False,
+        isolation_level=None,  # autocommit; explicit transactions live in db.concurrency
         factory=SerializedConnection,
     )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute(CREATE_CAPTURES_TABLE)
     _migrate_captures_table(conn)
@@ -400,6 +429,8 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute(CREATE_READING_DRAFTS_TABLE)
     conn.execute(CREATE_CAPTURE_VERSION_BACKUPS_TABLE)
     conn.execute(CREATE_KNOWLEDGE_WRITE_JOBS_TABLE)
+    conn.execute(CREATE_CONFIRMATION_TOKENS_TABLE)
+    conn.execute(CREATE_CONFIRMATION_TOKENS_OBJECT_INDEX)
     conn.execute(CREATE_KNOWLEDGE_EDGES_TABLE)
     conn.execute(CREATE_KNOWLEDGE_EDGES_LOOKUP_INDEX)
     conn.execute(CREATE_KNOWLEDGE_EDGES_RELATION_INDEX)
@@ -419,7 +450,7 @@ def _migrate_captures_table(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS captures_fts")
 
     existing = [
-        row[1] for row in conn.execute("PRAGMA table_info(captures)").fetchall()
+        row["name"] for row in conn.execute("PRAGMA table_info(captures)").fetchall()
     ]
     if existing == CAPTURE_COLUMNS:
         return
@@ -447,7 +478,7 @@ def _migrate_captures_table(conn: sqlite3.Connection) -> None:
 
 def _migrate_capture_drafts_table(conn: sqlite3.Connection) -> None:
     existing = [
-        row[1] for row in conn.execute("PRAGMA table_info(capture_drafts)").fetchall()
+        row["name"] for row in conn.execute("PRAGMA table_info(capture_drafts)").fetchall()
     ]
     if "capture_intent" not in existing:
         conn.execute(
@@ -464,7 +495,7 @@ def _migrate_capture_drafts_table(conn: sqlite3.Connection) -> None:
 def _migrate_garden_tables(conn: sqlite3.Connection) -> None:
     for table in ("garden_cards", "garden_drafts"):
         existing = {
-            row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
         }
         if "card_kind" not in existing:
             conn.execute(
@@ -485,7 +516,7 @@ def _migrate_garden_tables(conn: sqlite3.Connection) -> None:
 
 def _migrate_review_items_table(conn: sqlite3.Connection) -> None:
     existing = {
-        row[1] for row in conn.execute("PRAGMA table_info(review_items)").fetchall()
+        row["name"] for row in conn.execute("PRAGMA table_info(review_items)").fetchall()
     }
     if "view_count" not in existing:
         conn.execute(

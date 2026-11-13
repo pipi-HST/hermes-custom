@@ -902,6 +902,7 @@ def commit_capture_draft(
     draft_id: str = "",
     confirmation: str = "",
     confirmation_source: str = "agent",
+    token_verified: bool = False,
     context: KnowledgeContext | None = None,
 ) -> dict:
     """用户确认后将草稿写入 Knowledge File raw/ 和 captures/。"""
@@ -932,6 +933,7 @@ def commit_capture_draft(
                 draft_id=draft_id,
                 confirmation=confirmation,
                 confirmation_source=confirmation_source,
+                token_verified=token_verified,
             )
             if result.get("status") == "error":
                 if write_jobs:
@@ -1059,6 +1061,7 @@ def _commit_capture_draft(
     draft_id: str = "",
     confirmation: str = "",
     confirmation_source: str = "agent",
+    token_verified: bool = False,
 ) -> dict:
     if not draft_id:
         latest = agent.draft_repo.get_latest_open()
@@ -1080,6 +1083,7 @@ def _commit_capture_draft(
         draft,
         confirmation=confirmation,
         confirmation_source=confirmation_source,
+        token_verified=token_verified,
     )
     if review_error:
         return error_envelope(
@@ -1164,11 +1168,13 @@ def _commit_review_gate(
     *,
     confirmation: str = "",
     confirmation_source: str = "agent",
+    token_verified: bool = False,
 ) -> str:
     return confirmation_error(
         "commit_capture_draft",
         confirmation=confirmation,
         confirmation_source=confirmation_source,
+        token_verified=token_verified,
     )
 
 

@@ -360,7 +360,7 @@ def _scenario_editable_update_and_commit(ctx: KnowledgeContext) -> dict[str, Any
         content="更新后的正文。\n\n保留原意。",
         title="更新后草稿",
     )
-    committed = capture_bridge.commit_capture_draft(draft_id, confirmation_source="dashboard")
+    committed = capture_bridge.commit_capture_draft(draft_id, confirmation_source="api", token_verified=True)
     meta = committed.get("meta") or {}
     note = read_note(ctx.vault_path, meta.get("file_path", ""))
     return _scenario_result(
@@ -412,7 +412,7 @@ def _scenario_capture_link_full_text_commit(ctx: KnowledgeContext) -> dict[str, 
         instruction="全文保存整理入库",
     )
     draft_id = result["meta"]["draft_id"]
-    committed = capture_bridge.commit_capture_draft(draft_id, confirmation_source="dashboard")
+    committed = capture_bridge.commit_capture_draft(draft_id, confirmation_source="api", token_verified=True)
     meta = committed.get("meta") or {}
     note = read_note(ctx.vault_path, meta.get("file_path", ""))
     frontmatter = note[0] if note else {}
@@ -475,7 +475,8 @@ def _create_committed_capture(ctx: KnowledgeContext, title: str = "已入库样�
     )
     committed = capture_bridge.commit_capture_draft(
         created["meta"]["draft_id"],
-        confirmation_source="dashboard",
+        confirmation_source="api",
+        token_verified=True,
     )
     return committed.get("meta") or {}
 
@@ -490,7 +491,7 @@ def _scenario_committed_capture_revise_preview_and_apply(ctx: KnowledgeContext) 
     )
     note_after_preview = read_note(ctx.vault_path, meta["file_path"])
     revision_draft_id = preview.get("durable_artifacts", [{}])[0].get("id", "")
-    applied = capture_bridge.commit_capture_draft(revision_draft_id, confirmation_source="dashboard")
+    applied = capture_bridge.commit_capture_draft(revision_draft_id, confirmation_source="api", token_verified=True)
     return _scenario_result(
         "committed_capture_revise_preview_and_apply",
         [
@@ -585,7 +586,7 @@ def _scenario_garden_draft_commit(ctx: KnowledgeContext) -> dict[str, Any]:
     draft_id = draft.get("meta", {}).get("draft_id", "")
     committed = garden_bridge.commit_garden_draft(
         draft_id,
-        confirmation_source="manual",
+        confirmation="确认卡片",
         context=ctx,
     )
     card_id = committed.get("meta", {}).get("card_id", "")
@@ -607,7 +608,7 @@ def _scenario_garden_duplicate_blocks_creation(ctx: KnowledgeContext) -> dict[st
     draft = garden_bridge.synthesize_garden(capture_ids=[meta["capture_id"]], title="重复卡片", context=ctx)
     committed = garden_bridge.commit_garden_draft(
         draft["meta"]["draft_id"],
-        confirmation_source="manual",
+        confirmation="确认卡片",
         context=ctx,
     )
     before = ctx.conn.execute("SELECT count(*) FROM garden_cards").fetchone()[0]

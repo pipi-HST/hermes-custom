@@ -169,7 +169,7 @@ def _run_pipeline(
     if pipeline == "full-text-commit":
         result = capture_bridge.capture_content("https://acceptance.test/live-full", instruction="全文保存整理入库")
         draft_id = result.get("meta", {}).get("draft_id", "")
-        committed = capture_bridge.commit_capture_draft(draft_id, confirmation_source="dashboard")
+        committed = capture_bridge.commit_capture_draft(draft_id, confirmation_source="api", token_verified=True)
         return _report_from_envelope(pipeline, started, conn, committed, vault_path=ctx.vault_path)
 
     if pipeline == "reading-answer":
@@ -186,13 +186,13 @@ def _run_pipeline(
 
     if pipeline == "garden-card":
         base = agent.create_editable_draft("Garden live smoke 来源正文，用于生成一张知识卡片。")
-        committed = capture_bridge.commit_capture_draft(base["id"], confirmation_source="dashboard")
+        committed = capture_bridge.commit_capture_draft(base["id"], confirmation_source="api", token_verified=True)
         capture_id = committed.get("meta", {}).get("capture_id", "")
         result = garden_bridge.synthesize_garden(capture_ids=[capture_id], title="Live Smoke Knowledge Card", context=ctx)
         draft_id = result.get("meta", {}).get("draft_id", "")
         committed = garden_bridge.commit_garden_draft(
             draft_id,
-            confirmation_source="manual",
+            confirmation="确认卡片",
             context=ctx,
         )
         return _report_from_envelope(pipeline, started, conn, committed, vault_path=ctx.vault_path)

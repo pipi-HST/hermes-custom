@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 from typing import Optional
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from api.routes._bridge_response import bridge_result_response
+from api.routes._confirmation import issue_confirmation_token, require_confirmation_token
+from db.confirmation_repo import ConfirmationRepo
 from db.repo import CaptureDraftRepo
+
+COMMIT_CAPTURE_DRAFT_INTENT = "commit_capture_draft"
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +50,10 @@ class UpdateEditableCaptureDraftRequest(BaseModel):
 
 class ReviseCaptureDraftRequest(BaseModel):
     instruction: str
+
+
+class CommitCaptureDraftRequest(BaseModel):
+    confirmation_token: str = Field(default="", max_length=200)
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +96,12 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
     @router.post("/capture-drafts/editable")
     def create_editable_capture_draft(body: CreateEditableCaptureDraftRequest):
         from bridge import capture_bridge
+
+        if _is_local_file_input(body.content):
+            raise HTTPException(
+                status_code=400,
+                detail="local file capture is not allowed through the API",
+            )
 
         result = capture_bridge.create_editable_capture_draft(
             content=body.content,
@@ -133,13 +146,34 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
         )
         return bridge_result_response(result)
 
+    @router.post("/capture-drafts/{draft_id}/confirmation")
+    def issue_capture_draft_confirmation(draft_id: str):
+        draft = draft_repo.get_by_id(draft_id)
+        if draft is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return issue_confirmation_token(
+            ConfirmationRepo(draft_repo.conn),
+            intent=COMMIT_CAPTURE_DRAFT_INTENT,
+            object_id=draft_id,
+        )
+
     @router.post("/capture-drafts/{draft_id}/commit")
-    def commit_capture_draft(draft_id: str):
+    def commit_capture_draft(
+        draft_id: str,
+        body: CommitCaptureDraftRequest | None = None,
+    ):
         from bridge import capture_bridge
 
+        require_confirmation_token(
+            ConfirmationRepo(draft_repo.conn),
+            intent=COMMIT_CAPTURE_DRAFT_INTENT,
+            object_id=draft_id,
+            token=body.confirmation_token if body else "",
+        )
         result = capture_bridge.commit_capture_draft(
             draft_id=draft_id,
-            confirmation_source="dashboard",
+            confirmation_source="api",
+            token_verified=True,
         )
         return bridge_result_response(result)
 
@@ -147,10 +181,23 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
 
 
 def _is_local_file_input(content: str) -> bool:
+    """Reject local-file inputs without touching the filesystem.
+
+    The old implementation called ``Path(value).is_file()`` which turned this
+    check into a file-existence oracle for any API client.  Local paths are
+    never valid capture content over HTTP, so reject them by shape only.
+    """
     value = (content or "").strip()
-    if value.lower().startswith("file://"):
-        return True
-    try:
-        return Path(value).expanduser().is_file()
-    except (OSError, ValueError):
+    if not value:
         return False
+    lowered = value.lower()
+    if lowered.startswith("file://"):
+        return True
+    if "\x00" in value:
+        return True
+    # Absolute Windows (C:\ or C:/) and POSIX paths, plus drive-relative forms.
+    if value.startswith(("/", "\\", "~")):
+        return True
+    if len(value) >= 3 and value[1] == ":" and value[2] in ("\\", "/") and value[0].isalpha():
+        return True
+    return False

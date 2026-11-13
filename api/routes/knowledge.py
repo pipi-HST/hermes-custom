@@ -4,12 +4,16 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agents.knowledge_graph import KnowledgeGraphService
 from api.routes._bridge_response import bridge_result_response
+from api.routes._confirmation import issue_confirmation_token, require_confirmation_token
+from db.confirmation_repo import ConfirmationRepo
 from db.reading_repo import ReadingRepo
 from db.repo import CaptureRepo
+
+COMMIT_KNOWLEDGE_DRAFT_INTENT = "commit_reading_artifact"
 
 
 class AnswerDraftRequest(BaseModel):
@@ -24,6 +28,10 @@ class AnswerDraftRequest(BaseModel):
 
 class ReviseDraftRequest(BaseModel):
     instruction: str = ""
+
+
+class CommitKnowledgeDraftRequest(BaseModel):
+    confirmation_token: str = Field(default="", max_length=200)
 
 
 def create_knowledge_router(
@@ -71,11 +79,35 @@ def create_knowledge_router(
         result = answer_bridge.revise_answer_draft(draft_id, body.instruction)
         return bridge_result_response(result)
 
+    @router.post("/knowledge/drafts/{draft_id}/confirmation")
+    def issue_knowledge_draft_confirmation(draft_id: str):
+        draft = reading_repo.get_draft(draft_id)
+        if draft is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return issue_confirmation_token(
+            ConfirmationRepo(reading_repo.conn),
+            intent=COMMIT_KNOWLEDGE_DRAFT_INTENT,
+            object_id=draft_id,
+        )
+
     @router.post("/knowledge/drafts/{draft_id}/commit")
-    def commit_draft(draft_id: str):
+    def commit_draft(
+        draft_id: str,
+        body: CommitKnowledgeDraftRequest | None = None,
+    ):
         from bridge import reading_bridge
 
-        result = reading_bridge.commit_reading_artifact(draft_id)
+        require_confirmation_token(
+            ConfirmationRepo(reading_repo.conn),
+            intent=COMMIT_KNOWLEDGE_DRAFT_INTENT,
+            object_id=draft_id,
+            token=body.confirmation_token if body else "",
+        )
+        result = reading_bridge.commit_reading_artifact(
+            draft_id,
+            confirmation_source="api",
+            token_verified=True,
+        )
         return bridge_result_response(result)
 
     @router.get("/knowledge/garden-cards")

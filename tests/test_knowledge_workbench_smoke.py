@@ -60,7 +60,8 @@ def test_long_material_capture_smoke_creates_draft_commits_and_writes_artifacts(
     )
     committed = capture_bridge.commit_capture_draft(
         draft["durable_artifacts"][0]["id"],
-        confirmation_source="dashboard",
+        confirmation_source="api",
+        token_verified=True,
     )
 
     assert draft["status"] == "success"
@@ -104,7 +105,7 @@ def test_sourced_qa_smoke_saves_answer_draft_revises_and_commits(tmp_path, monke
         draft["meta"]["reading_draft_id"],
         "补充后续动作",
     )
-    committed = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"])
+    committed = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"], confirmation="确认整理")
 
     assert draft["status"] == "success"
     assert revised["status"] == "success"
@@ -135,7 +136,7 @@ def test_reading_to_knowledge_card_smoke_writes_garden_card(tmp_path, monkeypatc
             session_id=session["meta"]["reading_session_id"],
             output_type="knowledge_card",
         )
-        committed = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"])
+        committed = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"], confirmation="确认整理")
 
     assert committed["status"] == "success"
     assert committed["durable_artifacts"][0]["type"] == "knowledge_card"

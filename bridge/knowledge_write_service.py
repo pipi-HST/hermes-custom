@@ -89,17 +89,6 @@ def _ensure_path_inside_vault(vault_path: Path, target: Path, display_path: str)
 
 
 def _atomic_write_text(target: Path, content: str) -> None:
-    file_descriptor, temporary_name = tempfile.mkstemp(
-        dir=target.parent,
-        prefix=f".{target.name}.",
-        suffix=".tmp",
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(file_descriptor, "w", encoding="utf-8") as temporary_file:
-            temporary_file.write(content)
-            temporary_file.flush()
-            os.fsync(temporary_file.fileno())
-        os.replace(temporary_path, target)
-    finally:
-        temporary_path.unlink(missing_ok=True)
+    from bridge.atomic_io import atomic_write_text
+
+    atomic_write_text(target, content)
