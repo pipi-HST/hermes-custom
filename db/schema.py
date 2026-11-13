@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from db.concurrency import SerializedConnection
+from db.concurrency import SerializedConnection, transaction
 
 CREATE_CAPTURES_TABLE = """
 CREATE TABLE IF NOT EXISTS captures (
@@ -405,36 +405,41 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute(CREATE_CAPTURES_TABLE)
-    _migrate_captures_table(conn)
-    conn.execute(CREATE_CHANGE_LOG_TABLE)
-    conn.execute(CREATE_AGENT_RUNS_TABLE)
-    conn.execute(CREATE_AGENT_RUN_EVENTS_TABLE)
-    conn.execute(CREATE_AGENT_RUN_OBJECTS_TABLE)
-    conn.execute(CREATE_AGENT_RUN_OBJECTS_INDEX)
-    conn.execute(CREATE_GARDEN_CARDS_TABLE)
-    conn.execute(CREATE_GARDEN_DRAFTS_TABLE)
-    _migrate_garden_tables(conn)
-    conn.execute(CREATE_PENDING_QUESTIONS_TABLE)
-    conn.execute(CREATE_CAPTURE_DRAFTS_TABLE)
-    _migrate_capture_drafts_table(conn)
-    conn.execute(CREATE_CAPTURE_EMBEDDINGS_TABLE)
-    conn.execute(CREATE_CAPTURE_EMBEDDINGS_SEARCH_INDEX)
-    conn.execute(CREATE_CAPTURE_METADATA_TABLE)
-    conn.execute(CREATE_REVIEW_ITEMS_TABLE)
-    _migrate_review_items_table(conn)
-    conn.execute(CREATE_READING_SESSIONS_TABLE)
-    conn.execute(CREATE_READING_TURNS_TABLE)
-    conn.execute(CREATE_READING_EVIDENCE_TABLE)
-    conn.execute(CREATE_READING_DRAFTS_TABLE)
-    conn.execute(CREATE_CAPTURE_VERSION_BACKUPS_TABLE)
-    conn.execute(CREATE_KNOWLEDGE_WRITE_JOBS_TABLE)
-    conn.execute(CREATE_CONFIRMATION_TOKENS_TABLE)
-    conn.execute(CREATE_CONFIRMATION_TOKENS_OBJECT_INDEX)
-    conn.execute(CREATE_KNOWLEDGE_EDGES_TABLE)
-    conn.execute(CREATE_KNOWLEDGE_EDGES_LOOKUP_INDEX)
-    conn.execute(CREATE_KNOWLEDGE_EDGES_RELATION_INDEX)
-    _migrate_timestamp_formats(conn)
+    # The whole DDL batch runs in one explicit transaction so an interrupted
+    # upgrade cannot leave the database half-migrated (e.g. rows parked in
+    # ``captures_new`` after ``captures`` was already dropped).  PRAGMAs above
+    # stay outside: journal mode cannot be changed inside a transaction.
+    with transaction(conn):
+        conn.execute(CREATE_CAPTURES_TABLE)
+        _migrate_captures_table(conn)
+        conn.execute(CREATE_CHANGE_LOG_TABLE)
+        conn.execute(CREATE_AGENT_RUNS_TABLE)
+        conn.execute(CREATE_AGENT_RUN_EVENTS_TABLE)
+        conn.execute(CREATE_AGENT_RUN_OBJECTS_TABLE)
+        conn.execute(CREATE_AGENT_RUN_OBJECTS_INDEX)
+        conn.execute(CREATE_GARDEN_CARDS_TABLE)
+        conn.execute(CREATE_GARDEN_DRAFTS_TABLE)
+        _migrate_garden_tables(conn)
+        conn.execute(CREATE_PENDING_QUESTIONS_TABLE)
+        conn.execute(CREATE_CAPTURE_DRAFTS_TABLE)
+        _migrate_capture_drafts_table(conn)
+        conn.execute(CREATE_CAPTURE_EMBEDDINGS_TABLE)
+        conn.execute(CREATE_CAPTURE_EMBEDDINGS_SEARCH_INDEX)
+        conn.execute(CREATE_CAPTURE_METADATA_TABLE)
+        conn.execute(CREATE_REVIEW_ITEMS_TABLE)
+        _migrate_review_items_table(conn)
+        conn.execute(CREATE_READING_SESSIONS_TABLE)
+        conn.execute(CREATE_READING_TURNS_TABLE)
+        conn.execute(CREATE_READING_EVIDENCE_TABLE)
+        conn.execute(CREATE_READING_DRAFTS_TABLE)
+        conn.execute(CREATE_CAPTURE_VERSION_BACKUPS_TABLE)
+        conn.execute(CREATE_KNOWLEDGE_WRITE_JOBS_TABLE)
+        conn.execute(CREATE_CONFIRMATION_TOKENS_TABLE)
+        conn.execute(CREATE_CONFIRMATION_TOKENS_OBJECT_INDEX)
+        conn.execute(CREATE_KNOWLEDGE_EDGES_TABLE)
+        conn.execute(CREATE_KNOWLEDGE_EDGES_LOOKUP_INDEX)
+        conn.execute(CREATE_KNOWLEDGE_EDGES_RELATION_INDEX)
+        _migrate_timestamp_formats(conn)
     conn.commit()
     return conn
 
@@ -462,7 +467,14 @@ def _migrate_timestamp_formats(conn: sqlite3.Connection) -> None:
     Timestamps written by Python already use ``datetime.isoformat()``; rows that
     kept the SQLite ``datetime('now')`` default were a different format, which
     forced ``replace(substr(...))`` sorting hacks in the repositories.  This
-    migration is idempotent and only touches the legacy space-separated form.
+    migration is idempotent and only touches the legacy space-separated form, so
+    it runs on every ``init_db`` instead of being gated on a schema version: the
+    scan is cheap (large vaults measure well under 100 ms for 50k rows) and it
+    keeps re-normalising rows written by code paths that still rely on the SQL
+    default.  Values that match the legacy shape but are not real timestamps
+    (e.g. ``0000-00-00 00:00:00``) keep their original text: ``strftime``
+    returns NULL for those, and writing NULL aborted ``init_db`` on NOT NULL
+    columns or silently dropped data on nullable ones.
     """
     tables = [
         str(row["name"])
@@ -478,10 +490,39 @@ def _migrate_timestamp_formats(conn: sqlite3.Connection) -> None:
         for column in columns & _TIMESTAMP_COLUMNS:
             conn.execute(
                 f'UPDATE "{table}" '
-                f'SET "{column}" = strftime(?, "{column}") '
+                f'SET "{column}" = COALESCE(strftime(?, "{column}"), "{column}") '
                 f'WHERE "{column}" GLOB ?',
                 ("%Y-%m-%dT%H:%M:%SZ", "????-??-?? ??:??:??*"),
             )
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _recover_interrupted_captures_swap(conn: sqlite3.Connection) -> None:
+    """Promote ``captures_new`` when a captures rebuild was interrupted.
+
+    :func:`_migrate_captures_table` copies rows into ``captures_new``, drops
+    ``captures`` and renames the copy back.  A crash between those steps used to
+    leave the data parked in ``captures_new`` while the next startup recreated
+    an empty ``captures`` table, silently losing every capture.  If the swap is
+    incomplete and ``captures_new`` actually holds rows, finish it here.
+    """
+    if not _table_exists(conn, "captures_new"):
+        return
+    if _table_exists(conn, "captures") and conn.execute(
+        "SELECT 1 FROM captures LIMIT 1"
+    ).fetchone() is not None:
+        return
+    if conn.execute("SELECT 1 FROM captures_new LIMIT 1").fetchone() is None:
+        return
+    conn.execute("DROP TABLE IF EXISTS captures")
+    conn.execute("ALTER TABLE captures_new RENAME TO captures")
 
 
 def _migrate_captures_table(conn: sqlite3.Connection) -> None:
@@ -494,6 +535,8 @@ def _migrate_captures_table(conn: sqlite3.Connection) -> None:
     for trigger in ("captures_ai", "captures_au", "captures_ad"):
         conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     conn.execute("DROP TABLE IF EXISTS captures_fts")
+
+    _recover_interrupted_captures_swap(conn)
 
     existing = [
         row["name"] for row in conn.execute("PRAGMA table_info(captures)").fetchall()

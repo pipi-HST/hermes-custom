@@ -2,13 +2,20 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from agents.run_evidence import extract_input_object_refs, extract_run_evidence
 from bridge.ai_cancel import AIOperationCancelled
 from db.agent_run_repo import AgentRunRepo
-from db.concurrency import connection_lock
+
+# Only one logical run may be in flight at a time, so two bridge entrypoints
+# cannot interleave a start/complete pair.  This deliberately does *not* reuse
+# the connection lock: db.concurrency already serialises every statement, and
+# holding the connection lock for a whole operation would queue all API reads
+# behind slow LLM pipelines (summarize 300s / outliner 120s).
+_RUN_LOCK = threading.RLock()
 
 
 def run_with_ledger(
@@ -20,7 +27,7 @@ def run_with_ledger(
     input_ref: dict[str, Any] | None = None,
     operation: Callable[[], Mapping[str, Any]],
 ) -> Mapping[str, Any]:
-    with connection_lock(conn):
+    with _RUN_LOCK:
         return _run_with_ledger_unlocked(
             conn,
             agent=agent,
