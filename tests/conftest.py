@@ -15,9 +15,32 @@ def repo(tmp_path):
 
 
 @pytest.fixture
-def real_db():
-    """指向真实 data/captures.db 的 repo（用于集成测试）。"""
+def real_db(tmp_path):
+    """A copy of the real data/captures.db, never the live database.
+
+    The fixture used to open (and migrate) the project database in place, so a
+    test that wrote through it could mutate real captures.  Copy through the
+    SQLite backup API instead - it also captures WAL content - and close the
+    connection afterwards.
+    """
+    import sqlite3
     from pathlib import Path
-    db_path = str(Path(__file__).parent.parent / "data" / "captures.db")
+
+    source = Path(__file__).parent.parent / "data" / "captures.db"
+    if not source.is_file():
+        pytest.skip("no local captures database to copy")
+    db_path = str(tmp_path / "copy.db")
+    source_conn = sqlite3.connect(str(source))
+    try:
+        target_conn = sqlite3.connect(db_path)
+        try:
+            source_conn.backup(target_conn)
+        finally:
+            target_conn.close()
+    finally:
+        source_conn.close()
     conn = init_db(db_path)
-    return CaptureRepo(conn)
+    try:
+        yield CaptureRepo(conn)
+    finally:
+        conn.close()
