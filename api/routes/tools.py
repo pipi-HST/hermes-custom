@@ -26,6 +26,7 @@ timeout; there is deliberately no request-level timeout or cancellation here.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib
 import inspect
 import json
@@ -105,6 +106,22 @@ _BRIDGE_TOOL_WHITELIST: dict[str, tuple[str, frozenset[str]]] = {
             }
         ),
     ),
+    "reading_bridge": (
+        "bridge.reading_bridge",
+        frozenset(
+            {
+                "commit_reading_artifact",
+                "discuss_reading",
+                "show_reading_session",
+                "start_reading_session",
+                "summarize_reading_session",
+            }
+        ),
+    ),
+    "research_bridge": (
+        "bridge.research_bridge",
+        frozenset({"async_light_web_answer", "async_web_assist_answer"}),
+    ),
 }
 
 _MODULE_CACHE: dict[str, Any] = {}
@@ -163,6 +180,10 @@ def create_tools_router(
 
         try:
             result = function(*list(body.args), **kwargs)
+            if inspect.isawaitable(result):
+                # research_bridge exposes async entrypoints; this handler runs
+                # in FastAPI's threadpool, so driving the coroutine here is safe.
+                result = asyncio.run(result)
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001 - tool failures become structured 500s

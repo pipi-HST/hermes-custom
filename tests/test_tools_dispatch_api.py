@@ -308,3 +308,34 @@ def test_dispatch_is_behind_auth_middleware(tmp_path, monkeypatch):
     assert anonymous.status_code == 401
     assert authorized.status_code == 200
     assert authorized.json() == {"status": "success"}
+
+
+def test_reading_and_research_bridges_are_whitelisted(env, monkeypatch):
+    """The remaining envelope tools call these modules directly."""
+    _, app, _ = env
+    from bridge import reading_bridge, research_bridge
+
+    calls: dict[str, dict] = {}
+
+    def fake_show(**kwargs):
+        calls["show"] = kwargs
+        return {"status": "success", "session": {"id": "s1"}}
+
+    async def fake_research(**kwargs):
+        calls["research"] = kwargs
+        return {"status": "success", "answer": "ok"}
+
+    monkeypatch.setattr(reading_bridge, "show_reading_session", fake_show)
+    monkeypatch.setattr(research_bridge, "async_web_assist_answer", fake_research)
+
+    with _client(app) as client:
+        shown = _dispatch(client, "reading_bridge", "show_reading_session")
+        researched = _dispatch(
+            client, "research_bridge", "async_web_assist_answer", kwargs={"query": "q"}
+        )
+
+    assert shown.status_code == 200
+    assert shown.json()["session"]["id"] == "s1"
+    assert researched.status_code == 200
+    assert researched.json()["answer"] == "ok"
+    assert calls["research"]["query"] == "q"
