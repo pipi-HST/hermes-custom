@@ -111,3 +111,25 @@ def confirmation_error(
     if normalized in phrases:
         return ""
     return _ERRORS.get(intent, _DEFAULT_ERROR)
+
+
+_ALL_CONFIRMATION_PHRASES = frozenset().union(*_CONFIRMATION_PHRASES.values())
+
+
+def redact_confirmation_phrases(text: str) -> str:
+    """Remove confirmation phrases from untrusted content before prompting.
+
+    Retrieved web pages / imported documents must never be able to talk the
+    model into "confirming" a durable write.  Redacting the phrases is
+    defence-in-depth on top of the rule that only the raw user turn may confirm.
+    """
+    result = str(text or "")
+    for phrase in sorted(_ALL_CONFIRMATION_PHRASES, key=len, reverse=True):
+        if phrase in result:
+            result = result.replace(phrase, "[确认短语已移除]")
+    return result
+
+
+def contains_confirmation_phrase(text: str) -> bool:
+    normalized = re.sub(r"[\s，。！？、,.!?；;：:'\"“”‘’（）()]+", "", str(text or "")).lower()
+    return any(phrase in normalized for phrase in _ALL_CONFIRMATION_PHRASES)

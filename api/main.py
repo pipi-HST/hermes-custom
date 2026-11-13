@@ -46,9 +46,16 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
     app = FastAPI(title="Hermes Knowledge API")
     request_lock = asyncio.Lock()
     api_token = os.environ.get("HERMES_API_TOKEN", "").strip()
+    trusted_proxies = _trusted_proxies()
+    allowed_hosts = _allowed_hosts()
 
     @app.middleware("http")
-    async def serialize_shared_database_requests(request, call_next):
+    async def auth_and_body_guard(request, call_next):
+        if not _host_header_allowed(request.headers.get("host", ""), allowed_hosts):
+            return JSONResponse(
+                {"detail": "unexpected Host header"},
+                status_code=400,
+            )
         if api_token:
             authorization = request.headers.get("authorization", "")
             scheme, _, provided_token = authorization.partition(" ")
@@ -61,7 +68,7 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
                     status_code=401,
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-        elif not _is_loopback_client(request.client.host if request.client else ""):
+        elif not _client_is_loopback(request, trusted_proxies):
             return JSONResponse(
                 {"detail": "remote access requires HERMES_API_TOKEN"},
                 status_code=403,
@@ -71,6 +78,16 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
                 {"detail": "request body too large"},
                 status_code=413,
             )
+        if not request.headers.get("content-length") and request.method in {"POST", "PUT", "PATCH"}:
+            body = b""
+            async for chunk in request.stream():
+                body += chunk
+                if len(body) > MAX_API_REQUEST_BYTES:
+                    return JSONResponse(
+                        {"detail": "request body too large"},
+                        status_code=413,
+                    )
+            request._body = body
         if _uses_shared_api_connection(request.method, request.url.path):
             async with request_lock:
                 return await call_next(request)
@@ -109,12 +126,66 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
 
 def _is_loopback_client(host: str) -> bool:
     value = (host or "").strip().strip("[]")
+    if not value:
+        return False
     if value.lower() == "localhost":
         return True
     try:
-        return ipaddress.ip_address(value).is_loopback
+        address = ipaddress.ip_address(value)
     except ValueError:
         return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address.is_loopback
+
+
+def _trusted_proxies() -> frozenset[str]:
+    raw = os.environ.get("HERMES_API_TRUSTED_PROXIES", "").strip()
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _allowed_hosts() -> frozenset[str] | None:
+    raw = os.environ.get("HERMES_API_ALLOWED_HOSTS", "").strip()
+    if not raw:
+        return None
+    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
+def _host_header_allowed(host_header: str, allowed: frozenset[str] | None) -> bool:
+    """Reject DNS-rebinding style Host headers.
+
+    By default only loopback names, IP literals and the test client host are
+    accepted.  Deployments behind a hostname must set
+    ``HERMES_API_ALLOWED_HOSTS`` explicitly.
+    """
+    host = (host_header or "").strip()
+    if not host:
+        return True
+    if host.startswith("["):
+        close = host.find("]")
+        host_only = host[1:close] if close != -1 else host.strip("[]")
+    else:
+        host_only = host.rsplit(":", 1)[0] if ":" in host else host
+    host_only = host_only.lower()
+    if allowed is not None:
+        return host_only in allowed
+    if host_only in {"localhost", "testserver"}:
+        return True
+    try:
+        ipaddress.ip_address(host_only)
+    except ValueError:
+        return False
+    return True
+
+
+def _client_is_loopback(request, trusted_proxies: frozenset[str]) -> bool:
+    peer = request.client.host if request.client else ""
+    if trusted_proxies and peer in trusted_proxies:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        first_hop = forwarded.split(",")[0].strip()
+        if first_hop:
+            return _is_loopback_client(first_hop)
+    return _is_loopback_client(peer)
 
 
 def _request_body_too_large(content_length: str) -> bool:

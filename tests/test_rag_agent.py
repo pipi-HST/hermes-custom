@@ -186,7 +186,7 @@ def test_build_prompt_marks_long_source_excerpt_at_natural_boundary():
 
     assert "该来源过长，已省略后续内容" in prompt
     assert "不应该进入提示" not in prompt
-    body = prompt.split("[1] 《长材料》\n", 1)[1].split("\n\n请用", 1)[0]
+    body = prompt.split('<source id="1" title="长材料">\n', 1)[1].split("\n</source>", 1)[0]
     assert body.rstrip().endswith("。）")
     excerpt = body.split("\n\n（该来源过长", 1)[0]
     assert excerpt.endswith("。")
@@ -209,7 +209,7 @@ def test_build_prompt_includes_garden_and_theme_as_orientation_only():
     assert "AI 工程化" in prompt
     assert "Agent 方法论" in prompt
     assert "不要把高层线索当作编号来源" in prompt
-    assert "[1] 《材料》" in prompt
+    assert '<source id="1" title="材料">' in prompt
 
 
 def test_build_prompt_includes_graph_theme_groups_as_orientation_only():
@@ -229,7 +229,7 @@ def test_build_prompt_includes_graph_theme_groups_as_orientation_only():
     assert "检索路径" in prompt
     assert "复杂度控制" in prompt
     assert "Garden/Theme 是理解线索" in prompt
-    assert "[1] 《材料》" in prompt
+    assert '<source id="1" title="材料">' in prompt
 
 
 @patch("agents.rag_agent.RagAgent._call_llm")
