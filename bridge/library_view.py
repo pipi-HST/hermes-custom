@@ -286,6 +286,102 @@ def render_markdown(frontmatter: dict, body: str) -> str:
     )
 
 
+def list_library_items(
+    conn,
+    vault_path: str | Path,
+    *,
+    kind: str = "",
+    folder: str = "",
+    status: str = "",
+    search: str = "",
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    """List the dashboard's library items (contract v1.1 ``GET /library/items``).
+
+    Mirrors the runtime's local library listing: captures come from
+    ``review_state != archived`` rows, drafts from non-committed/non-discarded
+    rows; the merged list is sorted by ``updated_at`` desc then ``id`` desc.
+    ``counts`` comes from the same filtered pass (before the ``kind`` filter), so
+    tab counts always match the pageable set without extra queries.
+    """
+    kind_filter = (kind or "").strip()
+    folder_filter = normalize_folder(folder) if (folder or "").strip() else ""
+    status_filter = (status or "").strip()
+    search_text = (search or "").strip().lower()
+
+    items: list[dict] = []
+    for row in conn.execute(
+        "SELECT * FROM captures WHERE COALESCE(review_state, '') != 'archived'"
+    ).fetchall():
+        # ``full=True`` keeps the note body available for the search filter;
+        # list responses blank it out again below (same shape as the detail
+        # view, matching the runtime's non-full library item).
+        items.append(capture_library_item(vault_path, dict(row), conn=conn, full=True))
+    for row in _open_draft_rows(conn):
+        items.append(draft_library_item(row, conn=conn, full=True))
+
+    filtered: list[dict] = []
+    for item in items:
+        if folder_filter and normalize_folder(item.get("folder_path")) != folder_filter:
+            continue
+        if status_filter and str(item.get("status") or "") != status_filter:
+            continue
+        if search_text and search_text not in _library_search_haystack(item):
+            continue
+        filtered.append(item)
+    filtered.sort(key=_library_sort_key, reverse=True)
+
+    counts = {
+        "capture": sum(1 for item in filtered if item["kind"] == "capture"),
+        "capture_draft": sum(
+            1 for item in filtered if item["kind"] == "capture_draft"
+        ),
+        "all": len(filtered),
+    }
+    selected = filtered
+    if kind_filter:
+        selected = [item for item in selected if item["kind"] == kind_filter]
+    total = len(selected)
+    start = max(0, int(offset))
+    end = start + max(0, int(limit))
+    return {
+        "items": [{**item, "body": ""} for item in selected[start:end]],
+        "total": total,
+        "counts": counts,
+    }
+
+
+def get_library_item(conn, vault_path: str | Path, kind: str, item_id: str) -> dict | None:
+    """Return one library item view or ``None`` when it does not exist."""
+    kind = (kind or "").strip()
+    if kind == "capture":
+        row = conn.execute("SELECT * FROM captures WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            return None
+        return capture_library_item(vault_path, dict(row), conn=conn, full=True)
+    if kind == "capture_draft":
+        row = conn.execute(
+            "SELECT * FROM capture_drafts WHERE id = ?", (item_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return draft_library_item(dict(row), conn=conn, full=True)
+    return None
+
+
+def _library_sort_key(item: dict) -> tuple[str, str]:
+    # Rows mix ISO-8601 and ``YYYY-MM-DD HH:MM:SS``; normalise before sorting.
+    updated = str(item.get("updated_at") or item.get("created_at") or "")
+    return (updated.replace(" ", "T")[:19], str(item.get("id") or ""))
+
+
+def _library_search_haystack(item: dict) -> str:
+    return "\n".join(
+        str(item.get(key) or "") for key in ("title", "summary", "body", "preview")
+    ).lower()
+
+
 def open_draft_rows(conn) -> list[dict]:
     """Drafts the library still shows (not committed, not discarded)."""
     return _open_draft_rows(conn)

@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 
 from api.routes.captures import apply_capture_update
@@ -30,6 +30,8 @@ from bridge.library_view import (
     capture_dependencies,
     draft_library_item,
     folder_response,
+    get_library_item as get_library_item_view,
+    list_library_items as list_library_items_view,
     now_iso,
     rename_folder_everywhere,
 )
@@ -124,6 +126,36 @@ def create_library_router(
             "ok": True,
             "item": draft_library_item(updated, conn=capture_repo.conn, full=True),
         }
+
+    @router.get("/library/items")
+    def list_library_items(
+        kind: str = Query(default=""),
+        folder: str = Query(default=""),
+        status: str = Query(default=""),
+        search: str = Query(default=""),
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ):
+        return list_library_items_view(
+            capture_repo.conn,
+            vault,
+            kind=kind,
+            folder=folder,
+            status=status,
+            search=search,
+            limit=limit,
+            offset=offset,
+        )
+
+    @router.get("/library/items/{kind}/{item_id}")
+    def get_library_item(kind: str, item_id: str):
+        kind = (kind or "").strip()
+        item = get_library_item_view(capture_repo.conn, vault, kind, item_id)
+        if item is None:
+            if kind not in {"capture", "capture_draft"}:
+                raise HTTPException(status_code=400, detail=UNSUPPORTED_KIND_DETAIL)
+            raise HTTPException(status_code=404, detail="Library item not found")
+        return {"ok": True, "item": item}
 
     @router.post("/library/items")
     def create_library_item(body: LibraryItemCreateRequest):

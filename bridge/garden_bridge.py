@@ -577,14 +577,21 @@ def commit_garden_draft(
     draft_id: str = "",
     confirmation: str = "",
     confirmation_source: str = "agent",
+    token_verified: bool = False,
     context: KnowledgeContext | None = None,
 ) -> dict:
-    """确认 Knowledge Card Draft，写入 garden_cards 结构化记录。"""
+    """确认 Knowledge Card Draft，写入 garden_cards 结构化记录。
+
+    ``token_verified`` is the server-side confirmation used by the HTTP API and
+    the dashboard routes (they already authenticated and recorded the user's
+    action); agent/tool callers must still produce a confirmation phrase.
+    """
     config, repo = _config_repo(context)
     confirmation_failure = confirmation_error(
         "commit_garden_draft",
         confirmation=confirmation,
         confirmation_source=confirmation_source,
+        token_verified=token_verified,
     )
     if confirmation_failure:
         return error_envelope(

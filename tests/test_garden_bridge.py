@@ -793,3 +793,33 @@ def test_revise_garden_draft_updates_latest_open_draft(repo, tmp_path):
         c.get("title") == "用户修改意见" and "强调边界" in c.get("cached_text", "")
         for c in mock_synthesize.call_args.args[0]
     )
+
+
+def test_commit_garden_draft_accepts_server_side_token_verification(repo, tmp_path):
+    """HTTP routes and the dashboard confirm server-side; no chat phrase needed."""
+    from agents.garden_agent import create_garden_draft
+    from bridge.garden_bridge import commit_garden_draft
+
+    draft_id = create_garden_draft(repo, {
+        "title": "服务端确认",
+        "one_liner": "点击即确认。",
+        "core_arguments": [{"claim": "token_verified 生效"}],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": "# 服务端确认\n\n正文",
+        "capture_ids": ["cap1"],
+    })
+    db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
+
+    with patch("bridge.garden_bridge.load_config") as mock_cfg:
+        mock_cfg.return_value = MagicMock(
+            vault_path=str(tmp_path),
+            db_path=db_path,
+            llm_api_key="sk-test",
+            llm_model="test",
+            llm_base_url="http://test",
+        )
+        result = commit_garden_draft(draft_id, token_verified=True)
+
+    assert result["status"] == "success"
+    assert result["durable_artifacts"][0]["type"] == "garden_card"
