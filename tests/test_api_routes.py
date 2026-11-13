@@ -1038,7 +1038,9 @@ def test_permanent_delete_detaches_committed_capture_draft(
     ).fetchone()
     assert row["committed_capture_id"] == ""
     assert row["pending_capture_id"] == ""
-    assert row["status"] == "abandoned"
+    # Back to draft_ready (not abandoned): the capture is gone but the draft
+    # content is still valid, so it re-enters the open list and can be retried.
+    assert row["status"] == "draft_ready"
 
 
 def test_permanent_delete_checks_garden_references_inside_transaction(
@@ -1241,6 +1243,7 @@ def test_permanent_delete_reports_partial_when_unlink_fails(
 
     assert resp.status_code == 200
     body = resp.json()
+    assert body["ok"] is False
     assert body["status"] == "partially_deleted"
     assert body["warnings"]
     assert body["deleted"]["knowledge_file"] == ""

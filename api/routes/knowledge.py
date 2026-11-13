@@ -181,8 +181,10 @@ def create_knowledge_router(
         for backup_path in backup_paths:
             _unlink_inside_vault(vault, backup_path, warnings)
         _delete_sibling_backups(vault, file_path, warnings)
+        # ``ok`` only when nothing was left behind: a partially deleted item
+        # still has files on disk and callers must not report success.
         return {
-            "ok": True,
+            "ok": not warnings,
             "status": "partially_deleted" if warnings else "permanently_deleted",
             "id": item_id,
             "deleted": {"knowledge_file": deleted_file, "raw_file": deleted_raw},
@@ -274,7 +276,7 @@ def _delete_capture_dependents(conn, capture_id: str) -> None:
         """UPDATE capture_drafts
            SET committed_capture_id = '',
                pending_capture_id = '',
-               status = CASE WHEN status = 'committed' THEN 'abandoned' ELSE status END
+               status = CASE WHEN status = 'committed' THEN 'draft_ready' ELSE status END
            WHERE committed_capture_id = ? OR pending_capture_id = ?""",
         (capture_id, capture_id),
     )
