@@ -59,6 +59,12 @@ function sessionIdFromBody(body: unknown): string {
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (process.env.HERMES_ENABLE_LEGACY_PROXY !== '1') {
+    // This deprecated dashboard must not proxy the gateway (and its API key)
+    // by default; the native Hermes dashboard is the supported path.
+    res.status(404).json({ error: 'legacy proxy disabled; set HERMES_ENABLE_LEGACY_PROXY=1 to enable' })
+    return
+  }
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST')
     res.status(405).json({ error: 'Method not allowed' })

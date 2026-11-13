@@ -51,6 +51,10 @@ class CaptureRepo:
             "SELECT * FROM captures ORDER BY created_at DESC LIMIT 1",
         )
 
+    def count(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS n FROM captures").fetchone()
+        return int(row["n"]) if row else 0
+
     def update(self, capture_id: str, **kwargs) -> Optional[dict]:
         allowed = {
             "file_path", "raw_path", "embedding",

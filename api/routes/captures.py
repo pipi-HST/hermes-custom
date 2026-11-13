@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 import yaml
 
@@ -15,6 +15,9 @@ from agents.markdown_writer import read_note
 from agents.outliner import Outliner
 from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest
 from db.repo import CaptureRepo
+
+CAPTURE_SCAN_PAGE_SIZE = 200
+CAPTURE_MAX_SCAN_ROWS = 20_000
 
 
 class UpdateCaptureRequest(BaseModel):
@@ -39,15 +42,26 @@ def create_capture_router(
         search: str = Query(default=""),
         folder: str = Query(default=""),
     ):
-        filtered = [
-            item for item in (
-                _hydrate_capture(vault, row)
-                for row in repo.list_all(limit=10000, offset=0)
-            )
-            if _matches_filters(item, tag=tag, search=search, folder=folder)
-        ]
-        items = filtered[offset:offset + limit]
-        return {"items": [_strip_binary(i) for i in items], "total": len(items)}
+        has_filters = bool(tag or search or folder)
+        needed = offset + limit
+        matched: list[dict] = []
+        scanned = 0
+        while len(matched) < needed and scanned < CAPTURE_MAX_SCAN_ROWS:
+            rows = repo.list_all(limit=CAPTURE_SCAN_PAGE_SIZE, offset=scanned)
+            if not rows:
+                break
+            for row in rows:
+                item = _hydrate_capture(vault, row)
+                if _matches_filters(item, tag=tag, search=search, folder=folder):
+                    matched.append(item)
+                    if len(matched) >= needed:
+                        break
+            scanned += len(rows)
+            if len(rows) < CAPTURE_SCAN_PAGE_SIZE:
+                break
+        items = matched[offset:offset + limit]
+        total = len(matched) if has_filters else repo.count()
+        return {"items": [_strip_binary(i) for i in items], "total": total}
 
     @router.get("/captures/{capture_id}")
     def get_capture(capture_id: str):
@@ -57,7 +71,11 @@ def create_capture_router(
         return _strip_binary(_hydrate_capture(vault, item))
 
     @router.patch("/captures/{capture_id}")
-    def update_capture(capture_id: str, body: UpdateCaptureRequest):
+    def update_capture(
+        capture_id: str,
+        body: UpdateCaptureRequest,
+        background_tasks: BackgroundTasks,
+    ):
         item = repo.get_by_id(capture_id)
         if item is None:
             raise HTTPException(status_code=404, detail="not found")
@@ -97,7 +115,10 @@ def create_capture_router(
             new_value="updated via capture API",
             source="api",
         )
-        library_report = _maintain_capture_after_edit(
+        # Library maintenance calls an LLM with a 120s timeout. Keep it off the
+        # request path so it cannot block every other API call.
+        background_tasks.add_task(
+            _maintain_capture_after_edit,
             repo,
             vault,
             capture_id,
@@ -107,7 +128,7 @@ def create_capture_router(
             "capture_id": capture_id,
             "file_path": file_path,
             "backup_path": write_result.backup_path,
-            "library_postprocess": library_report,
+            "library_postprocess": {"status": "queued"},
             "item": _strip_binary(_hydrate_capture(vault, repo.get_by_id(capture_id) or item)),
         }
 

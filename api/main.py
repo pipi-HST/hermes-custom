@@ -1,7 +1,6 @@
 """FastAPI application entrypoint."""
 from __future__ import annotations
 
-import asyncio
 import ipaddress
 import os
 import secrets
@@ -44,7 +43,6 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
     Use ``uvicorn api.main:create_app --factory`` to serve it.
     """
     app = FastAPI(title="Hermes Knowledge API")
-    request_lock = asyncio.Lock()
     api_token = os.environ.get("HERMES_API_TOKEN", "").strip()
     trusted_proxies = _trusted_proxies()
     allowed_hosts = _allowed_hosts()
@@ -88,9 +86,6 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
                         status_code=413,
                     )
             request._body = body
-        if _uses_shared_api_connection(request.method, request.url.path):
-            async with request_lock:
-                return await call_next(request)
         return await call_next(request)
 
     app.add_middleware(
@@ -102,6 +97,7 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
 
     if config is None:
         config = load_config(_resolve_config_path(config_path))
+    _validate_runtime_config(config)
     db_path = str(Path(config.db_path or DB_PATH).expanduser())
     if not Path(db_path).is_absolute():
         db_path = str((Path(__file__).parent.parent / db_path).resolve())
@@ -122,6 +118,34 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
     )
 
     return app
+
+
+def _validate_runtime_config(config) -> None:
+    """Fail fast with an actionable message instead of a half-working service."""
+    db_path = str(getattr(config, "db_path", "") or "").strip()
+    vault_path = str(getattr(config, "vault_path", "") or "").strip()
+    if not db_path:
+        raise RuntimeError(
+            "invalid configuration: database.path is required "
+            "(set it in config.yaml or HERMES_CONFIG_PATH)"
+        )
+    if not vault_path:
+        raise RuntimeError(
+            "invalid configuration: vault.path is required "
+            "(set it in config.yaml or HERMES_CONFIG_PATH)"
+        )
+    if not str(getattr(config, "llm_api_key", "") or "").strip():
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "llm.api_key is empty: capture/reading generation will fail until it is set"
+        )
+    if not str(getattr(config, "qwen_api_key", "") or "").strip():
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "qwen.api_key is empty: image/voice extraction will be unavailable"
+        )
 
 
 def _is_loopback_client(host: str) -> bool:
@@ -205,14 +229,6 @@ def _resolve_config_path(config_path: str | None) -> str:
         return env_path
     return str(Path(__file__).parent.parent / "config.yaml")
 
-
-def _uses_shared_api_connection(method: str, path: str) -> bool:
-    normalized_method = (method or "").upper()
-    if normalized_method == "GET" and path.startswith("/api/"):
-        return True
-    if normalized_method == "PATCH" and path.startswith("/api/captures/"):
-        return True
-    return normalized_method == "POST" and path == "/api/knowledge/graph/refresh"
 
 
 # NOTE: no module-level ``app`` on purpose. Importing this module must not read
