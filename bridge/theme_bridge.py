@@ -30,6 +30,7 @@ from bridge.run_ledger import run_with_ledger
 from db.schema import init_db
 from db.repo import CaptureRepo
 from db.write_job_repo import KnowledgeWriteJobRepo
+from bridge.config_paths import load_bridge_config
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 def _config_repo(context: KnowledgeContext | None = None):
     if context is not None:
         return context.config, context.capture_repo()
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    config = load_bridge_config(loader=load_config)
     return config, CaptureRepo(init_db(config.db_path))
 
 
@@ -750,7 +751,7 @@ def _theme_scan_report_artifact(
 
 def run_graph_report(context: KnowledgeContext | None = None) -> dict:
     """Generate a knowledge graph health report (cron entry point)."""
-    config = context.config if context is not None else load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    config = context.config if context is not None else load_bridge_config(loader=load_config)
     vault_path = Path(config.vault_path).expanduser()
 
     agent = ThemeAgent(

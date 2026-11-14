@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -459,7 +459,10 @@ def _format_capture_source(source_id: str, capture_lookup: dict[str, dict]) -> s
     title = str(capture.get("title", "")).strip() or source_id
     file_path = str(capture.get("file_path", "")).strip()
     if file_path:
-        target = str(Path(file_path).with_suffix(""))
+        # Capture paths are stored POSIX-style; rendering them through a
+        # platform Path would emit backslashes in the Markdown wiki link on
+        # Windows and break Obsidian links.
+        target = str(PurePosixPath(file_path).with_suffix(""))
         return f"[[{target}|{title}]]"
     return title
 

@@ -4,6 +4,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from scripts.reset_smoke import run_reset_smoke
 
 
@@ -34,6 +36,10 @@ def test_reset_smoke_can_include_structured_card(tmp_path: Path) -> None:
     assert result["counts"]["garden_cards"] == 1
 
 
+@pytest.mark.skipif(
+    not Path(".venv/bin/python").exists(),
+    reason="test drives the POSIX venv launcher (.venv/bin/python)",
+)
 def test_reset_smoke_cli_outputs_json(tmp_path: Path) -> None:
     completed = subprocess.run(
         [

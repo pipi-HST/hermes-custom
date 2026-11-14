@@ -12,12 +12,13 @@ from agents.capture_agent import load_config
 from bridge.result_envelope import success_envelope
 from db.agent_run_repo import AgentRunRepo
 from db.schema import init_db
+from bridge.config_paths import load_bridge_config
 
 MAX_PREVIEW_SOURCES = 8
 
 
 def get_agent_run_status(limit: int = 5) -> dict[str, Any]:
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    config = load_bridge_config(loader=load_config)
     repo = AgentRunRepo(init_db(config.db_path))
     max_limit = max(1, min(int(limit or 5), 10))
     runs = [dict(row) for row in repo.latest(limit=max_limit)]

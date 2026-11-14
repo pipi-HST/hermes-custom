@@ -12,9 +12,10 @@ from bridge.result_envelope import source_ref, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.schema import init_db
 from db.repo import CaptureRepo
+from bridge.config_paths import load_bridge_config
 
 def run_daily_review() -> dict:
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    config = load_bridge_config(loader=load_config)
     repo = CaptureRepo(init_db(config.db_path))
     return run_with_ledger(
         repo.conn,
@@ -44,7 +45,7 @@ def _run_daily_review(config, repo: CaptureRepo) -> dict:
 
 
 def record_review_feedback(item_id: str, outcome: str) -> dict:
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    config = load_bridge_config(loader=load_config)
     repo = CaptureRepo(init_db(config.db_path))
     agent = ReviewAgent(repo, vault_path=config.vault_path)
     updated = agent.record_item_feedback(item_id, outcome)
@@ -61,7 +62,7 @@ def record_review_feedback(item_id: str, outcome: str) -> dict:
 
 
 def expand_latest_review_followup(question: str) -> dict:
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    config = load_bridge_config(loader=load_config)
     repo = CaptureRepo(init_db(config.db_path))
     return run_with_ledger(
         repo.conn,

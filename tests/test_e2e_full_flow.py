@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from tests.conftest import requires_runtime, requires_symlink  # noqa: E402
 
 sys.path.insert(0, "/Users/pipi/hermes-custom")
 sys.path.insert(0, "/Users/pipi/Downloads/hermes-agent-main")
@@ -245,3 +246,5 @@ class TestBridgeToMarkdownE2E:
     def test_empty_content_returns_error(self):
         result = self.agent.process("")
         assert "error" in result, f"Should return error for empty content: {result}"
+
+pytestmark = requires_runtime

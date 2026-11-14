@@ -18,6 +18,7 @@ from bridge.result_envelope import (
 )
 from bridge.run_ledger import run_with_ledger
 from db.write_job_repo import KnowledgeWriteJobRepo
+from bridge.config_paths import load_bridge_config
 
 _config = None
 _agent = None
@@ -27,7 +28,7 @@ DRAFT_PAGE_SIZE = 1400
 def _init():
     global _config, _agent
     if _config is None:
-        _config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+        _config = load_bridge_config(loader=load_config)
         _agent = CaptureAgent(_config)
     return _config, _agent
 

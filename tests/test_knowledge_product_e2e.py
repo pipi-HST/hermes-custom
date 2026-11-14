@@ -8,6 +8,7 @@ import yaml
 
 from scripts import knowledge_pipeline_e2e
 from scripts import knowledge_product_e2e
+from tests.conftest import requires_runtime, requires_symlink  # noqa: E402
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -133,6 +134,7 @@ def test_browser_rag_queries_the_browser_capture_signal(monkeypatch, tmp_path):
     assert pipeline["ok"] is True
 
 
+@requires_runtime
 def test_pipeline_subprocesses_use_isolated_hermes_home(tmp_path):
     paths = knowledge_pipeline_e2e._prepare_isolated_root(
         tmp_path,

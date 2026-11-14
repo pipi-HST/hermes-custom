@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import requires_runtime, requires_symlink  # noqa: E402
 from agents.markdown_writer import (
     HERMES_THEME_END,
     HERMES_THEME_START,
@@ -208,6 +209,7 @@ def test_read_note_rejects_absolute_path_outside_vault(tmp_path: Path) -> None:
     assert read_note(vault, str(outside)) is None
 
 
+@requires_symlink
 def test_read_note_rejects_symlink_escape_from_vault(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     vault.mkdir()

@@ -19,6 +19,7 @@ from bridge.result_envelope import artifact_ref, error_envelope, next_action, su
 from bridge.run_ledger import run_with_ledger
 from db.reading_repo import ReadingRepo
 from db.schema import init_db
+from bridge.config_paths import load_bridge_config
 
 OUTPUT_TYPES = {"auto", "local_learning_note", "knowledge_card", "enhance_capture"}
 ANSWER_SOURCES = {"auto", "provided", "latest_rag_full_answer"}
@@ -30,7 +31,7 @@ _repo: ReadingRepo | None = None
 def _init():
     global _config, _repo
     if _config is None:
-        _config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+        _config = load_bridge_config(loader=load_config)
         conn = init_db(_config.db_path)
         _repo = ReadingRepo(conn)
     return _config, _repo

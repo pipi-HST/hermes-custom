@@ -27,6 +27,7 @@ from bridge.run_ledger import run_with_ledger
 from db.schema import init_db
 from db.repo import CaptureRepo
 from db.write_job_repo import KnowledgeWriteJobRepo
+from bridge.config_paths import load_bridge_config
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 def _config_repo(context: KnowledgeContext | None = None):
     if context is not None:
         return context.config, context.capture_repo()
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    config = load_bridge_config(loader=load_config)
     return config, CaptureRepo(init_db(config.db_path))
 
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.conftest import requires_runtime, requires_symlink  # noqa: E402
 
 
 def test_isolated_cross_process_pipeline_e2e(tmp_path):
@@ -42,3 +43,5 @@ def test_pipeline_e2e_reports_injected_embedding_break(tmp_path):
     pipelines = {item["name"]: item for item in result["pipelines"]}
     assert "identity_and_section_embeddings_written" in pipelines["capture_http_to_storage"]["failed_checks"]
     assert "rag_used_index" in pipelines["rag_retrieval"]["failed_checks"]
+
+pytestmark = requires_runtime

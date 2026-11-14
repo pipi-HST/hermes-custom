@@ -24,6 +24,7 @@ from db.embedding_repo import CaptureEmbeddingRepo
 from db.vector_search import search as vector_search
 from db.schema import init_db
 from db.repo import CaptureRepo
+from bridge.config_paths import load_bridge_config
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ _HEADING_RE = re.compile(r"^(#{2,6})\s+(.+?)\s*$", re.MULTILINE)
 def _init():
     global _config, _repo
     if _config is None:
-        _config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+        _config = load_bridge_config(loader=load_config)
         _repo = CaptureRepo(init_db(_config.db_path))
     return _config, _repo
 

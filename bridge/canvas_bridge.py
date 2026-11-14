@@ -25,6 +25,7 @@ from bridge.result_envelope import artifact_ref, error_envelope, success_envelop
 from bridge.run_ledger import run_with_ledger
 from db.repo import CaptureRepo
 from db.schema import init_db
+from bridge.config_paths import load_bridge_config
 
 
 def generate_canvas(
@@ -37,7 +38,7 @@ def generate_canvas(
     vault_path: str = "",
     export_file: bool = False,
 ) -> dict[str, Any]:
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    config = load_bridge_config(loader=load_config)
     resolved_db_path = db_path or config.db_path
     resolved_vault_path = vault_path or config.vault_path
     conn = init_db(resolved_db_path)

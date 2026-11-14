@@ -33,20 +33,27 @@ class ImageExtractor(BaseExtractor):
         self.api_key = api_key
         self.base_url = base_url
 
+    _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
+
     def can_handle(self, source: str) -> bool:
         # 检测图片路径或 base64 data URI
-        if source.startswith("data:image/"):
+        candidate = (source or "").strip()
+        if candidate.startswith("data:image/"):
             return True
-        if source.startswith("http") and any(
-            ext in source.lower() for ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+        if candidate.startswith(("http://", "https://")) and any(
+            ext in candidate.lower() for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp")
         ):
             return True
-        # 本地文件路径
-        if source.startswith("/") and Path(source).suffix.lower() in {
-            ".png", ".jpg", ".jpeg", ".gif", ".webp",
-        }:
-            return True
-        return False
+        # 本地文件路径：不假设 POSIX（Windows 盘符路径也必须识别）
+        if not candidate or len(candidate) > 1024 or any(c in candidate for c in ("\n", "\r", "\x00")):
+            return False
+        path = Path(candidate)
+        if path.suffix.lower() not in self._IMAGE_SUFFIXES:
+            return False
+        try:
+            return path.is_file()
+        except OSError:
+            return False
 
     def extract(self, source: str, **kwargs) -> ExtractionResult:
         if not self.api_key:
@@ -138,9 +145,14 @@ class ImageExtractor(BaseExtractor):
                 return None
             b64 = base64.b64encode(content).decode()
             return f"data:{content_type or 'image/png'};base64,{b64}"
-        if source.startswith("/"):
+        local_path = Path(source)
+        try:
+            is_local_file = local_path.is_file()
+        except OSError:
+            is_local_file = False
+        if is_local_file:
             try:
-                path = Path(source)
+                path = local_path
                 if path.exists():
                     if path.stat().st_size > MAX_IMAGE_BYTES:
                         raise DownloadTooLarge(f"image exceeds {MAX_IMAGE_BYTES} bytes")

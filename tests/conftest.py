@@ -1,9 +1,43 @@
 """共享 fixtures — 使用真实迁移过的临时数据库."""
 from __future__ import annotations
 
+import os
+import tempfile
+from pathlib import Path
+
 import pytest
+
 from db.schema import init_db
 from db.repo import CaptureRepo
+
+
+def _symlink_supported() -> bool:
+    """Windows only allows symlinks in Developer Mode / elevated shells."""
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "target").mkdir()
+            (root / "link").symlink_to(root / "target", target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+SYMLINKS_SUPPORTED = _symlink_supported()
+requires_symlink = pytest.mark.skipif(
+    not SYMLINKS_SUPPORTED,
+    reason="filesystem does not support symlinks (enable Windows Developer Mode)",
+)
+
+
+# Cross-repo pipelines need a hermes-agent-main checkout next to this one.
+RUNTIME_ROOT = Path(
+    os.environ.get("HERMES_RUNTIME_ROOT", "/Users/pipi/Downloads/hermes-agent-main")
+).expanduser()
+requires_runtime = pytest.mark.skipif(
+    not RUNTIME_ROOT.is_dir(),
+    reason=f"hermes-agent-main checkout not found at {RUNTIME_ROOT} (set HERMES_RUNTIME_ROOT)",
+)
 
 
 @pytest.fixture

@@ -5,6 +5,7 @@ import pytest
 
 import bridge.knowledge_write_service as knowledge_write_service
 from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest
+from tests.conftest import requires_runtime, requires_symlink  # noqa: E402
 
 
 def test_write_markdown_artifact_creates_parent_directory_and_file(tmp_path):
@@ -88,6 +89,7 @@ def test_write_markdown_artifact_does_not_overwrite_backup_created_in_same_secon
     assert (tmp_path / second.backup_path).read_text(encoding="utf-8") == "first update"
 
 
+@requires_symlink
 def test_write_markdown_artifact_rejects_symlink_escape_from_vault(tmp_path):
     vault = tmp_path / "vault"
     outside = tmp_path / "outside"

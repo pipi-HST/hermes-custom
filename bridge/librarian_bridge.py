@@ -18,6 +18,7 @@ from bridge.file_artifacts import write_markdown_export
 from bridge.result_envelope import artifact_ref, error_envelope, next_action, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.schema import init_db
+from bridge.config_paths import load_bridge_config
 
 
 def run_librarian_audit(
@@ -39,7 +40,7 @@ def run_librarian_audit(
                 intent="apply_librarian_repair",
                 error=confirmation_failure,
             )
-    config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+    config = load_bridge_config(loader=load_config)
     conn = init_db(config.db_path)
     return run_with_ledger(
         conn,

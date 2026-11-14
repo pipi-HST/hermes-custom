@@ -39,6 +39,7 @@ from db.reading_repo import ReadingRepo
 from db.repo import CaptureRepo
 from db.schema import init_db
 from db.write_job_repo import KnowledgeWriteJobRepo
+from bridge.config_paths import load_bridge_config
 
 _config = None
 _repo: ReadingRepo | None = None
@@ -65,7 +66,7 @@ def _init(context: KnowledgeContext | None = None):
         return context.config, context.reading_repo(), context.capture_repo()
     global _config, _repo, _capture_repo
     if _config is None:
-        _config = load_config(str(Path(__file__).parent.parent / "config.yaml"))
+        _config = load_bridge_config(loader=load_config)
         conn = init_db(_config.db_path)
         _repo = ReadingRepo(conn)
         _capture_repo = CaptureRepo(conn)

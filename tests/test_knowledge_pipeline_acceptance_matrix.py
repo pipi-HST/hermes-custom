@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.conftest import requires_runtime, requires_symlink  # noqa: E402
 
 
 def test_knowledge_pipeline_acceptance_matrix_covers_all_major_pipelines(tmp_path):
@@ -189,3 +190,5 @@ def test_live_smoke_counts_preserved_markers():
     markers = ["HERMES-LIVE-SIGNAL-01", "HERMES-LIVE-SIGNAL-02"]
 
     assert _count_preserved_markers("保留 HERMES-LIVE-SIGNAL-01", markers) == 1
+
+pytestmark = requires_runtime
