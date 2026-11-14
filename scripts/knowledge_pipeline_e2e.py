@@ -228,7 +228,21 @@ def _capture_pipeline(client: httpx.Client, api_base: str, paths: dict[str, Path
     draft_id = str((created.get("meta") or {}).get("draft_id") or "")
     draft_response = client.get(f"{api_base}/api/capture-drafts/{draft_id}") if draft_id else None
     draft = _json_response(draft_response) if draft_response is not None else {}
-    commit_response = client.post(f"{api_base}/api/capture-drafts/{draft_id}/commit") if draft_id else None
+    confirm_response = (
+        client.post(f"{api_base}/api/capture-drafts/{draft_id}/confirmation")
+        if draft_id
+        else None
+    )
+    confirmation = _json_response(confirm_response) if confirm_response is not None else {}
+    confirmation_token = str(confirmation.get("token") or "")
+    commit_response = (
+        client.post(
+            f"{api_base}/api/capture-drafts/{draft_id}/commit",
+            json={"confirmation_token": confirmation_token},
+        )
+        if draft_id
+        else None
+    )
     committed = _json_response(commit_response) if commit_response is not None else {}
     meta = committed.get("meta") if isinstance(committed.get("meta"), dict) else {}
     capture_id = str(meta.get("capture_id") or "")
