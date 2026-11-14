@@ -102,6 +102,18 @@ jobs:
       - name: Run deterministic real-browser product Pipeline
         run: .venv/bin/python scripts/knowledge_product_e2e.py
 
+      - name: Upload browser E2E artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: browser-e2e-artifacts
+          path: |
+            runtime/web/test-results-real/**
+            runtime/web/test-results/**
+            runtime/web/playwright-report/**
+          if-no-files-found: ignore
+          retention-days: 7
+
   live-provider-pipeline:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
