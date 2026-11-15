@@ -44,3 +44,6 @@ dashboard/.playwright-cli/
 
 # pytest temp dirs created inside the repo
 pytest-of-*/
+
+# local review artifacts
+data/*.bak-*

@@ -6,6 +6,8 @@ import sqlite3
 import struct
 from pathlib import Path
 
+import pytest
+
 from agents.capture_agent import CaptureConfig
 from agents.rag_graph import _theme_groups_for_captures
 from db.embedding_repo import CaptureEmbeddingRepo
@@ -460,12 +462,89 @@ def test_resolve_deepseek_credentials_normalizes_base_url():
     assert resolve_deepseek_credentials("k", "")[1] == "https://api.deepseek.com"
 
 
-def test_extract_query_keywords_strips_question_filler():
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        # 疑问壳必须被剥掉，但词内汉字一个都不能动
+        ("解释器模式有什么用", ["解释器模式"]),
+        ("什么是传话筒", ["传话筒"]),
+        ("避坑经验有哪些", ["避坑经验"]),
+        ("了解了 MCP 之后应该怎么用", ["mcp"]),
+        ("了解 MCP 怎么用", ["mcp"]),
+        ("传话筒效应怎么理解", ["传话筒效应"]),
+        ("请问一下，MCP 的 130秒 是什么？", ["mcp", "130秒"]),
+        # 反过拟合组：含"的/和/了"的实词与成语不能被杀
+        ("目的地在哪里", ["目的地"]),
+        ("总和是多少", ["总和"]),
+        ("成本总和是多少", ["成本总和"]),
+        ("君子和而不同", ["君子和而不同"]),
+        ("和谐社会", ["和谐社会"]),
+        ("和而不同", ["和而不同"]),
+        ("的确是重点", ["的确是重点"]),
+        ("了如指掌", ["了如指掌"]),
+        # 复合名词整体保留，靠 FTS 的 bigram OR 回退去召回
+        ("转介绍的目的和边界是什么", ["转介绍的目的和边界"]),
+        ("", []),
+    ],
+)
+def test_extract_query_keywords_strips_question_filler(query, expected):
     from bridge.rag_bridge import _extract_query_keywords
 
-    assert _extract_query_keywords("请问一下，MCP 的 130秒 是什么？") == [
-        "mcp",
-        "130秒",
-    ]
-    assert _extract_query_keywords("传话筒效应怎么理解") == ["传话筒效应"]
-    assert _extract_query_keywords("") == []
+    assert _extract_query_keywords(query) == expected
+
+
+def _fts_corpus(tmp_path):
+    """One capture whose body mentions every term but never the full phrase."""
+    conn = init_db(str(tmp_path / "captures.db"))
+    conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap-zhuan", "captures/zhuan.md"),
+    )
+    repo = CaptureEmbeddingRepo(conn)
+    body = (
+        "转介绍是一种获客方式，需要先说清楚它的目的，再讲边界条件。"
+        "目的不清晰时，转介绍会变成消耗人情。"
+    )
+    repo.upsert(
+        capture_id="cap-zhuan",
+        kind="identity",
+        index_text=f"文章：转介绍\n内容：{body}",
+        embedding=_vec(1.0),
+        source_hash="zhuan-identity",
+        file_path="captures/zhuan.md",
+    )
+    for index, chunk in enumerate(
+        ["转介绍的目的", "说清楚它的目的", "再讲边界条件"], start=1
+    ):
+        repo.upsert(
+            capture_id="cap-zhuan",
+            kind="section",
+            section_id=f"section-{index}",
+            section_title=f"第{index}节",
+            index_text=f"文章：转介绍\n章节：第{index}节\n内容：{chunk}",
+            embedding=_vec(1.0),
+            source_hash=f"zhuan-{index}",
+            file_path="captures/zhuan.md",
+        )
+    return conn
+
+
+def test_fts_keyword_rows_falls_back_to_bigram_or(tmp_path):
+    """短语查询 0 命中时必须用 bigram OR 补召回，而不是返回空。"""
+    from bridge.rag_bridge import _fts_keyword_rows
+
+    conn = _fts_corpus(tmp_path)
+    phrase_only = _fts_keyword_rows(conn, ["转介绍的目的和边界"], limit=6)
+    assert phrase_only, "复合问句不能因为短语命中为 0 就丢召回"
+    assert all(row["capture_id"] == "cap-zhuan" for row in phrase_only)
+    # 命中的 section 行必须带回章节名，供引用面板定位
+    assert any(row["section_title"] for row in phrase_only)
+
+
+def test_fts_keyword_rows_reports_missing_fts_table(tmp_path):
+    """没有 FTS5 表时返回 None（触发旧版兜底），语法错则返回 []。"""
+    from bridge.rag_bridge import _fts_keyword_rows
+
+    conn = init_db(str(tmp_path / "captures.db"))
+    conn.execute("DROP TABLE capture_search_fts")
+    assert _fts_keyword_rows(conn, ["转介绍"], limit=3) is None

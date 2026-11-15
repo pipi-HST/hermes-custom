@@ -1,6 +1,7 @@
 """Batch 2 — 长文切分、引用血缘、引用事件与预算控制。"""
 from __future__ import annotations
 
+import re
 import struct
 
 import pytest
@@ -128,7 +129,12 @@ def test_graph_expansion_ignores_theme_groups():
 # Context 预算与去重
 # ---------------------------------------------------------------------------
 def test_prompt_budget_and_same_capture_dedupe():
-    from agents.rag_agent import MAX_TOTAL_PROMPT_CHARS, build_rag_prompt
+    from agents.rag_agent import (
+        MAX_TOTAL_PROMPT_CHARS,
+        build_rag_prompt,
+        render_prompt,
+        select_prompt_sources,
+    )
 
     big = "丙" * 4000
     captures = [
@@ -140,7 +146,35 @@ def test_prompt_budget_and_same_capture_dedupe():
 
     assert prompt.count('<source id="cap_1"') == 0  # source 标签用编号，不写 capture_id
     assert prompt.count("<source") == 2, "同一篇资料的 identity 与 section 必须去重"
-    assert len(prompt) <= MAX_TOTAL_PROMPT_CHARS + 2000
+    assert len(prompt) <= MAX_TOTAL_PROMPT_CHARS + 200
+
+    # 编号只有一个来源：同一份 selected 既渲染 prompt 又生成 source_map。
+    selected = select_prompt_sources(captures, question="问题")
+    rendered = render_prompt("问题", selected)
+    assert rendered == prompt
+    source_ids = re.findall(r'<source id="(\d+)"', rendered)
+    assert len(source_ids) == len(selected) == 2
+    assert [item["id"] for item in selected] == ["cap_1", "cap_2"]
+
+
+def test_prompt_budget_never_drops_a_numbered_source():
+    """预算裁剪只能发生在编号之前：被丢掉的来源不能既编号又渲染。"""
+    from agents.rag_agent import (
+        MAX_TOTAL_PROMPT_CHARS,
+        render_prompt,
+        select_prompt_sources,
+    )
+
+    captures = [
+        {"id": f"cap_{index}", "matched_kind": "identity",
+         "title": f"第{index}篇", "body": "丁" * 3200}
+        for index in range(7)
+    ]
+    selected = select_prompt_sources(captures, question="问题")
+    prompt = render_prompt("问题", selected)
+    assert 0 < len(selected) < len(captures), "七篇 3200 字必须触发预算裁剪"
+    assert len(prompt) <= MAX_TOTAL_PROMPT_CHARS + 200
+    assert len(re.findall(r'<source id="(\d+)"', prompt)) == len(selected)
 
 
 # ---------------------------------------------------------------------------

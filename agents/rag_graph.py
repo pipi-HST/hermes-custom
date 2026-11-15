@@ -250,30 +250,46 @@ def _select_final_hits(
                 by_key[key] = item
 
     ranked = sorted(by_key.values(), key=lambda item: item.get("score", 0), reverse=True)
-    ranked = _prefer_sections_over_whole_note(ranked)
+    ranked = _one_hit_per_capture(ranked)
     return ranked[:final_limit]
 
 
-def _prefer_sections_over_whole_note(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    section_capture_ids = {
-        str(hit.get("id") or hit.get("capture_id") or "")
-        for hit in hits
-        if hit.get("matched_kind") == "section"
-        and (hit.get("section_id") or hit.get("section_title"))
-    }
-    if not section_capture_ids:
-        return hits
-    filtered = []
+def _one_hit_per_capture(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep at most one hit per capture: the best section, else the identity.
+
+    Retrieval used to return *every* section of an expanded capture, so the
+    prompt and ``source_map`` numbered the same document several times and one
+    note could crowd out cross-note diversity.  ``hits`` is already ranked by
+    score, so the first row seen for a capture wins within its kind.
+    """
+    best: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
     for hit in hits:
         capture_id = str(hit.get("id") or hit.get("capture_id") or "")
-        is_concrete_section = (
-            hit.get("matched_kind") == "section"
-            and (hit.get("section_id") or hit.get("section_title"))
-        )
-        if capture_id in section_capture_ids and not is_concrete_section:
+        if not capture_id:
             continue
-        filtered.append(hit)
-    return filtered
+        is_section = _is_concrete_section(hit)
+        existing = best.get(capture_id)
+        if existing is None:
+            best[capture_id] = hit
+            order.append(capture_id)
+            continue
+        # A concrete section always beats the whole-note hit; between two
+        # sections the earlier (higher scoring) one already won.
+        if is_section and not _is_concrete_section(existing):
+            best[capture_id] = hit
+    return [best[capture_id] for capture_id in order]
+
+
+def _is_concrete_section(hit: dict[str, Any]) -> bool:
+    return bool(
+        hit.get("matched_kind") == "section"
+        and (hit.get("section_id") or hit.get("section_title"))
+    )
+
+
+# Backwards-compatible alias: scripts and older imports still use the old name.
+_prefer_sections_over_whole_note = _one_hit_per_capture
 
 
 def _expanded_capture_ids(

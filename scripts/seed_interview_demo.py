@@ -46,6 +46,20 @@ from bridge.folder_store import STORE_RELATIVE_PATH, write_folder_store  # noqa:
 from db.schema import init_db  # noqa: E402
 
 DIM = 1024
+
+# Set by ``seed(use_real_embeddings=True)``.  When present every vector is a
+# real DashScope embedding; when absent the deterministic topic vectors are
+# used so the demo and the unit tests stay fully offline.
+_REAL_EMBEDDER = None
+
+
+def _vector_for(index_text: str, fallback: np.ndarray) -> np.ndarray:
+    """Return the real embedding for ``index_text``, or the offline vector."""
+    if _REAL_EMBEDDER is None:
+        return fallback
+    return _REAL_EMBEDDER(index_text)
+
+
 DEMO_FOLDERS = ["Inbox", "AI 产品面试", "Agent 与大模型", "行业与产品拆解", "读书与随笔"]
 
 CAPTURE_1_BODY = """## 💡 AI 核心导读
@@ -1113,30 +1127,34 @@ def _insert_capture(conn, capture: dict[str, Any]) -> None:
             now,
         ),
     )
+    identity_text = (
+        f"标题：{capture['title']}\n摘要：{capture['summary']}\n"
+        f"标签：{', '.join(capture['tags'])}\n目录纲要："
+        + "；".join(title for title, _summary in capture["sections"])
+    )
     _insert_embedding(
         conn,
         capture_id=capture["id"],
         kind="identity",
         section_id="",
         section_title="",
-        index_text=(
-            f"标题：{capture['title']}\n摘要：{capture['summary']}\n"
-            f"标签：{', '.join(capture['tags'])}\n目录纲要："
-            + "；".join(title for title, _summary in capture["sections"])
-        ),
-        vector=identity,
+        index_text=identity_text,
+        vector=_vector_for(identity_text, identity),
         file_path=file_path,
         now=now,
     )
     for index, (title, summary) in enumerate(capture["sections"], 1):
+        section_text = f"文章：{capture['title']}\n章节：{title}\n内容：{summary}"
         _insert_embedding(
             conn,
             capture_id=capture["id"],
             kind="section",
             section_id=f"section-{index}",
             section_title=title,
-            index_text=f"文章：{capture['title']}\n章节：{title}\n内容：{summary}",
-            vector=_section_vector(identity, capture["id"], title),
+            index_text=section_text,
+            vector=_vector_for(
+                section_text, _section_vector(identity, capture["id"], title)
+            ),
             file_path=file_path,
             now=now,
         )
@@ -1233,6 +1251,19 @@ def _insert_card(conn, card: dict[str, Any]) -> None:
             now,
         ),
     )
+    if _REAL_EMBEDDER is not None:
+        # Cards get a real vector too, so the column is populated and ready for
+        # the (not yet wired) card-vector retrieval.
+        statements = "；".join(
+            str(judgment.get("statement") or "") for judgment in card["judgments"]
+        )
+        card_text = (
+            f"标题：{card['title']}\n结论：{card['claim']}\n论点：{statements}"
+        )[:2000]
+        conn.execute(
+            "UPDATE garden_cards SET embedding = ? WHERE id = ?",
+            (_embedding_blob(_REAL_EMBEDDER(card_text)), card["id"]),
+        )
 
 
 def _insert_theme_groups(conn) -> None:
@@ -1254,7 +1285,48 @@ def _insert_theme_groups(conn) -> None:
         )
 
 
-def seed(conn, vault: Path) -> dict[str, Any]:
+def _build_real_embedder(config: Any | None):
+    """Return ``text -> np.ndarray`` backed by DashScope ``text-embedding-v4``."""
+    from agents.embedder import DIM as EMBED_DIM
+    from agents.embedder import Embedder
+
+    config = config or load_config()
+    api_key = str(getattr(config, "qwen_api_key", "") or "").strip()
+    if not api_key:
+        raise RuntimeError("qwen_api_key is empty")
+    embedder = Embedder(api_key=api_key)
+
+    def _embed(text: str) -> np.ndarray:
+        blob = embedder.embed(str(text or ""))
+        return np.frombuffer(blob, dtype=np.float32).astype(np.float32).reshape(EMBED_DIM)
+
+    return _embed
+
+
+def seed(
+    conn,
+    vault: Path,
+    *,
+    use_real_embeddings: bool = False,
+    config: Any | None = None,
+) -> dict[str, Any]:
+    """Seed the demo dataset.
+
+    ``use_real_embeddings`` stays **off by default** so unit tests never touch
+    the network; the CLI turns it on when a DashScope key is configured.
+    """
+    global _REAL_EMBEDDER
+    previous_embedder = _REAL_EMBEDDER
+    _REAL_EMBEDDER = None
+    embedding_mode = "synthetic"
+    if use_real_embeddings:
+        try:
+            _REAL_EMBEDDER = _build_real_embedder(config)
+            embedding_mode = "dashscope"
+        except Exception as exc:  # noqa: BLE001 - seeding must still work offline
+            print(f"[seed] real embeddings unavailable, using synthetic: {exc}")
+            _REAL_EMBEDDER = None
+
     vault.mkdir(parents=True, exist_ok=True)
     (vault / "captures").mkdir(parents=True, exist_ok=True)
     (vault / "_archive" / "raw").mkdir(parents=True, exist_ok=True)
@@ -1278,12 +1350,20 @@ def seed(conn, vault: Path) -> dict[str, Any]:
     write_folder_store(vault, DEMO_FOLDERS)
     conn.commit()
 
+    # Cards are deleted and re-inserted above; the ledger keeps its rows, so
+    # the cached counters must be rebuilt instead of silently resetting to 0.
+    from bridge.rag_bridge import recompute_card_citation_counts
+
+    recompute_card_citation_counts(conn)
+
     graph = KnowledgeGraphService(conn, vault).refresh()
+    _REAL_EMBEDDER = previous_embedder
     return {
         "captures": len(CAPTURES),
         "cards": len(CARD_DEFINITIONS),
         "theme_groups": len(THEME_GROUPS),
         "graph": graph,
+        "embedding_mode": embedding_mode,
     }
 
 
@@ -1338,14 +1418,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default="")
     parser.add_argument("--vault", default="")
     parser.add_argument("--json", action="store_true", help="print only the JSON summary")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="force deterministic offline vectors even when an API key exists",
+    )
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
+    use_real_embeddings = bool(
+        not args.offline and str(getattr(config, "qwen_api_key", "") or "").strip()
+    )
     db_path = _resolve_path(args.db or config.db_path, REPO_ROOT)
     vault_path = _resolve_path(args.vault or config.vault_path, REPO_ROOT)
     conn = init_db(str(db_path))
     try:
-        seeded = seed(conn, vault_path)
+        seeded = seed(
+            conn,
+            vault_path,
+            use_real_embeddings=use_real_embeddings,
+            config=config,
+        )
         verified = verify(conn, vault_path)
     finally:
         conn.close()

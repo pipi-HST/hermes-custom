@@ -77,3 +77,52 @@ def build_fts_match_query(keywords: list[str] | tuple[str, ...]) -> str:
         if phrase and phrase not in phrases:
             phrases.append(phrase)
     return " OR ".join(phrases)
+
+
+# Characters that carry no retrieval signal *when both* characters of a bigram
+# are particles.  A single particle inside a real word (目的 / 的确 / 在线) must
+# survive, so the filter is intentionally "all characters", not "any character".
+_PARTICLE_CHARS = frozenset("的了是在和与及或吗呢呀吧")
+
+
+def _is_noise_bigram(token: str) -> bool:
+    return len(token) == 2 and all(char in _PARTICLE_CHARS for char in token)
+
+
+def build_fts_or_query(keywords: list[str] | tuple[str, ...]) -> str:
+    """Loose fallback query: OR the bigrams instead of requiring adjacency.
+
+    ``build_fts_match_query`` needs the bigrams of one keyword to appear
+    *adjacent and in order*, which is exactly why a compound phrase such as
+    ``转介绍的目的和边界`` finds nothing.  OR-ing the bigrams keeps recall when
+    the query mixes several terms into one run of Chinese characters.
+    """
+    tokens: list[str] = []
+    for keyword in keywords or []:
+        text = str(keyword or "").strip()
+        if not text:
+            continue
+        for match in _RUN_RE.finditer(text):
+            run = match.group(0)
+            if _CJK_ONLY_RE.fullmatch(run):
+                grams = _bigrams(run)
+                candidates = (
+                    grams
+                    if len(grams) == 1
+                    else [gram for gram in grams if not _is_noise_bigram(gram)]
+                )
+            else:
+                candidates = [run.lower()]
+            for candidate in candidates:
+                if candidate and candidate not in tokens:
+                    tokens.append(candidate)
+    return " OR ".join(f'"{token}"' for token in tokens)
+
+
+def keyword_bigram_hits(keyword: str, haystack: str) -> int:
+    """How many non-noise bigrams of ``keyword`` appear in ``haystack``."""
+    text = str(keyword or "")
+    if not text or not _CJK_ONLY_RE.fullmatch(text):
+        return 0
+    grams = [gram for gram in _bigrams(text) if not _is_noise_bigram(gram)]
+    return sum(1 for gram in grams if gram in haystack)
