@@ -1,8 +1,15 @@
 """Calibrate the vector relevance gate from measured score distributions.
 
-`MIN_VECTOR_SCORE = 0.20` was a guess.  This script measures the actual
-positive/negative cosine distributions for the *engine in use* and proposes a
-threshold at the midpoint between Q95(negative) and Q10(positive).
+``MIN_VECTOR_SCORE`` used to be a guess (0.20).  This script measures the
+actual positive/negative cosine distributions for the *engine in use* and
+proposes a threshold at the midpoint between Q95(negative) and Q10(positive).
+
+When the two distributions overlap (``separation < 0``) that midpoint is a
+**compromise operating point**, not a decision boundary: by construction it
+rejects roughly 10% of near-miss positives while still admitting roughly 5% of
+negatives.  It is a first-pass filter only — production still needs rerank or
+score fusion, and the literal-keyword exemption in ``bridge/rag_bridge.py``
+exists precisely to rescue those rejected positives.
 
 The engine matters: a semantic embedding model and an offline char-ngram hash
 produce completely different distributions, so a threshold calibrated on one
@@ -163,12 +170,16 @@ def calibrate() -> dict:
         "negative_p95": q95_neg,
         "separation": round(q10_pos - q95_neg, 4),
         "suggested_min_vector_score": suggested,
-        "current_min_vector_score": 0.20,
+        "current_min_vector_score": 0.46,
         "note": (
             "hash 引擎衡量字面重合，阈值只在同一引擎内有效；"
             "配好 embedding key 后必须重跑本脚本"
             if engine == ENGINE_OFFLINE
-            else "语义引擎实测分布，可直接用于生产阈值"
+            else (
+                "语义引擎实测分布。separation<0 表示正负分布重叠，"
+                "suggested 只是折中工作点（约牺牲 10% 边缘正样本），"
+                "仅作首轮粗筛，不能替代 rerank/分数融合"
+            )
         ),
     }
 

@@ -78,3 +78,34 @@ def real_db(tmp_path):
         yield CaptureRepo(conn)
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Browser e2e isolation
+# ---------------------------------------------------------------------------
+# These modules spawn a real Chromium child process.  On Windows the browser
+# occasionally dies inside crashpad and takes the whole pytest process with it
+# (exit 4294930435), which hides every other result.  They are opt-in.
+BROWSER_TEST_FILES = {
+    "test_knowledge_product_e2e.py",
+    "test_reset_hermes_local_data.py",
+    "test_reset_smoke.py",
+}
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-browser",
+        action="store_true",
+        default=False,
+        help="also run the desktop-browser e2e tests (spawns Chromium)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-browser"):
+        return
+    skip_browser = pytest.mark.skip(reason="browser e2e: pass --run-browser to run")
+    for item in items:
+        if Path(str(item.fspath)).name in BROWSER_TEST_FILES:
+            item.add_marker(skip_browser)

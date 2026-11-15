@@ -330,7 +330,7 @@ def web_context_answer(
         web_attempted=use_web,
         synthesis_skipped=synthesis_skipped,
     )
-    total_elapsed_ms = int((time.monotonic() - started) * 1000)
+    total_elapsed_ms = round((time.monotonic() - started) * 1000.0, 3)
     provider_status["total_elapsed_ms"] = total_elapsed_ms
     summary_update = _updated_history_summary(
         history_summary=history_summary,
@@ -871,7 +871,7 @@ def _search_candidates(
             query_status = {
                 "query": search_query,
                 "status": "success",
-                "duration_ms": int((time.monotonic() - query_started) * 1000),
+                "duration_ms": round((time.monotonic() - query_started) * 1000.0, 3),
                 "result_count": len(parsed),
                 "error": "",
             }
@@ -879,7 +879,7 @@ def _search_candidates(
             query_status = {
                 "query": search_query,
                 "status": "timeout" if isinstance(exc, TimeoutError) else "failed",
-                "duration_ms": int((time.monotonic() - query_started) * 1000),
+                "duration_ms": round((time.monotonic() - query_started) * 1000.0, 3),
                 "result_count": 0,
                 "error": str(exc),
             }
@@ -1519,7 +1519,7 @@ def _provider_status(
 ) -> dict[str, Any]:
     status = {
         "path": "web_context",
-        "total_elapsed_ms": int((time.monotonic() - started) * 1000),
+        "total_elapsed_ms": round((time.monotonic() - started) * 1000.0, 3),
         "warnings": list(warnings),
         "stage_timings": stage_timings,
         "synthesis_skipped": synthesis_skipped,
@@ -1555,7 +1555,9 @@ def _empty_web_context_stage_timings() -> dict[str, int]:
 def _add_web_context_stage_timing(stage_timings: dict[str, Any], key: str, started: float) -> None:
     if key not in _empty_web_context_stage_timings():
         return
-    stage_timings[key] = int(stage_timings.get(key) or 0) + int((time.monotonic() - started) * 1000)
+    stage_timings[key] = float(stage_timings.get(key) or 0) + round(
+        (time.monotonic() - started) * 1000.0, 3
+    )
 
 
 def _run_coro_sync(coro: Awaitable[Any]) -> Any:

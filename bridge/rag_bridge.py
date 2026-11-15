@@ -953,13 +953,29 @@ def _indexed_search(
     return results
 
 
+def _chunk_body_from_index_text(index_text: object) -> str:
+    """The exact chunk text stored next to the vector, if this row is one."""
+    text = str(index_text or "")
+    marker = "\n内容："
+    if marker not in text:
+        return ""
+    return text.split(marker, 1)[1].strip()
+
+
 def _hydrate_capture(vault_path: str, row: dict) -> dict:
     """RAG view: the shared capture view plus the aliases the prompt uses."""
     frontmatter, body = read_capture_note(vault_path, row)
     item = build_capture_view(row, frontmatter, body)
     section_title = row.get("section_title", "")
-    if row.get("matched_kind") == "section" and section_title:
-        item["body"] = _extract_section_body(body, section_title) or body
+    if row.get("matched_kind") == "section":
+        # Split chunks share the same visible section title, so heading-based
+        # extraction would hand chunk 2 the whole section.  Prefer the chunk
+        # text that was actually embedded.
+        chunk_body = _chunk_body_from_index_text(row.get("index_text"))
+        if chunk_body:
+            item["body"] = chunk_body
+        elif section_title:
+            item["body"] = _extract_section_body(body, section_title) or body
     return {
         **item,
         "story": frontmatter.get("story", ""),

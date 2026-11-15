@@ -2629,9 +2629,10 @@ def test_commit_long_full_text_save_generates_clickable_sections_and_rag(
         "SELECT section_title FROM capture_embeddings WHERE capture_id = ? AND kind = 'section'",
         (committed["capture_id"],),
     ).fetchall()
+    # 长章节会被滑动窗口切成多个 chunk，但对外标题仍是干净的原章节名。
     assert {row["section_title"] for row in section_rows} == {"第一部分", "第二部分"}
     assert committed["library_postprocess"]["pipeline"]["directory_rendered"] is True
-    assert committed["library_postprocess"]["pipeline"]["section_embedding_count"] == 2
+    assert committed["library_postprocess"]["pipeline"]["section_embedding_count"] >= 2
     assert committed["library_postprocess"]["pipeline"]["rag_section_ready"] is True
 
 

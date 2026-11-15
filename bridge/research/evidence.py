@@ -176,7 +176,7 @@ def _web_provider_status(
     except Exception:
         pass
     extracted = sources or []
-    elapsed_ms = int((time.monotonic() - started) * 1000)
+    elapsed_ms = round((time.monotonic() - started) * 1000.0, 3)
     return {
         "search_backend": search_backend,
         "extract_backend": extract_backend,

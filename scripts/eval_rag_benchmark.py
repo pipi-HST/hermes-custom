@@ -345,7 +345,7 @@ def _vector_hits(conn, query: str, limit: int, threshold: float | None = None) -
 
     query_vec = _blob(query)
     keywords = _keywords(query)
-    rows = CaptureEmbeddingRepo(conn).search(query_vec, limit=limit * 3, two_stage_threshold=40)
+    rows = CaptureEmbeddingRepo(conn).search(query_vec, limit=limit * 4, two_stage_threshold=40)
     seen: list[str] = []
     for row in rows:
         # Mirror the product's relevance gate: weak vector hits only survive
@@ -362,19 +362,26 @@ def _vector_hits(conn, query: str, limit: int, threshold: float | None = None) -
 
 
 def _legacy_hits(conn, query: str, limit: int) -> list[str]:
-    """Pre-refactor baseline: literal match on identity only, no sections, no cards."""
-    match = build_fts_match_query(_keywords(query))
-    if not match:
+    """Pre-refactor baseline: literal substring on title/summary, no FTS, no sections.
+
+    This must NOT use the new FTS table or the new tokenizer — otherwise the
+    "old" group is just the new index with half the rows removed and the
+    measured improvement is meaningless.
+    """
+    keywords = _keywords(query)
+    if not keywords:
         return []
-    try:
-        rows = conn.execute(
-            "SELECT capture_id FROM capture_search_fts "
-            "WHERE capture_search_fts MATCH ? AND kind = 'identity' LIMIT ?",
-            (match, limit),
-        ).fetchall()
-    except Exception:
-        return []
-    return [str(row["capture_id"]) for row in rows]
+    rows = conn.execute(
+        "SELECT capture_id, index_text FROM capture_embeddings WHERE kind = 'identity'"
+    ).fetchall()
+    scored: list[tuple[int, str]] = []
+    for row in rows:
+        haystack = str(row["index_text"] or "").lower()
+        hits = sum(1 for keyword in keywords if keyword in haystack)
+        if hits:
+            scored.append((hits, str(row["capture_id"] or "")))
+    scored.sort(key=lambda pair: (-pair[0], pair[1]))
+    return [capture_id for _hits, capture_id in scored[:limit]]
 
 
 def _keyword_hits(conn, query: str, limit: int) -> list[str]:
@@ -444,7 +451,7 @@ def run_group(group: str, conn, query: str, limit: int = 5, threshold: float | N
 
 
 GROUPS = [
-    "G0_legacy_identity_keyword",
+    "G0_title_summary_substring",
     "G1_vector_only",
     "G2_vector_plus_fts",
     "G3_full_v3",
@@ -469,6 +476,15 @@ def evaluate(conn, units: list[Unit], cards: list[dict[str, Any]], threshold: fl
     results: dict[str, Any] = {"groups": {}, "engine": ENGINE_OFFLINE}
     positives = [q for q in QUERIES if q["gold"]]
     negatives = [q for q in QUERIES if not q["gold"]]
+    # Warm the embedding cache for every query *before* timing anything.  G1
+    # used to pay the API round trip while G2/G3 read a warm cache, which made
+    # the latency column look like a 300x algorithmic win.
+    embed_times: list[float] = []
+    for query in QUERIES:
+        started = time.perf_counter()
+        _blob(query["query"])
+        embed_times.append((time.perf_counter() - started) * 1000)
+    results["embed_api_mean_ms"] = round(statistics.mean(embed_times), 2)
     for group in GROUPS:
         latencies: list[float] = []
         r3 = r5 = mrr = 0.0
@@ -496,6 +512,22 @@ def evaluate(conn, units: list[Unit], cards: list[dict[str, Any]], threshold: fl
                 sorted(latencies)[max(0, math.ceil(len(latencies) * 0.95) - 1)], 2
             ),
         }
+    per_query: list[dict[str, Any]] = []
+    for query in QUERIES:
+        entry = {
+            "id": query["id"],
+            "query": query["query"],
+            "kind": query.get("kind", ""),
+            "gold": list(query["gold"]),
+            "hits": {},
+        }
+        for group in GROUPS:
+            entry["hits"][group] = run_group(
+                group, conn, query["query"], threshold=threshold
+            )
+        per_query.append(entry)
+    results["per_query_details"] = per_query
+
     prompt_sizes: list[int] = []
     for query in positives:
         hits = run_group("G3_full_v3", conn, query["query"])

@@ -92,14 +92,17 @@ def build_section_indexes(
             clean_body = _clip(_normalize_body(chunk), SECTION_BODY_CHARS)
             if not clean_body:
                 continue
-            sub_title = (
+            # The chunk suffix belongs to the *index* text only: the visible
+            # section title is what citations show, and "第二部分（第 2 部分）"
+            # leaked that internal numbering into the UI.
+            index_title = (
                 clean_title if part == 1 else f"{clean_title}（第 {part} 部分）"
             )
             section_id = f"section-{idx}" if part == 1 else f"section-{idx}-p{part}"
             index_text = "\n".join(
                 [
                     f"文章：{title}",
-                    f"章节：{sub_title}",
+                    f"章节：{index_title}",
                     f"内容：{clean_body}",
                 ]
             )
@@ -108,7 +111,7 @@ def build_section_indexes(
                     capture_id=capture_id,
                     kind="section",
                     section_id=section_id,
-                    section_title=sub_title,
+                    section_title=clean_title,
                     index_text=index_text,
                     source_hash=_hash_text(index_text),
                     file_path=file_path,
@@ -131,10 +134,15 @@ def _split_long_body(
         return [text]
     chunks: list[str] = []
     current = ""
-    for paragraph in re.split(r"\n\s*\n", text):
-        paragraph = paragraph.strip()
-        if not paragraph:
+    paragraphs: list[str] = []
+    for raw_paragraph in re.split(r"\n\s*\n", text):
+        raw_paragraph = raw_paragraph.strip()
+        if not raw_paragraph:
             continue
+        # A single wall-of-text paragraph (common in scraped articles) has no
+        # blank line to split on; without this the tail is silently clipped.
+        paragraphs.extend(_split_oversized_paragraph(raw_paragraph, chunk_chars))
+    for paragraph in paragraphs:
         candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
         if current and len(candidate) > chunk_chars:
             chunks.append(current)
@@ -147,6 +155,33 @@ def _split_long_body(
     return chunks
 
 
+def _split_oversized_paragraph(paragraph: str, chunk_chars: int) -> list[str]:
+    """Split one over-long paragraph on sentence ends, then by hard window."""
+    if len(paragraph) <= chunk_chars:
+        return [paragraph]
+    sentences = [
+        piece for piece in re.split(r"(?<=[。！？；.!?;])", paragraph) if piece.strip()
+    ]
+    pieces: list[str] = []
+    current = ""
+    for sentence in sentences:
+        if len(sentence) > chunk_chars:
+            if current:
+                pieces.append(current)
+                current = ""
+            for start in range(0, len(sentence), chunk_chars):
+                pieces.append(sentence[start : start + chunk_chars])
+            continue
+        if current and len(current) + len(sentence) > chunk_chars:
+            pieces.append(current)
+            current = sentence
+        else:
+            current += sentence
+    if current:
+        pieces.append(current)
+    return [piece.strip() for piece in pieces if piece.strip()]
+
+
 def _fallback_sections(body: str) -> list[tuple[str, str]]:
     """Give heading-less long text paragraph-sized pseudo sections."""
     text = (body or "").strip()
@@ -155,7 +190,15 @@ def _fallback_sections(body: str) -> list[tuple[str, str]]:
     chunks = _split_long_body(
         text, chunk_chars=PARAGRAPH_FALLBACK_CHUNK_CHARS, overlap=0
     )
-    return [(f"正文片段 {index}", chunk) for index, chunk in enumerate(chunks, 1)]
+    sections: list[tuple[str, str]] = []
+    for index, chunk in enumerate(chunks, 1):
+        lead = re.split(r"(?<=[。！？!?；;\n])", chunk.strip())[0].strip()
+        lead = re.sub(r"^#{1,6}\s*", "", lead)[:18].strip()
+        # Keep the index prefix so the title stays unique even when two chunks
+        # open with the same sentence.
+        title = f"正文片段 {index}·{lead}" if lead else f"正文片段 {index}"
+        sections.append((title, chunk))
+    return sections
 
 
 def _outline_sections(outline: list[dict]) -> list[tuple[str, str]]:
