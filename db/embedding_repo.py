@@ -6,6 +6,95 @@ import uuid
 from datetime import datetime, timezone
 
 from agents.embedder import batch_cosine_similarity
+from db.fts_tokenizer import tokenize_for_fts
+
+
+def _delete_fts_row(
+    conn: sqlite3.Connection,
+    *,
+    capture_id: str,
+    kind: str,
+    section_id: str,
+) -> None:
+    """Keep the derived FTS index in step with ``capture_embeddings``.
+
+    Silently skipped when the database was built without FTS5; the keyword
+    search path then degrades to its legacy implementation.
+    """
+    try:
+        conn.execute(
+            "DELETE FROM capture_search_fts "
+            "WHERE capture_id = ? AND kind = ? AND section_id = ?",
+            (capture_id, kind, section_id),
+        )
+    except sqlite3.OperationalError:
+        pass
+
+
+def _insert_fts_row(
+    conn: sqlite3.Connection,
+    *,
+    capture_id: str,
+    kind: str,
+    section_id: str,
+    section_title: str,
+    index_text: str,
+) -> None:
+    try:
+        conn.execute(
+            "INSERT INTO capture_search_fts "
+            "(capture_id, kind, section_id, section_title_tokens, index_text_tokens) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                capture_id,
+                kind,
+                section_id,
+                tokenize_for_fts(section_title),
+                tokenize_for_fts(index_text),
+            ),
+        )
+    except sqlite3.OperationalError:
+        pass
+
+
+def rebuild_fts_from_embeddings(conn: sqlite3.Connection) -> int:
+    """Rebuild the whole keyword index from ``capture_embeddings``.
+
+    The FTS table is derived data.  A plain re-index run skips chunks whose
+    ``source_hash`` is unchanged, so a database that predates the FTS table
+    would otherwise keep an empty index forever and keyword search would look
+    broken for no visible reason.
+    """
+    from db.schema import CREATE_CAPTURE_SEARCH_FTS_TABLE
+
+    try:
+        conn.execute(CREATE_CAPTURE_SEARCH_FTS_TABLE)
+        conn.execute("DELETE FROM capture_search_fts")
+    except sqlite3.OperationalError:
+        return 0
+    rows = conn.execute(
+        "SELECT capture_id, kind, section_id, section_title, index_text "
+        "FROM capture_embeddings"
+    ).fetchall()
+    payload = [
+        (
+            str(row["capture_id"] or ""),
+            str(row["kind"] or ""),
+            str(row["section_id"] or ""),
+            tokenize_for_fts(str(row["section_title"] or "")),
+            tokenize_for_fts(str(row["index_text"] or "")),
+        )
+        for row in rows
+    ]
+    if payload:
+        conn.executemany(
+            "INSERT INTO capture_search_fts "
+            "(capture_id, kind, section_id, section_title_tokens, index_text_tokens) "
+            "VALUES (?, ?, ?, ?, ?)",
+            payload,
+        )
+    conn.commit()
+    return len(payload)
 
 
 class CaptureEmbeddingRepo:
@@ -52,6 +141,17 @@ class CaptureEmbeddingRepo:
                 now,
             ),
         )
+        _delete_fts_row(
+            self.conn, capture_id=capture_id, kind=kind, section_id=section_id
+        )
+        _insert_fts_row(
+            self.conn,
+            capture_id=capture_id,
+            kind=kind,
+            section_id=section_id,
+            section_title=section_title,
+            index_text=index_text,
+        )
         self.conn.commit()
         return self.get(capture_id, kind, section_id) or {}
 
@@ -95,6 +195,13 @@ class CaptureEmbeddingRepo:
                WHERE capture_id = ? AND kind = ? AND section_id = ?""",
             [(capture_id, kind, section_id) for kind, section_id in stale_keys],
         )
+        for kind, section_id in stale_keys:
+            _delete_fts_row(
+                self.conn,
+                capture_id=capture_id,
+                kind=kind,
+                section_id=section_id,
+            )
         self.conn.commit()
         return len(stale_keys)
 
@@ -114,18 +221,24 @@ class CaptureEmbeddingRepo:
         *,
         kinds: tuple[str, ...] = ("identity", "section"),
         limit: int = 5,
+        two_stage_threshold: int = 40,
     ) -> list[dict]:
         if not kinds or limit <= 0:
             return []
         placeholders = ", ".join("?" for _ in kinds)
         rows = self.conn.execute(
-            f"""SELECT id, embedding
-                FROM capture_embeddings
-                WHERE embedding IS NOT NULL AND kind IN ({placeholders})""",
+            f"""SELECT ce.id, ce.capture_id, ce.kind, ce.embedding
+                FROM capture_embeddings ce
+                LEFT JOIN captures c ON c.id = ce.capture_id
+                WHERE ce.embedding IS NOT NULL
+                  AND ce.kind IN ({placeholders})
+                  AND COALESCE(c.review_state, '') != 'archived'""",
             kinds,
         ).fetchall()
         if not rows:
             return []
+        if len(rows) > two_stage_threshold and "section" in kinds:
+            rows = self._coarse_filter(query_embedding, rows)
         embeddings = [row["embedding"] for row in rows]
         scores = batch_cosine_similarity(query_embedding, embeddings)
         scored: list[tuple[str, float]] = []
@@ -147,6 +260,37 @@ class CaptureEmbeddingRepo:
             item["score"] = top_scores[row_id]
             items.append(item)
         return items
+
+    @staticmethod
+    def _coarse_filter(query_embedding: bytes, rows: list, *, keep: int = 30) -> list:
+        """Stage 1: rank whole notes by identity, then score only their sections.
+
+        A full scan already happened to load the rows; the saving is cosine work
+        and the row hydration that used to run over every section of every note.
+        """
+        from agents.embedder import batch_cosine_similarity as _cos
+
+        identity_rows = [row for row in rows if row["kind"] == "identity"]
+        if not identity_rows:
+            return rows
+        scores = _cos(query_embedding, [row["embedding"] for row in identity_rows])
+        ranked = sorted(
+            zip(identity_rows, scores), key=lambda pair: pair[1], reverse=True
+        )
+        keep_ids = {
+            str(row["capture_id"])
+            for row, _score in ranked[:keep]
+        }
+        # A note that only has section rows cannot be ranked; keep it rather
+        # than silently dropping its evidence.
+        identity_capture_ids = {str(row["capture_id"]) for row in identity_rows}
+        for row in rows:
+            capture_id = str(row["capture_id"])
+            if capture_id not in identity_capture_ids:
+                keep_ids.add(capture_id)
+        if not keep_ids:
+            return rows
+        return [row for row in rows if str(row["capture_id"]) in keep_ids]
 
     def _get_rows_by_ids(self, row_ids: list[str]) -> list[sqlite3.Row]:
         if not row_ids:

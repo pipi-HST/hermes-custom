@@ -55,6 +55,21 @@ class CaptureBodyRenderResult:
     heading_count: int = 0
 
 
+def _card_embedding_text(row) -> str:
+    """Compact text that represents one knowledge card in vector space."""
+    parts = []
+    title = str(row["title"] or "").strip()
+    one_liner = str(row["one_liner"] or "").strip()
+    arguments = str(row["core_arguments"] or "").strip()
+    if title:
+        parts.append(f"标题：{title}")
+    if one_liner:
+        parts.append(f"结论：{one_liner}")
+    if arguments:
+        parts.append(f"论点：{arguments}")
+    return "\n".join(parts)[:2000]
+
+
 class LibraryAgent:
     """Maintain vault-level metadata without rewriting note prose."""
 
@@ -343,7 +358,63 @@ class LibraryAgent:
         rows = conn.execute(
             "SELECT id, file_path FROM captures ORDER BY created_at ASC"
         ).fetchall()
-        return self._maintain_embedding_index_rows(rows, apply=apply)
+        report = self._maintain_embedding_index_rows(rows, apply=apply)
+        if apply:
+            # The FTS index is derived data covering *every* chunk, including
+            # the ones the incremental pass just skipped.  Rebuilding it here
+            # is what makes a pre-FTS database searchable on the next run.
+            try:
+                from db.embedding_repo import rebuild_fts_from_embeddings
+
+                report["fts_rows"] = rebuild_fts_from_embeddings(conn)
+            except Exception as exc:  # pragma: no cover - defensive
+                report["fts_error"] = str(exc)
+            try:
+                report["card_embeddings"] = self._maintain_card_embeddings(
+                    conn, apply=True
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                report["card_embedding_error"] = str(exc)
+        return report
+
+    def _sync_capture_folder(self, conn, capture_id: str, frontmatter: dict) -> None:
+        """链路①写入侧：把 frontmatter 的专题镜像进 capture_metadata。"""
+        folder = str(
+            frontmatter.get("folder_path") or frontmatter.get("folder") or "Inbox"
+        )
+        try:
+            CaptureMetadataRepo(conn).set_folder_path(capture_id, folder)
+        except Exception:
+            pass
+
+    def _maintain_card_embeddings(self, conn, *, apply: bool = False) -> dict[str, Any]:
+        """Give knowledge cards their own vector so they can be recalled semantically."""
+        rows = conn.execute(
+            "SELECT id, title, one_liner, core_arguments, embedding FROM garden_cards"
+        ).fetchall()
+        missing = [row for row in rows if not row["embedding"]]
+        updated = 0
+        errors = 0
+        if apply:
+            for row in missing:
+                text = _card_embedding_text(row)
+                if not text.strip():
+                    continue
+                try:
+                    conn.execute(
+                        "UPDATE garden_cards SET embedding = ?, updated_at = datetime('now') WHERE id = ?",
+                        (self.embedder.embed(text), row["id"]),
+                    )
+                    updated += 1
+                except Exception:
+                    errors += 1
+            conn.commit()
+        return {
+            "scanned": len(rows),
+            "missing": len(missing),
+            "updated": updated,
+            "errors": errors,
+        }
 
     def repair_long_capture_directories(self, *, apply: bool = False) -> dict[str, Any]:
         """Audit or repair committed long captures whose visible body lacks a usable directory."""
@@ -505,6 +576,8 @@ class LibraryAgent:
 
             report["scanned"] += 1
             frontmatter, body = parsed
+            if apply:
+                self._sync_capture_folder(conn, capture_id, frontmatter)
             metadata = CaptureMetadataRepo(conn).get(capture_id)
             metadata_outline = metadata.get("outline") if metadata else None
             index_items = [

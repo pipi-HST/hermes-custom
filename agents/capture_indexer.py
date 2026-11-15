@@ -11,6 +11,14 @@ from agents.managed_sections import is_managed_section_title
 
 IDENTITY_BODY_HINT_CHARS = 500
 SECTION_BODY_CHARS = 1600
+# Long sections are split instead of clipped: Chinese long-form articles put
+# conclusions and action items at the end, which a head-truncation silently
+# dropped from the index.
+SECTION_CHUNK_CHARS = 1500
+SECTION_CHUNK_OVERLAP = 200
+# Articles without any ## / ### heading used to produce zero section vectors.
+PARAGRAPH_FALLBACK_MIN_CHARS = 1000
+PARAGRAPH_FALLBACK_CHUNK_CHARS = 1300
 
 
 @dataclass(frozen=True)
@@ -71,32 +79,83 @@ def build_section_indexes(
     outline: list[dict] | None = None,
 ) -> list[IndexItem]:
     sections = _markdown_sections(body)
+    if not sections:
+        sections = _fallback_sections(body)
     title = _single_line(str(frontmatter.get("title") or "未命名"))
     items: list[IndexItem] = []
-    for idx, (section_title, section_body) in enumerate(sections, 1):
+    for idx, (section_title, raw_body) in enumerate(sections, 1):
         clean_title = _single_line(section_title)
-        clean_body = _clip(_normalize_body(section_body), SECTION_BODY_CHARS)
-        if not clean_title or not clean_body:
+        if not clean_title:
             continue
-        index_text = "\n".join(
-            [
-                f"文章：{title}",
-                f"章节：{clean_title}",
-                f"内容：{clean_body}",
-            ]
-        )
-        items.append(
-            IndexItem(
-                capture_id=capture_id,
-                kind="section",
-                section_id=f"section-{idx}",
-                section_title=clean_title,
-                index_text=index_text,
-                source_hash=_hash_text(index_text),
-                file_path=file_path,
+        chunks = _split_long_body(raw_body)
+        for part, chunk in enumerate(chunks, 1):
+            clean_body = _clip(_normalize_body(chunk), SECTION_BODY_CHARS)
+            if not clean_body:
+                continue
+            sub_title = (
+                clean_title if part == 1 else f"{clean_title}（第 {part} 部分）"
             )
-        )
+            section_id = f"section-{idx}" if part == 1 else f"section-{idx}-p{part}"
+            index_text = "\n".join(
+                [
+                    f"文章：{title}",
+                    f"章节：{sub_title}",
+                    f"内容：{clean_body}",
+                ]
+            )
+            items.append(
+                IndexItem(
+                    capture_id=capture_id,
+                    kind="section",
+                    section_id=section_id,
+                    section_title=sub_title,
+                    index_text=index_text,
+                    source_hash=_hash_text(index_text),
+                    file_path=file_path,
+                )
+            )
     return items
+
+
+def _split_long_body(
+    raw_body: str,
+    *,
+    chunk_chars: int = SECTION_CHUNK_CHARS,
+    overlap: int = SECTION_CHUNK_OVERLAP,
+) -> list[str]:
+    """Split one section into overlapping chunks on paragraph boundaries."""
+    text = (raw_body or "").strip()
+    if not text:
+        return []
+    if len(_normalize_body(text)) <= SECTION_BODY_CHARS:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for paragraph in re.split(r"\n\s*\n", text):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
+        if current and len(candidate) > chunk_chars:
+            chunks.append(current)
+            tail = current[-overlap:].strip() if overlap else ""
+            current = f"{tail}\n\n{paragraph}".strip() if tail else paragraph
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _fallback_sections(body: str) -> list[tuple[str, str]]:
+    """Give heading-less long text paragraph-sized pseudo sections."""
+    text = (body or "").strip()
+    if len(_normalize_body(text)) <= PARAGRAPH_FALLBACK_MIN_CHARS:
+        return []
+    chunks = _split_long_body(
+        text, chunk_chars=PARAGRAPH_FALLBACK_CHUNK_CHARS, overlap=0
+    )
+    return [(f"正文片段 {index}", chunk) for index, chunk in enumerate(chunks, 1)]
 
 
 def _outline_sections(outline: list[dict]) -> list[tuple[str, str]]:

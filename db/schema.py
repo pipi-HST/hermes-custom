@@ -380,6 +380,34 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_edges_relation
 ON knowledge_edges (relation_type, score)
 """
 
+# CJK-aware keyword index.  Content is pre-tokenised by ``db.fts_tokenizer``
+# (overlapping bigrams) because ``unicode61`` alone cannot match Chinese
+# substrings and ``trigram`` cannot match two-character words.
+CREATE_CAPTURE_SEARCH_FTS_TABLE = """
+CREATE VIRTUAL TABLE IF NOT EXISTS capture_search_fts USING fts5(
+    capture_id UNINDEXED,
+    kind UNINDEXED,
+    section_id UNINDEXED,
+    section_title_tokens,
+    index_text_tokens,
+    tokenize='unicode61'
+)
+"""
+
+CREATE_CITATION_EVENTS_TABLE = """
+CREATE TABLE IF NOT EXISTS citation_events (
+    id TEXT PRIMARY KEY,
+    card_id TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    query TEXT NOT NULL DEFAULT '',
+    cited_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+CREATE_CITATION_EVENTS_CARD_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_citation_events_card ON citation_events(card_id)
+"""
+
 
 def _dict_row(cursor: sqlite3.Cursor, row: tuple) -> dict:
     """Materialise rows as plain dicts at fetch time.
@@ -426,6 +454,11 @@ def init_db(db_path: str) -> sqlite3.Connection:
         conn.execute(CREATE_CAPTURE_EMBEDDINGS_TABLE)
         conn.execute(CREATE_CAPTURE_EMBEDDINGS_SEARCH_INDEX)
         conn.execute(CREATE_CAPTURE_METADATA_TABLE)
+        _migrate_capture_metadata_table(conn)
+        _create_capture_search_fts(conn)
+        _backfill_capture_search_fts(conn)
+        conn.execute(CREATE_CITATION_EVENTS_TABLE)
+        conn.execute(CREATE_CITATION_EVENTS_CARD_INDEX)
         conn.execute(CREATE_REVIEW_ITEMS_TABLE)
         _migrate_review_items_table(conn)
         conn.execute(CREATE_READING_SESSIONS_TABLE)
@@ -601,6 +634,108 @@ def _migrate_garden_tables(conn: sqlite3.Connection) -> None:
                 f"ALTER TABLE {table} "
                 "ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'"
             )
+
+    # Card-only lineage columns (V3).  ``source_theme`` closes a real contract
+    # gap: bridge/rag_bridge.py has always read ``card["source_theme"]`` but the
+    # column never existed, so the read silently produced ''.
+    card_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(garden_cards)").fetchall()
+    }
+    added: list[str] = []
+    for column, ddl in (
+        ("source_theme", "TEXT NOT NULL DEFAULT 'Inbox'"),
+        ("embedding", "BLOB"),
+        ("citation_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_cited_at", "TEXT"),
+    ):
+        if column not in card_columns:
+            conn.execute(f"ALTER TABLE garden_cards ADD COLUMN {column} {ddl}")
+            added.append(column)
+    if "source_theme" in added:
+        # One-time backfill for cards that already carried a theme in payload.
+        try:
+            conn.execute(
+                "UPDATE garden_cards "
+                "SET source_theme = json_extract(payload_json, '$.source_theme') "
+                "WHERE COALESCE(json_extract(payload_json, '$.source_theme'), '') != ''"
+            )
+        except sqlite3.OperationalError:
+            pass
+
+
+def _migrate_capture_metadata_table(conn: sqlite3.Connection) -> None:
+    """Add the indexed folder column that mirrors frontmatter ``folder_path``."""
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(capture_metadata)").fetchall()
+    }
+    if "folder_path" not in existing:
+        conn.execute(
+            "ALTER TABLE capture_metadata "
+            "ADD COLUMN folder_path TEXT NOT NULL DEFAULT 'Inbox'"
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_capture_metadata_folder "
+        "ON capture_metadata(folder_path)"
+    )
+
+
+def _create_capture_search_fts(conn: sqlite3.Connection) -> bool:
+    """Create the CJK keyword index; tolerate builds without FTS5."""
+    try:
+        conn.execute(CREATE_CAPTURE_SEARCH_FTS_TABLE)
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
+def capture_search_fts_available(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='capture_search_fts'"
+    ).fetchone()
+    return row is not None
+
+
+def _backfill_capture_search_fts(conn: sqlite3.Connection) -> int:
+    """Populate a freshly created keyword index from existing chunk rows.
+
+    A database upgraded from a pre-FTS build has embeddings but an empty FTS
+    table.  Without this, keyword search returns nothing and looks exactly like
+    a broken tokenizer, so the upgrade must self-heal instead of waiting for
+    someone to run the maintenance script.
+    """
+    from db.fts_tokenizer import tokenize_for_fts
+
+    if not capture_search_fts_available(conn):
+        return 0
+    try:
+        existing = conn.execute("SELECT count(*) FROM capture_search_fts").fetchone()[0]
+        if existing:
+            return 0
+        rows = conn.execute(
+            "SELECT capture_id, kind, section_id, section_title, index_text "
+            "FROM capture_embeddings"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    if not rows:
+        return 0
+    conn.executemany(
+        "INSERT INTO capture_search_fts "
+        "(capture_id, kind, section_id, section_title_tokens, index_text_tokens) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [
+            (
+                str(row["capture_id"] or ""),
+                str(row["kind"] or ""),
+                str(row["section_id"] or ""),
+                tokenize_for_fts(str(row["section_title"] or "")),
+                tokenize_for_fts(str(row["index_text"] or "")),
+            )
+            for row in rows
+        ],
+    )
+    return len(rows)
 
 
 def _migrate_review_items_table(conn: sqlite3.Connection) -> None:

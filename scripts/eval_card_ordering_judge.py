@@ -1,0 +1,172 @@
+"""Experiment 2 (semantic half) — controlled ordering ablation with adversarial pairs.
+
+Why this corpus
+---------------
+The first attempt reused the retrieval benchmark, whose cards are one-line
+conclusions and whose articles contain no boundary conditions.  The judge
+correctly said NO to everything: there was no boundary to surface.
+
+Here each topic is built as an adversarial pair:
+
+    card      : an over-general claim distilled from the article
+    sections  : claim restated, two distractors, then the boundary section
+
+Ordering A (card first) spends one of the four context slots on the card, so the
+boundary section (rank 4) falls out.  Ordering B (evidence first) keeps it.
+Same model, same judge, only the order changes.
+
+Usage::
+
+    python scripts/eval_card_ordering_judge.py
+"""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import httpx
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from agents.capture_agent import load_config  # noqa: E402
+from agents.rag_agent import build_rag_prompt  # noqa: E402
+
+TOPICS = [
+    {
+        "query": "多级 Agent 里原文应该怎么传给工具？",
+        "card": "原文可以概括后再传给工具，反正模型能抓住重点。",
+        "claim": "主 Agent 可以把用户长文概括成三百字再填进工具参数。",
+        "distractors": [
+            "路由 Agent 需要判断用户意图，通常用短消息就够。",
+            "工具调用返回结果建议做结构化输出，便于渲染。",
+        ],
+        "boundary": "边界：长材料严禁经过模型参数，概括会丢失原文；只有短指令可以压缩。",
+    },
+    {
+        "query": "知识库里卡片和资料应该怎么分工？",
+        "card": "卡片是最高优先级的来源，应该永远排在资料前面。",
+        "claim": "卡片是用户自己沉淀的认知，检索时应当无条件置顶。",
+        "distractors": [
+            "资料是证据层，保存时必须保真且带原文归档。",
+            "专题用于把跨篇内容聚合成一个输出单元。",
+        ],
+        "boundary": "边界：卡片可能片面或过时，无原文绑定的卡片不应压过原文证据，需按来源数降权。",
+    },
+    {
+        "query": "工具是不是越多越好？",
+        "card": "工具越多覆盖面越广，路由准确率不会下降。",
+        "claim": "把每个能力都做成独立工具，模型自己会选对的。",
+        "distractors": [
+            "MCP 把工具接入从 M×N 降到 M+N。",
+            "工具参数应该用 JSON Schema 约束。",
+        ],
+        "boundary": "边界：工具超过二十个且描述重叠时，路由准确率明显下降，应收敛到八到十四个主干工具。",
+    },
+    {
+        "query": "RAG 的余弦阈值应该怎么定？",
+        "card": "阈值固定 0.20 就够了，所有 embedding 通用。",
+        "claim": "向量检索设一个 0.20 的最低分门槛即可。",
+        "distractors": [
+            "两阶段检索先按 identity 粗排再按 section 精排。",
+            "检索结果要带引用编号，方便溯源。",
+        ],
+        "boundary": "边界：不同 embedding 的分数分布不同，阈值必须按引擎重新标定；正负分布重叠时单阈值无法分离。",
+    },
+]
+
+
+def _chat(config, messages: list[dict], *, max_tokens: int = 600) -> str:
+    base = (config.llm_base_url or "https://api.deepseek.com").rstrip("/")
+    payload = {
+        "model": config.llm_model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+    }
+    with httpx.Client(timeout=120.0) as client:
+        response = client.post(
+            f"{base}/chat/completions",
+            headers={"Authorization": f"Bearer {config.llm_api_key}"},
+            json=payload,
+        )
+        response.raise_for_status()
+        return str(response.json()["choices"][0]["message"]["content"] or "").strip()
+
+
+JUDGE = """用户问题：{query}
+
+AI 回答：
+{answer}
+
+判断：回答是否指出了相关结论的适用边界、前提或局限（而不只是复述结论）？
+只输出 YES 或 NO。"""
+
+
+def _unit(unit_id: str, title: str, body: str) -> dict:
+    return {"id": unit_id, "matched_kind": "section", "title": title, "body": body}
+
+
+def _contexts(topic: dict) -> tuple[list[dict], list[dict]]:
+    card = _unit("card", "卡片", f"结论：{topic['card']}")
+    claim = _unit("s1", "要点", topic["claim"])
+    d1 = _unit("s2", "补充", topic["distractors"][0])
+    d2 = _unit("s3", "补充", topic["distractors"][1])
+    boundary = _unit("s4", "适用边界", topic["boundary"])
+    card_first = [card, claim, d1, d2]
+    evidence_first = [claim, d1, d2, boundary]
+    return card_first, evidence_first
+
+
+def run() -> dict:
+    config = load_config()
+    rows = []
+    for index, topic in enumerate(TOPICS, 1):
+        card_first, evidence_first = _contexts(topic)
+        row = {"id": f"t{index}", "query": topic["query"]}
+        for label, units in (("card_first", card_first), ("evidence_first", evidence_first)):
+            prompt = build_rag_prompt(topic["query"], units)
+            answer = _chat(
+                config,
+                [
+                    {"role": "system", "content": "你是用户的知识库助手，用中文回答。"},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            verdict = _chat(
+                config,
+                [{"role": "user", "content": JUDGE.format(query=topic["query"], answer=answer)}],
+                max_tokens=64,
+            )
+            row[label] = {
+                "boundary_mentioned": "YES" in verdict.upper(),
+                "answer_len": len(answer),
+            }
+        rows.append(row)
+    total = max(1, len(rows))
+    return {
+        "summary": {
+            label: {
+                "boundary_rate": round(
+                    sum(1 for row in rows if row[label]["boundary_mentioned"]) / total, 3
+                )
+            }
+            for label in ("card_first", "evidence_first")
+        }
+        | {"n_topics": len(rows)},
+        "results": rows,
+    }
+
+
+def main() -> int:
+    report = run()
+    print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
+    out = PROJECT_ROOT / "docs" / "card-ordering-judge.json"
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

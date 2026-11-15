@@ -17,7 +17,7 @@ import { WorkbenchSideContextContent } from '../features/workbench/WorkbenchSide
 type WorkspaceTab = 'library' | 'workbench' | 'garden'
 type WorkspaceCapture = Capture
 
-const baseFolderNames = ['Inbox', 'AI 产品', '数据 Agent', '待读', '临时']
+const baseFolderNames = ['Inbox', 'AI 产品面试', 'Agent 与大模型', '行业与产品拆解', '读书与随笔']
 
 const tabItems: Array<{
   key: WorkspaceTab

@@ -29,6 +29,22 @@ class CaptureMetadataRepo:
             data["metadata"] = {}
         return data
 
+    def set_folder_path(self, capture_id: str, folder_path: str) -> None:
+        """Mirror the note's frontmatter folder into the indexed column.
+
+        Frontmatter stays the source of truth; this column exists so retrieval
+        and card inheritance can filter by topic without reading every note.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT INTO capture_metadata (capture_id, folder_path, created_at, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(capture_id) DO UPDATE SET
+                 folder_path=excluded.folder_path,
+                 updated_at=excluded.updated_at""",
+            (capture_id, str(folder_path or "Inbox"), now, now),
+        )
+
     def upsert_outline(
         self,
         capture_id: str,

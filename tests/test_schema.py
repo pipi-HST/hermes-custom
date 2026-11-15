@@ -216,6 +216,7 @@ def test_capture_metadata_table_exists(tmp_path):
         "metadata_json",
         "created_at",
         "updated_at",
+        "folder_path",
     ]
     conn.close()
 

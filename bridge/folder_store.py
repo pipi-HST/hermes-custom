@@ -16,7 +16,17 @@ from pathlib import Path
 
 from bridge.atomic_io import atomic_write_text, resolve_inside
 
-DEFAULT_FOLDERS = ("Inbox", "AI 产品", "数据 Agent", "待读", "临时")
+# Learner-centric topics shared by the WeChat routing skill, the dashboard and
+# the Golden Demo dataset.  Old vaults that still contain captures in the
+# previous defaults ("AI 产品", "数据 Agent", "待读", "临时") keep showing those
+# folders because ``folder_response`` appends any folder that still has items.
+DEFAULT_FOLDERS = (
+    "Inbox",
+    "AI 产品面试",
+    "Agent 与大模型",
+    "行业与产品拆解",
+    "读书与随笔",
+)
 STORE_RELATIVE_PATH = ".hermes/knowledge_folders.json"
 MAX_FOLDER_NAME_LENGTH = 80
 

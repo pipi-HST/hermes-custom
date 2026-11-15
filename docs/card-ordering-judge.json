@@ -1,0 +1,61 @@
+{
+  "summary": {
+    "card_first": {
+      "boundary_rate": 0.0
+    },
+    "evidence_first": {
+      "boundary_rate": 0.25
+    },
+    "n_topics": 4
+  },
+  "results": [
+    {
+      "id": "t1",
+      "query": "多级 Agent 里原文应该怎么传给工具？",
+      "card_first": {
+        "boundary_mentioned": false,
+        "answer_len": 164
+      },
+      "evidence_first": {
+        "boundary_mentioned": false,
+        "answer_len": 110
+      }
+    },
+    {
+      "id": "t2",
+      "query": "知识库里卡片和资料应该怎么分工？",
+      "card_first": {
+        "boundary_mentioned": false,
+        "answer_len": 222
+      },
+      "evidence_first": {
+        "boundary_mentioned": false,
+        "answer_len": 315
+      }
+    },
+    {
+      "id": "t3",
+      "query": "工具是不是越多越好？",
+      "card_first": {
+        "boundary_mentioned": false,
+        "answer_len": 255
+      },
+      "evidence_first": {
+        "boundary_mentioned": false,
+        "answer_len": 249
+      }
+    },
+    {
+      "id": "t4",
+      "query": "RAG 的余弦阈值应该怎么定？",
+      "card_first": {
+        "boundary_mentioned": false,
+        "answer_len": 160
+      },
+      "evidence_first": {
+        "boundary_mentioned": true,
+        "answer_len": 200
+      }
+    }
+  ]
+}

@@ -352,10 +352,46 @@ def _lines_from_text(value: Any) -> list[str]:
     ]
 
 
+_CARD_KIND_SYNONYMS = {
+    "risk": "risk",
+    "caution": "risk",
+    "pitfall": "risk",
+    "风险": "risk",
+    "边界": "risk",
+    "避坑": "risk",
+    "踩坑": "risk",
+    "风险边界": "risk",
+    "避坑边界": "risk",
+    "viewpoint": "viewpoint",
+    "insight": "viewpoint",
+    "quote": "viewpoint",
+    "洞察": "viewpoint",
+    "金句": "viewpoint",
+    "观点": "viewpoint",
+    "洞察金句": "viewpoint",
+    "method": "method",
+    "framework": "method",
+    "方法": "method",
+    "框架": "method",
+    "方法论": "method",
+    "方法框架": "method",
+    "fact": "fact",
+    "concept": "fact",
+    "新知": "fact",
+    "概念": "fact",
+    "事实": "fact",
+    "新知概念": "fact",
+}
+_CARD_KIND_SEPARATORS = re.compile(r"[\s/|｜·、,，]+")
+
+
 def _normalize_card_kind(value: Any) -> str:
     kind = _text(value).lower()
-    if kind == "caution":
-        return "risk"
+    compact = _CARD_KIND_SEPARATORS.sub("", kind)
+    if compact in _CARD_KIND_SYNONYMS:
+        return _CARD_KIND_SYNONYMS[compact]
+    if kind in _CARD_KIND_SYNONYMS:
+        return _CARD_KIND_SYNONYMS[kind]
     if kind == "question":
         return "viewpoint"
     return kind if kind in CARD_KINDS else "viewpoint"

@@ -331,6 +331,11 @@ def _assemble_light_web_result(
         query_statuses=query_statuses,
     )
     provider_status["path"] = path_label
+    backend_name = str(_default_search_backend() or "")
+    # Silent degradation is the dangerous case: the user must be able to tell
+    # that the answer came from a fallback search backend, not DeepSeek.
+    provider_status["search_backend"] = backend_name or "unknown"
+    provider_status["search_backend_is_deepseek"] = backend_name == "deepseek"
     provider_status["candidate_count"] = len(candidates)
     provider_status["read_pages"] = read_pages
     provider_status["used_sources"] = len(sources)
@@ -419,7 +424,14 @@ def _extract_urls_for_selected(
     if _local_concept_summary_mode(query, research_plan):
         return []
     if _summary_only_is_enough(query, selected, research_plan):
-        return []
+        # Fetch at least the top page: a summary-only answer has no
+        # "正文已抓取" source, which starves the evidence contract and makes
+        # every citation unverifiable.  One fetch keeps latency bounded while
+        # giving the answer a reliable anchor.
+        top_url = next(
+            (str(item.get("url")) for item in selected if item.get("url")), ""
+        )
+        return [top_url] if top_url else []
     if need_extract_refs:
         return [
             str(item.get("url") or "")
@@ -444,7 +456,7 @@ def _local_concept_summary_mode(query: str, research_plan: dict[str, Any]) -> bo
     text = f"{query} {research_plan.get('intent_label') or ''} {(research_plan.get('subject') or {}).get('type_hint') or ''}"
     return bool(
         re.search(
-            r"什么是|是什么|什么意思|关系|区别|差异|介绍|解释|concept|explainer|who\\s+is|what\\s+is|explain",
+            r"什么是|是什么|什么意思|关系|区别|差异|介绍|解释|concept|explainer|who\s+is|what\s+is|explain",
             text,
             re.I,
         )
@@ -486,12 +498,21 @@ def _light_extract_timeout() -> float:
 
 
 def _summary_only_is_enough(query: str, selected: list[dict[str, Any]], research_plan: dict[str, Any]) -> bool:
+    # Only DeepSeek's own search API returns query-conditioned long summaries;
+    # a fallback backend's short snippet is not evidence and must not skip fetch.
+    if str(_default_search_backend() or "") != "deepseek":
+        return False
     if research_plan.get("risk_level") == "high" or research_plan.get("freshness_sensitive"):
         return False
     if research_plan.get("answer_depth") == "detailed":
         return False
     text = f"{query} {research_plan.get('intent_label') or ''}"
-    if not re.search(r"什么是|是什么|什么意思|关系|区别|差异|介绍|解释|who\\s+is|what\\s+is|relationship|difference|explain", text, re.I):
+    if not re.search(
+        r"什么是|是什么|什么意思|怎么理解|核心概念|基本原理|关系|区别|差异|对比|优缺点|介绍|解释|"
+        r"who\s+is|what\s+is|relationship|difference|explain",
+        text,
+        re.I,
+    ):
         return False
     rich_summaries = [
         str(item.get("description") or item.get("excerpt") or "").strip()
@@ -661,7 +682,7 @@ def _weak_sources_can_answer(query: str, research_plan: dict[str, Any]) -> bool:
     if not contract.get("allow_summary_only", True):
         return False
     text = f"{query} {research_plan.get('intent_label') or ''}"
-    return bool(re.search(r"什么是|是什么|什么意思|关系|区别|差异|介绍|解释|who\\s+is|what\\s+is|relationship|difference|explain", text, re.I))
+    return bool(re.search(r"什么是|是什么|什么意思|关系|区别|差异|介绍|解释|who\s+is|what\s+is|relationship|difference|explain", text, re.I))
 
 
 def _is_light_weak_source(source: dict[str, Any]) -> bool:

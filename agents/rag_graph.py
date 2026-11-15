@@ -23,7 +23,7 @@ def build_graph_retrieval(
     final_limit: int = 6,
     max_garden: int = 3,
     max_theme: int = 3,
-    max_expanded_captures: int = 20,
+    max_expanded_captures: int = 4,
 ) -> dict[str, Any]:
     seed_capture_ids = [
         str(hit.get("id") or hit.get("capture_id") or "")
@@ -128,13 +128,8 @@ def _theme_groups_for_captures(
     wanted = set(capture_ids)
     if not wanted:
         return []
-    try:
-        rows = conn.execute(
-            """SELECT id, question_text, related_capture_ids, status
-               FROM theme_questions
-               ORDER BY created_at DESC"""
-        ).fetchall()
-    except Exception:
+    rows = _pending_question_rows(conn)
+    if rows is None:
         return []
     groups = []
     for row in rows:
@@ -151,6 +146,41 @@ def _theme_groups_for_captures(
         if len(groups) >= limit:
             break
     return groups
+
+
+def _pending_question_rows(conn):
+    """Return pending-question rows in the ``theme_questions`` row shape.
+
+    The real knowledge base stores theme candidates in ``pending_questions``.
+    Older builds (and some test fixtures) used a ``theme_questions`` table with
+    ``question_text``/``related_capture_ids``, while an earlier iteration of
+    this module addressed ``pending_questions`` with ``theme_name``/``question``
+    /``capture_ids`` columns.  Try each shape and return ``None`` when none of
+    them exist so callers can degrade gracefully.
+    """
+    queries = (
+        # Alternate pending_questions shape (theme_name/question/capture_ids).
+        """SELECT id, COALESCE(NULLIF(theme_name, ''), question) AS question_text,
+                  capture_ids AS related_capture_ids, status
+           FROM pending_questions
+           WHERE COALESCE(status, '') != 'dismissed'
+           ORDER BY created_at DESC""",
+        # Real schema (db/schema.py): question_text/related_capture_ids.
+        """SELECT id, question_text, related_capture_ids, status
+           FROM pending_questions
+           WHERE COALESCE(status, '') != 'dismissed'
+           ORDER BY created_at DESC""",
+        # Legacy fixture table.
+        """SELECT id, question_text, related_capture_ids, status
+           FROM theme_questions
+           ORDER BY created_at DESC""",
+    )
+    for query in queries:
+        try:
+            return conn.execute(query).fetchall()
+        except Exception:
+            continue
+    return None
 
 
 def _theme_pages_for_captures(
@@ -252,15 +282,19 @@ def _expanded_capture_ids(
     theme_groups: list[dict[str, Any]],
     limit: int,
 ) -> list[str]:
+    """Expand through cards only.
+
+    ``theme_groups`` used to dump every sibling article of the same topic into
+    the candidate pool; a broad topic like "Agent 与大模型" would drag in a
+    dozen loosely related long reads.  Theme groups still feed the orientation
+    line in the prompt, but they no longer widen retrieval.
+    """
     seen: set[str] = set()
     ordered: list[str] = []
     for capture_id in seed_capture_ids:
         _append_capture_id(ordered, seen, capture_id, limit)
     for card in garden_cards:
         for capture_id in card.get("capture_ids", []):
-            _append_capture_id(ordered, seen, str(capture_id), limit)
-    for group in theme_groups:
-        for capture_id in group.get("capture_ids", []):
             _append_capture_id(ordered, seen, str(capture_id), limit)
     return ordered
 

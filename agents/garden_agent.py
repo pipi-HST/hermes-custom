@@ -508,6 +508,21 @@ def create_garden_card(repo, garden_data: dict) -> str:
             now, now,
         ),
     )
+    source_theme = str(garden_data.get("source_theme") or payload.get("source_theme") or "").strip()
+    if not source_theme:
+        for capture_id in _json_list(legacy.get("capture_ids")):
+            row = repo.conn.execute(
+                "SELECT folder_path FROM capture_metadata WHERE capture_id = ?",
+                (str(capture_id),),
+            ).fetchone()
+            if row and str(row["folder_path"] or "").strip():
+                source_theme = str(row["folder_path"]).strip()
+                break
+    if source_theme:
+        repo.conn.execute(
+            "UPDATE garden_cards SET source_theme = ? WHERE id = ?",
+            (source_theme, card_id),
+        )
     repo.conn.commit()
     return card_id
 
@@ -727,6 +742,13 @@ def commit_garden_draft_to_card(repo, draft_id: str) -> Optional[str]:
         (card_id, now, draft_id),
     )
     repo.conn.commit()
+    try:
+        from agents.capture_agent import load_config
+        from agents.knowledge_graph import refresh_graph_after_write
+
+        refresh_graph_after_write(repo.conn, load_config().vault_path)
+    except Exception:
+        pass
     return card_id
 
 

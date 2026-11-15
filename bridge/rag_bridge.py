@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -14,13 +16,14 @@ from agents.rag_citations import validate_citations
 from agents.rag_context import build_rag_context_pack
 from agents.rag_graph import build_graph_retrieval
 from agents.embedder import Embedder
-from bridge.capture_view import build_capture_view, read_capture_note
+from bridge.capture_view import build_capture_view, hydrate_capture, read_capture_note
 from bridge.file_artifacts import write_markdown_export
 from bridge.context import KnowledgeContext
 from bridge.knowledge_search import search_captures
 from bridge.result_envelope import artifact_ref, source_ref, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.embedding_repo import CaptureEmbeddingRepo
+from db.fts_tokenizer import build_fts_match_query
 from db.vector_search import search as vector_search
 from db.schema import init_db
 from db.repo import CaptureRepo
@@ -44,6 +47,60 @@ _config = None
 _repo = None
 
 _HEADING_RE = re.compile(r"^(#{2,6})\s+(.+?)\s*$", re.MULTILINE)
+
+# Relevance gate for pure vector hits.  Anything below this is only kept when
+# it contains a literal query keyword (see ``_indexed_search``); otherwise old,
+# loosely-related notes crowd out the material that actually answers the
+# question.
+MIN_VECTOR_SCORE = 0.20
+
+# Chinese question filler words carry no retrieval signal and break literal
+# keyword matching (e.g. "什么是传话筒" would otherwise match nothing).
+_QUERY_FILLER_WORDS = (
+    "请问",
+    "为什么",
+    "什么",
+    "怎么",
+    "如何",
+    "哪些",
+    "一下",
+    "帮我",
+    "关于",
+    "理解",
+    "解释",
+    "介绍",
+    "说说",
+    "讲讲",
+    "告诉",
+    "知道",
+    "的",
+    "了",
+    "吗",
+    "呢",
+)
+_KEYWORD_SPLIT_RE = re.compile(r"[^0-9a-zA-Z\u4e00-\u9fff]+")
+
+
+def _extract_query_keywords(query: str) -> list[str]:
+    """Extract meaningful 2+ character terms from a question.
+
+    Filler words are stripped so a query such as ``请问 MCP 的 130秒 是什么？``
+    yields ``["mcp", "130秒"]``.  Kept deliberately simple and deterministic:
+    exact technical terms must survive even when the embedding score is low.
+    """
+    text = str(query or "").strip().lower()
+    if not text:
+        return []
+    for filler in _QUERY_FILLER_WORDS:
+        text = text.replace(filler, " ")
+    keywords: list[str] = []
+    for token in _KEYWORD_SPLIT_RE.split(text):
+        token = token.strip("-_. ")
+        if len(token) < 2 or token in _QUERY_FILLER_WORDS or token in keywords:
+            continue
+        keywords.append(token)
+    return keywords
+
 
 def _init():
     global _config, _repo
@@ -133,7 +190,38 @@ def _search_knowledge_base(
             results = graph["final_hits"]
         _log(f"GRAPH: {json.dumps(graph['trace'], ensure_ascii=False)}")
 
-    results = [_hydrate_capture(config.vault_path, item) for item in results]
+    results = [
+        _hydrate_capture(config.vault_path, item)
+        for item in results
+        if item.get("matched_kind") != "garden_card"
+    ]
+
+    # Literal keyword top-up: embeddings rank paraphrases well but can bury
+    # exact technical terms (MCP, 130秒, 传话筒) behind loosely-related notes.
+    seen_capture_ids = {str(item.get("id") or "") for item in results}
+    keyword_hits = [
+        item
+        for item in _keyword_match_captures(query, repo, config.vault_path, limit=3)
+        if str(item.get("id") or "") not in seen_capture_ids
+    ]
+    if keyword_hits:
+        results.extend(keyword_hits)
+        _log(f"KEYWORD: {len(keyword_hits)} hits")
+        logger.info("[RAG] keyword top-up returned %d results", len(keyword_hits))
+
+    # Curated Knowledge Cards are first-class RAG sources: they encode the
+    # user's own conclusions, so they lead the context instead of trailing it.
+    card_hits = _search_garden_cards(query, repo.conn, limit=3)
+    if card_hits:
+        existing_ids = {str(item.get("id") or "") for item in results}
+        new_cards = [
+            card for card in card_hits if str(card.get("id") or "") not in existing_ids
+        ]
+        if new_cards:
+            results = (new_cards + results)[:7]
+            _log(f"CARDS: {len(new_cards)} hits")
+            logger.info("[RAG] knowledge cards matched %d results", len(new_cards))
+    results = results[:7]
 
     if not results:
         used_fallback = True
@@ -186,25 +274,7 @@ def _search_knowledge_base(
         chat_preview = "已生成 RAG 完整回答与引用报告文件。我会把文件发给你。"
 
     source_map = [
-        source_ref(
-            role="evidence",
-            type=(
-                "capture_section"
-                if item.get("matched_kind") == "section"
-                else "capture_note"
-            ),
-            id=item.get("id", ""),
-            title=item.get("title") or item.get("file_path", ""),
-            path=item.get("file_path", ""),
-            section=item.get("section_title", ""),
-            ref=str(index),
-            file_path=item.get("file_path", ""),
-            excerpt=_source_excerpt(item),
-            source_kind=str(item.get("source_kind") or ""),
-            reading_session_id=str(item.get("reading_session_id") or ""),
-            reading_draft_id=str(item.get("reading_draft_id") or ""),
-        )
-        for index, item in enumerate(results, 1)
+        _source_entry(item, index) for index, item in enumerate(results, 1)
     ]
     citation_validation = validate_citations(resp["answer"], source_map)
     repaired = False
@@ -221,6 +291,11 @@ def _search_knowledge_base(
                     chat_preview = "已生成 RAG 完整回答与引用报告文件。我会把文件发给你。"
         except Exception as exc:
             logger.warning("[RAG] citation repair failed: %s", exc)
+
+    try:
+        record_card_citations(repo.conn, resp["answer"], source_map, query=query)
+    except Exception as exc:  # never fail an answer because bookkeeping failed
+        logger.warning("[RAG] citation recording failed: %s", exc)
 
     return success_envelope(
         agent="rag",
@@ -310,6 +385,344 @@ def _rag_report_artifact(
     )
 
 
+_CARD_SOURCE_TYPES = {"knowledge_card", "garden_card"}
+_CITED_REF_RE = re.compile(r"\[(\d+)\]")
+
+
+def record_card_citations(
+    conn,
+    answer: str,
+    source_map: list[dict],
+    *,
+    query: str = "",
+    run_id: str = "",
+) -> list[str]:
+    """Record only the cards the answer actually cited with ``[n]``.
+
+    Retrieval hit is not usage: a card that merely matched a keyword must not
+    accumulate ``citation_count``.  ``citation_events`` is append-only so the
+    counter can always be recomputed and a read path never rewrites a row it
+    just read (SQLite has one writer).
+    """
+    cited_refs = {int(match.group(1)) for match in _CITED_REF_RE.finditer(answer or "")}
+    if not cited_refs or conn is None:
+        return []
+    recorded: list[str] = []
+    for item in source_map or []:
+        if str(item.get("type") or "") not in _CARD_SOURCE_TYPES:
+            continue
+        try:
+            ref = int(str(item.get("ref") or ""))
+        except (TypeError, ValueError):
+            continue
+        card_id = str(item.get("id") or "")
+        if ref not in cited_refs or not card_id:
+            continue
+        try:
+            conn.execute(
+                "INSERT INTO citation_events (id, card_id, run_id, query) VALUES (?, ?, ?, ?)",
+                (uuid.uuid4().hex, card_id, str(run_id or ""), str(query or "")[:200]),
+            )
+        except sqlite3.OperationalError:
+            continue
+        recorded.append(card_id)
+    if not recorded:
+        return []
+    conn.commit()
+    for card_id in recorded:
+        conn.execute(
+            "UPDATE garden_cards SET citation_count = COALESCE(citation_count, 0) + 1, "
+            "last_cited_at = datetime('now') WHERE id = ?",
+            (card_id,),
+        )
+    conn.commit()
+    return recorded
+
+
+def _source_entry(item: dict, index: int) -> dict:
+    """Build one ``source_map`` entry for a capture hit or a knowledge card."""
+    if (
+        item.get("matched_kind") == "garden_card"
+        or item.get("source_kind") == "garden_card"
+    ):
+        role = "viewpoint"
+        source_type = "knowledge_card"
+    else:
+        role = "evidence"
+        source_type = (
+            "capture_section"
+            if item.get("matched_kind") == "section"
+            else "capture_note"
+        )
+    return source_ref(
+        role=role,
+        type=source_type,
+        id=item.get("id", ""),
+        title=item.get("title") or item.get("file_path", ""),
+        path=item.get("file_path", ""),
+        section=item.get("section_title", ""),
+        ref=str(index),
+        file_path=item.get("file_path", ""),
+        excerpt=_source_excerpt(item),
+        source_kind=str(item.get("source_kind") or ""),
+        reading_session_id=str(item.get("reading_session_id") or ""),
+        reading_draft_id=str(item.get("reading_draft_id") or ""),
+    )
+
+
+def _garden_card_match_score(
+    keywords: list[str],
+    needle: str,
+    *,
+    title: str,
+    theme: str,
+    one_liner: str,
+    content: str,
+    arguments: str,
+) -> int:
+    medium = " ".join(part for part in (theme, one_liner) if part)
+    deep = " ".join(part for part in (content, arguments) if part)
+    score = 0
+    for keyword in keywords:
+        if keyword in title:
+            score += 3
+        elif keyword in medium:
+            score += 2
+        elif keyword in deep:
+            score += 1
+    if needle and needle in title:
+        score += 2
+    return score
+
+
+def _search_garden_cards(query: str, conn, limit: int = 3) -> list[dict]:
+    """Recall the user's curated Knowledge Cards by literal keyword match.
+
+    Cards are stored in the slim ``garden_cards`` table, so richer fields
+    (``source_theme``/``content_markdown``/``file_path``) are read opportunistically
+    via ``dict(row)``: older databases only have title/one_liner and still work.
+    """
+    if conn is None or limit <= 0:
+        return []
+    keywords = _extract_query_keywords(query)
+    needle = str(query or "").strip().lower()
+    if not keywords and not needle:
+        return []
+    try:
+        rows = conn.execute(
+            """SELECT * FROM garden_cards
+               WHERE COALESCE(status, 'accepted') != 'archived'"""
+        ).fetchall()
+    except Exception as exc:
+        logger.debug("[RAG] garden_cards lookup unavailable: %s", exc)
+        return []
+
+    scored: list[tuple[int, dict]] = []
+    for row in rows:
+        card = dict(row)
+        title = str(card.get("title") or "")
+        score = _garden_card_match_score(
+            keywords,
+            needle,
+            title=title.lower(),
+            theme=str(card.get("source_theme") or "").lower(),
+            one_liner=str(card.get("one_liner") or "").lower(),
+            content=str(card.get("content_markdown") or "").lower(),
+            arguments=str(card.get("core_arguments") or "").lower(),
+        )
+        if score <= 0:
+            continue
+        scored.append((score, card))
+    if not scored:
+        return []
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+
+    cards: list[dict] = []
+    for _score, row in scored[:limit]:
+        one_liner = str(row.get("one_liner") or "")
+        cards.append(
+            {
+                "id": row.get("id", ""),
+                "title": f"【知识卡片】{row.get('title') or ''}",
+                "raw_title": row.get("title") or "",
+                "body": row.get("content_markdown") or one_liner or "",
+                "story": one_liner,
+                "summary": one_liner,
+                "section_title": row.get("source_theme")
+                or row.get("card_kind")
+                or "知识卡片",
+                "matched_kind": "garden_card",
+                "source_kind": "garden_card",
+                "file_path": row.get("file_path")
+                or f"garden/{row.get('id', '')}.md",
+                "score": 0.85,
+            }
+        )
+    return cards
+
+
+def _keyword_match_captures(
+    query: str,
+    repo: CaptureRepo,
+    vault_path: str,
+    limit: int = 3,
+) -> list[dict]:
+    """Top up retrieval with literal keyword hits from the FTS5 index.
+
+    The index stores ``capture_embeddings.index_text`` (identity + every
+    section body), so a query can hit a sentence in section 3 without touching
+    a single file.  Only the winning rows are hydrated from disk.
+    """
+    keywords = _extract_query_keywords(query)
+    if not keywords or limit <= 0:
+        return []
+    rows = _fts_keyword_rows(repo.conn, keywords, limit=max(limit * 3, 6))
+    if rows is None:
+        # No FTS5 in this SQLite build: keep the pre-migration behaviour.
+        return _legacy_keyword_match_captures(query, repo, vault_path, limit=limit)
+    results: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        capture_id = str(row["capture_id"] or "")
+        if not capture_id or capture_id in seen:
+            continue
+        seen.add(capture_id)
+        item = hydrate_capture(
+            vault_path,
+            {
+                "id": capture_id,
+                "file_path": row["file_path"] or "",
+                "raw_path": row["raw_path"] or "",
+                "created_at": row["row_created_at"] or "",
+            },
+        )
+        item["matched_kind"] = str(row["kind"] or "")
+        item["source_kind"] = str(row["kind"] or "")
+        item["score"] = _bm25_rank_to_score(row["rank"])
+        results.append(item)
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _bm25_rank_to_score(rank: object) -> float:
+    """Map bm25 (negative, lower is better) onto a 0..1 display score."""
+    try:
+        value = abs(float(rank))
+    except (TypeError, ValueError):
+        return 0.5
+    return round(1.0 / (1.0 + value), 3)
+
+
+def _fts_keyword_rows(conn, keywords: list[str], *, limit: int):
+    """Query the CJK keyword index; ``None`` means FTS5 is unavailable."""
+    match = build_fts_match_query(keywords)
+    if not match:
+        return []
+    try:
+        return conn.execute(
+            """SELECT capture_search_fts.capture_id AS capture_id,
+                      capture_search_fts.kind AS kind,
+                      capture_search_fts.section_id AS section_id,
+                      c.file_path AS file_path,
+                      c.raw_path AS raw_path,
+                      c.created_at AS row_created_at,
+                      bm25(capture_search_fts, 0.0, 0.0, 0.0, 3.0, 1.0) AS rank
+               FROM capture_search_fts
+               JOIN captures c ON c.id = capture_search_fts.capture_id
+               WHERE capture_search_fts MATCH ?
+                 AND COALESCE(c.review_state, '') != 'archived'
+               ORDER BY rank
+               LIMIT ?""",
+            (match, int(limit)),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+
+
+def _legacy_keyword_match_captures(
+    query: str,
+    repo: CaptureRepo,
+    vault_path: str,
+    limit: int = 3,
+) -> list[dict]:
+    """Pre-FTS fallback: scan recent captures and hydrate each one.
+
+    Kept only for SQLite builds without FTS5.  This is the implementation that
+    read up to 500 Markdown files per query; it must never be the hot path.
+    """
+    keywords = _extract_query_keywords(query)
+    if not keywords or limit <= 0:
+        return []
+    rows = []
+    try:
+        rows = repo.conn.execute(
+            """SELECT c.*, m.metadata_json AS _capture_metadata_json
+               FROM captures c
+               LEFT JOIN capture_metadata m ON m.capture_id = c.id
+               WHERE COALESCE(c.review_state, '') != 'archived'
+               ORDER BY c.created_at DESC
+               LIMIT 500"""
+        ).fetchall()
+    except Exception:
+        try:
+            rows = repo.conn.execute(
+                """SELECT * FROM captures
+                   WHERE COALESCE(review_state, '') != 'archived'
+                   ORDER BY created_at DESC
+                   LIMIT 500"""
+            ).fetchall()
+        except Exception:
+            return []
+
+    matches: list[tuple[int, dict]] = []
+    for row in rows:
+        raw = dict(row)
+        metadata_text = str(raw.pop("_capture_metadata_json", "") or "").lower()
+        item = hydrate_capture(vault_path, raw)
+        # The slim captures table has no text columns, but mock/legacy callers
+        # may supply title/summary/tags directly on the row.  Use both sources.
+        raw_title = str(raw.get("title") or "")
+        raw_summary = " ".join(
+            [str(raw.get("summary") or ""), str(raw.get("tags") or "")]
+        )
+        if raw_title and not item.get("title"):
+            item["title"] = raw_title
+        if raw_summary.strip() and not item.get("summary"):
+            item["summary"] = raw_summary.strip()
+        title = str(item.get("title") or raw_title or "").lower()
+        summary = " ".join(
+            [
+                str(item.get("summary") or ""),
+                " ".join(str(tag) for tag in item.get("tags") or []),
+                raw_summary,
+                metadata_text,
+            ]
+        ).lower()
+        score = 0
+        for keyword in keywords:
+            if keyword in title:
+                score += 3
+            elif keyword in summary:
+                score += 2
+        if score <= 0:
+            continue
+        matches.append((score, item))
+    if not matches:
+        return []
+    matches.sort(key=lambda pair: pair[0], reverse=True)
+    return [
+        {
+            **item,
+            "story": item.get("story") or item.get("summary") or "",
+            "matched_kind": item.get("matched_kind") or "keyword",
+            "source_kind": str(item.get("source_kind") or ""),
+            "score": float(score) / 10.0,
+        }
+        for score, item in matches[:limit]
+    ]
+
+
 def _indexed_search(
     query: str,
     repo: CaptureRepo,
@@ -325,6 +738,24 @@ def _indexed_search(
         kinds=("identity", "section"),
         limit=limit * 4,
     )
+    if not rows:
+        return []
+
+    keywords = _extract_query_keywords(query)
+
+    def _has_literal_keyword(row: dict) -> bool:
+        haystack = f"{row.get('index_text') or ''} {row.get('section_title') or ''}".lower()
+        return any(keyword in haystack for keyword in keywords)
+
+    # Relevance gate: drop weak vector hits unless they contain a literal query
+    # term.  Keeps stale/loosely-related notes out of the prompt without losing
+    # exact technical matches.
+    rows = [
+        row
+        for row in rows
+        if float(row.get("score") or 0.0) >= MIN_VECTOR_SCORE
+        or _has_literal_keyword(row)
+    ]
     if not rows:
         return []
 

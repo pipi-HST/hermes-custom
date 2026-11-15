@@ -196,6 +196,29 @@ def test_create_patch_delete_capture_draft_chain(env):
         assert title_only_body["item"]["body"] == "只有标题"
 
 
+def test_quick_manual_note_never_calls_ai_rewrite(env, monkeypatch):
+    """POST /library/items is the quick-create path: no synchronous LLM."""
+    config, app, vault = env
+
+    def fail_organize(*_args, **_kwargs):
+        raise AssertionError("quick manual note must not invoke AI organizing")
+
+    monkeypatch.setattr(CaptureAgent, "_organize_editable_body", fail_organize)
+    body_text = "第一段用户原文，必须原样保存。\n\n第二段用户原文，不能被压缩或改写。"
+
+    with _client(app) as client:
+        created = client.post(
+            "/api/library/items",
+            json={"body": body_text, "title": "快速笔记", "folder_path": "读书与随笔"},
+        )
+
+    assert created.status_code == 200
+    item = created.json()["item"]
+    assert item["title"] == "快速笔记"
+    assert item["body"] == body_text
+    assert item["folder_path"] == "读书与随笔"
+
+
 def test_capture_draft_direct_endpoints(env):
     config, app, vault = env
     draft_id = _add_draft(config, title="直接草稿")

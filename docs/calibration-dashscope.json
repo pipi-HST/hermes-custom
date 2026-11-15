@@ -1,0 +1,14 @@
+{
+  "engine": "dashscope-v4",
+  "positive_count": 30,
+  "negative_count": 168,
+  "positive_p10": 0.4286,
+  "positive_p50": 0.5752,
+  "positive_p90": 0.6378,
+  "negative_p50": 0.2188,
+  "negative_p95": 0.4887,
+  "separation": -0.0601,
+  "suggested_min_vector_score": 0.46,
+  "current_min_vector_score": 0.2,
+  "note": "语义引擎实测分布，可直接用于生产阈值"
+}

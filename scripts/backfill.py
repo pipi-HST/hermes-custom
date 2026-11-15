@@ -1,40 +1,62 @@
-"""回填存量 captures — 为没有 embedding/outline 的记录补全."""
+"""Re-index the whole library: chunk embeddings, FTS index and card vectors.
+
+The previous version of this script embedded ``captures.summary`` — a column
+that was removed when the schema was slimmed down — and only wrote
+``captures.embedding``.  It could never run.  The real pipeline lives in
+``LibraryAgent.maintain_embedding_index``; this script is now a thin CLI over
+it so there is exactly one re-index entry point.
+"""
 from __future__ import annotations
 
+import argparse
+import json
 import sys
-import time
 from pathlib import Path
+from typing import Any
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.embedder import Embedder
 from agents.capture_agent import load_config
-from db.schema import init_db
-from db.repo import CaptureRepo
+from agents.embedder import Embedder
+from agents.library_agent import LibraryAgent
 
 
-def backfill(config_path: str = "config.yaml"):
+def backfill(
+    *,
+    config_path: str = "config.yaml",
+    apply: bool = True,
+    vault_path: str | None = None,
+) -> dict[str, Any]:
     config = load_config(config_path)
-    conn = init_db(config.db_path)
-    repo = CaptureRepo(conn)
-    embedder = Embedder(api_key=config.qwen_api_key)
+    agent = LibraryAgent(
+        vault_path or config.vault_path,
+        outliner=None,
+        db_path=config.db_path,
+        embedder=Embedder(api_key=config.qwen_api_key),
+    )
+    return agent.maintain_embedding_index(apply=apply)
 
-    all_captures = repo.list_all(limit=10000)
-    needs_embedding = [c for c in all_captures if not c.get("embedding")]
 
-    print(f"Total: {len(all_captures)}, need embedding: {len(needs_embedding)}")
-
-    for c in needs_embedding:
-        try:
-            emb = embedder.embed(c["summary"])
-            repo.update(c["id"], embedding=emb)
-            print(f"  embed: {c['id'][:8]} OK")
-            time.sleep(0.1)
-        except Exception as e:
-            print(f"  embed: {c['id'][:8]} FAIL: {e}")
-
-    print("Backfill complete.")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--vault", default=None)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what would change without writing",
+    )
+    args = parser.parse_args(argv)
+    report = backfill(
+        config_path=args.config,
+        apply=not args.dry_run,
+        vault_path=args.vault,
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    return 0
 
 
 if __name__ == "__main__":
-    backfill()
+    raise SystemExit(main())

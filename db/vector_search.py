@@ -42,6 +42,7 @@ def _list_embedding_captures(repo: CaptureRepo) -> list[dict]:
         """SELECT *
            FROM captures
            WHERE embedding IS NOT NULL
+             AND COALESCE(review_state, '') != 'archived'
            ORDER BY created_at DESC"""
     ).fetchall()
     return [dict(row) for row in rows]

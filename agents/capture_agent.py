@@ -52,6 +52,14 @@ CAPTURE_SECTION_NOTE_CHAR_LIMIT = 1500
 CAPTURE_INTERNAL_PLAN_BUDGET_RATIO = 0.45
 CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD = 2000
 CAPTURE_OVERCOMPRESSED_RATIO = 0.65
+# Editable drafts must never let the LLM shrink the user's own body.  A body is
+# treated as lossy when the rewrite keeps less than this share of the original
+# text or drops substantive paragraphs.
+EDITABLE_BODY_MIN_RETENTION_RATIO = 0.95
+EDITABLE_PARAGRAPH_MIN_RETENTION_RATIO = 0.85
+EDITABLE_PARAGRAPH_MIN_CHARS = 20
+AI_READING_GUIDE_HEADING = "## 💡 AI 核心导读"
+AI_READING_GUIDE_MARKER = "💡 AI 核心导读"
 CAPTURE_STAGE_TIMING_KEYS = (
     "extract_clean",
     "intent_planning",
@@ -210,6 +218,16 @@ class CaptureAgent:
                 stored_raw_text,
                 instruction=instruction,
             )
+            guide_requested = _wants_ai_reading_guide(instruction)
+            guide_summary = ""
+            guide_tags: list[str] = []
+            if guide_requested:
+                # Explicit "提炼观点/核心导读" request: keep the extracted
+                # material verbatim and put the AI reading guide above it.
+                capture_intent["content_shape"] = "guide_plus_original"
+                capture_intent["original_preserved"] = True
+                guide_summary, guide_tags = self._build_reading_guide_metadata(stored_raw_text)
+                draft_body = _compose_ai_reading_guide_body(stored_raw_text, guide_summary)
             stage_started = time.perf_counter()
             draft = self.draft_repo.create(
                 raw_text=stored_raw_text,
@@ -219,6 +237,10 @@ class CaptureAgent:
                 word_count=len(draft_body),
                 instruction=instruction,
                 capture_intent=capture_intent,
+                draft_text=draft_body if guide_requested else "",
+                summary=guide_summary if guide_requested else "",
+                tags=guide_tags if guide_requested else [],
+                status="draft_ready" if guide_requested else "raw_extracted",
             )
             _add_capture_stage_timing(timings, "draft_create", stage_started)
             return _attach_capture_stage_timings(draft, timings, total_started)
@@ -701,6 +723,11 @@ class CaptureAgent:
         user_request = str(instruction or capture_intent.get("user_request") or "")
         return self._is_raw_package_request(user_request)
 
+    def _is_reading_guide_intent(self, capture_intent: dict) -> bool:
+        if not isinstance(capture_intent, dict):
+            return False
+        return capture_intent.get("content_shape") == "guide_plus_original"
+
     def _is_high_fidelity_organize_request(self, user_request: str) -> bool:
         return bool(
             re.search(
@@ -772,16 +799,46 @@ class CaptureAgent:
         elif folder_path and folder_suggestion.get("mode") == "existing" and folder_path not in folder_options:
             folder_suggestion["mode"] = "new"
         card_suggestion = result.get("card_suggestion") if isinstance(result.get("card_suggestion"), dict) else {}
+        warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+        proposed_body = str(result.get("body_markdown") or "").strip() or cleaned_body
+        body_markdown, preserved_original_body = _preserve_editable_body(cleaned_body, proposed_body)
+        if preserved_original_body:
+            warnings = [
+                *warnings,
+                "AI 建议疑似压缩了你的原文，已保留你输入的完整正文（不做改写）。",
+            ]
         return {
             "title": _clean_semantic_title(str(result.get("title") or "")),
             "summary": str(result.get("summary") or ""),
             "tags": result.get("tags") if isinstance(result.get("tags"), list) else [],
-            "body_markdown": str(result.get("body_markdown") or "").strip() or cleaned_body,
+            "body_markdown": body_markdown,
             "folder_suggestion": _normalize_editable_folder_suggestion(folder_suggestion),
             "card_suggestion": _normalize_editable_card_suggestion(card_suggestion),
-            "warnings": result.get("warnings") if isinstance(result.get("warnings"), list) else [],
+            "warnings": warnings,
             "diagnostics": result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {},
         }
+
+    def _build_reading_guide_metadata(self, source_text: str) -> tuple[str, list[str]]:
+        """Return ``(summary, tags)`` for an explicit AI reading-guide capture.
+
+        The caller keeps ``source_text`` verbatim; this metadata only feeds the
+        ``💡 AI 核心导读`` block.  Without an LLM key we fall back to a
+        deterministic extractive lead so the capture pipeline still works
+        offline.
+        """
+        cleaned = clean_text(source_text) or source_text
+        fallback = _extractive_reading_guide(cleaned)
+        if not self._capture_planning_available():
+            return fallback, []
+        try:
+            existing_tags = self._get_existing_tags(Path(self.config.vault_path).expanduser())
+            result = self.summarizer.summarize(cleaned, existing_tags)
+        except Exception as exc:  # noqa: BLE001 - metadata is best effort
+            logger.warning(f"Reading guide summary failed: {exc}")
+            return fallback, []
+        summary = str(result.get("summary") or "").strip() or fallback
+        tags = result.get("tags") if isinstance(result.get("tags"), list) else []
+        return summary, [str(tag).strip() for tag in tags if str(tag).strip()]
 
     def _light_cleanup_editable_body(self, body: str) -> str:
         text = (body or "").replace("\r\n", "\n").replace("\r", "\n")
@@ -1492,6 +1549,7 @@ class CaptureAgent:
         capture_intent = draft.get("capture_intent") or {}
         is_editable_capture = capture_intent.get("entry_mode") == "editable_capture"
         is_raw_package = self._is_raw_package_intent(capture_intent)
+        is_reading_guide = self._is_reading_guide_intent(capture_intent)
         if not is_editable_capture and not is_raw_package and not summary and body.strip():
             tag_result = self.summarizer.summarize(body, self._get_existing_tags(vault_path))
             summary = tag_result.get("summary", "")
@@ -1546,6 +1604,15 @@ class CaptureAgent:
             library_postprocess = {
                 "skipped": True,
                 "reason": "raw_package_verbatim",
+                "pipeline": {},
+            }
+        elif is_reading_guide:
+            # The body already contains the verbatim original below the
+            # 💡 AI 核心导读 block; Library maintenance must not rewrite it.
+            self._index_committed_identity(capture["id"], file_path)
+            library_postprocess = {
+                "skipped": True,
+                "reason": "reading_guide_original_preserved",
                 "pipeline": {},
             }
         else:
@@ -1634,6 +1701,8 @@ class CaptureAgent:
     ) -> str:
         if self._is_raw_package_intent(capture_intent):
             return ""
+        if self._is_reading_guide_intent(capture_intent):
+            return ""
         is_long = max(len(raw_text or ""), len(body or "")) >= CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD
         if "## 目录纲要" not in (body or ""):
             return "正式 Capture 缺少目录纲要"
@@ -1680,6 +1749,9 @@ class CaptureAgent:
         capture_intent = draft.get("capture_intent") if isinstance(draft.get("capture_intent"), dict) else {}
         if capture_intent.get("entry_mode") == "editable_capture":
             return draft
+        if self._is_reading_guide_intent(capture_intent):
+            # The guide + verbatim original were composed at capture time.
+            return draft
         raw_text = draft.get("raw_text", "")
         if not raw_text.strip():
             return draft
@@ -1711,6 +1783,8 @@ class CaptureAgent:
         if capture_intent.get("entry_mode") == "editable_capture":
             return ""
         if self._is_raw_package_intent(capture_intent, str(draft.get("instruction") or "")):
+            return ""
+        if self._is_reading_guide_intent(capture_intent):
             return ""
         return _capture_presentation_contract_warning(str(draft.get("draft_text") or ""))
 
@@ -2416,6 +2490,110 @@ def _attach_capture_stage_timings(
     if isinstance(result, dict):
         result["stage_timings_ms"] = dict(timings)
     return result
+
+
+def _wants_ai_reading_guide(instruction: str) -> bool:
+    """True when the user explicitly asks for a summary/reading guide."""
+    return bool(
+        re.search(
+            r"(核心导读|观点导读|阅读导读|提炼.{0,6}观点|观点.{0,4}提炼|"
+            r"提炼.{0,6}要点|要点提炼|导读)",
+            instruction or "",
+        )
+    )
+
+
+def _extractive_reading_guide(text: str, limit: int = 260) -> str:
+    """Deterministic lead used when no LLM is configured (offline demo mode)."""
+    blocks = [
+        re.sub(r"^#{1,6}\s*", "", block.strip()).strip()
+        for block in re.split(r"\n\s*\n", text or "")
+        if block.strip()
+    ]
+    sentences: list[str] = []
+    for block in blocks:
+        if block.startswith(("目录纲要", "来源：", "本地图片：", "图片地址：")):
+            continue
+        for sentence in re.split(r"(?<=[。！？!?])", block):
+            sentence = sentence.strip()
+            if sentence:
+                sentences.append(sentence)
+            if sum(len(item) for item in sentences) >= limit:
+                break
+        if sum(len(item) for item in sentences) >= limit:
+            break
+    lead = "".join(sentences).strip()
+    if not lead:
+        lead = "原文已完整保留，核心内容请见下方正文。"
+    return lead[:limit].rstrip()
+
+
+def _compose_ai_reading_guide_body(original: str, summary: str) -> str:
+    """Return guide-at-top + verbatim original; never drops the source text."""
+    body = (original or "").strip()
+    if AI_READING_GUIDE_MARKER in body[:400]:
+        return body
+    guide = (summary or "").strip() or "原文已完整保留，核心内容请见下方正文。"
+    return (
+        f"{AI_READING_GUIDE_HEADING}\n\n"
+        f"> {guide}\n\n"
+        "- 原文已完整保留在下方，未做压缩、删减或改写。\n\n"
+        "---\n\n"
+        f"## 原文\n\n{body}"
+    )
+
+
+def _body_compare_text(text: str) -> str:
+    """Normalise Markdown/whitespace so structure edits compare cleanly."""
+    return re.sub(r"[\s`*_#>|\[\]()~+\-]+", "", (text or "").lower())
+
+
+def _retention_paragraphs(text: str) -> list[str]:
+    paragraphs: list[str] = []
+    for block in re.split(r"\n\s*\n", text or ""):
+        cleaned = re.sub(r"^#{1,6}\s*", "", block.strip()).strip()
+        cleaned = re.sub(r"^[-*+]\s+", "", cleaned).strip()
+        if len(cleaned) >= EDITABLE_PARAGRAPH_MIN_CHARS:
+            paragraphs.append(cleaned)
+    return paragraphs
+
+
+def _paragraph_retention_ratio(paragraph: str, normalized_candidate: str) -> float:
+    """Share of spread-out text windows from one paragraph still present."""
+    text = _body_compare_text(paragraph)
+    if not text or not normalized_candidate:
+        return 0.0
+    window = min(12, len(text))
+    if window < 6:
+        return 1.0
+    step = max(1, (len(text) - window) // 7) if len(text) > window else 1
+    samples = [text[start:start + window] for start in range(0, len(text) - window + 1, step)][:8]
+    if not samples:
+        return 1.0
+    retained = sum(1 for sample in samples if sample in normalized_candidate)
+    return retained / len(samples)
+
+
+def _preserve_editable_body(original: str, candidate: str) -> tuple[str, bool]:
+    """Keep the user's body whenever an AI rewrite shrinks or drops its text.
+
+    Returns ``(body, preserved_original)``.  Structure-only edits (headings,
+    spacing, bold) still pass because the original text remains present.
+    """
+    original_text = (original or "").strip()
+    candidate_text = (candidate or "").strip()
+    if not candidate_text or candidate_text == original_text:
+        return original_text, False
+    normalized_original = _body_compare_text(original_text)
+    normalized_candidate = _body_compare_text(candidate_text)
+    if normalized_original and normalized_original in normalized_candidate:
+        return candidate_text, False
+    if len(normalized_candidate) < len(normalized_original) * EDITABLE_BODY_MIN_RETENTION_RATIO:
+        return original_text, True
+    for paragraph in _retention_paragraphs(original_text):
+        if _paragraph_retention_ratio(paragraph, normalized_candidate) < EDITABLE_PARAGRAPH_MIN_RETENTION_RATIO:
+            return original_text, True
+    return candidate_text, False
 
 
 def _normalize_editable_folder_suggestion(suggestion: dict) -> dict:

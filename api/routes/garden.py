@@ -128,10 +128,8 @@ def create_garden_router(
 def _card_view(conn, vault_path: Path, row) -> dict:
     """Library-style card view (mirrors the runtime's ``GET /api/knowledge/cards``)."""
     data = dict(row)
-    payload = normalize_garden_payload(
-        parse_payload_json(str(data.get("payload_json") or "{}")),
-        legacy=data,
-    )
+    raw_payload = parse_payload_json(str(data.get("payload_json") or "{}"))
+    payload = normalize_garden_payload(raw_payload, legacy=data)
     capture_ids = payload.get("source_ids") or _json_list(data.get("capture_ids"))
     capture_ids = [str(item).strip() for item in capture_ids if str(item).strip()]
     summary = str(payload.get("claim") or data.get("one_liner") or "").strip()
@@ -148,7 +146,8 @@ def _card_view(conn, vault_path: Path, row) -> dict:
         "created_at": str(data.get("created_at") or ""),
         "file_path": "",
         "markdown": "",
-        "source_theme": "",
+        "source_theme": str(raw_payload.get("source_theme") or ""),
+        "content_markdown": str(raw_payload.get("content_markdown") or ""),
         "core_arguments": _json_list(data.get("core_arguments")),
         "knowledge_links": _json_list(data.get("knowledge_links")),
         "key_materials": _json_list(data.get("key_materials")),
@@ -158,6 +157,8 @@ def _card_view(conn, vault_path: Path, row) -> dict:
             for capture_id in capture_ids
         ],
         "source_count": len(capture_ids),
+        "citation_count": int(data.get("citation_count") or 0),
+        "last_cited_at": str(data.get("last_cited_at") or ""),
     }
 
 

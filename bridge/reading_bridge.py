@@ -752,6 +752,12 @@ def _commit_knowledge_card(config, repo: ReadingRepo, draft: dict) -> dict:
     garden_data, _card_body, synth_warnings = _garden_data_from_reading_draft(config, repo, draft)
     raise_if_cancelled("reading.commit_card.before_write")
     card_id = create_garden_card(repo, garden_data)
+    try:
+        from agents.knowledge_graph import refresh_graph_after_write
+
+        refresh_graph_after_write(repo.conn, getattr(config, "vault_path", ""))
+    except Exception:
+        pass
     repo.update_draft(draft["id"], status="committed")
     repo.update_session(draft["session_id"], status="committed", committed_artifact_id=card_id)
     return success_envelope(
@@ -894,7 +900,7 @@ def _synthesize_reading_card(
             for a in core_args[:5]
             if str(a.get("claim", "")).strip()
         ] or [{"claim": one_liner}],
-        "knowledge_links": [],
+        "knowledge_links": _reading_card_linked_card_ids(evidence),
         "key_materials": source_materials if not key_mats else [
             {
                 "type": str(m.get("type", "quote")).strip(),
@@ -976,14 +982,38 @@ def _garden_data_from_reading_draft(config, repo: ReadingRepo, draft: dict) -> t
     )
 
 
+_CAPTURE_SOURCE_KINDS = {
+    "capture",
+    "capture_note",
+    "capture_section",
+    "knowledge_base",
+}
+_CARD_SOURCE_KINDS = {"knowledge_card", "garden_card"}
+
+
+def _strip_section_suffix(source_id: str) -> str:
+    """``cap_x#section-2`` -> ``cap_x`` (RAG sections reference the capture)."""
+    return str(source_id or "").split("#", 1)[0].strip()
+
+
 def _reading_card_capture_ids(session: dict, evidence: list[dict]) -> list[str]:
     ids: list[str] = []
-    if session.get("source_type") == "capture" and session.get("source_id"):
-        ids.append(str(session["source_id"]))
+    if session.get("source_type") in _CAPTURE_SOURCE_KINDS and session.get("source_id"):
+        ids.append(_strip_section_suffix(session["source_id"]))
     for item in evidence:
-        if item.get("source_kind") in {"capture", "capture_note", "knowledge_base"} and item.get("source_id"):
-            ids.append(str(item["source_id"]))
-    return _dedupe(ids)
+        if item.get("source_kind") in _CAPTURE_SOURCE_KINDS and item.get("source_id"):
+            ids.append(_strip_section_suffix(item["source_id"]))
+    return _dedupe([item for item in ids if item])
+
+
+def _reading_card_linked_card_ids(evidence: list[dict]) -> list[str]:
+    """Cards already cited in the conversation become the new card's siblings."""
+    ids = [
+        str(item.get("source_id") or "")
+        for item in evidence
+        if item.get("source_kind") in _CARD_SOURCE_KINDS and item.get("source_id")
+    ]
+    return _dedupe([item for item in ids if item])
 
 
 def _reading_card_key_materials(session: dict, evidence: list[dict]) -> list[dict]:

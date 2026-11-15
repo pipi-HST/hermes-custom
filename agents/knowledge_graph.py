@@ -26,6 +26,21 @@ RELATION_TYPES = {
 }
 
 
+def refresh_graph_after_write(conn, vault_path) -> dict[str, Any] | None:
+    """Rebuild auto-generated edges after a card/capture write.
+
+    Never raises: a bookkeeping failure must not fail the user's write.  The
+    refresh reads vault notes and is O(edges), so callers invoke it once per
+    write, not per retrieved row.
+    """
+    if conn is None or not vault_path:
+        return None
+    try:
+        return KnowledgeGraphService(conn, vault_path).refresh()
+    except Exception:
+        return None
+
+
 class KnowledgeGraphService:
     def __init__(self, conn, vault_path: str | Path):
         self.conn = conn

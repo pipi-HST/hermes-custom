@@ -1,0 +1,49 @@
+{
+  "groups": {
+    "G0_legacy_identity_keyword": {
+      "recall_at_3": 0.5,
+      "recall_at_5": 0.5,
+      "mrr_at_5": 0.5,
+      "negative_rejection": 1.0,
+      "latency_p50_ms": 0.1,
+      "latency_p95_ms": 436.16
+    },
+    "G1_vector_only": {
+      "recall_at_3": 0.667,
+      "recall_at_5": 0.667,
+      "mrr_at_5": 0.667,
+      "negative_rejection": 1.0,
+      "latency_p50_ms": 1.0,
+      "latency_p95_ms": 1.64
+    },
+    "G2_vector_plus_fts": {
+      "recall_at_3": 0.667,
+      "recall_at_5": 0.667,
+      "mrr_at_5": 0.667,
+      "negative_rejection": 1.0,
+      "latency_p50_ms": 1.38,
+      "latency_p95_ms": 3.8
+    },
+    "G3_full_v3": {
+      "recall_at_3": 0.667,
+      "recall_at_5": 0.667,
+      "mrr_at_5": 0.611,
+      "negative_rejection": 1.0,
+      "latency_p50_ms": 1.65,
+      "latency_p95_ms": 3.54
+    }
+  },
+  "engine": "char-ngram-blake2b-hash-1024",
+  "avg_prompt_chars": 362,
+  "corpus": {
+    "notes": 20,
+    "chunks": 86,
+    "cards": 12,
+    "units": 98,
+    "queries": 20,
+    "positives": 18,
+    "negatives": 2
+  },
+  "threshold": 0.2,
+  "max_prompt_chars": 14000
+}

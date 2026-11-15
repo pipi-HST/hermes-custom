@@ -48,6 +48,9 @@ class LibraryItemCreateRequest(BaseModel):
     source: str = ""
     source_type: str = "manual"
     folder_path: str = "Inbox"
+    # Quick manual notes must not block on an LLM rewrite.  Clients that want
+    # title/summary/folder/card suggestions opt in explicitly.
+    organize: bool = False
 
 
 class LibraryItemUpdateRequest(BaseModel):
@@ -172,6 +175,7 @@ def create_library_router(
             instruction="自由编辑后入库到知识库",
             title=title,
             folder_path=normalize_folder(body.folder_path) if body.folder_path else "",
+            organize=body.organize,
             context=_context(),
         )
         draft_id = _draft_id_from_result(result)

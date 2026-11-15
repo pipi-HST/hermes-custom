@@ -25,6 +25,7 @@ data/reports/
 data/exports/
 data/media/
 data/knowledge_folders.json
+data/vault/
 data/test-reset-backups/
 reports/
 /plans/

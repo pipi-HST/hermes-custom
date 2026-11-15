@@ -412,7 +412,16 @@ def _group_answer_sources(sources: list[dict[str, Any]]) -> dict[str, Any]:
         source_type = str(item.get("type") or item.get("source_kind") or "").strip()
         if source_type in {"web", "web_page", "web_search"} or item.get("url"):
             web_sources.append(item)
-        elif source_type in {"knowledge", "capture", "capture_note", "capture_section", "knowledge_base", "capture_draft"}:
+        elif source_type in {
+            "knowledge",
+            "capture",
+            "capture_note",
+            "capture_section",
+            "knowledge_base",
+            "capture_draft",
+            "knowledge_card",
+            "garden_card",
+        }:
             knowledge_sources.append(item)
     if web_sources and knowledge_sources:
         source_type = "knowledge_web_research"

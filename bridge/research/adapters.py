@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
@@ -9,6 +11,11 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
+from bridge.deepseek_web_tools import (
+    deepseek_web_fetch,
+    deepseek_web_search,
+    resolve_deepseek_credentials,
+)
 from bridge.research.types import (
     ResearchSearchAdapter,
     ResearchExtractAdapter,
@@ -29,6 +36,40 @@ from bridge.research.utils import (
     _stage_timeout,
 )
 from bridge.research.search import _html_text
+
+logger = logging.getLogger(__name__)
+
+
+def _web_tools_is_stubbed() -> bool:
+    """True when a test replaced ``tools.web_tools`` with a fake module."""
+    module = sys.modules.get("tools.web_tools")
+    return module is not None and not getattr(module, "__file__", None)
+
+
+def _deepseek_credentials() -> tuple[str, str] | None:
+    """Return ``(api_key, root)`` when DeepSeek official tools are configured.
+
+    ``DEEPSEEK_API_KEY`` always wins.  Otherwise the LLM config is used only
+    when its base URL actually points at DeepSeek, so pointing the LLM at
+    another provider never silently reroutes web search.
+    """
+    if _web_tools_is_stubbed():
+        return None
+    env_key = str(os.environ.get("DEEPSEEK_API_KEY") or "").strip()
+    if env_key:
+        key, root = resolve_deepseek_credentials()
+        return (key, root) if key else None
+    try:
+        from agents.capture_agent import load_config
+
+        config = load_config()
+    except Exception:
+        return None
+    api_key = str(getattr(config, "llm_api_key", "") or "").strip()
+    base_url = str(getattr(config, "llm_base_url", "") or "").strip()
+    if api_key and "deepseek" in base_url.lower():
+        return resolve_deepseek_credentials(api_key, base_url)
+    return None
 
 
 def _legacy_search_web(
@@ -74,7 +115,23 @@ def _legacy_search_web(
     return sources
 
 
-def _default_web_search(query: str, limit: int) -> str:
+def _default_web_search(query: str, limit: int) -> str | dict[str, Any]:
+    credentials = _deepseek_credentials()
+    if credentials:
+        api_key, base_url = credentials
+        try:
+            results = deepseek_web_search(
+                query,
+                limit=limit,
+                api_key=api_key,
+                base_url=base_url,
+            )
+        except Exception as exc:
+            logger.warning("[research] DeepSeek web search failed: %s", exc)
+            results = []
+        if results:
+            return {"success": True, "data": {"web": results}, "backend": "deepseek"}
+
     _ensure_main_repo_on_path()
     from tools.web_tools import web_search_tool
 
@@ -82,6 +139,8 @@ def _default_web_search(query: str, limit: int) -> str:
 
 
 def _default_search_backend() -> str:
+    if _deepseek_credentials():
+        return "deepseek"
     try:
         _ensure_main_repo_on_path()
         from tools import web_tools
@@ -129,11 +188,70 @@ def _web_search_with_backend(query: str, limit: int, backend: str) -> str | dict
     return provider.search(query, limit)
 
 
+def _deepseek_web_extract(
+    urls: list[str],
+    credentials: tuple[str, str],
+) -> dict[str, Any] | None:
+    """Extract pages with DeepSeek's official fetch API.
+
+    Returns ``None`` when nothing could be fetched so the caller can fall back
+    to the legacy/local extraction path.
+    """
+    selected_urls = [url for url in urls[:MAX_EXTRACT_URLS] if url]
+    if not selected_urls:
+        return None
+    api_key, base_url = credentials
+    stage_timeout = _stage_timeout(EXTRACT_STAGE_TIMEOUT_SECONDS)
+    per_url_timeout = max(1.0, min(20.0, stage_timeout / max(1, len(selected_urls))))
+
+    def _fetch_one(url: str) -> dict[str, Any]:
+        try:
+            fetched = deepseek_web_fetch(
+                url,
+                api_key=api_key,
+                base_url=base_url,
+                timeout=per_url_timeout,
+            )
+        except Exception as exc:
+            return {"url": url, "content": "", "raw_content": "", "error": str(exc)}
+        content = str(fetched.get("content") or "")
+        if not content:
+            return {
+                "url": url,
+                "content": "",
+                "raw_content": "",
+                "error": "empty deepseek fetch content",
+            }
+        return {"url": url, "content": content, "raw_content": content}
+
+    # Serial fetching made the extract stage sum of N round trips; the API
+    # allows 25 fetch QPS per account, so four in flight is safe.
+    workers = max(1, min(4, len(selected_urls)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results: list[dict[str, Any]] = list(pool.map(_fetch_one, selected_urls))
+    if not any(item.get("content") for item in results):
+        return None
+    return {
+        "success": True,
+        "results": results,
+        "meta": {
+            "extract_backend": "deepseek",
+            "allow_summary_fallback": True,
+        },
+    }
+
+
 def _default_web_extract(
     urls: list[str],
     *,
     local_extract: Callable[..., dict[str, Any]] | None = None,
 ) -> str | dict[str, Any]:
+    credentials = _deepseek_credentials()
+    if credentials:
+        extracted = _deepseek_web_extract(urls, credentials)
+        if extracted is not None:
+            return extracted
+
     _ensure_main_repo_on_path()
     from tools import web_tools
 

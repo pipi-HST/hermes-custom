@@ -1,0 +1,49 @@
+{
+  "groups": {
+    "G0_legacy_identity_keyword": {
+      "recall_at_3": 0.5,
+      "recall_at_5": 0.5,
+      "mrr_at_5": 0.5,
+      "negative_rejection": 1.0,
+      "latency_p50_ms": 0.11,
+      "latency_p95_ms": 38.13
+    },
+    "G1_vector_only": {
+      "recall_at_3": 0.833,
+      "recall_at_5": 0.833,
+      "mrr_at_5": 0.806,
+      "negative_rejection": 1.0,
+      "latency_p50_ms": 520.93,
+      "latency_p95_ms": 767.47
+    },
+    "G2_vector_plus_fts": {
+      "recall_at_3": 0.833,
+      "recall_at_5": 0.833,
+      "mrr_at_5": 0.806,
+      "negative_rejection": 1.0,
+      "latency_p50_ms": 1.58,
+      "latency_p95_ms": 2.08
+    },
+    "G3_full_v3": {
+      "recall_at_3": 0.833,
+      "recall_at_5": 0.833,
+      "mrr_at_5": 0.778,
+      "negative_rejection": 1.0,
+      "latency_p50_ms": 2.15,
+      "latency_p95_ms": 4.96
+    }
+  },
+  "engine": "dashscope-text-embedding-v4",
+  "avg_prompt_chars": 754,
+  "corpus": {
+    "notes": 20,
+    "chunks": 86,
+    "cards": 12,
+    "units": 98,
+    "queries": 20,
+    "positives": 18,
+    "negatives": 2
+  },
+  "threshold": 0.46,
+  "max_prompt_chars": 14000
+}
