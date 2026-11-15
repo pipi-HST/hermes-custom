@@ -16,7 +16,6 @@ import os
 import re
 import struct
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -88,8 +87,9 @@ def p2() -> list[str]:
             rng = np.random.default_rng(abs(hash(text)) % (2**32))
             return struct.pack(f"{self.DIM}f", *rng.normal(size=self.DIM).tolist())
 
-    tmp = tempfile.mkdtemp()
-    conn = init_db(os.path.join(tmp, "t.db"))
+    # In-memory DB: tempfile.mkdtemp() lands in the CWD when TMP/TEMP unset,
+    # which used to leave stray tmp*/ dirs inside the repo.
+    conn = init_db(":memory:")
     emb = FakeEmbedder()
     repo = CaptureEmbeddingRepo(conn)
     query_vec = emb.embed("Agent 工具调用收敛策略 与上下文预算")
