@@ -120,6 +120,22 @@ def _contexts(topic: dict) -> tuple[list[dict], list[dict]]:
     return card_first, evidence_first
 
 
+def _judge(config, query: str, answer: str) -> str:
+    """Ask the judge for YES/NO.
+
+    The configured model is a *reasoning* model: it spends completion tokens on
+    ``reasoning_content`` before any visible content, so a small ``max_tokens``
+    yields an empty string and every verdict silently becomes "NO".  Give it
+    room and retry once before recording a failure.
+    """
+    prompt = JUDGE.format(query=query, answer=answer)
+    for max_tokens in (512, 1024):
+        verdict = _chat(config, [{"role": "user", "content": prompt}], max_tokens=max_tokens)
+        if verdict:
+            return verdict
+    return ""
+
+
 def run() -> dict:
     config = load_config()
     rows = []
@@ -135,11 +151,7 @@ def run() -> dict:
                     {"role": "user", "content": prompt},
                 ],
             )
-            verdict = _chat(
-                config,
-                [{"role": "user", "content": JUDGE.format(query=topic["query"], answer=answer)}],
-                max_tokens=64,
-            )
+            verdict = _judge(config, topic["query"], answer)
             row[label] = {
                 "boundary_mentioned": "YES" in verdict.upper(),
                 "answer_len": len(answer),
@@ -153,6 +165,7 @@ def run() -> dict:
                 ],
                 "answer": answer,
                 "judge_raw_output": verdict,
+                "judge_error": "" if verdict else "empty completion",
             }
         rows.append(row)
     total = max(1, len(rows))
