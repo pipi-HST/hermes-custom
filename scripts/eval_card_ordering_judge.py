@@ -143,10 +143,22 @@ def run() -> dict:
             row[label] = {
                 "boundary_mentioned": "YES" in verdict.upper(),
                 "answer_len": len(answer),
+                "sources": [
+                    {
+                        "id": unit.get("id", ""),
+                        "title": unit.get("title", ""),
+                        "section": unit.get("section_title", ""),
+                    }
+                    for unit in units
+                ],
+                "answer": answer,
+                "judge_raw_output": verdict,
             }
         rows.append(row)
     total = max(1, len(rows))
     return {
+        "rerun": True,
+        "judge": "deepseek chat completion, temperature default",
         "summary": {
             label: {
                 "boundary_rate": round(

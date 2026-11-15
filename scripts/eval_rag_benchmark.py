@@ -577,7 +577,7 @@ def _markdown(report: dict[str, Any]) -> str:
         "# RAG 检索消融评测（V3.0）",
         "",
         f"- Embedding engine: `{report['engine']}`",
-        f"- 生效阈值 MIN_VECTOR_SCORE = `{report.get('threshold', 0.20)}`",
+        f"- 生效阈值 MIN_VECTOR_SCORE = `{report.get('threshold')}`（与 bridge/rag_bridge.py 一致）",
         f"- 语料：{corpus['notes']} 篇资料 / {corpus['chunks']} chunk / {corpus['cards']} 张卡片 "
         f"= {corpus['units']} 个检索单元",
         f"- Query：{corpus['queries']} 条（{corpus['positives']} 正样本 + {corpus['negatives']} 负样本）",
@@ -592,29 +592,39 @@ def _markdown(report: dict[str, Any]) -> str:
             f"| {name} | {row['recall_at_3']} | {row['recall_at_5']} | {row['mrr_at_5']} "
             f"| {row['negative_rejection']} | {row['latency_p50_ms']} | {row['latency_p95_ms']} |"
         )
+    negatives = report["corpus"]["negatives"]
     lines += [
         "",
         "口径说明：",
         "- 正样本命中按 capture/card 级判定（随机基线约 1/32）；负样本要求零召回。",
-        "- 离线 hash 引擎只衡量字面重合，真实语义指标需配置 embedding key 后重跑。",
-        "- 延迟只含检索层，不含 LLM 合成与 embedding API 往返。",
+        "- 计时前已预热 embedding 缓存，四组都只测检索层，不含 LLM 合成。",
+        f"- 负样本只有 {negatives} 条，拦截率只能写成 {negatives}/{negatives}，不能写成百分比。",
+        "- 逐条命中见同目录 JSON 的 `per_query_details`。",
         "",
         "已知限制（必须写进面试口径）：",
         _engine_caveat(report),
-        "- 注意：负样本拦截率随引擎与阈值剧烈变化，0.20 是历史硬编码值，不是标定值。",
+        "- 阈值按 DashScope v4 标定（docs/calibration-dashscope.json）；"
+        "separation<0 说明正负分布重叠，单阈值只是首轮粗筛。",
+        "- G0 是真实的旧版字面基线（标题/摘要子串，不用 FTS）。"
+        "若它在本语料上与 V3 打平，说明这套 query 的收益已被字面匹配吃掉，"
+        "不能宣称语义检索带来提升。",
         "",
     ]
     return "\n".join(lines)
 
 
 def _engine_caveat(report: dict[str, Any]) -> str:
-    if report.get("engine") != ENGINE_OFFLINE:
-        return "- 语义 embedding 引擎实测，阈值与召回可在生产复用。"
     row = report["groups"]["G3_full_v3"]
+    if report.get("engine") != ENGINE_OFFLINE:
+        return (
+            f"- 语义 embedding 引擎实测：G3 Recall@5 {row['recall_at_5']:.3f}、"
+            f"MRR@5 {row['mrr_at_5']:.3f}、负样本 {report['corpus']['negatives']} 条全拦。"
+            "结论只对本语料成立，换语料必须重跑。"
+        )
     return (
-        f"- 离线 hash 引擎在阈值 0.20 下负样本拦截 {row['negative_rejection']:.0%}、"
-        f"Recall@5 {row['recall_at_5']:.3f}；换成校准值 0.09 时 Recall@5 升到 0.722 "
-        "但负样本全部漏过——这是清晰的 precision/recall 权衡，也说明**阈值不可跨引擎迁移**。"
+        f"- 离线 hash 引擎只衡量字面重合：G3 Recall@5 {row['recall_at_5']:.3f}、"
+        f"MRR@5 {row['mrr_at_5']:.3f}。真实语义指标需配置 embedding key 后重跑，"
+        "**阈值不可跨引擎迁移**。"
     )
 
 
@@ -656,7 +666,11 @@ def main(argv: list[str] | None = None) -> int:
     report["engine"] = (
         "dashscope-text-embedding-v4" if args.engine == "dashscope" else ENGINE_OFFLINE
     )
-    report["threshold"] = args.threshold if args.threshold is not None else 0.20
+    from bridge.rag_bridge import MIN_VECTOR_SCORE
+
+    report["threshold"] = (
+        args.threshold if args.threshold is not None else MIN_VECTOR_SCORE
+    )
     report["max_prompt_chars"] = 14000
     markdown = _markdown(report)
     print(markdown)

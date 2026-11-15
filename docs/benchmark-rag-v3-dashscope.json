@@ -1,40 +1,696 @@
 {
   "groups": {
-    "G0_legacy_identity_keyword": {
-      "recall_at_3": 0.5,
-      "recall_at_5": 0.5,
-      "mrr_at_5": 0.5,
+    "G0_title_summary_substring": {
+      "recall_at_3": 0.833,
+      "recall_at_5": 0.833,
+      "mrr_at_5": 0.778,
       "negative_rejection": 1.0,
-      "latency_p50_ms": 0.11,
-      "latency_p95_ms": 38.13
+      "latency_p50_ms": 1.2,
+      "latency_p95_ms": 34.86
     },
     "G1_vector_only": {
       "recall_at_3": 0.833,
       "recall_at_5": 0.833,
       "mrr_at_5": 0.806,
       "negative_rejection": 1.0,
-      "latency_p50_ms": 520.93,
-      "latency_p95_ms": 767.47
+      "latency_p50_ms": 0.77,
+      "latency_p95_ms": 1.9
     },
     "G2_vector_plus_fts": {
       "recall_at_3": 0.833,
       "recall_at_5": 0.833,
       "mrr_at_5": 0.806,
       "negative_rejection": 1.0,
-      "latency_p50_ms": 1.58,
-      "latency_p95_ms": 2.08
+      "latency_p50_ms": 0.91,
+      "latency_p95_ms": 2.15
     },
     "G3_full_v3": {
       "recall_at_3": 0.833,
       "recall_at_5": 0.833,
       "mrr_at_5": 0.778,
       "negative_rejection": 1.0,
-      "latency_p50_ms": 2.15,
-      "latency_p95_ms": 4.96
+      "latency_p50_ms": 1.18,
+      "latency_p95_ms": 2.41
     }
   },
   "engine": "dashscope-text-embedding-v4",
-  "avg_prompt_chars": 754,
+  "embed_api_mean_ms": 1160.49,
+  "per_query_details": [
+    {
+      "id": "q01",
+      "query": "怎么判断一个 AI 功能是真需求还是伪需求",
+      "kind": "semantic",
+      "gold": [
+        "cap_aipm_demand"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "card_demo_boundary",
+          "cap_aipm_demand",
+          "cap_mcp",
+          "cap_pkm_compare",
+          "cap_telephone_game"
+        ],
+        "G1_vector_only": [
+          "cap_aipm_demand",
+          "cap_mcp",
+          "cap_pkm_compare",
+          "cap_telephone_game"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_aipm_demand",
+          "cap_mcp",
+          "cap_pkm_compare",
+          "cap_telephone_game"
+        ],
+        "G3_full_v3": [
+          "card_demo_boundary",
+          "cap_aipm_demand",
+          "cap_mcp",
+          "cap_pkm_compare",
+          "cap_telephone_game"
+        ]
+      }
+    },
+    {
+      "id": "q02",
+      "query": "传话筒效应为什么会让原文失真",
+      "kind": "semantic",
+      "gold": [
+        "cap_telephone_game",
+        "card_demo_telephone"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_telephone_game",
+          "cap_distractor_08",
+          "cap_latency_roi",
+          "card_demo_telephone",
+          "card_demo_latency"
+        ],
+        "G1_vector_only": [
+          "cap_telephone_game",
+          "cap_distractor_08",
+          "cap_latency_roi"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_telephone_game",
+          "cap_distractor_08",
+          "cap_latency_roi"
+        ],
+        "G3_full_v3": [
+          "cap_telephone_game",
+          "cap_distractor_08",
+          "cap_latency_roi",
+          "card_demo_telephone",
+          "card_demo_latency"
+        ]
+      }
+    },
+    {
+      "id": "q03",
+      "query": "Research 管线哪几个阶段可以砍掉",
+      "kind": "detail",
+      "gold": [
+        "cap_latency_roi"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_latency_roi",
+          "cap_model_routing",
+          "cap_distractor_09",
+          "cap_telephone_game",
+          "cap_distractor_04"
+        ],
+        "G1_vector_only": [
+          "cap_latency_roi",
+          "cap_model_routing",
+          "cap_distractor_09",
+          "cap_telephone_game",
+          "cap_distractor_04"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_latency_roi",
+          "cap_model_routing",
+          "cap_distractor_09",
+          "cap_telephone_game",
+          "cap_distractor_04"
+        ],
+        "G3_full_v3": [
+          "cap_latency_roi",
+          "cap_model_routing",
+          "cap_distractor_09",
+          "cap_telephone_game",
+          "cap_distractor_04"
+        ]
+      }
+    },
+    {
+      "id": "q04",
+      "query": "MCP 解决了什么问题",
+      "kind": "term",
+      "gold": [
+        "cap_mcp"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_mcp",
+          "card_demo_mcp",
+          "card_demo_context"
+        ],
+        "G1_vector_only": [
+          "cap_mcp"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_mcp"
+        ],
+        "G3_full_v3": [
+          "cap_mcp",
+          "card_demo_mcp",
+          "card_demo_context"
+        ]
+      }
+    },
+    {
+      "id": "q05",
+      "query": "Model Routing 怎么按任务分档",
+      "kind": "semantic",
+      "gold": [
+        "cap_model_routing",
+        "card_demo_routing"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_model_routing",
+          "cap_mcp",
+          "cap_telephone_game",
+          "card_demo_telephone",
+          "card_demo_mcp"
+        ],
+        "G1_vector_only": [
+          "cap_model_routing",
+          "cap_mcp",
+          "cap_telephone_game"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_model_routing",
+          "cap_mcp",
+          "cap_telephone_game"
+        ],
+        "G3_full_v3": [
+          "cap_model_routing",
+          "cap_mcp",
+          "cap_telephone_game",
+          "card_demo_telephone",
+          "card_demo_mcp"
+        ]
+      }
+    },
+    {
+      "id": "q06",
+      "query": "NotebookLM 和 Readwise 在证据层有什么差异",
+      "kind": "detail",
+      "gold": [
+        "cap_pkm_compare"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_pkm_compare",
+          "cap_latency_roi",
+          "cap_telephone_game",
+          "card_demo_telephone",
+          "card_demo_latency"
+        ],
+        "G1_vector_only": [
+          "cap_pkm_compare",
+          "cap_latency_roi",
+          "cap_telephone_game"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_pkm_compare",
+          "cap_latency_roi",
+          "cap_telephone_game"
+        ],
+        "G3_full_v3": [
+          "cap_pkm_compare",
+          "cap_latency_roi",
+          "cap_telephone_game",
+          "card_demo_telephone",
+          "card_demo_latency"
+        ]
+      }
+    },
+    {
+      "id": "q07",
+      "query": "工具收敛策略建议保留多少个工具",
+      "kind": "detail",
+      "gold": [
+        "cap_mcp",
+        "card_demo_mcp"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_mcp",
+          "cap_latency_roi",
+          "cap_telephone_game",
+          "cap_model_routing",
+          "cap_distractor_05"
+        ],
+        "G1_vector_only": [
+          "cap_mcp",
+          "cap_latency_roi",
+          "cap_telephone_game",
+          "cap_model_routing",
+          "cap_distractor_05"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_mcp",
+          "cap_latency_roi",
+          "cap_telephone_game",
+          "cap_model_routing",
+          "cap_distractor_05"
+        ],
+        "G3_full_v3": [
+          "cap_mcp",
+          "cap_latency_roi",
+          "cap_telephone_game",
+          "cap_model_routing",
+          "cap_distractor_05"
+        ]
+      }
+    },
+    {
+      "id": "q08",
+      "query": "130 秒到 20 秒砍掉了哪些低 ROI 阶段",
+      "kind": "term",
+      "gold": [
+        "cap_latency_roi",
+        "card_demo_latency"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "card_demo_latency",
+          "cap_latency_roi",
+          "cap_telephone_game",
+          "cap_model_routing",
+          "cap_distractor_06"
+        ],
+        "G1_vector_only": [
+          "cap_latency_roi",
+          "cap_telephone_game",
+          "cap_model_routing",
+          "cap_distractor_06",
+          "cap_aipm_demand"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_latency_roi",
+          "cap_telephone_game",
+          "cap_model_routing",
+          "cap_distractor_06",
+          "cap_aipm_demand"
+        ],
+        "G3_full_v3": [
+          "card_demo_latency",
+          "cap_latency_roi",
+          "cap_telephone_game",
+          "cap_model_routing",
+          "cap_distractor_06"
+        ]
+      }
+    },
+    {
+      "id": "q09",
+      "query": "面试中被问需求真假应该怎么反问",
+      "kind": "semantic",
+      "gold": [
+        "cap_aipm_demand"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_aipm_demand",
+          "card_demo_demand",
+          "card_demo_boundary"
+        ],
+        "G1_vector_only": [
+          "cap_aipm_demand"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_aipm_demand"
+        ],
+        "G3_full_v3": [
+          "cap_aipm_demand",
+          "card_demo_demand",
+          "card_demo_boundary"
+        ]
+      }
+    },
+    {
+      "id": "q10",
+      "query": "卡片和资料在知识库里应该怎么分工",
+      "kind": "card",
+      "gold": [
+        "card_demo_pkm",
+        "cap_pkm_compare"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_pkm_compare",
+          "cap_model_routing",
+          "cap_distractor_09",
+          "cap_mcp",
+          "cap_latency_roi"
+        ],
+        "G1_vector_only": [
+          "cap_pkm_compare",
+          "cap_model_routing",
+          "cap_distractor_09",
+          "cap_mcp",
+          "cap_latency_roi"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_pkm_compare",
+          "cap_model_routing",
+          "cap_distractor_09",
+          "cap_mcp",
+          "cap_latency_roi"
+        ],
+        "G3_full_v3": [
+          "cap_pkm_compare",
+          "cap_model_routing",
+          "cap_distractor_09",
+          "cap_mcp",
+          "cap_latency_roi"
+        ]
+      }
+    },
+    {
+      "id": "q11",
+      "query": "为什么工具太多模型会选错",
+      "kind": "semantic",
+      "gold": [
+        "cap_mcp",
+        "card_demo_mcp"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_mcp",
+          "cap_model_routing",
+          "cap_telephone_game",
+          "cap_aipm_demand",
+          "cap_distractor_02"
+        ],
+        "G1_vector_only": [
+          "cap_mcp",
+          "cap_model_routing",
+          "cap_telephone_game",
+          "cap_aipm_demand",
+          "cap_distractor_02"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_mcp",
+          "cap_model_routing",
+          "cap_telephone_game",
+          "cap_aipm_demand",
+          "cap_distractor_02"
+        ],
+        "G3_full_v3": [
+          "cap_mcp",
+          "cap_model_routing",
+          "cap_telephone_game",
+          "cap_aipm_demand",
+          "cap_distractor_02"
+        ]
+      }
+    },
+    {
+      "id": "q12",
+      "query": "并发抓取能省多少时间",
+      "kind": "card",
+      "gold": [
+        "card_demo_concurrency",
+        "cap_latency_roi"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_latency_roi",
+          "cap_mcp",
+          "cap_telephone_game",
+          "cap_distractor_06",
+          "card_demo_telephone"
+        ],
+        "G1_vector_only": [
+          "cap_latency_roi",
+          "cap_mcp",
+          "cap_telephone_game",
+          "cap_distractor_06"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_latency_roi",
+          "cap_mcp",
+          "cap_telephone_game",
+          "cap_distractor_06"
+        ],
+        "G3_full_v3": [
+          "cap_latency_roi",
+          "cap_mcp",
+          "cap_telephone_game",
+          "cap_distractor_06",
+          "card_demo_telephone"
+        ]
+      }
+    },
+    {
+      "id": "q13",
+      "query": "强监管场景适不适合先上生成式 AI",
+      "kind": "detail",
+      "gold": [
+        "card_demo_boundary",
+        "cap_aipm_demand"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "card_demo_boundary",
+          "cap_aipm_demand",
+          "cap_latency_roi",
+          "card_demo_demand",
+          "card_demo_latency"
+        ],
+        "G1_vector_only": [
+          "cap_aipm_demand",
+          "cap_latency_roi"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_aipm_demand",
+          "cap_latency_roi"
+        ],
+        "G3_full_v3": [
+          "card_demo_boundary",
+          "cap_aipm_demand",
+          "cap_latency_roi",
+          "card_demo_demand",
+          "card_demo_latency"
+        ]
+      }
+    },
+    {
+      "id": "q14",
+      "query": "怎么证明检索重构有效",
+      "kind": "card",
+      "gold": [
+        "card_demo_eval"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_latency_roi",
+          "cap_pkm_compare",
+          "cap_telephone_game",
+          "cap_aipm_demand",
+          "card_demo_demand"
+        ],
+        "G1_vector_only": [
+          "cap_latency_roi",
+          "cap_pkm_compare",
+          "cap_telephone_game",
+          "cap_aipm_demand"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_latency_roi",
+          "cap_pkm_compare",
+          "cap_telephone_game",
+          "cap_aipm_demand"
+        ],
+        "G3_full_v3": [
+          "cap_latency_roi",
+          "cap_pkm_compare",
+          "cap_telephone_game",
+          "cap_aipm_demand",
+          "card_demo_demand"
+        ]
+      }
+    },
+    {
+      "id": "q15",
+      "query": "上下文太多会有什么问题",
+      "kind": "card",
+      "gold": [
+        "card_demo_context"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_telephone_game",
+          "cap_model_routing",
+          "cap_distractor_04",
+          "cap_mcp",
+          "cap_distractor_07"
+        ],
+        "G1_vector_only": [
+          "cap_telephone_game",
+          "cap_model_routing",
+          "cap_distractor_04",
+          "cap_mcp",
+          "cap_distractor_07"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_telephone_game",
+          "cap_model_routing",
+          "cap_distractor_04",
+          "cap_mcp",
+          "cap_distractor_07"
+        ],
+        "G3_full_v3": [
+          "cap_telephone_game",
+          "cap_model_routing",
+          "cap_distractor_04",
+          "cap_mcp",
+          "cap_distractor_07"
+        ]
+      }
+    },
+    {
+      "id": "q16",
+      "query": "用户只发一个链接不说话应该怎么处理",
+      "kind": "card",
+      "gold": [
+        "card_demo_silence"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_telephone_game",
+          "cap_aipm_demand",
+          "card_demo_demand",
+          "card_demo_telephone"
+        ],
+        "G1_vector_only": [
+          "cap_telephone_game",
+          "cap_aipm_demand"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_telephone_game",
+          "cap_aipm_demand"
+        ],
+        "G3_full_v3": [
+          "cap_telephone_game",
+          "cap_aipm_demand",
+          "card_demo_demand",
+          "card_demo_telephone"
+        ]
+      }
+    },
+    {
+      "id": "q17",
+      "query": "收藏了很多文章但记不住怎么办",
+      "kind": "semantic",
+      "gold": [
+        "card_demo_quote",
+        "cap_pkm_compare"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_distractor_08",
+          "cap_pkm_compare",
+          "cap_distractor_09",
+          "cap_distractor_07",
+          "cap_telephone_game"
+        ],
+        "G1_vector_only": [
+          "cap_distractor_08",
+          "cap_pkm_compare",
+          "cap_distractor_09",
+          "cap_distractor_07",
+          "cap_telephone_game"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_distractor_08",
+          "cap_pkm_compare",
+          "cap_distractor_09",
+          "cap_distractor_07",
+          "cap_telephone_game"
+        ],
+        "G3_full_v3": [
+          "cap_distractor_08",
+          "cap_pkm_compare",
+          "cap_distractor_09",
+          "cap_distractor_07",
+          "cap_telephone_game"
+        ]
+      }
+    },
+    {
+      "id": "q18",
+      "query": "大小模型协同的成本怎么测算",
+      "kind": "semantic",
+      "gold": [
+        "cap_model_routing"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_model_routing",
+          "cap_telephone_game",
+          "card_demo_telephone",
+          "card_demo_routing"
+        ],
+        "G1_vector_only": [
+          "cap_model_routing",
+          "cap_telephone_game"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_model_routing",
+          "cap_telephone_game"
+        ],
+        "G3_full_v3": [
+          "cap_model_routing",
+          "cap_telephone_game",
+          "card_demo_telephone",
+          "card_demo_routing"
+        ]
+      }
+    },
+    {
+      "id": "q19",
+      "query": "怎么给猫做绝育手术恢复快",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q20",
+      "query": "量子计算机的退相干时间怎么延长",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    }
+  ],
+  "avg_prompt_chars": 671,
   "corpus": {
     "notes": 20,
     "chunks": 86,

@@ -1,10 +1,12 @@
 {
+  "rerun": true,
+  "judge": "deepseek chat completion, temperature default",
   "summary": {
     "card_first": {
       "boundary_rate": 0.0
     },
     "evidence_first": {
-      "boundary_rate": 0.25
+      "boundary_rate": 0.0
     },
     "n_topics": 4
   },
@@ -14,11 +16,59 @@
       "query": "多级 Agent 里原文应该怎么传给工具？",
       "card_first": {
         "boundary_mentioned": false,
-        "answer_len": 164
+        "answer_len": 166,
+        "sources": [
+          {
+            "id": "card",
+            "title": "卡片",
+            "section": ""
+          },
+          {
+            "id": "s1",
+            "title": "要点",
+            "section": ""
+          },
+          {
+            "id": "s2",
+            "title": "补充",
+            "section": ""
+          },
+          {
+            "id": "s3",
+            "title": "补充",
+            "section": ""
+          }
+        ],
+        "answer": "在多级 Agent 中，知识库给出的做法不是把原文原样传给工具，而是**先概括再填入工具参数**：原文可以概括后传给工具，模型通常能抓住重点[1]；例如主 Agent 可以把用户长文概括成约三百字，再填进工具参数[2]。另外，路由 Agent 判断用户意图时通常用短消息就够[3]；工具调用返回结果建议做结构化输出，便于渲染[4]。",
+        "judge_raw_output": ""
       },
       "evidence_first": {
         "boundary_mentioned": false,
-        "answer_len": 110
+        "answer_len": 261,
+        "sources": [
+          {
+            "id": "s1",
+            "title": "要点",
+            "section": ""
+          },
+          {
+            "id": "s2",
+            "title": "补充",
+            "section": ""
+          },
+          {
+            "id": "s3",
+            "title": "补充",
+            "section": ""
+          },
+          {
+            "id": "s4",
+            "title": "适用边界",
+            "section": ""
+          }
+        ],
+        "answer": "在多级 Agent 中传原文时，关键是不能把长材料概括后再塞进工具参数：\n\n- 长材料**严禁经过模型参数**，因为概括会丢失原文；只有短指令才可以压缩。[4]\n- 因此，主 Agent 把用户长文概括成三百字再填进工具参数的做法，只适合被压缩的短内容，不适合需要保留原文的长材料。[1][4]\n- 路由 Agent 判断意图时通常用短消息就够。[2]\n- 工具调用返回结果建议做结构化输出，便于渲染。[3]\n\n结论：**需要保留的原文应原样传给工具，不要经过模型概括或参数压缩；只有短指令可以压缩后再传。**[1][4]",
+        "judge_raw_output": ""
       }
     },
     {
@@ -26,11 +76,59 @@
       "query": "知识库里卡片和资料应该怎么分工？",
       "card_first": {
         "boundary_mentioned": false,
-        "answer_len": 222
+        "answer_len": 265,
+        "sources": [
+          {
+            "id": "card",
+            "title": "卡片",
+            "section": ""
+          },
+          {
+            "id": "s1",
+            "title": "要点",
+            "section": ""
+          },
+          {
+            "id": "s2",
+            "title": "补充",
+            "section": ""
+          },
+          {
+            "id": "s3",
+            "title": "补充",
+            "section": ""
+          }
+        ],
+        "answer": "卡片和资料的分工可以概括为：\n\n- **卡片负责“认知与优先级”**：卡片是用户自己沉淀的认知，检索时应当无条件置顶；作为最高优先级来源，卡片应永远排在资料前面。[1][2]\n- **资料负责“证据与保真”**：资料是证据层，保存时必须保真，并带原文归档，作为可追溯的原始依据。[3]\n- **专题负责“聚合输出”**：如果需要把跨篇内容聚合成一个输出单元，用专题来组织，而不是让卡片或资料承担这个角色。[4]\n\n所以检索和呈现时，**先卡片、后资料**；资料为卡片提供证据支撑，卡片则承载用户自己的判断和认知。[1][2][3]",
+        "judge_raw_output": ""
       },
       "evidence_first": {
         "boundary_mentioned": false,
-        "answer_len": 315
+        "answer_len": 294,
+        "sources": [
+          {
+            "id": "s1",
+            "title": "要点",
+            "section": ""
+          },
+          {
+            "id": "s2",
+            "title": "补充",
+            "section": ""
+          },
+          {
+            "id": "s3",
+            "title": "补充",
+            "section": ""
+          },
+          {
+            "id": "s4",
+            "title": "适用边界",
+            "section": ""
+          }
+        ],
+        "answer": "卡片和资料的分工可以这样理解：\n\n- **卡片负责“认知沉淀”**：卡片是用户自己沉淀的认知，检索时应当无条件置顶，便于优先看到自己的判断和结论[1]。\n- **资料负责“证据保真”**：资料是证据层，保存时必须保真并带原文归档，作为可追溯的依据[2]。\n- **专题负责“聚合输出”**：专题用于把跨篇内容聚合成一个输出单元，适合把多张卡片、多份资料组织成完整成果[3]。\n\n需要注意边界：卡片可能片面或过时，**无原文绑定的卡片不应压过原文证据**，并需按来源数降权[4]。所以实际分工是：卡片优先展示认知，资料提供原文证据；卡片最好绑定原文，涉及证据判断时以资料和来源数量校正权重。",
+        "judge_raw_output": ""
       }
     },
     {
@@ -38,11 +136,59 @@
       "query": "工具是不是越多越好？",
       "card_first": {
         "boundary_mentioned": false,
-        "answer_len": 255
+        "answer_len": 161,
+        "sources": [
+          {
+            "id": "card",
+            "title": "卡片",
+            "section": ""
+          },
+          {
+            "id": "s1",
+            "title": "要点",
+            "section": ""
+          },
+          {
+            "id": "s2",
+            "title": "补充",
+            "section": ""
+          },
+          {
+            "id": "s3",
+            "title": "补充",
+            "section": ""
+          }
+        ],
+        "answer": "根据知识库内容，工具并不是越少越好：工具越多，覆盖面越广，而且路由准确率不会下降[1]。把每个能力都做成独立工具，模型自己会选对[2]。此外，MCP 能把工具接入从 M×N 降到 M+N[3]，工具参数也应该用 JSON Schema 约束[4]。因此，按这些信息，工具可以更多，以扩大覆盖面并保持路由准确率[1][2]。",
+        "judge_raw_output": ""
       },
       "evidence_first": {
         "boundary_mentioned": false,
-        "answer_len": 249
+        "answer_len": 219,
+        "sources": [
+          {
+            "id": "s1",
+            "title": "要点",
+            "section": ""
+          },
+          {
+            "id": "s2",
+            "title": "补充",
+            "section": ""
+          },
+          {
+            "id": "s3",
+            "title": "补充",
+            "section": ""
+          },
+          {
+            "id": "s4",
+            "title": "适用边界",
+            "section": ""
+          }
+        ],
+        "answer": "不是越多越好。工具数量需要控制在合理范围内。\n\n一方面，把能力拆成独立工具，模型可以自行选择合适工具[1]；MCP 也把工具接入成本从 M×N 降到 M+N[2]，工具参数可用 JSON Schema 约束[3]。这些都有利于工具的使用和接入。\n\n但另一方面，工具存在明确边界：当工具超过二十个且描述重叠时，路由准确率会明显下降，应收敛到八到十四个主干工具[4]。因此，工具并非越多越好，而应在保证能力覆盖的前提下控制数量、减少描述重叠。",
+        "judge_raw_output": ""
       }
     },
     {
@@ -50,11 +196,59 @@
       "query": "RAG 的余弦阈值应该怎么定？",
       "card_first": {
         "boundary_mentioned": false,
-        "answer_len": 160
+        "answer_len": 74,
+        "sources": [
+          {
+            "id": "card",
+            "title": "卡片",
+            "section": ""
+          },
+          {
+            "id": "s1",
+            "title": "要点",
+            "section": ""
+          },
+          {
+            "id": "s2",
+            "title": "补充",
+            "section": ""
+          },
+          {
+            "id": "s3",
+            "title": "补充",
+            "section": ""
+          }
+        ],
+        "answer": "按知识库内容，RAG 的余弦阈值可以**固定设为 0.20**，作为向量检索的最低分门槛；该结论还声称对所有 embedding 通用。[1][2]",
+        "judge_raw_output": ""
       },
       "evidence_first": {
-        "boundary_mentioned": true,
-        "answer_len": 200
+        "boundary_mentioned": false,
+        "answer_len": 324,
+        "sources": [
+          {
+            "id": "s1",
+            "title": "要点",
+            "section": ""
+          },
+          {
+            "id": "s2",
+            "title": "补充",
+            "section": ""
+          },
+          {
+            "id": "s3",
+            "title": "补充",
+            "section": ""
+          },
+          {
+            "id": "s4",
+            "title": "适用边界",
+            "section": ""
+          }
+        ],
+        "answer": "RAG 的余弦阈值可以这样定：\n\n- 可先把 **0.20 作为向量检索的最低分门槛/初始参考值** [1]。\n- 但不能直接照搬：**不同 embedding 的分数分布不同，阈值必须按所用引擎重新标定** [4]。\n- 如果正负样本的分数分布存在重叠，**单靠一个阈值无法有效分离** [4]。\n- 这种情况下可考虑采用**两阶段检索：先按 identity 粗排，再按 section 精排** [2]。\n- 同时检索结果应**带引用编号，便于溯源** [3]。\n\n因此，实践上建议：以 0.20 为起点 [1]，在自己的 embedding 引擎和数据上重新标定 [4]；若单阈值分离效果差，改用两阶段检索 [2]，并保留引用编号 [3]。",
+        "judge_raw_output": ""
       }
     }
   ]

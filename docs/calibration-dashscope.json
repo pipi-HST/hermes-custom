@@ -9,6 +9,6 @@
   "negative_p95": 0.4887,
   "separation": -0.0601,
   "suggested_min_vector_score": 0.46,
-  "current_min_vector_score": 0.2,
-  "note": "语义引擎实测分布，可直接用于生产阈值"
+  "current_min_vector_score": 0.46,
+  "note": "语义引擎实测分布。separation<0 表示正负分布重叠，suggested 只是折中工作点（约牺牲 10% 边缘正样本），仅作首轮粗筛，不能替代 rerank/分数融合"
 }
