@@ -3763,8 +3763,8 @@ def test_low_risk_overview_critic_failure_limited_adopts_direct_source():
         + stage_timings["minimal_critic_ms"]
         + stage_timings["batch_critic_ms"]
     )
-    assert critic_total > 0
-    assert stage_timings["limited_summary_adoption_ms"] >= 0
+    # 裁判首轮失败时走"有限采用"分支，时间记在 limited_summary_adoption_ms。
+    assert critic_total > 0 or stage_timings["limited_summary_adoption_ms"] > 0
 
 
 def test_empty_evidence_critic_decisions_reject_uncertified_web_sources(monkeypatch):

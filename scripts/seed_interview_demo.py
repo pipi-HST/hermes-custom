@@ -1251,6 +1251,11 @@ def _insert_card(conn, card: dict[str, Any]) -> None:
             now,
         ),
     )
+    # The API view reads the column first, so it must be populated here too.
+    conn.execute(
+        "UPDATE garden_cards SET source_theme = ? WHERE id = ?",
+        (card["theme"], card["id"]),
+    )
     if _REAL_EMBEDDER is not None:
         # Cards get a real vector too, so the column is populated and ready for
         # the (not yet wired) card-vector retrieval.

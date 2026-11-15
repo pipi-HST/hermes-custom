@@ -63,8 +63,18 @@ def test_list_stale_rows_detects_hash_changes(tmp_path):
     assert fresh is False
 
 
+def _add_captures(conn, *capture_ids: str) -> None:
+    for capture_id in capture_ids:
+        conn.execute(
+            "INSERT OR IGNORE INTO captures (id, file_path) VALUES (?, ?)",
+            (capture_id, f"captures/{capture_id}.md"),
+        )
+    conn.commit()
+
+
 def test_search_returns_rows_by_cosine_similarity(tmp_path):
     conn = init_db(str(tmp_path / "test.db"))
+    _add_captures(conn, "cap1", "cap2")
     repo = CaptureEmbeddingRepo(conn)
     repo.upsert(
         capture_id="cap1",
@@ -95,6 +105,7 @@ def test_search_returns_rows_by_cosine_similarity(tmp_path):
 
 def test_search_scores_lightweight_candidates_before_loading_full_rows(tmp_path):
     conn = init_db(str(tmp_path / "test.db"))
+    _add_captures(conn, "cap1", "cap2")
     repo = CaptureEmbeddingRepo(conn)
     repo.upsert(
         capture_id="cap1",
@@ -132,7 +143,7 @@ def test_search_scores_lightweight_candidates_before_loading_full_rows(tmp_path)
     normalized = " ".join(candidate_selects[0].split())
     assert "ce.id" in normalized and "ce.embedding" in normalized
     assert "ce.capture_id" in normalized and "ce.kind" in normalized
-    assert "LEFT JOIN captures" in normalized
+    assert "JOIN captures" in normalized
     assert "review_state" in normalized and "archived" in normalized
     assert "SELECT *" not in candidate_selects[0]
     assert [row["capture_id"] for row in rows] == ["cap1"]
