@@ -1,3 +1,7 @@
+> ⚠️ **本文件是离线 hash 引擎的冒烟回归口径，不是对外主口径。**
+> 对外/面试引用请看 `docs/BENCHMARK-RAG-V3-dashscope.md`（DashScope v4 实测，阈值 0.46）。
+> hash 引擎只衡量字面重合，其 Recall 与负样本拦截率都不可迁移到真实语义库。
+
 # RAG 检索消融评测（V3.0）
 
 - Embedding engine: `char-ngram-blake2b-hash-1024`（离线字符 n-gram，**不代表语义能力**）
