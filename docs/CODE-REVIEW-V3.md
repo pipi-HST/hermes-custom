@@ -403,3 +403,56 @@ chunks from a single 3000-char paragraph: 2 [3000, 211]
 | ID | 位置 | 问题 |
 | --- | --- | --- |
 | P2-19 | `scripts/seed_interview_demo.py:940-950` | **演示库的向量是合成的，不是语义向量**：`_concept_vector(name)` 用 `sha256(name) → rng.normal(0,1,DIM)` 生成随机单位向量，section 向量由 identity 混合而来。实测真实库 30 个 chunk：同篇 chunk 余弦均值 **0.9903**（三个 section 几乎无法区分）、跨篇均值 **0.3478**、最大 **0.9940**。后果：①查询用 DashScope 真实向量、索引是随机向量，余弦≈0，向量检索在 demo 上等于不工作，全靠字面关键词兜底；②`MIN_VECTOR_SCORE` 从 0.20 改到 0.46 是在**另一个嵌入空间 + 另一个语料**上标定的值，demo 行为会变但从未被测过；③"两阶段 identity→section 检索"在 demo 上不可能生效，因为同篇 chunk 天然几乎重合 |
+
+---
+
+## 10. 执行结果（V3.3 方案落地，2026-11-16）
+
+### 10.1 最终验收（全部实测）
+
+| Gate | 命令 | 结果 |
+| :-- | :-- | :-- |
+| 全量测试 | `pytest tests -q`（浏览器 e2e 默认 skip） | **1247 用例收集，0 failed，EXIT=0** |
+| 复现脚本 | `python scripts/repro_v3_review_findings.py` | **EXIT=0**，`3 sources == 3 refs`、`1 rows, 1 distinct capture ids` |
+| demo 检索 | `python scripts/verify_demo_retrieval.py` | **6/6 命中 @0.46**，Top-1 余弦 0.673~0.843，无 0.42~0.46 边缘样本 |
+| demo 真向量 | `seed_interview_demo.py` | `embedding_mode=dashscope`；同篇 chunk 余弦 0.9903 → **0.8061**；9/9 卡片有向量 |
+| 引用账本 | `citation_events` vs `citation_count` | **一致**（recompute 后） |
+| 前端 | `npx tsc -b` / `npx eslint .` / 8 个 `npm run check:*` | **全部 0 error / 8-8 OK** |
+| 行尾 | `git diff --stat` | 真实改动量级（不再整文件重写） |
+
+提交：`b000963`（快照）→ `f00fa0a`（renorm）→ `cd48d63`（编号/关键词/阈值）→ `56b13bd`（切分/计时/隔离）→ `995f9f1`/`904bc6d`/`04d68fb`/`e387a5d`（评测与文档）→ `2645489`（收尾）。
+前端仓：`374ee6f` → `064311f` → `797b6a2`。
+
+### 10.2 已闭环的条目
+
+- **P1-1 / P2-8 / P2-9 / P2-16 / P3-24**：`select_prompt_sources` 单点编号 + `render_prompt`；图检索每篇 1 席；FTS 行补齐章节；关键词预留 2 席；引用正则排除代码块与链接。
+- **P1-2 / P2-11 / P3-25**：关键词抽取改为「先切分再整词去停用词」；短语 0 命中回退 bigram OR；`no such table/module` 才走旧兜底。13 条分词断言 + 2 条召回断言全绿。
+- **P1-3 / P2-12 / D4**：`MIN_VECTOR_SCORE = 0.46`（支持 config 覆盖），calibration 的 `current_min_vector_score` 同步 0.46，note 声明「分布重叠、仅作粗筛」。
+- **P1-4 / P2-4 / P2-5 / P3-27**：7 个红灯清零（2 个契约测试按新设计改断言、计时断言改为分支无关、章节去后缀、单段硬切）；浏览器用例改 `--run-browser` opt-in，不再崩进程。
+- **P2-19**：demo 库改灌真 DashScope 向量（默认离线，仅 CLI 开真网）。
+- **P3-4**：`run_id` 默认 UUID、单事务、新增 `recompute_card_citation_counts`，seed 末尾调用。
+- **P3-5 / P3-6 / P3-7 / P3-21**：`vector_search` 按分数返回、web tools 区分 `content_is_summary`、删恒等变换、`JOIN captures` 过滤孤儿 chunk。
+- **P2-3**：`source_theme` 改读列；seed 同步写列（否则 API 显示 Inbox）。
+- **P2-14**：`vector_search` 接受 `query_embedding`，降级路径不再二次嵌入。
+- **P3-14 / P3-15 / P2-2（Library 视图）**：代码块安全的 💡 分段；灵感卡改「示例选题模板」；Library 视图已接 `searchBackend`。
+
+### 10.3 结论发生变化的三处（口径必须更新）
+
+1. **G0 不再是稻草人**：真实旧版子串基线在本语料 **Recall@5 0.833**，与 V3 打平；只有 MRR 略高（0.806 vs 0.778）。
+   → 旧口径「0.5 → 0.833」作废；只能说「该语料的收益已被字面匹配吃掉，语义收益需要更难的问题集来测」。
+2. **判官 bug 修复后结果反转**：`max_tokens=64` 被推理模型的 `reasoning_content` 吃光 → 全空 → 全 NO；修好后同一批对抗样本 **卡片优先 1/4 vs 证据优先 4/4**。
+   → 之前「0/4 vs 1/4」和「0/4 vs 0/4」都是判官预算问题。
+3. **demo 向量语义化**：`_concept_vector` 的合成随机向量已替换为真向量，同篇 chunk 余弦 0.99→0.81，两阶段检索在 demo 上才开始有意义。
+
+### 10.4 仍未闭环（明确记录，不假装完成）
+
+| 条目 | 状态 |
+| :-- | :-- |
+| P2-2 Workbench 视图黄条 | 仅 Library 视图接线；GatewayChat 的消息模型没有 `provider_status`，需要另做 plumbing |
+| P3-2 FTS 删除 O(n) / 每次 apply 全量 rebuild | 未改，30 行规模无感，上万 chunk 前必须换 rowid 映射 |
+| P3-9 `_default_search_backend()` 读磁盘 | 未加缓存，一次研究调用 ≥2 次 |
+| P3-22 `citation_events` 索引 | 未加 run_id/cited_at 索引 |
+| P3-29/P3-30 写路径读配置、图刷新无日志 | 未改 |
+| 异步裁判链路分项计时 | 只汇总 `critic_ms`，`initial/minimal/batch` 恒 0（已在测试注释标注） |
+| 负样本只有 2 条 | 拦截率只能写 2/2；要比率需扩到 ≥10 条 |
+| P2-6 judge n=4 | 已可复核（存了答案与判官原文），但样本量仍是 4 |
