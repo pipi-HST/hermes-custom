@@ -121,13 +121,17 @@ def _text(value: Any) -> str:
 def _normalize_search_item(item: dict[str, Any]) -> dict[str, Any]:
     snippet = _text(item.get("snippet"))
     summary = _text(item.get("summary")) or snippet
+    raw_content = _text(item.get("content"))
     return {
         "title": _text(item.get("title")),
         "url": _text(item.get("url")),
         "snippet": snippet,
         "summary": summary,
         "description": summary,
-        "content": _text(item.get("content")) or summary,
+        # ``content`` keeps the historical fallback for downstream consumers,
+        # but the flag makes it impossible to mistake a snippet for a body.
+        "content": raw_content or summary,
+        "content_is_summary": not raw_content,
         "site_name": _text(item.get("site_name")),
         "date": _text(item.get("date")),
         "rerank_score": _as_float(item.get("rerank_score"), 0.0),
@@ -176,10 +180,6 @@ def deepseek_web_search(
         reverse=True,
     )
 
-    strong = [item for item in parsed if item["rerank_score"] >= 1.5]
-    if strong:
-        weak = [item for item in parsed if item["rerank_score"] < 1.5]
-        parsed = strong + weak
 
     max_results = max(1, int(limit or 8))
     return parsed[:max_results]

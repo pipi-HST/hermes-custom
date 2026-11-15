@@ -6,9 +6,13 @@ from agents.embedder import Embedder, batch_cosine_similarity
 
 
 def search(query: str, repo: CaptureRepo, embedder: Embedder,
-           top_k: int = 5) -> list[dict]:
-    """检索 top-k 最相关的 captures（按 file_path 去重）。"""
-    query_emb = embedder.embed(query)
+           top_k: int = 5, *, query_embedding: bytes | None = None) -> list[dict]:
+    """检索 top-k 最相关的 captures（按 file_path 去重）。
+
+    ``query_embedding`` lets a caller that already embedded the query (the RAG
+    bridge does) reuse it instead of paying for a second API round trip.
+    """
+    query_emb = query_embedding if query_embedding is not None else embedder.embed(query)
     embedding_captures = _list_embedding_captures(repo)
     candidates = [(c["id"], c.get("embedding")) for c in embedding_captures
                   if c.get("embedding")]
@@ -34,7 +38,9 @@ def search(query: str, repo: CaptureRepo, embedder: Embedder,
         if len(top_ids) >= top_k:
             break
 
-    return [c for c in embedding_captures if c["id"] in top_ids]
+    # Return in score order: rows used to come back in created_at order, so the
+    # caller's first source was the newest note instead of the best match.
+    return [id_to_row[cid] for cid, _score in scored if cid in top_ids]
 
 
 def _list_embedding_captures(repo: CaptureRepo) -> list[dict]:

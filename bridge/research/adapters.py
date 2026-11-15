@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -130,12 +131,32 @@ def _default_web_search(query: str, limit: int) -> str | dict[str, Any]:
             logger.warning("[research] DeepSeek web search failed: %s", exc)
             results = []
         if results:
+            global _LAST_SEARCH_BACKEND
+            _LAST_SEARCH_BACKEND = "deepseek"
             return {"success": True, "data": {"web": results}, "backend": "deepseek"}
 
     _ensure_main_repo_on_path()
     from tools.web_tools import web_search_tool
 
-    return web_search_tool(query, limit=limit)
+    raw = web_search_tool(query, limit=limit)
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            parsed = None
+        raw = parsed if isinstance(parsed, dict) else {"success": True, "raw": raw}
+    if isinstance(raw, dict):
+        # The caller must be able to tell that DeepSeek was *not* used.
+        raw = {**raw, "backend": "fallback"}
+    return raw
+
+
+_LAST_SEARCH_BACKEND = ""
+
+
+def current_search_backend() -> str:
+    """Backend that actually served the most recent search ('' if unknown)."""
+    return _LAST_SEARCH_BACKEND
 
 
 def _default_search_backend() -> str:

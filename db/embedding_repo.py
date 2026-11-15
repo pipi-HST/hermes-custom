@@ -229,7 +229,7 @@ class CaptureEmbeddingRepo:
         rows = self.conn.execute(
             f"""SELECT ce.id, ce.capture_id, ce.kind, ce.embedding
                 FROM capture_embeddings ce
-                LEFT JOIN captures c ON c.id = ce.capture_id
+                JOIN captures c ON c.id = ce.capture_id
                 WHERE ce.embedding IS NOT NULL
                   AND ce.kind IN ({placeholders})
                   AND COALESCE(c.review_state, '') != 'archived'""",

@@ -331,7 +331,13 @@ def _assemble_light_web_result(
         query_statuses=query_statuses,
     )
     provider_status["path"] = path_label
-    backend_name = str(_default_search_backend() or "")
+    try:
+        from bridge.research.adapters import current_search_backend
+
+        observed_backend = str(current_search_backend() or "")
+    except Exception:  # pragma: no cover - adapters always importable
+        observed_backend = ""
+    backend_name = observed_backend or str(_default_search_backend() or "")
     # Silent degradation is the dangerous case: the user must be able to tell
     # that the answer came from a fallback search backend, not DeepSeek.
     provider_status["search_backend"] = backend_name or "unknown"

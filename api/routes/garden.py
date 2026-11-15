@@ -146,7 +146,9 @@ def _card_view(conn, vault_path: Path, row) -> dict:
         "created_at": str(data.get("created_at") or ""),
         "file_path": "",
         "markdown": "",
-        "source_theme": str(raw_payload.get("source_theme") or ""),
+        "source_theme": str(
+            data.get("source_theme") or raw_payload.get("source_theme") or ""
+        ),
         "content_markdown": str(raw_payload.get("content_markdown") or ""),
         "core_arguments": _json_list(data.get("core_arguments")),
         "knowledge_links": _json_list(data.get("knowledge_links")),

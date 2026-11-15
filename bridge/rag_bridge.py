@@ -194,7 +194,9 @@ def _search_knowledge_base(
 
     if not results:
         try:
-            results = vector_search(query, repo, embedder, top_k=5)
+            results = vector_search(
+                query, repo, embedder, top_k=5, query_embedding=query_embedding
+            )
             _log(f"VECTOR: {len(results)} hits")
             logger.info("[RAG] vector_search returned %d results", len(results))
         except Exception as e:
@@ -580,6 +582,21 @@ def _garden_card_match_score(
     return score
 
 
+def _card_body_text(card: dict) -> str:
+    """Card body lives in payload_json; the old code read a column that never existed."""
+    payload = card.get("payload_json")
+    if payload:
+        try:
+            data = json.loads(payload) if isinstance(payload, str) else payload
+        except (TypeError, ValueError):
+            data = {}
+        if isinstance(data, dict):
+            content = str(data.get("content_markdown") or "")
+            if content:
+                return content
+    return str(card.get("content_markdown") or "")
+
+
 def _search_garden_cards(query: str, conn, limit: int = 3) -> list[dict]:
     """Recall the user's curated Knowledge Cards by literal keyword match.
 
@@ -595,8 +612,11 @@ def _search_garden_cards(query: str, conn, limit: int = 3) -> list[dict]:
         return []
     try:
         rows = conn.execute(
-            """SELECT * FROM garden_cards
-               WHERE COALESCE(status, 'accepted') != 'archived'"""
+            """SELECT id, title, one_liner, card_kind, source_theme,
+                      core_arguments, payload_json
+               FROM garden_cards
+               WHERE COALESCE(status, 'accepted') != 'archived'
+               LIMIT 200"""
         ).fetchall()
     except Exception as exc:
         logger.debug("[RAG] garden_cards lookup unavailable: %s", exc)
@@ -623,14 +643,14 @@ def _search_garden_cards(query: str, conn, limit: int = 3) -> list[dict]:
     scored.sort(key=lambda pair: pair[0], reverse=True)
 
     cards: list[dict] = []
-    for _score, row in scored[:limit]:
+    for raw_score, row in scored[:limit]:
         one_liner = str(row.get("one_liner") or "")
         cards.append(
             {
                 "id": row.get("id", ""),
                 "title": f"【知识卡片】{row.get('title') or ''}",
                 "raw_title": row.get("title") or "",
-                "body": row.get("content_markdown") or one_liner or "",
+                "body": _card_body_text(row) or one_liner or "",
                 "story": one_liner,
                 "summary": one_liner,
                 "section_title": row.get("source_theme")
@@ -640,7 +660,9 @@ def _search_garden_cards(query: str, conn, limit: int = 3) -> list[dict]:
                 "source_kind": "garden_card",
                 "file_path": row.get("file_path")
                 or f"garden/{row.get('id', '')}.md",
-                "score": 0.85,
+                # Literal match score normalised into the same 0..1 space as
+                # cosine hits instead of the old hard-coded 0.85.
+                "score": round(min(1.0, raw_score / 9.0), 3),
             }
         )
     return cards
