@@ -131,6 +131,29 @@ def test_apply_refuses_when_preflight_has_blockers(
         )
 
 
+def test_apply_refuses_home_as_delete_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        reset_script,
+        "_automation_preflight",
+        lambda **_: {"blockers": []},
+    )
+    db_path = tmp_path / "captures.db"
+    init_db(str(db_path)).close()
+
+    with pytest.raises(ValueError, match="unsafe legacy store"):
+        reset_local_data(
+            db_path=db_path,
+            legacy_store=Path.home(),
+            new_storage_root=tmp_path / "knowledge",
+            repo_root=tmp_path / "repo",
+            apply=True,
+            confirmation=CONFIRMATION_PHRASE,
+        )
+
+
 def test_apply_clears_rows_preserves_schema_and_creates_empty_storage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -144,6 +167,11 @@ def test_apply_clears_rows_preserves_schema_and_creates_empty_storage(
     conn = init_db(str(db_path))
     conn.execute("INSERT INTO captures (id, file_path) VALUES ('cap1', 'captures/a.md')")
     conn.execute("INSERT INTO garden_cards (id, title) VALUES ('card1', 'Card')")
+    conn.execute(
+        """INSERT INTO capture_search_fts
+           (capture_id, kind, section_id, section_title_tokens, index_text_tokens)
+           VALUES ('cap1', 'identity', '', 'card', 'body')"""
+    )
     conn.execute("CREATE TABLE life_events (id TEXT PRIMARY KEY)")
     conn.execute("INSERT INTO life_events (id) VALUES ('life1')")
     conn.commit()
@@ -187,6 +215,7 @@ def test_apply_clears_rows_preserves_schema_and_creates_empty_storage(
     try:
         assert conn.execute("SELECT COUNT(*) FROM captures").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM garden_cards").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM capture_search_fts").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM life_events").fetchone()[0] == 0
         cols = [row[1] for row in conn.execute("PRAGMA table_info(captures)")]
         assert "file_path" in cols

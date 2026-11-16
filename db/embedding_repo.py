@@ -45,6 +45,48 @@ def _delete_fts_row(
         pass
 
 
+def delete_fts_for_capture(conn: sqlite3.Connection, capture_id: str) -> int:
+    """Remove every derived FTS row/map entry for one capture.
+
+    Permanent deletes used to remove ``capture_embeddings`` directly, leaving
+    the FTS table and its rowid map pointing at a capture that no longer
+    existed.  This helper is safe on databases built without FTS5.
+    """
+    if not capture_id:
+        return 0
+    removed = 0
+    try:
+        rows = conn.execute(
+            "SELECT kind, section_id FROM capture_search_fts_map WHERE capture_id = ?",
+            (capture_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    for row in rows:
+        _delete_fts_row(
+            conn,
+            capture_id=capture_id,
+            kind=str(row["kind"] or ""),
+            section_id=str(row["section_id"] or ""),
+        )
+        removed += 1
+    # Legacy databases may have FTS rows but no map entries.
+    try:
+        cursor = conn.execute(
+            "DELETE FROM capture_search_fts WHERE capture_id = ?", (capture_id,)
+        )
+        removed += max(0, int(cursor.rowcount or 0))
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute(
+            "DELETE FROM capture_search_fts_map WHERE capture_id = ?", (capture_id,)
+        )
+    except sqlite3.OperationalError:
+        pass
+    return removed
+
+
 def _insert_fts_row(
     conn: sqlite3.Connection,
     *,

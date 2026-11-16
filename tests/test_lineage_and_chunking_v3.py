@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 import struct
 
 import pytest
@@ -91,6 +92,41 @@ def test_citation_events_only_for_cited_cards(tmp_path):
         # 幂等/重复：同一回答再记一次会再加一，但不会给未引用卡片记账
         record_card_citations(conn, "结论[1]", source_map, query="q", run_id="run-2")
         assert conn.execute("SELECT count(*) FROM citation_events").fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_citation_event_and_counter_roll_back_together(tmp_path):
+    from bridge.rag_bridge import record_card_citations
+
+    conn = init_db(str(tmp_path / "cite-atomic.db"))
+    try:
+        conn.execute("INSERT INTO garden_cards (id, title) VALUES ('card_1', 'A')")
+        conn.execute("INSERT INTO garden_cards (id, title) VALUES ('card_2', 'B')")
+        conn.execute(
+            """CREATE TRIGGER fail_second_card
+               BEFORE UPDATE ON garden_cards
+               WHEN NEW.id = 'card_2'
+               BEGIN
+                   SELECT RAISE(ABORT, 'boom');
+               END"""
+        )
+        source_map = [
+            {"ref": "1", "type": "knowledge_card", "id": "card_1"},
+            {"ref": "2", "type": "knowledge_card", "id": "card_2"},
+        ]
+
+        with pytest.raises(sqlite3.IntegrityError):
+            record_card_citations(
+                conn, "结论[1][2]", source_map, query="q", run_id="run-atomic"
+            )
+
+        assert conn.execute("SELECT COUNT(*) FROM citation_events").fetchone()[0] == 0
+        counts = {
+            row["id"]: row["citation_count"]
+            for row in conn.execute("SELECT id, citation_count FROM garden_cards")
+        }
+        assert counts == {"card_1": 0, "card_2": 0}
     finally:
         conn.close()
 

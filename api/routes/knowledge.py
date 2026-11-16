@@ -312,6 +312,9 @@ def _delete_capture_dependents(conn, capture_id: str) -> None:
         (capture_id, capture_id),
     )
     _remove_capture_from_pending_questions(conn, capture_id)
+    from db.embedding_repo import delete_fts_for_capture
+
+    delete_fts_for_capture(conn, capture_id)
     for table, column in _DELETABLE_CAPTURE_TABLES:
         conn.execute(f"DELETE FROM {table} WHERE {column} = ?", (capture_id,))
 

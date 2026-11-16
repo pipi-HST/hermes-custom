@@ -958,6 +958,19 @@ def test_permanent_delete_requires_confirmation_token(client, capture_repo, tmp_
 
 def test_permanent_delete_removes_rows_and_file(client, capture_repo, tmp_path):
     capture, target = _capture_with_file(capture_repo, tmp_path)
+    cur = capture_repo.conn.execute(
+        """INSERT INTO capture_search_fts
+           (capture_id, kind, section_id, section_title_tokens, index_text_tokens)
+           VALUES (?, 'identity', '', 'title', 'body')""",
+        (capture["id"],),
+    )
+    capture_repo.conn.execute(
+        """INSERT INTO capture_search_fts_map
+           (capture_id, kind, section_id, fts_rowid, source_hash)
+           VALUES (?, 'identity', '', ?, 'hash')""",
+        (capture["id"], cur.lastrowid),
+    )
+    capture_repo.conn.commit()
     token = client.post(
         f"/api/knowledge/library/items/capture/{capture['id']}/confirmation"
     ).json()["token"]
@@ -971,6 +984,14 @@ def test_permanent_delete_removes_rows_and_file(client, capture_repo, tmp_path):
     assert resp.status_code == 200
     assert capture_repo.get_by_id(capture["id"]) is None
     assert not target.exists()
+    assert capture_repo.conn.execute(
+        "SELECT COUNT(*) FROM capture_search_fts WHERE capture_id = ?",
+        (capture["id"],),
+    ).fetchone()[0] == 0
+    assert capture_repo.conn.execute(
+        "SELECT COUNT(*) FROM capture_search_fts_map WHERE capture_id = ?",
+        (capture["id"],),
+    ).fetchone()[0] == 0
 
 
 def test_permanent_delete_blocks_referenced_capture(client, capture_repo, db, tmp_path):

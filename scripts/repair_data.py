@@ -14,6 +14,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from agents.markdown_writer import make_note_filename, read_note
+from db.concurrency import transaction
+from db.embedding_repo import delete_fts_for_capture
 from db.schema import init_db
 from db.write_job_repo import KnowledgeWriteJobRepo
 
@@ -452,75 +454,104 @@ def _readable_path(stage: str, capture_id: str, title: str, date_value: str) -> 
     return f"{stage}/{make_note_filename(title, date_value, capture_id)}"
 
 
+def _delete_capture_auxiliary(conn: sqlite3.Connection, capture_id: str) -> None:
+    """Remove derived rows that are not covered by a plain captures delete."""
+    delete_fts_for_capture(conn, capture_id)
+    for table in ("capture_embeddings", "capture_metadata", "capture_version_backups"):
+        try:
+            conn.execute(f"DELETE FROM {table} WHERE capture_id = ?", (capture_id,))
+        except sqlite3.OperationalError:
+            # Older databases may not have every derived table.
+            continue
+
+
 def _apply_actions(
     conn: sqlite3.Connection, vault_path: Path, actions: list[dict[str, Any]]
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
-    with conn:
-        for action in actions:
-            if action["type"] == "delete_duplicate_capture":
-                conn.execute(
-                    """UPDATE capture_drafts
-                       SET committed_capture_id = ?, updated_at = ?
-                       WHERE committed_capture_id = ?""",
-                    (action["canonical_id"], now, action["delete_id"]),
-                )
-                conn.execute(
-                    "DELETE FROM captures WHERE id = ?",
-                    (action["delete_id"],),
-                )
-            elif action["type"] == "delete_missing_capture":
-                conn.execute(
-                    """UPDATE capture_drafts
-                       SET committed_capture_id = '', updated_at = ?
-                       WHERE committed_capture_id = ?""",
-                    (now, action["capture_id"]),
-                )
-                conn.execute(
-                    "DELETE FROM captures WHERE id = ?",
-                    (action["capture_id"],),
-                )
-            elif action["type"] == "clear_missing_raw_path":
-                conn.execute(
-                    """UPDATE captures
-                       SET raw_path = '', updated_at = ?
-                       WHERE id = ?""",
-                    (now, action["capture_id"]),
-                )
-            elif action["type"] == "discard_duplicate_open_draft":
-                conn.execute(
-                    """UPDATE capture_drafts
-                       SET status = 'discarded', updated_at = ?
-                       WHERE id = ?""",
-                    (now, action["discard_id"]),
-                )
-            elif action["type"] == "rename_capture_file":
-                old_file = vault_path / action["old_file_path"]
-                new_file = vault_path / action["new_file_path"]
-                if old_file.exists() and old_file != new_file:
-                    new_file.parent.mkdir(parents=True, exist_ok=True)
-                    old_file.rename(new_file)
+    moved_files: list[tuple[Path, Path]] = []
+    try:
+        # ``with conn:`` is a no-op on this autocommit connection; use the
+        # explicit transaction helper so a mid-batch failure rolls back all
+        # database changes.
+        with transaction(conn):
+            for action in actions:
+                if action["type"] == "delete_duplicate_capture":
+                    conn.execute(
+                        """UPDATE capture_drafts
+                           SET committed_capture_id = ?, updated_at = ?
+                           WHERE committed_capture_id = ?""",
+                        (action["canonical_id"], now, action["delete_id"]),
+                    )
+                    _delete_capture_auxiliary(conn, action["delete_id"])
+                    conn.execute(
+                        "DELETE FROM captures WHERE id = ?",
+                        (action["delete_id"],),
+                    )
+                elif action["type"] == "delete_missing_capture":
+                    conn.execute(
+                        """UPDATE capture_drafts
+                           SET committed_capture_id = '', updated_at = ?
+                           WHERE committed_capture_id = ?""",
+                        (now, action["capture_id"]),
+                    )
+                    _delete_capture_auxiliary(conn, action["capture_id"])
+                    conn.execute(
+                        "DELETE FROM captures WHERE id = ?",
+                        (action["capture_id"],),
+                    )
+                elif action["type"] == "clear_missing_raw_path":
+                    conn.execute(
+                        """UPDATE captures
+                           SET raw_path = '', updated_at = ?
+                           WHERE id = ?""",
+                        (now, action["capture_id"]),
+                    )
+                elif action["type"] == "discard_duplicate_open_draft":
+                    conn.execute(
+                        """UPDATE capture_drafts
+                           SET status = 'discarded', updated_at = ?
+                           WHERE id = ?""",
+                        (now, action["discard_id"]),
+                    )
+                elif action["type"] == "rename_capture_file":
+                    old_file = vault_path / action["old_file_path"]
+                    new_file = vault_path / action["new_file_path"]
+                    if old_file.exists() and old_file != new_file:
+                        new_file.parent.mkdir(parents=True, exist_ok=True)
+                        old_file.rename(new_file)
+                        moved_files.append((old_file, new_file))
 
-                old_raw_path = action.get("old_raw_path") or ""
-                new_raw_path = action.get("new_raw_path") or ""
-                if old_raw_path and new_raw_path:
-                    old_raw = vault_path / old_raw_path
-                    new_raw = vault_path / new_raw_path
-                    if old_raw.exists() and old_raw != new_raw:
-                        new_raw.parent.mkdir(parents=True, exist_ok=True)
-                        old_raw.rename(new_raw)
+                    old_raw_path = action.get("old_raw_path") or ""
+                    new_raw_path = action.get("new_raw_path") or ""
+                    if old_raw_path and new_raw_path:
+                        old_raw = vault_path / old_raw_path
+                        new_raw = vault_path / new_raw_path
+                        if old_raw.exists() and old_raw != new_raw:
+                            new_raw.parent.mkdir(parents=True, exist_ok=True)
+                            old_raw.rename(new_raw)
+                            moved_files.append((old_raw, new_raw))
 
-                conn.execute(
-                    """UPDATE captures
-                       SET file_path = ?, raw_path = ?, updated_at = ?
-                       WHERE id = ?""",
-                    (
-                        action["new_file_path"],
-                        new_raw_path or old_raw_path,
-                        now,
-                        action["capture_id"],
-                    ),
-                )
+                    conn.execute(
+                        """UPDATE captures
+                           SET file_path = ?, raw_path = ?, updated_at = ?
+                           WHERE id = ?""",
+                        (
+                            action["new_file_path"],
+                            new_raw_path or old_raw_path,
+                            now,
+                            action["capture_id"],
+                        ),
+                    )
+    except BaseException:
+        # Database rollback cannot undo disk renames; compensate explicitly.
+        for old_path, new_path in reversed(moved_files):
+            try:
+                if new_path.exists() and not old_path.exists():
+                    new_path.rename(old_path)
+            except OSError:
+                pass
+        raise
 
 
 def _sortable_time(value: str | None) -> str:

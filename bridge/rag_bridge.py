@@ -29,6 +29,7 @@ from bridge.context import KnowledgeContext
 from bridge.knowledge_search import search_captures
 from bridge.result_envelope import _SOURCE_REF_MISSING, artifact_ref, source_ref, success_envelope
 from bridge.run_ledger import run_with_ledger
+from db.concurrency import transaction
 from db.embedding_repo import CaptureEmbeddingRepo
 from db.fts_tokenizer import (
     build_fts_match_query,
@@ -610,34 +611,36 @@ def record_card_citations(
         return []
     run_id = str(run_id or uuid.uuid4().hex)
     recorded: list[str] = []
-    for item in source_map or []:
-        if str(item.get("type") or "") not in _CARD_SOURCE_TYPES:
-            continue
-        try:
-            ref = int(str(item.get("ref") or ""))
-        except (TypeError, ValueError):
-            continue
-        card_id = str(item.get("id") or "")
-        if ref not in cited_refs or not card_id:
-            continue
-        try:
+    # The event rows and the cached counters must commit together.  The
+    # connection is opened in autocommit mode, so ``with conn:`` is not a
+    # transaction here; use the shared BEGIN IMMEDIATE helper instead.
+    with transaction(conn):
+        for item in source_map or []:
+            if str(item.get("type") or "") not in _CARD_SOURCE_TYPES:
+                continue
+            try:
+                ref = int(str(item.get("ref") or ""))
+            except (TypeError, ValueError):
+                continue
+            card_id = str(item.get("id") or "")
+            if ref not in cited_refs or not card_id:
+                continue
+            try:
+                conn.execute(
+                    "INSERT INTO citation_events (id, card_id, run_id, query) VALUES (?, ?, ?, ?)",
+                    (uuid.uuid4().hex, card_id, str(run_id or ""), str(query or "")[:200]),
+                )
+            except sqlite3.OperationalError:
+                continue
+            recorded.append(card_id)
+        if not recorded:
+            return []
+        for card_id in recorded:
             conn.execute(
-                "INSERT INTO citation_events (id, card_id, run_id, query) VALUES (?, ?, ?, ?)",
-                (uuid.uuid4().hex, card_id, str(run_id or ""), str(query or "")[:200]),
+                "UPDATE garden_cards SET citation_count = COALESCE(citation_count, 0) + 1, "
+                "last_cited_at = datetime('now') WHERE id = ?",
+                (card_id,),
             )
-        except sqlite3.OperationalError:
-            continue
-        recorded.append(card_id)
-    if not recorded:
-        return []
-    # One transaction: the ledger row and the counter must never disagree.
-    for card_id in recorded:
-        conn.execute(
-            "UPDATE garden_cards SET citation_count = COALESCE(citation_count, 0) + 1, "
-            "last_cited_at = datetime('now') WHERE id = ?",
-            (card_id,),
-        )
-    conn.commit()
     return recorded
 
 
@@ -650,17 +653,17 @@ def recompute_card_citation_counts(conn) -> int:
     """
     if conn is None:
         return 0
-    conn.execute(
-        """UPDATE garden_cards SET
-             citation_count = COALESCE(
-                 (SELECT COUNT(*) FROM citation_events ce
-                   WHERE ce.card_id = garden_cards.id), 0),
-             last_cited_at = (
-                 SELECT MAX(ce.cited_at) FROM citation_events ce
-                  WHERE ce.card_id = garden_cards.id
-             )"""
-    )
-    conn.commit()
+    with transaction(conn):
+        conn.execute(
+            """UPDATE garden_cards SET
+                 citation_count = COALESCE(
+                     (SELECT COUNT(*) FROM citation_events ce
+                       WHERE ce.card_id = garden_cards.id), 0),
+                 last_cited_at = (
+                     SELECT MAX(ce.cited_at) FROM citation_events ce
+                      WHERE ce.card_id = garden_cards.id
+                 )"""
+        )
     return int(
         conn.execute(
             "SELECT COUNT(*) FROM garden_cards WHERE COALESCE(citation_count, 0) > 0"

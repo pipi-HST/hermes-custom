@@ -14,12 +14,29 @@ from typing import Any
 
 CONFIRMATION_PHRASE = "RESET HERMES LOCAL DATA"
 
-DEFAULT_DB_PATH = Path("/Users/pipi/hermes-custom/data/captures.db")
-DEFAULT_LEGACY_STORE = Path("~/Obsidian/hermes-vault")
-DEFAULT_NEW_STORAGE_ROOT = Path("~/Hermes/knowledge")
-DEFAULT_REPO_ROOT = Path("/Users/pipi/hermes-custom")
-DEFAULT_CRON_JOBS_PATH = Path("~/.hermes/cron/jobs.json")
-DEFAULT_LIFE_DB_PATH = Path("/Users/pipi/hermes-life/data/life.db")
+DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _default_db_path() -> Path:
+    """Read the configured DB path instead of assuming a macOS checkout."""
+    config_path = DEFAULT_REPO_ROOT / "config.yaml"
+    try:
+        import yaml
+
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        configured = (data.get("database") or {}).get("path")
+        if configured:
+            return Path(str(configured)).expanduser()
+    except (OSError, ValueError, ImportError):
+        pass
+    return DEFAULT_REPO_ROOT / "data" / "captures.db"
+
+
+DEFAULT_DB_PATH = _default_db_path()
+DEFAULT_LEGACY_STORE = Path.home() / "Obsidian" / "hermes-vault"
+DEFAULT_NEW_STORAGE_ROOT = Path.home() / "Hermes" / "knowledge"
+DEFAULT_CRON_JOBS_PATH = Path.home() / ".hermes" / "cron" / "jobs.json"
+DEFAULT_LIFE_DB_PATH = Path.home() / "hermes-life" / "data" / "life.db"
 WATCHER_LABEL = "com.pipi.hermes-vault-watcher"
 
 KNOWLEDGE_TABLES = [
@@ -42,6 +59,8 @@ KNOWLEDGE_TABLES = [
     "garden_cards",
     "capture_drafts",
     "captures",
+    "capture_search_fts",
+    "capture_search_fts_map",
 ]
 
 NEW_STORAGE_DIRS = [
@@ -80,7 +99,7 @@ def build_reset_plan(
         "preserved_paths": [
             str(repo / "config.yaml"),
             str(repo / "data" / "rag.log"),
-            str(Path("/Users/pipi/hermes-life/data/life.db")),
+            str(DEFAULT_LIFE_DB_PATH),
         ],
         "automation_preflight": _automation_preflight(
             legacy_store=legacy,
@@ -110,6 +129,10 @@ def reset_local_data(
         return plan
     _require_confirmation(confirmation)
     _require_safe_to_apply(plan)
+    _require_safe_delete_targets(
+        Path(legacy_store).expanduser(),
+        Path(repo_root).expanduser(),
+    )
 
     db = Path(db_path).expanduser()
     storage = Path(new_storage_root).expanduser()
@@ -240,6 +263,18 @@ def _require_safe_to_apply(plan: dict[str, Any]) -> None:
         )
 
 
+def _require_safe_delete_targets(legacy_store: Path, repo_root: Path) -> None:
+    """Reject roots where ``rmtree`` would destroy the checkout or home dir."""
+    home = Path.home().resolve()
+    legacy = legacy_store.resolve()
+    repo = repo_root.resolve()
+    for label, target in (("legacy store", legacy), ("repo root", repo)):
+        if target == Path(target.anchor) or target == home:
+            raise ValueError(f"Refusing to delete unsafe {label}: {target}")
+    if legacy == repo:
+        raise ValueError(f"Refusing to delete repo root as legacy store: {legacy}")
+
+
 def _table_counts(db_path: Path) -> list[dict[str, Any]]:
     if not db_path.exists():
         return []
@@ -278,11 +313,16 @@ def _delete_table_rows(db_path: Path, table_reports: list[dict[str, Any]]) -> No
     conn = sqlite3.connect(str(db_path))
     try:
         conn.execute("PRAGMA foreign_keys=OFF")
-        for item in table_reports:
-            table = str(item["name"])
-            quoted = '"' + table.replace('"', '""') + '"'
-            conn.execute(f"DELETE FROM {quoted}")
-        conn.commit()
+        try:
+            conn.execute("BEGIN")
+            for item in table_reports:
+                table = str(item["name"])
+                quoted = '"' + table.replace('"', '""') + '"'
+                conn.execute(f"DELETE FROM {quoted}")
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     finally:
         conn.close()

@@ -1,8 +1,12 @@
 """Tests for the local data repair maintenance script."""
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
+import pytest
+
+from db.embedding_repo import CaptureEmbeddingRepo
 from db.schema import init_db
 from scripts.repair_data import repair_data
 
@@ -110,6 +114,57 @@ def test_duplicate_capture_keeps_frontmatter_id_and_repoints_committed_draft(tmp
     assert ids == {"keep-me"}
     assert draft_capture_id == "keep-me"
     assert result["after"]["duplicate_capture_paths"] == 0
+
+
+def test_repair_delete_removes_derived_rows(tmp_path):
+    db_path = tmp_path / "captures.db"
+    vault_path = tmp_path / "vault"
+    conn = init_db(str(db_path))
+    _write_note(vault_path, "captures/test.md", "keep-me")
+    _insert_capture(conn, "delete-me", "captures/test.md")
+    _insert_capture(conn, "keep-me", "captures/test.md")
+    CaptureEmbeddingRepo(conn).upsert(
+        capture_id="delete-me",
+        kind="identity",
+        section_id="",
+        section_title="",
+        index_text="duplicate body",
+        embedding=b"\0" * 4096,
+        source_hash="delete-me-identity",
+        file_path="captures/test.md",
+    )
+
+    repair_data(db_path, vault_path, apply=True)
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM capture_embeddings WHERE capture_id = 'delete-me'"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM captures WHERE id = 'delete-me'"
+    ).fetchone()[0] == 0
+
+
+def test_repair_apply_rolls_back_database_on_failure(tmp_path):
+    db_path = tmp_path / "captures.db"
+    vault_path = tmp_path / "vault"
+    conn = init_db(str(db_path))
+    _write_note(vault_path, "captures/test.md", "keep-me")
+    _insert_capture(conn, "delete-me", "captures/test.md")
+    _insert_capture(conn, "keep-me", "captures/test.md")
+    conn.execute(
+        """CREATE TRIGGER fail_delete
+           BEFORE DELETE ON captures
+           WHEN OLD.id = 'delete-me'
+           BEGIN
+               SELECT RAISE(ABORT, 'boom');
+           END"""
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        repair_data(db_path, vault_path, apply=True)
+
+    ids = {row[0] for row in conn.execute("SELECT id FROM captures").fetchall()}
+    assert ids == {"delete-me", "keep-me"}
 
 
 def test_repair_data_apply_records_write_job(tmp_path):

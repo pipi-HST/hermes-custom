@@ -218,63 +218,77 @@ def rename_folder_everywhere(
     """Move capture notes and drafts from ``old_folder`` to ``new_folder``."""
     vault = Path(vault_path).expanduser()
     write_service = KnowledgeWriteService(vault)
-    updated = 0
+    draft_updates: list[tuple[str, str]] = []
+    file_updates: list[dict] = []
+
+    # Phase 1: collect plan without holding a write transaction across file I/O.
+    draft_rows = conn.execute(
+        """SELECT * FROM capture_drafts
+           WHERE COALESCE(committed_capture_id, '') = ''
+             AND COALESCE(status, '') NOT IN ('abandoned', 'discarded')"""
+    ).fetchall()
+    for row in draft_rows:
+        data = dict(row)
+        intent = _json_dict(data.get("capture_intent"))
+        if normalize_folder(intent.get("folder_path")) != old_folder:
+            continue
+        intent["folder_path"] = new_folder
+        draft_updates.append(
+            (json.dumps(intent, ensure_ascii=False), str(data.get("id") or ""))
+        )
+
+    capture_rows = conn.execute(
+        "SELECT * FROM captures WHERE COALESCE(review_state, '') != 'archived'"
+    ).fetchall()
+    for row in capture_rows:
+        data = dict(row)
+        file_path = str(data.get("file_path") or "")
+        if not file_path:
+            continue
+        try:
+            target = resolve_inside(vault, file_path)
+        except ValueError:
+            continue
+        if not target.is_file():
+            continue
+        frontmatter, body = read_capture_note(vault, data)
+        if normalize_folder(frontmatter.get("folder_path") or frontmatter.get("folder")) != old_folder:
+            continue
+        frontmatter["folder_path"] = new_folder
+        file_updates.append({
+            "capture_id": str(data.get("id") or ""),
+            "file_path": file_path,
+            "frontmatter": frontmatter,
+            "body": body,
+        })
+
+    # Phase 2: write files outside the DB transaction.  A slow disk no longer
+    # blocks every other writer behind BEGIN IMMEDIATE.
+    for item in file_updates:
+        write_service.write_markdown_artifact(
+            MarkdownWriteRequest(
+                kind="capture_note",
+                relative_path=item["file_path"],
+                content=render_markdown(item["frontmatter"], item["body"]),
+                db_object_id=item["capture_id"],
+                db_table="captures",
+                requires_backup=True,
+            )
+        )
+
+    # Phase 3: commit the index changes in one short transaction.
     with transaction(conn):
-        draft_rows = conn.execute(
-            """SELECT * FROM capture_drafts
-               WHERE COALESCE(committed_capture_id, '') = ''
-                 AND COALESCE(status, '') NOT IN ('abandoned', 'discarded')"""
-        ).fetchall()
-        for row in draft_rows:
-            data = dict(row)
-            intent = _json_dict(data.get("capture_intent"))
-            if normalize_folder(intent.get("folder_path")) != old_folder:
-                continue
-            intent["folder_path"] = new_folder
+        for intent_json, draft_id in draft_updates:
             conn.execute(
                 "UPDATE capture_drafts SET capture_intent = ?, updated_at = ? WHERE id = ?",
-                (
-                    json.dumps(intent, ensure_ascii=False),
-                    now_iso(),
-                    str(data.get("id") or ""),
-                ),
+                (intent_json, now_iso(), draft_id),
             )
-            updated += 1
-
-        capture_rows = conn.execute(
-            "SELECT * FROM captures WHERE COALESCE(review_state, '') != 'archived'"
-        ).fetchall()
-        for row in capture_rows:
-            data = dict(row)
-            file_path = str(data.get("file_path") or "")
-            if not file_path:
-                continue
-            try:
-                target = resolve_inside(vault, file_path)
-            except ValueError:
-                continue
-            if not target.is_file():
-                continue
-            frontmatter, body = read_capture_note(vault, data)
-            if normalize_folder(frontmatter.get("folder_path") or frontmatter.get("folder")) != old_folder:
-                continue
-            frontmatter["folder_path"] = new_folder
-            write_service.write_markdown_artifact(
-                MarkdownWriteRequest(
-                    kind="capture_note",
-                    relative_path=file_path,
-                    content=render_markdown(frontmatter, body),
-                    db_object_id=str(data.get("id") or ""),
-                    db_table="captures",
-                    requires_backup=True,
-                )
-            )
+        for item in file_updates:
             conn.execute(
                 "UPDATE captures SET updated_at = ? WHERE id = ?",
-                (now_iso(), str(data.get("id") or "")),
+                (now_iso(), item["capture_id"]),
             )
-            updated += 1
-    return updated
+    return len(draft_updates) + len(file_updates)
 
 
 def render_markdown(frontmatter: dict, body: str) -> str:
