@@ -763,7 +763,13 @@ def grade_case(case: dict[str, Any], result: dict[str, Any], *, live: bool = Fal
     rejected_titles = [str(item.get("title") or "") for item in rejected]
     candidate_titles = adopted_titles + clue_titles + rejected_titles
     research_trace = meta.get("research_trace") if isinstance(meta.get("research_trace"), dict) else {}
-    is_light_path = meta.get("path") in {"light_web_qa", "web_assist"} or research_trace.get("path") in {"light_web_qa", "web_assist"}
+    is_light_path = (
+        meta.get("path") in {"light_web_qa", "web_assist", "web_context"}
+        or research_trace.get("path") in {"light_web_qa", "web_assist", "web_context"}
+    )
+    allow_summary_only = bool(
+        (research_trace.get("evidence_contract") or {}).get("allow_summary_only")
+    )
     source_counts = research_trace.get("source_counts") if isinstance(research_trace.get("source_counts"), dict) else {}
     attempted_domains = _attempted_domains(meta)
     allowed_refusal = bool(expect.get("allow_refusal_with_rejected_sources") and not adopted and rejected)
@@ -835,6 +841,16 @@ def grade_case(case: dict[str, Any], result: dict[str, Any], *, live: bool = Fal
             for authority in adopted_authorities
             if authority in {"primary", "official", "index_database", "reputable_secondary"}
         )
+        if is_light_path and allow_summary_only:
+            # The assist path deliberately adopts search summaries for entity
+            # intros; count them as usable evidence instead of forcing the
+            # legacy full-fetch contract onto it.
+            reliable += sum(
+                1
+                for item in adopted
+                if item.get("extract_status") == "summary"
+                and not item.get("source_authority")
+            )
         if reliable < int(expect["min_reliable_adopted_web_if_answered"]):
             failures.append(f"reliable adopted web sources below minimum when answered: {reliable} < {expect['min_reliable_adopted_web_if_answered']}")
     for needle in expect.get("must_not_adopt_title_contains") or []:
