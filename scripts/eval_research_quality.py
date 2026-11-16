@@ -865,7 +865,12 @@ def grade_case(case: dict[str, Any], result: dict[str, Any], *, live: bool = Fal
         if not any(needle.lower() in title.lower() for title in rejected_titles):
             failures.append(f"missing rejected title containing {needle!r}")
 
-    for claim_id, requirement in (expect.get("claim_requirements") or {}).items():
+    claim_requirements = expect.get("claim_requirements") or {}
+    if is_light_path:
+        # The assist/light path deliberately skips the legacy evidence critic;
+        # it is graded on adoption + citations, not claim-support decisions.
+        claim_requirements = {}
+    for claim_id, requirement in claim_requirements.items():
         claim_ids = _claim_ids_for_grading(
             claim_id,
             meta,
