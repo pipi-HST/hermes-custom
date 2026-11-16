@@ -50,6 +50,18 @@ CREATE INDEX IF NOT EXISTS idx_capture_drafts_updated_at
 ON capture_drafts(updated_at DESC)
 """
 
+CREATE_CAPTURE_DRAFTS_STATUS_UPDATED_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_capture_drafts_status_updated
+ON capture_drafts(status, updated_at DESC)
+"""
+
+CREATE_CAPTURE_DRAFTS_FOLDER_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_capture_drafts_folder
+ON capture_drafts(
+    TRIM(COALESCE(NULLIF(json_extract(capture_intent, '$.folder_path'), ''), 'Inbox'))
+)
+"""
+
 CREATE_GARDEN_CARDS_RECALL_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_garden_cards_recall
 ON garden_cards(citation_count DESC, updated_at DESC)
@@ -513,7 +525,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
         ):
             conn.execute(ddl)
         if _table_exists(conn, "capture_drafts"):
-            conn.execute(CREATE_CAPTURE_DRAFTS_UPDATED_AT_INDEX)
+            _create_capture_draft_indexes(conn)
         if capture_search_fts_available(conn):
             try:
                 fts_count = conn.execute(
@@ -551,7 +563,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
         conn.execute(CREATE_PENDING_QUESTIONS_TABLE)
         conn.execute(CREATE_CAPTURE_DRAFTS_TABLE)
         _migrate_capture_drafts_table(conn)
-        conn.execute(CREATE_CAPTURE_DRAFTS_UPDATED_AT_INDEX)
+        _create_capture_draft_indexes(conn)
         conn.execute(CREATE_CAPTURE_EMBEDDINGS_TABLE)
         conn.execute(CREATE_CAPTURE_EMBEDDINGS_SEARCH_INDEX)
         conn.execute(CREATE_CAPTURE_METADATA_TABLE)
@@ -710,6 +722,16 @@ def _recover_interrupted_captures_swap(conn: sqlite3.Connection) -> None:
         return
     conn.execute("DROP TABLE IF EXISTS captures")
     conn.execute("ALTER TABLE captures_new RENAME TO captures")
+
+
+def _create_capture_draft_indexes(conn: sqlite3.Connection) -> None:
+    conn.execute(CREATE_CAPTURE_DRAFTS_UPDATED_AT_INDEX)
+    conn.execute(CREATE_CAPTURE_DRAFTS_STATUS_UPDATED_INDEX)
+    try:
+        conn.execute(CREATE_CAPTURE_DRAFTS_FOLDER_INDEX)
+    except sqlite3.OperationalError:
+        # Older SQLite builds without JSON1 keep the Python fallback path.
+        pass
 
 
 def _migrate_captures_table(conn: sqlite3.Connection) -> None:

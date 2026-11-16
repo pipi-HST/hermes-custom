@@ -464,6 +464,14 @@ def test_web_context_query_cap_preserves_planner_tiers():
     assert web_context_answer._query_cap("web_only", high_risk_plan) == web_context_answer.MAX_WEB_QUERIES
 
 
+def test_web_only_remains_api_only_mode_contract():
+    """UI never originates web_only, but API/eval callers still can."""
+    assert web_context_answer._normalize_mode("web_only") == "web_only"
+    assert web_context_answer._normalize_mode("unknown") == "local_web"
+    assert web_context_answer._mode_needs_web("web_only", {"needs_web": False}) is True
+    assert web_context_answer._mode_needs_web("local_web", {"needs_web": False}) is False
+
+
 def test_web_context_answer_prompt_includes_article_term_context(monkeypatch):
     prompts = []
 

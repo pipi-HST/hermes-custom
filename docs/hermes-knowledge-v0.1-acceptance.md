@@ -249,6 +249,7 @@ Hermes 主 Agent 是唯一入口，负责理解你的微信/飞书消息、判�
 - 评测阈值契约：`pytest tests/test_eval_rag_benchmark.py -q`
 - 重置脚本：`pytest tests/test_reset_hermes_local_data.py tests/test_reset_smoke.py -q`
 - 前端构建：在 `hermes-agent-main/web` 运行 `npm run build`
+- 检索模式契约：`npm run check:knowledge-research-modes`（UI 不暴露 `web_only`，API 仍兼容）
 
 当前验收记录：
 
@@ -257,6 +258,7 @@ Hermes 主 Agent 是唯一入口，负责理解你的微信/飞书消息、判�
 - [x] 重置脚本 `tests/test_reset_hermes_local_data.py` / `tests/test_reset_smoke.py`
 - [x] 产品分层单测 `tests/test_knowledge_product_e2e.py`
 - [x] 前端构建 `npm run build`
+- [x] 检索模式契约 `npm run check:knowledge-research-modes`
 - [x] `hermes-agent-main` 本轮相关套件（gateway/ACP/CLI-cron/knowledge client/toolsets/tui_gateway）：764 passed, 87 skipped, exit 0（2026-11-17）
 - [x] 服务健康：`/api/health` ok、`/api/status` gateway running（2026-11-17）
 - [ ] Windows 平台专属用例：单列为环境限制（POSIX 权限、symlink、prompt_toolkit、gateway 子进程），不计入本轮验收线

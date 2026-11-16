@@ -148,6 +148,15 @@ def test_garden_cards_recall_index_exists(conn):
     assert "idx_garden_cards_recall" in indexes
 
 
+def test_capture_drafts_filter_indexes_exist(conn):
+    indexes = {
+        row["name"]
+        for row in conn.execute("PRAGMA index_list(capture_drafts)").fetchall()
+    }
+    assert "idx_capture_drafts_folder" in indexes
+    assert "idx_capture_drafts_status_updated" in indexes
+
+
 def test_captures_migration_keeps_unknown_columns(tmp_path):
     import sqlite3
 

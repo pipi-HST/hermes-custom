@@ -11,6 +11,9 @@ from fastapi.testclient import TestClient
 from agents.capture_agent import CaptureAgent, CaptureConfig
 from agents.knowledge_graph import KnowledgeGraphService
 from api import main as api_main
+from bridge import library_view
+from db.embedding_repo import CaptureEmbeddingRepo
+from db.metadata_repo import CaptureMetadataRepo
 from db.repo import CaptureDraftRepo, CaptureRepo
 from db.schema import init_db
 
@@ -88,12 +91,15 @@ def _add_capture(
     story: str = "",
     updated_at: str = "",
     archived: bool = False,
+    mirror_metadata: bool = True,
 ) -> str:
     relative_path = f"captures/{name}.md"
     _write_note(vault, relative_path, title=title, body=body, folder=folder, story=story)
     conn = _conn(config)
     try:
         capture = CaptureRepo(conn).insert(file_path=relative_path)
+        if mirror_metadata:
+            CaptureMetadataRepo(conn).set_folder_path(capture["id"], folder)
         if updated_at:
             conn.execute(
                 "UPDATE captures SET updated_at = ? WHERE id = ?",
@@ -332,6 +338,108 @@ def test_library_items_list_filters_sorting_and_counts(env):
         assert client.get("/api/library/items", params={"limit": 0}).status_code == 422
         assert client.get("/api/library/items", params={"limit": 501}).status_code == 422
         assert client.get("/api/library/items", params={"offset": -1}).status_code == 422
+
+
+def _index_capture(config, capture_id: str, text: str, file_path: str) -> None:
+    conn = _conn(config)
+    try:
+        CaptureEmbeddingRepo(conn).upsert(
+            capture_id=capture_id,
+            kind="identity",
+            index_text=text,
+            embedding=b"\0" * 4096,
+            source_hash=capture_id,
+            file_path=file_path,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_library_folder_filter_reads_only_matching_note(env, monkeypatch):
+    config, app, vault = env
+    _add_capture(
+        config, vault, name="inbox", title="Inbox note", body="inbox body", folder="Inbox"
+    )
+    study_id = _add_capture(
+        config, vault, name="study", title="Study note", body="study body", folder="研究"
+    )
+
+    reads: list[str] = []
+    original = library_view.read_capture_note
+
+    def counting(vault_path, row):
+        reads.append(str(row.get("file_path")))
+        return original(vault_path, row)
+
+    monkeypatch.setattr(library_view, "read_capture_note", counting)
+
+    with _client(app) as client:
+        body = client.get("/api/library/items", params={"folder": "研究"}).json()
+
+    assert body["total"] == 1
+    assert body["items"][0]["id"] == study_id
+    assert reads == ["captures/study.md"]
+
+
+def test_library_folder_filter_falls_back_without_metadata(env):
+    config, app, vault = env
+    capture_id = _add_capture(
+        config,
+        vault,
+        name="legacy-study",
+        title="Legacy study",
+        body="legacy body",
+        folder="研究",
+        mirror_metadata=False,
+    )
+
+    with _client(app) as client:
+        body = client.get("/api/library/items", params={"folder": "研究"}).json()
+
+    assert body["total"] == 1
+    assert body["items"][0]["id"] == capture_id
+
+
+def test_library_search_filter_reads_only_indexed_match(env, monkeypatch):
+    config, app, vault = env
+    needle_id = _add_capture(
+        config, vault, name="needle", title="Needle note", body="a needle here"
+    )
+    other_id = _add_capture(
+        config, vault, name="other", title="Other note", body="unrelated body"
+    )
+    _index_capture(config, needle_id, "Needle note a needle here", "captures/needle.md")
+    _index_capture(config, other_id, "Other note unrelated body", "captures/other.md")
+
+    reads: list[str] = []
+    original = library_view.read_capture_note
+
+    def counting(vault_path, row):
+        reads.append(str(row.get("file_path")))
+        return original(vault_path, row)
+
+    monkeypatch.setattr(library_view, "read_capture_note", counting)
+
+    with _client(app) as client:
+        body = client.get("/api/library/items", params={"search": "needle"}).json()
+
+    assert body["total"] == 1
+    assert body["items"][0]["id"] == needle_id
+    assert reads == ["captures/needle.md"]
+
+
+def test_library_search_falls_back_without_embeddings(env):
+    config, app, vault = env
+    capture_id = _add_capture(
+        config, vault, name="body-only", title="Body only", body="正文里藏着 needle"
+    )
+
+    with _client(app) as client:
+        body = client.get("/api/library/items", params={"search": "needle"}).json()
+
+    assert body["total"] == 1
+    assert body["items"][0]["id"] == capture_id
 
 
 def test_library_item_detail(env):

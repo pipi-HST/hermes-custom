@@ -458,10 +458,11 @@ chunks from a single 3000-char paragraph: 2 [3000, 211]
 | 异步裁判链路分项计时 | 只汇总 `critic_ms`，`initial/minimal/batch` 恒 0（已在测试注释标注） |
 | 负样本已扩到 10 条 | G1–G3 实际拦截 9/10（q24 漏过 `cap_distractor_02`）；不能写 100% |
 | P2-6 judge 样本量 | 已扩到 n=8（5/8 vs 8/8），仍可复核答案与判官原文；仍非大样本 |
+| T9 列表筛选全量 hydration | folder（capture_metadata）/草稿 status/search 已下推 SQL；capture status 因 frontmatter 优先级保留 hydration 后校验；metadata/embedding 覆盖不足时回退全量，测试用读取计数锁定快路径 |
 | T11 时间戳全表扫描 | 已改为 `timestamp_format_v1` 标记 + 写时触发器；二次 init 不再重扫，测试锁死 |
 | T13 卡片候选 `LIMIT 200` | 已改为 200 行分页、最多扫描 2000 张；测试覆盖后页命中 |
-| T26 巨型页面组件 | 已拆出 `KnowledgeLibraryHeader` 与 `KnowledgeLibrarySidebar`；主组件约 1.8k 行，页面文件仍包含共用 helper，后续可继续下沉 |
-| P10 `web_only` UI 不可达 | 产品决策保留二态开关（local_only/local_web）+ `force_web`；`web_only` 仅作 API/历史兼容，不在 UI 暴露。若后续删除死分支，需同步兼容测试 |
+| T26 巨型页面组件 | 已拆出 Header、Sidebar、model、helpers、selection、ReadingOverlay、CollapsedAIPanelRail；页面 4,868 → 3,783 行，主组件约 1.9k 行；仍与 Article AI 状态强耦合的 FileWorkbench 留在页面 |
+| P10 `web_only` UI 不可达 | 已关闭：UI 可选类型 `KnowledgeSelectableResearchMode` 不含 `web_only`；`web_only` 仅保留 API/评测/历史兼容，契约脚本 `check:knowledge-research-modes` + 后端 `_normalize_mode` 测试锁定；历史答案重跑映射为 `local_web + force_web` |
 
 ### 10.5 验收线（2026-11-17 定稿）
 

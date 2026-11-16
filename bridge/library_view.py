@@ -353,16 +353,208 @@ def list_library_items(
             offset=offset,
         )
 
-    items: list[dict] = []
+    return _list_filtered(
+        conn,
+        vault_path,
+        kind_filter=kind_filter,
+        folder_filter=folder_filter,
+        status_filter=status_filter,
+        search_text=search_text,
+        limit=limit,
+        offset=offset,
+    )
+
+
+def _like_pattern(text: str) -> str:
+    """Escape a literal substring for SQL ``LIKE ... ESCAPE '\\'``."""
+    escaped = (
+        str(text)
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+    return f"%{escaped}%"
+
+
+def _search_pushdown_safe(text: str) -> bool:
+    """SQLite ``LIKE`` only folds ASCII case; fall back for cased non-ASCII."""
+    for char in str(text or ""):
+        if char.isascii():
+            continue
+        if char.lower() != char.upper():
+            return False
+    return True
+
+
+def _capture_folder_mirror_complete(conn) -> bool:
+    try:
+        row = conn.execute(
+            """SELECT COUNT(*) FROM captures c
+               LEFT JOIN capture_metadata m ON m.capture_id = c.id
+               WHERE COALESCE(c.review_state, '') != 'archived'
+                 AND m.capture_id IS NULL"""
+        ).fetchone()
+    except Exception:
+        return False
+    return int(row[0] or 0) == 0
+
+
+def _capture_search_index_complete(conn) -> bool:
+    try:
+        row = conn.execute(
+            """SELECT COUNT(*) FROM captures c
+               WHERE COALESCE(c.review_state, '') != 'archived'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM capture_embeddings e WHERE e.capture_id = c.id
+                 )"""
+        ).fetchone()
+    except Exception:
+        return False
+    return int(row[0] or 0) == 0
+
+
+def _passes_library_filters(
+    item: dict,
+    *,
+    folder_filter: str,
+    status_filter: str,
+    search_text: str,
+) -> bool:
+    if folder_filter and normalize_folder(item.get("folder_path")) != folder_filter:
+        return False
+    if status_filter and str(item.get("status") or "") != status_filter:
+        return False
+    if search_text and search_text not in _library_search_haystack(item):
+        return False
+    return True
+
+
+def _list_filtered(
+    conn,
+    vault_path: str | Path,
+    *,
+    kind_filter: str,
+    folder_filter: str,
+    status_filter: str,
+    search_text: str,
+    limit: int,
+    offset: int,
+) -> dict:
+    """List with DB-side prefiltering; hydrate only rows that can match.
+
+    Pushdown is best-effort and never trades correctness for speed:
+
+    * folder on captures needs the ``capture_metadata.folder_path`` mirror;
+    * search on captures needs the embedding index to cover every active row;
+    * capture status stays a post-hydration check because frontmatter can
+      override ``review_state``;
+    * anything that cannot be pushed down falls back to reading candidates and
+      verifying with the exact same predicates as before.
+    """
+    start = max(0, int(offset))
+    end = start + max(0, int(limit))
+    capture_where = "COALESCE(c.review_state, '') != 'archived'"
+    draft_where = (
+        "COALESCE(d.committed_capture_id, '') = '' "
+        "AND COALESCE(d.status, '') NOT IN ('abandoned', 'discarded')"
+    )
+    capture_conditions = [capture_where]
+    capture_params: list[Any] = []
+    draft_conditions = [draft_where]
+    draft_params: list[Any] = []
+    capture_pushdown = True
+    draft_pushdown = True
+    capture_join_metadata = False
+
+    if folder_filter:
+        if _capture_folder_mirror_complete(conn):
+            capture_join_metadata = True
+            capture_conditions.append(
+                "COALESCE(NULLIF(TRIM(m.folder_path), ''), 'Inbox') = ?"
+            )
+            capture_params.append(folder_filter)
+        else:
+            capture_pushdown = False
+        draft_conditions.append(
+            "TRIM(COALESCE(NULLIF(json_extract(d.capture_intent, '$.folder_path'), ''), 'Inbox')) = ?"
+        )
+        draft_params.append(folder_filter)
+
+    if status_filter:
+        # Capture status may come from frontmatter, so it cannot be pushed.
+        capture_pushdown = False
+        draft_conditions.append("d.status = ?")
+        draft_params.append(status_filter)
+
+    if search_text and _search_pushdown_safe(search_text):
+        like = _like_pattern(search_text)
+        if _capture_search_index_complete(conn):
+            capture_conditions.append(
+                "EXISTS (SELECT 1 FROM capture_embeddings e "
+                "WHERE e.capture_id = c.id AND e.index_text LIKE ? ESCAPE '\\')"
+            )
+            capture_params.append(like)
+        else:
+            capture_pushdown = False
+        draft_conditions.append(
+            "(d.title LIKE ? ESCAPE '\\' OR d.summary LIKE ? ESCAPE '\\' "
+            "OR d.draft_text LIKE ? ESCAPE '\\' OR d.raw_text LIKE ? ESCAPE '\\')"
+        )
+        draft_params.extend([like, like, like, like])
+    elif search_text:
+        capture_pushdown = False
+        draft_pushdown = False
+
+    capture_from = "captures c"
+    if capture_join_metadata:
+        capture_from += " LEFT JOIN capture_metadata m ON m.capture_id = c.id"
+    capture_sql = (
+        f"SELECT c.* FROM {capture_from} WHERE "
+        + " AND ".join(capture_conditions)
+        + " ORDER BY c.updated_at DESC, c.id DESC"
+    )
+    draft_sql = (
+        "SELECT d.* FROM capture_drafts d WHERE "
+        + " AND ".join(draft_conditions)
+        + " ORDER BY d.updated_at DESC, d.id DESC"
+    )
+
     indexed_ids = _indexed_capture_ids(conn)
     garden_counts = _garden_card_counts(conn)
-    for row in conn.execute(
-        "SELECT * FROM captures WHERE COALESCE(review_state, '') != 'archived'"
-    ).fetchall():
-        # ``full=True`` keeps the note body available for the search filter;
-        # list responses blank it out again below (same shape as the detail
-        # view, matching the runtime's non-full library item).
-        items.append(
+    capture_all_cache: list[dict] | None = None
+    draft_all_cache: list[dict] | None = None
+
+    def capture_count() -> int:
+        if capture_pushdown:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM {capture_from} WHERE "
+                + " AND ".join(capture_conditions),
+                tuple(capture_params),
+            ).fetchone()
+            return int(row[0] or 0)
+        return len(_hydrated_captures(None))
+
+    def draft_count() -> int:
+        if draft_pushdown:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM capture_drafts d WHERE "
+                + " AND ".join(draft_conditions),
+                tuple(draft_params),
+            ).fetchone()
+            return int(row[0] or 0)
+        return len(_hydrated_drafts(None))
+
+    def _hydrated_captures(limit_rows: int | None) -> list[dict]:
+        nonlocal capture_all_cache
+        if limit_rows is None and capture_all_cache is not None:
+            return capture_all_cache
+        sql = capture_sql
+        params = tuple(capture_params)
+        if limit_rows is not None:
+            sql += " LIMIT ?"
+            params = params + (limit_rows,)
+        rows = conn.execute(sql, params).fetchall()
+        items = [
             capture_library_item(
                 vault_path,
                 dict(row),
@@ -371,38 +563,80 @@ def list_library_items(
                 indexed_ids=indexed_ids,
                 garden_counts=garden_counts,
             )
-        )
-    for row in _open_draft_rows(conn):
-        items.append(
-            draft_library_item(row, conn=conn, full=True, garden_counts=garden_counts)
-        )
+            for row in rows
+        ]
+        verified = [
+            item
+            for item in items
+            if _passes_library_filters(
+                item,
+                folder_filter=folder_filter,
+                status_filter=status_filter,
+                search_text=search_text,
+            )
+        ]
+        if limit_rows is None:
+            capture_all_cache = verified
+        return verified
 
-    filtered: list[dict] = []
-    for item in items:
-        if folder_filter and normalize_folder(item.get("folder_path")) != folder_filter:
-            continue
-        if status_filter and str(item.get("status") or "") != status_filter:
-            continue
-        if search_text and search_text not in _library_search_haystack(item):
-            continue
-        filtered.append(item)
-    filtered.sort(key=_library_sort_key, reverse=True)
+    def _hydrated_drafts(limit_rows: int | None) -> list[dict]:
+        nonlocal draft_all_cache
+        if limit_rows is None and draft_all_cache is not None:
+            return draft_all_cache
+        sql = draft_sql
+        params = tuple(draft_params)
+        if limit_rows is not None:
+            sql += " LIMIT ?"
+            params = params + (limit_rows,)
+        rows = conn.execute(sql, params).fetchall()
+        items = [
+            draft_library_item(
+                dict(row), conn=conn, full=True, garden_counts=garden_counts
+            )
+            for row in rows
+        ]
+        verified = [
+            item
+            for item in items
+            if _passes_library_filters(
+                item,
+                folder_filter=folder_filter,
+                status_filter=status_filter,
+                search_text=search_text,
+            )
+        ]
+        if limit_rows is None:
+            draft_all_cache = verified
+        return verified
 
-    counts = {
-        "capture": sum(1 for item in filtered if item["kind"] == "capture"),
-        "capture_draft": sum(
-            1 for item in filtered if item["kind"] == "capture_draft"
-        ),
-        "all": len(filtered),
-    }
-    selected = filtered
-    if kind_filter:
-        selected = [item for item in selected if item["kind"] == kind_filter]
-    total = len(selected)
-    start = max(0, int(offset))
-    end = start + max(0, int(limit))
+    if kind_filter not in {"", "capture", "capture_draft"}:
+        capture_total = capture_count()
+        draft_total = draft_count()
+        return {
+            "items": [],
+            "total": 0,
+            "counts": {
+                "capture": capture_total,
+                "capture_draft": draft_total,
+                "all": capture_total + draft_total,
+            },
+        }
+
+    counts = {"capture": capture_count(), "capture_draft": draft_count(), "all": 0}
+    counts["all"] = counts["capture"] + counts["capture_draft"]
+    if end <= 0:
+        return {"items": [], "total": 0, "counts": counts}
+
+    items: list[dict] = []
+    if kind_filter in {"", "capture"}:
+        items.extend(_hydrated_captures(end if capture_pushdown else None))
+    if kind_filter in {"", "capture_draft"}:
+        items.extend(_hydrated_drafts(end if draft_pushdown else None))
+    items.sort(key=_library_sort_key, reverse=True)
+    selected = items[start:end]
+    total = counts.get(kind_filter, counts["all"]) if kind_filter else counts["all"]
     return {
-        "items": [{**item, "body": ""} for item in selected[start:end]],
+        "items": [{**item, "body": ""} for item in selected],
         "total": total,
         "counts": counts,
     }
