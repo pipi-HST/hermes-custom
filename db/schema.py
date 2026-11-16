@@ -28,6 +28,13 @@ CREATE TABLE IF NOT EXISTS captures (
 )
 """
 
+CREATE_APP_META_TABLE = """
+CREATE TABLE IF NOT EXISTS app_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+)
+"""
+
 CREATE_CAPTURES_CREATED_AT_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_captures_created_at
 ON captures(created_at DESC)
@@ -520,13 +527,14 @@ def init_db(db_path: str) -> sqlite3.Connection:
                     _repair_capture_search_fts_map(conn)
             except sqlite3.OperationalError:
                 pass
-        _migrate_timestamp_formats(conn)
+        _ensure_timestamp_normalization(conn)
         return conn
     # The whole DDL batch runs in one explicit transaction so an interrupted
     # upgrade cannot leave the database half-migrated (e.g. rows parked in
     # ``captures_new`` after ``captures`` was already dropped).  PRAGMAs above
     # stay outside: journal mode cannot be changed inside a transaction.
     with transaction(conn):
+        conn.execute(CREATE_APP_META_TABLE)
         conn.execute(CREATE_CAPTURES_TABLE)
         _migrate_captures_table(conn)
         conn.execute(CREATE_CAPTURES_CREATED_AT_INDEX)
@@ -568,7 +576,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
         conn.execute(CREATE_KNOWLEDGE_EDGES_TABLE)
         conn.execute(CREATE_KNOWLEDGE_EDGES_LOOKUP_INDEX)
         conn.execute(CREATE_KNOWLEDGE_EDGES_RELATION_INDEX)
-        _migrate_timestamp_formats(conn)
+        _ensure_timestamp_normalization(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     return conn
@@ -591,39 +599,88 @@ _TIMESTAMP_COLUMNS = frozenset(
 )
 
 
-def _migrate_timestamp_formats(conn: sqlite3.Connection) -> None:
-    """Normalise SQLite-default timestamps ("YYYY-MM-DD HH:MM:SS") to ISO-8601.
+TIMESTAMP_FORMAT_MARKER = "timestamp_format_v1"
 
-    Timestamps written by Python already use ``datetime.isoformat()``; rows that
-    kept the SQLite ``datetime('now')`` default were a different format, which
-    forced ``replace(substr(...))`` sorting hacks in the repositories.  This
-    migration is idempotent and only touches the legacy space-separated form, so
-    it runs on every ``init_db`` instead of being gated on a schema version: the
-    scan is cheap (large vaults measure well under 100 ms for 50k rows) and it
-    keeps re-normalising rows written by code paths that still rely on the SQL
-    default.  Values that match the legacy shape but are not real timestamps
-    (e.g. ``0000-00-00 00:00:00``) keep their original text: ``strftime``
-    returns NULL for those, and writing NULL aborted ``init_db`` on NOT NULL
-    columns or silently dropped data on nullable ones.
-    """
+
+def _quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _timestamp_pairs(conn: sqlite3.Connection) -> list[tuple[str, str]]:
     tables = [
         str(row["name"])
         for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
         ).fetchall()
     ]
+    pairs: list[tuple[str, str]] = []
     for table in tables:
         columns = {
             str(row["name"])
-            for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+            for row in conn.execute(f"PRAGMA table_info({_quote_ident(table)})").fetchall()
         }
-        for column in columns & _TIMESTAMP_COLUMNS:
-            conn.execute(
-                f'UPDATE "{table}" '
-                f'SET "{column}" = COALESCE(strftime(?, "{column}"), "{column}") '
-                f'WHERE "{column}" GLOB ?',
-                ("%Y-%m-%dT%H:%M:%SZ", "????-??-?? ??:??:??*"),
-            )
+        for column in sorted(columns & _TIMESTAMP_COLUMNS):
+            pairs.append((table, column))
+    return pairs
+
+
+def _migrate_timestamp_formats(conn: sqlite3.Connection) -> None:
+    """Normalise existing SQLite-default timestamps to ISO-8601 once.
+
+    After this pass, ``_install_timestamp_triggers`` keeps new writes normalised
+    so ``init_db`` does not need to rescan the whole database on every open.
+    Values that match the legacy shape but are not real timestamps keep their
+    original text: ``strftime`` returns NULL for those.
+    """
+    for table, column in _timestamp_pairs(conn):
+        conn.execute(
+            f"UPDATE {_quote_ident(table)} "
+            f"SET {_quote_ident(column)} = "
+            f"COALESCE(strftime(?, {_quote_ident(column)}), {_quote_ident(column)}) "
+            f"WHERE {_quote_ident(column)} GLOB ?",
+            ("%Y-%m-%dT%H:%M:%SZ", "????-??-?? ??:??:??*"),
+        )
+
+
+def _install_timestamp_triggers(conn: sqlite3.Connection) -> None:
+    """Normalise timestamp columns at write time instead of rescanning on boot."""
+    for table, column in _timestamp_pairs(conn):
+        table_sql = _quote_ident(table)
+        column_sql = _quote_ident(column)
+        trigger_prefix = f"trg_norm_{table}_{column}"
+        for suffix, event, when in (
+            ("insert", "INSERT", f"NEW.{column_sql}"),
+            ("update", f"UPDATE OF {column_sql}", f"NEW.{column_sql}"),
+        ):
+            trigger_name = _quote_ident(f"{trigger_prefix}_{suffix}")
+            try:
+                conn.execute(
+                    f"CREATE TRIGGER IF NOT EXISTS {trigger_name} "
+                    f"AFTER {event} ON {table_sql} "
+                    f"WHEN {when} GLOB '????-??-?? ??:??:??*' "
+                    f"BEGIN "
+                    f"UPDATE {table_sql} SET {column_sql} = "
+                    f"COALESCE(strftime('%Y-%m-%dT%H:%M:%SZ', {when}), {when}) "
+                    f"WHERE rowid = NEW.rowid; "
+                    f"END"
+                )
+            except sqlite3.OperationalError:
+                continue
+
+
+def _ensure_timestamp_normalization(conn: sqlite3.Connection) -> None:
+    """Run the one-time migration, then install write-time triggers."""
+    conn.execute(CREATE_APP_META_TABLE)
+    marker = conn.execute(
+        "SELECT value FROM app_meta WHERE key = ?", (TIMESTAMP_FORMAT_MARKER,)
+    ).fetchone()
+    if marker is None or str(marker["value"]) != "1":
+        _migrate_timestamp_formats(conn)
+    _install_timestamp_triggers(conn)
+    conn.execute(
+        "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, '1')",
+        (TIMESTAMP_FORMAT_MARKER,),
+    )
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:

@@ -384,6 +384,32 @@ def test_search_knowledge_base_warns_when_answer_has_no_citations(monkeypatch, t
     }
 
 
+def test_card_candidate_pagination_reaches_later_pages(monkeypatch, tmp_path):
+    from bridge import rag_bridge
+
+    conn = init_db(str(tmp_path / "cards.db"))
+    for index in range(5):
+        conn.execute(
+            """INSERT INTO garden_cards
+               (id, title, one_liner, content_markdown, status, updated_at)
+               VALUES (?, ?, ?, ?, 'accepted', ?)""",
+            (
+                f"card{index}",
+                "分页目标" if index == 0 else f"无关卡片{index}",
+                "",
+                "分页目标正文" if index == 0 else "无关正文",
+                f"2026-01-0{index + 1}T00:00:00+00:00",
+            ),
+        )
+    conn.commit()
+    monkeypatch.setattr(rag_bridge, "CARD_CANDIDATE_PAGE_SIZE", 2)
+    monkeypatch.setattr(rag_bridge, "CARD_CANDIDATE_MAX_SCAN", 10)
+
+    hits = rag_bridge._search_garden_cards("分页目标", conn, limit=1)
+
+    assert [hit["id"] for hit in hits] == ["card0"]
+
+
 def test_search_knowledge_base_does_not_repair_empty_answer(monkeypatch, tmp_path):
     from bridge import rag_bridge
 

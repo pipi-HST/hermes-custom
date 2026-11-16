@@ -771,6 +771,8 @@ def _card_body_text(card: dict) -> str:
 
 
 CARD_MIN_VECTOR_SCORE = 0.42
+CARD_CANDIDATE_PAGE_SIZE = 200
+CARD_CANDIDATE_MAX_SCAN = 2000
 
 
 def _search_garden_cards(
@@ -798,16 +800,26 @@ def _search_garden_cards(
     needle = str(query or "").strip().lower()
     if not keywords and not needle:
         return []
+    rows: list[dict] = []
     try:
-        rows = conn.execute(
-            """SELECT id, title, one_liner, content_markdown, card_kind, source_theme,
-                      core_arguments, payload_json, capture_ids,
-                      embedding, citation_count, updated_at
-               FROM garden_cards
-               WHERE COALESCE(status, 'accepted') != 'archived'
-               ORDER BY COALESCE(citation_count, 0) DESC, updated_at DESC
-               LIMIT 200"""
-        ).fetchall()
+        offset = 0
+        while offset < CARD_CANDIDATE_MAX_SCAN:
+            page = conn.execute(
+                """SELECT id, title, one_liner, content_markdown, card_kind, source_theme,
+                          core_arguments, payload_json, capture_ids,
+                          embedding, citation_count, updated_at
+                   FROM garden_cards
+                   WHERE COALESCE(status, 'accepted') != 'archived'
+                   ORDER BY COALESCE(citation_count, 0) DESC, updated_at DESC
+                   LIMIT ? OFFSET ?""",
+                (CARD_CANDIDATE_PAGE_SIZE, offset),
+            ).fetchall()
+            if not page:
+                break
+            rows.extend(dict(row) for row in page)
+            offset += len(page)
+            if len(page) < CARD_CANDIDATE_PAGE_SIZE:
+                break
     except Exception as exc:
         logger.debug("[RAG] garden_cards lookup unavailable: %s", exc)
         return []

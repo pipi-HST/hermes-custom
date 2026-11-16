@@ -58,13 +58,8 @@ def test_migration_is_idempotent(tmp_path):
     conn.close()
 
 
-def test_rows_written_with_the_sql_default_are_normalised_later(tmp_path):
-    """The migration must keep self-healing after a database was upgraded once.
-
-    Most INSERTs still let SQLite fill ``created_at`` from ``datetime('now')``,
-    which writes the legacy space-separated form.  A version gate would leave
-    those rows unconverted forever and mix both formats in ``ORDER BY``.
-    """
+def test_rows_written_with_the_sql_default_are_normalised_at_write_time(tmp_path):
+    """After the one-time migration, triggers normalise new rows immediately."""
     db_path = str(tmp_path / "ts.db")
     conn = init_db(db_path)
     conn.close()
@@ -73,14 +68,35 @@ def test_rows_written_with_the_sql_default_are_normalised_later(tmp_path):
     conn.execute("INSERT INTO captures (id) VALUES ('fresh')")
     conn.commit()
     raw = conn.execute("SELECT created_at FROM captures WHERE id='fresh'").fetchone()
-    assert " " in raw["created_at"]
+    assert "T" in raw["created_at"] and raw["created_at"].endswith("Z")
     conn.close()
 
     conn = init_db(db_path)
     row = conn.execute("SELECT created_at FROM captures WHERE id='fresh'").fetchone()
-    assert row["created_at"].endswith("Z")
-    assert "T" in row["created_at"]
+    assert row["created_at"] == raw["created_at"]
     conn.close()
+
+
+def test_timestamp_marker_skips_repeat_scan(tmp_path, monkeypatch):
+    from db import schema
+
+    db_path = str(tmp_path / "ts.db")
+    init_db(db_path).close()
+
+    def _must_not_scan(_conn):
+        raise AssertionError("timestamp migration should be marker-gated")
+
+    monkeypatch.setattr(schema, "_migrate_timestamp_formats", _must_not_scan)
+
+    conn = init_db(db_path)
+    try:
+        marker = conn.execute(
+            "SELECT value FROM app_meta WHERE key = ?",
+            (schema.TIMESTAMP_FORMAT_MARKER,),
+        ).fetchone()
+        assert marker["value"] == "1"
+    finally:
+        conn.close()
 
 
 def test_unparseable_timestamps_are_kept_instead_of_nulled(tmp_path):
