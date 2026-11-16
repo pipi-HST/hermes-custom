@@ -30,6 +30,20 @@ def test_corpus_is_large_enough_to_be_meaningful(tmp_path):
     assert corpus["negatives"] == 2
 
 
+def test_threshold_contract_matches_code_and_artifact(tmp_path):
+    import json
+
+    from bridge.rag_bridge import MIN_VECTOR_SCORE
+
+    module = _load_benchmark()
+    report = module.run_benchmark(tmp_path)
+    assert report["threshold"] == MIN_VECTOR_SCORE
+
+    artifact = ROOT / "docs" / "benchmark-rag-v3-dashscope.json"
+    if artifact.exists():
+        assert json.loads(artifact.read_text(encoding="utf-8"))["threshold"] == MIN_VECTOR_SCORE
+
+
 def test_g0_dispatches_to_legacy(monkeypatch):
     module = _load_benchmark()
     calls: list[str] = []

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,17 @@ from agents.markdown_writer import read_note
 from db.embedding_repo import CaptureEmbeddingRepo
 
 _THEME_LINK_RE = re.compile(r"\[\[themes/([^|\]]+)(?:\|([^\]]+))?\]\]")
+
+logger = logging.getLogger(__name__)
+
+
+def _table_columns(conn, table: str) -> set[str]:
+    try:
+        rows = conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+    except Exception:
+        # A locked/corrupt database must surface; only a missing table degrades.
+        raise
+    return {str(row["name"]) for row in rows}
 
 
 def build_graph_retrieval(
@@ -158,28 +170,33 @@ def _pending_question_rows(conn):
     /``capture_ids`` columns.  Try each shape and return ``None`` when none of
     them exist so callers can degrade gracefully.
     """
-    queries = (
-        # Alternate pending_questions shape (theme_name/question/capture_ids).
-        """SELECT id, COALESCE(NULLIF(theme_name, ''), question) AS question_text,
-                  capture_ids AS related_capture_ids, status
-           FROM pending_questions
-           WHERE COALESCE(status, '') != 'dismissed'
-           ORDER BY created_at DESC""",
-        # Real schema (db/schema.py): question_text/related_capture_ids.
-        """SELECT id, question_text, related_capture_ids, status
-           FROM pending_questions
-           WHERE COALESCE(status, '') != 'dismissed'
-           ORDER BY created_at DESC""",
-        # Legacy fixture table.
-        """SELECT id, question_text, related_capture_ids, status
-           FROM theme_questions
-           ORDER BY created_at DESC""",
-    )
-    for query in queries:
-        try:
-            return conn.execute(query).fetchall()
-        except Exception:
-            continue
+    pending_columns = _table_columns(conn, "pending_questions")
+    if pending_columns:
+        if {"theme_name", "question", "capture_ids"} <= pending_columns:
+            return conn.execute(
+                """SELECT id, COALESCE(NULLIF(theme_name, ''), question) AS question_text,
+                          capture_ids AS related_capture_ids, status
+                   FROM pending_questions
+                   WHERE COALESCE(status, '') != 'dismissed'
+                   ORDER BY created_at DESC"""
+            ).fetchall()
+        if {"question_text", "related_capture_ids"} <= pending_columns:
+            return conn.execute(
+                """SELECT id, question_text, related_capture_ids, status
+                   FROM pending_questions
+                   WHERE COALESCE(status, '') != 'dismissed'
+                   ORDER BY created_at DESC"""
+            ).fetchall()
+        logger.warning("[RAG graph] pending_questions has unexpected columns: %s", pending_columns)
+        return None
+
+    legacy_columns = _table_columns(conn, "theme_questions")
+    if {"question_text", "related_capture_ids"} <= legacy_columns:
+        return conn.execute(
+            """SELECT id, question_text, related_capture_ids, status
+               FROM theme_questions
+               ORDER BY created_at DESC"""
+        ).fetchall()
     return None
 
 

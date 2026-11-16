@@ -1,12 +1,26 @@
 from __future__ import annotations
 
 import json
+import logging
 import struct
 
 from agents.embedder import DIM
-from agents.knowledge_graph import KnowledgeGraphService
+from agents.knowledge_graph import KnowledgeGraphService, refresh_graph_after_write
 from db.embedding_repo import CaptureEmbeddingRepo
 from db.schema import init_db
+
+
+def test_refresh_graph_failure_is_logged(monkeypatch, caplog):
+    class Boom:
+        def __init__(self, *_args, **_kwargs):
+            raise RuntimeError("graph unavailable")
+
+    monkeypatch.setattr("agents.knowledge_graph.KnowledgeGraphService", Boom)
+
+    with caplog.at_level(logging.WARNING):
+        assert refresh_graph_after_write(object(), "/tmp/vault") is None
+
+    assert "refresh failed" in caplog.text
 
 
 def _emb(seed: float) -> bytes:

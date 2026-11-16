@@ -2,7 +2,18 @@
 from __future__ import annotations
 
 from unittest.mock import patch
-from agents.rag_agent import RagAgent, format_answer, build_rag_prompt, is_empty_answer
+
+import pytest
+
+from agents.rag_agent import (
+    RagAgent,
+    SELECTED_BODY_KEY,
+    SOURCE_OMISSION_HINT,
+    build_rag_prompt,
+    format_answer,
+    is_empty_answer,
+    select_prompt_sources,
+)
 
 
 def test_format_answer_empty_input_is_explicit():
@@ -16,6 +27,16 @@ def test_format_answer_empty_input_is_explicit():
     assert is_empty_answer("") is True
     assert is_empty_answer("   ") is True
     assert is_empty_answer("正常答案") is False
+
+
+def test_budget_truncation_marks_the_source():
+    selected = select_prompt_sources(
+        [{"id": "cap1", "title": "长文", "body": "正文" * 1000}],
+        budget=500,
+    )
+
+    assert selected
+    assert SOURCE_OMISSION_HINT in selected[0][SELECTED_BODY_KEY]
 
 
 def test_format_answer_with_sources():
@@ -354,3 +375,68 @@ def test_call_llm_uses_configured_model_for_short_prompt(monkeypatch):
 
     assert answer == "回答"
     assert requests[0]["model"] == "deepseek-v4-pro"
+
+
+def test_missing_choices_raises_clear_error(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": []}
+
+    class FakeClient:
+        def __init__(self, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr("agents.rag_agent.httpx.Client", FakeClient)
+    agent = RagAgent(llm_api_key="test")
+
+    with pytest.raises(RuntimeError, match="no choices"):
+        agent._call_llm("问题")
+
+
+def test_length_finish_reason_marks_incomplete(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {"content": "没写完"},
+                        "finish_reason": "length",
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr("agents.rag_agent.httpx.Client", FakeClient)
+    agent = RagAgent(llm_api_key="test")
+
+    answer = agent._call_llm("问题")
+
+    assert answer
+    assert agent.last_incomplete is True

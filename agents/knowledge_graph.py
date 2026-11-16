@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,8 @@ from agents.theme_graph import (
     build_relationship_edges,
     filter_theme_nodes,
 )
+
+logger = logging.getLogger(__name__)
 
 SOURCE_KINDS = {"capture", "garden_card", "theme_candidate"}
 RELATION_TYPES = {
@@ -37,7 +40,8 @@ def refresh_graph_after_write(conn, vault_path) -> dict[str, Any] | None:
         return None
     try:
         return KnowledgeGraphService(conn, vault_path).refresh()
-    except Exception:
+    except Exception as exc:  # bookkeeping must not fail the user's write
+        logger.warning("[graph] refresh failed: %s", exc, exc_info=True)
         return None
 
 

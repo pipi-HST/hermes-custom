@@ -638,7 +638,13 @@ def run_benchmark(work_dir: Path | None = None, threshold: float | None = None) 
     base.mkdir(parents=True, exist_ok=True)
     conn, units, cards = build_corpus(base)
     try:
-        return evaluate(conn, units, cards, threshold=threshold)
+        report = evaluate(conn, units, cards, threshold=threshold)
+        from bridge.rag_bridge import MIN_VECTOR_SCORE
+
+        report["threshold"] = (
+            float(threshold) if threshold is not None else MIN_VECTOR_SCORE
+        )
+        return report
     finally:
         conn.close()
 

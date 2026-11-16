@@ -88,8 +88,6 @@ def real_db(tmp_path):
 # (exit 4294930435), which hides every other result.  They are opt-in.
 BROWSER_TEST_FILES = {
     "test_knowledge_product_e2e.py",
-    "test_reset_hermes_local_data.py",
-    "test_reset_smoke.py",
 }
 
 

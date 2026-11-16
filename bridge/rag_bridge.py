@@ -522,6 +522,7 @@ def _search_knowledge_base(
             "citation_validation": citation_validation.to_meta(),
             "citation_repaired": repaired,
             "empty_answer": empty_answer,
+            "answer_incomplete": bool(resp.get("incomplete")),
             "export_file": export_file,
         },
     )

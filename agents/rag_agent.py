@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import time
+
 import httpx
 from agents.rag_citations import build_citation_repair_prompt
 
@@ -96,7 +98,12 @@ def select_prompt_sources(
         room = remaining - len(prefix) - len(suffix)
         if room <= 0:
             break
-        body = excerpt if len(excerpt) <= room else excerpt[:room]
+        if len(excerpt) <= room:
+            body = excerpt
+        elif room > len(SOURCE_OMISSION_HINT):
+            body = excerpt[: room - len(SOURCE_OMISSION_HINT)].rstrip() + SOURCE_OMISSION_HINT
+        else:
+            body = excerpt[:room]
         chosen = dict(item)
         chosen[SELECTED_BODY_KEY] = body
         selected.append(chosen)
@@ -296,6 +303,7 @@ class RagAgent:
         self.llm_api_key = llm_api_key
         self.llm_model = llm_model
         self.llm_base_url = llm_base_url
+        self.last_incomplete = False
 
     def query(
         self,
@@ -320,13 +328,18 @@ class RagAgent:
             "file_path": c.get("file_path", ""),
             "section_title": c.get("section_title", ""),
         } for c in captures]
-        return {"answer": answer, "sources": sources}
+        return {
+            "answer": answer,
+            "sources": sources,
+            "incomplete": self.last_incomplete,
+        }
 
     def repair_citations(self, answer_text: str, source_map: list[dict]) -> str:
         prompt = build_citation_repair_prompt(answer_text, source_map)
         return self._call_llm(prompt)
 
     def _call_llm(self, prompt: str) -> str:
+        self.last_incomplete = False
         headers = {
             "Authorization": f"Bearer {self.llm_api_key}",
             "Content-Type": "application/json",
@@ -342,18 +355,35 @@ class RagAgent:
             "max_tokens": 1600,
         }
         chunks: list[str] = []
+        finish_reason = ""
         with httpx.Client(timeout=120) as client:
             for _ in range(3):
-                resp = client.post(
-                    f"{self.llm_base_url}/chat/completions",
-                    headers=headers, json=body,
-                )
-                resp.raise_for_status()
+                resp = None
+                for attempt in range(2):
+                    try:
+                        resp = client.post(
+                            f"{self.llm_base_url}/chat/completions",
+                            headers=headers, json=body,
+                        )
+                        resp.raise_for_status()
+                        break
+                    except httpx.HTTPError:
+                        if attempt:
+                            raise
+                        time.sleep(0.25)
+                if resp is None:
+                    raise RuntimeError("LLM request failed")
                 payload = resp.json()
-                choice = payload["choices"][0]
-                content = choice["message"]["content"]
+                choices = payload.get("choices") if isinstance(payload, dict) else None
+                if not isinstance(choices, list) or not choices:
+                    raise RuntimeError("LLM response has no choices")
+                choice = choices[0] if isinstance(choices[0], dict) else {}
+                message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+                content = message.get("content")
+                content = "" if content is None else str(content)
                 chunks.append(content)
-                if choice.get("finish_reason") != "length":
+                finish_reason = str(choice.get("finish_reason") or "")
+                if finish_reason != "length":
                     break
                 messages.extend([
                     {"role": "assistant", "content": content},
@@ -363,6 +393,7 @@ class RagAgent:
                     },
                 ])
                 body["messages"] = messages
+        self.last_incomplete = finish_reason == "length"
         return "".join(chunks)
 
 
