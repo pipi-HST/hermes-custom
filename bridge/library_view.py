@@ -344,6 +344,15 @@ def list_library_items(
     status_filter = (status or "").strip()
     search_text = (search or "").strip().lower()
 
+    if not folder_filter and not status_filter and not search_text:
+        return _list_unfiltered(
+            conn,
+            vault_path,
+            kind_filter=kind_filter,
+            limit=limit,
+            offset=offset,
+        )
+
     items: list[dict] = []
     indexed_ids = _indexed_capture_ids(conn)
     garden_counts = _garden_card_counts(conn)
@@ -394,6 +403,89 @@ def list_library_items(
     end = start + max(0, int(limit))
     return {
         "items": [{**item, "body": ""} for item in selected[start:end]],
+        "total": total,
+        "counts": counts,
+    }
+
+
+def _list_unfiltered(
+    conn,
+    vault_path: str | Path,
+    *,
+    kind_filter: str,
+    limit: int,
+    offset: int,
+) -> dict:
+    """List the default view without hydrating every file in the vault.
+
+    The old path read every capture note, then filtered/sorted/sliced.  With no
+    folder/status/search filters we can sort and limit in SQL first, and only
+    read the notes that will actually be returned.
+    """
+    start = max(0, int(offset))
+    end = start + max(0, int(limit))
+    capture_where = "COALESCE(review_state, '') != 'archived'"
+    draft_where = (
+        "COALESCE(committed_capture_id, '') = '' "
+        "AND COALESCE(status, '') NOT IN ('abandoned', 'discarded')"
+    )
+    capture_total = int(
+        conn.execute(f"SELECT COUNT(*) FROM captures WHERE {capture_where}").fetchone()[0]
+    )
+    draft_total = int(
+        conn.execute(f"SELECT COUNT(*) FROM capture_drafts WHERE {draft_where}").fetchone()[0]
+    )
+    counts = {
+        "capture": capture_total,
+        "capture_draft": draft_total,
+        "all": capture_total + draft_total,
+    }
+    if end <= 0:
+        return {"items": [], "total": 0, "counts": counts}
+
+    indexed_ids = _indexed_capture_ids(conn)
+    garden_counts = _garden_card_counts(conn)
+    items: list[dict] = []
+    if kind_filter in {"", "capture"} and capture_total:
+        rows = conn.execute(
+            f"""SELECT * FROM captures
+                WHERE {capture_where}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?""",
+            (end,),
+        ).fetchall()
+        items.extend(
+            capture_library_item(
+                vault_path,
+                dict(row),
+                conn=conn,
+                full=True,
+                indexed_ids=indexed_ids,
+                garden_counts=garden_counts,
+            )
+            for row in rows
+        )
+    if kind_filter in {"", "capture_draft"} and draft_total:
+        rows = conn.execute(
+            f"""SELECT * FROM capture_drafts
+                WHERE {draft_where}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?""",
+            (end,),
+        ).fetchall()
+        items.extend(
+            draft_library_item(
+                dict(row), conn=conn, full=True, garden_counts=garden_counts
+            )
+            for row in rows
+        )
+    if kind_filter not in {"", "capture", "capture_draft"}:
+        return {"items": [], "total": 0, "counts": counts}
+    items.sort(key=_library_sort_key, reverse=True)
+    selected = items[start:end]
+    total = counts.get(kind_filter, counts["all"]) if kind_filter else counts["all"]
+    return {
+        "items": [{**item, "body": ""} for item in selected],
         "total": total,
         "counts": counts,
     }

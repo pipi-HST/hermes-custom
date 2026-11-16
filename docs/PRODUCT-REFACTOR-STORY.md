@@ -517,9 +517,9 @@ reliable adopted web sources below minimum when answered: 0 < 1
 
 搜索后端状态已接入 Library 与 Workbench 的 `KnowledgeAnswerView` 降级黄条；真实后端名来自本次实际搜索的返回值，而不是配置意图。历史问题见 `CODE-REVIEW-V3.md` P2-2（该文为评审快照）。
 
-### 8.16 仍未闭环（2026-11-16，不要写成已完成）
+### 8.16 复核记录与仍开放项（2026-11-16）
 
-- **阈值路线**：当前是 `0.46` + identity/section 分阈值 + 字面词豁免 + FTS 保底席位；rerank / 分数融合仍未实现，单阈值只做首轮粗筛。
+- **阈值路线已定**：`0.46` + identity/section 分阈值 + 字面词豁免 + FTS 保底席位 + 合成 prompt 护栏；rerank/分数融合作为后续优化，不阻塞当前版本，单阈值只做首轮粗筛。
 - **卡片级召回**：benchmark 修复 query embedding 传递后，q10/q11/q12/q14/q15/q16 的卡片目标为 6/6；生产路径仍需用真实卡片库复核，不能只凭 benchmark 宣称线上卡片召回已满。
 - **Canary**：2026-11-16 重跑完整 5 例 `--live --canary --limit 5 --case-timeout 0` 为 **5/5 passed**（单例 1/1、概念/公司/人物/金融/本地+网页均通过）。canary 契约已按 assist/web_context 路径区分：legacy 才要求 rejected≥1，light/assist 以 adopted、引用和 summary-only 证据为准；仍不是完整生产流量评测。
 - **统计功效**：benchmark 已扩到 10 条负样本，但 G1–G3 仍漏 1 条（9/10）；judge 已扩到 n=8（5/8 vs 8/8），仍只能写方向性。

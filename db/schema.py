@@ -33,6 +33,16 @@ CREATE INDEX IF NOT EXISTS idx_captures_created_at
 ON captures(created_at DESC)
 """
 
+CREATE_CAPTURES_UPDATED_AT_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_captures_updated_at
+ON captures(updated_at DESC)
+"""
+
+CREATE_CAPTURE_DRAFTS_UPDATED_AT_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_capture_drafts_updated_at
+ON capture_drafts(updated_at DESC)
+"""
+
 CREATE_GARDEN_CARDS_RECALL_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_garden_cards_recall
 ON garden_cards(citation_count DESC, updated_at DESC)
@@ -490,6 +500,13 @@ def init_db(db_path: str) -> sqlite3.Connection:
         # even after the schema version was stamped.
         _recover_interrupted_captures_swap(conn)
         _backfill_garden_content(conn)
+        for ddl in (
+            CREATE_CAPTURES_CREATED_AT_INDEX,
+            CREATE_CAPTURES_UPDATED_AT_INDEX,
+        ):
+            conn.execute(ddl)
+        if _table_exists(conn, "capture_drafts"):
+            conn.execute(CREATE_CAPTURE_DRAFTS_UPDATED_AT_INDEX)
         if capture_search_fts_available(conn):
             try:
                 fts_count = conn.execute(
@@ -513,6 +530,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
         conn.execute(CREATE_CAPTURES_TABLE)
         _migrate_captures_table(conn)
         conn.execute(CREATE_CAPTURES_CREATED_AT_INDEX)
+        conn.execute(CREATE_CAPTURES_UPDATED_AT_INDEX)
         conn.execute(CREATE_CHANGE_LOG_TABLE)
         conn.execute(CREATE_AGENT_RUNS_TABLE)
         conn.execute(CREATE_AGENT_RUN_EVENTS_TABLE)
@@ -525,6 +543,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
         conn.execute(CREATE_PENDING_QUESTIONS_TABLE)
         conn.execute(CREATE_CAPTURE_DRAFTS_TABLE)
         _migrate_capture_drafts_table(conn)
+        conn.execute(CREATE_CAPTURE_DRAFTS_UPDATED_AT_INDEX)
         conn.execute(CREATE_CAPTURE_EMBEDDINGS_TABLE)
         conn.execute(CREATE_CAPTURE_EMBEDDINGS_SEARCH_INDEX)
         conn.execute(CREATE_CAPTURE_METADATA_TABLE)
