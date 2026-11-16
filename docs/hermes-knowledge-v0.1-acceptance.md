@@ -34,14 +34,14 @@ Hermes 主 Agent 是唯一入口，负责理解你的微信/飞书消息、判�
 - 默认先生成草稿，不直接入库。
 - 微信回复应包含标题、重点回应、简短总结和下一步指令。
 - “展开草稿”查看草稿全文或分页内容。
-- “存库”后写入 Obsidian `captures/`，原文写入 `_archive/raw/`。
+- “存库”后写入 Knowledge File `captures/`，原文写入 `_archive/raw/`（Obsidian 仅是可选外部编辑器）。
 - 入库后自动触发 Library 后处理：补属性、补目录/章节、更新 embedding。
 
 ### Library：知识库卫生维护
 
 支持内容：
 
-- DB 与 Obsidian 文件同步检查。
+- DB 与 Knowledge File 同步检查（资料正文以 Markdown 为源，卡片/专题/图谱以 DB 为源）。
 - 清理重复开放草稿。
 - 补 capture/raw properties。
 - 为长文补 `目录纲要`。
@@ -237,11 +237,20 @@ Hermes 主 Agent 是唯一入口，负责理解你的微信/飞书消息、判�
 
 ## 5. 自动化验收命令
 
-在 `/Users/pipi/hermes-custom` 运行：
+在仓库根目录运行（Windows 用 `.venv\Scripts\python.exe`）：
 
 ```bash
-.venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m pytest tests -q
 ```
+
+自动可验项（当前）：
+
+- 后端全量：`pytest tests`（Windows 实测 1290+ 用例，以收集数为准）
+- 评测阈值契约：`pytest tests/test_eval_rag_benchmark.py -q`
+- 重置脚本：`pytest tests/test_reset_hermes_local_data.py tests/test_reset_smoke.py -q`
+- 前端构建：在 `hermes-agent-main/web` 运行 `npm run build`
+
+微信/飞书“connected”、Obsidian/Canvas 目视类检查仍是人工项，不要把它们写成自动通过。
 
 当前主线还建议保留这些重点测试文件：
 

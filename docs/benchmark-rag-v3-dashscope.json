@@ -6,35 +6,35 @@
       "mrr_at_5": 0.389,
       "negative_rejection": 1.0,
       "latency_p50_ms": 0.06,
-      "latency_p95_ms": 38.26
+      "latency_p95_ms": 35.03
     },
     "G1_vector_only": {
       "recall_at_3": 0.833,
       "recall_at_5": 0.833,
       "mrr_at_5": 0.806,
-      "negative_rejection": 1.0,
-      "latency_p50_ms": 0.85,
-      "latency_p95_ms": 1.69
+      "negative_rejection": 0.9,
+      "latency_p50_ms": 1.22,
+      "latency_p95_ms": 19.48
     },
     "G2_vector_plus_fts": {
       "recall_at_3": 0.833,
       "recall_at_5": 0.833,
       "mrr_at_5": 0.806,
-      "negative_rejection": 1.0,
-      "latency_p50_ms": 1.1,
-      "latency_p95_ms": 2.88
+      "negative_rejection": 0.9,
+      "latency_p50_ms": 1.7,
+      "latency_p95_ms": 2.63
     },
     "G3_full_v3": {
       "recall_at_3": 0.833,
-      "recall_at_5": 0.833,
-      "mrr_at_5": 0.778,
-      "negative_rejection": 1.0,
-      "latency_p50_ms": 1.74,
-      "latency_p95_ms": 4.3
+      "recall_at_5": 1.0,
+      "mrr_at_5": 0.769,
+      "negative_rejection": 0.9,
+      "latency_p50_ms": 2.42,
+      "latency_p95_ms": 8.8
     }
   },
   "engine": "dashscope-text-embedding-v4",
-  "embed_api_mean_ms": 3858.44,
+  "embed_api_mean_ms": 583.57,
   "per_query_details": [
     {
       "id": "q01",
@@ -62,11 +62,11 @@
           "cap_telephone_game"
         ],
         "G3_full_v3": [
+          "card_demo_demand",
           "card_demo_boundary",
+          "card_demo_routing",
           "cap_aipm_demand",
-          "cap_mcp",
-          "cap_pkm_compare",
-          "cap_telephone_game"
+          "cap_mcp"
         ]
       }
     },
@@ -91,11 +91,11 @@
           "cap_latency_roi"
         ],
         "G3_full_v3": [
-          "cap_telephone_game",
-          "cap_distractor_08",
-          "cap_latency_roi",
           "card_demo_telephone",
-          "card_demo_latency"
+          "card_demo_eval",
+          "card_demo_mcp",
+          "cap_telephone_game",
+          "cap_distractor_08"
         ]
       }
     },
@@ -125,11 +125,11 @@
           "cap_distractor_04"
         ],
         "G3_full_v3": [
+          "card_demo_latency",
+          "card_demo_routing",
+          "card_demo_eval",
           "cap_latency_roi",
-          "cap_model_routing",
-          "cap_distractor_09",
-          "cap_telephone_game",
-          "cap_distractor_04"
+          "cap_model_routing"
         ]
       }
     },
@@ -180,11 +180,11 @@
           "cap_telephone_game"
         ],
         "G3_full_v3": [
+          "card_demo_routing",
+          "card_demo_mcp",
           "cap_model_routing",
           "cap_mcp",
-          "cap_telephone_game",
-          "card_demo_telephone",
-          "card_demo_mcp"
+          "cap_telephone_game"
         ]
       }
     },
@@ -210,11 +210,11 @@
           "cap_telephone_game"
         ],
         "G3_full_v3": [
-          "cap_pkm_compare",
-          "cap_latency_roi",
-          "cap_telephone_game",
           "card_demo_telephone",
-          "card_demo_latency"
+          "card_demo_eval",
+          "card_demo_silence",
+          "cap_pkm_compare",
+          "cap_latency_roi"
         ]
       }
     },
@@ -243,11 +243,11 @@
           "cap_distractor_05"
         ],
         "G3_full_v3": [
+          "card_demo_mcp",
+          "card_demo_routing",
+          "card_demo_context",
           "cap_mcp",
-          "cap_latency_roi",
-          "cap_telephone_game",
-          "cap_model_routing",
-          "cap_distractor_05"
+          "cap_latency_roi"
         ]
       }
     },
@@ -279,10 +279,10 @@
         ],
         "G3_full_v3": [
           "card_demo_latency",
+          "card_demo_mcp",
+          "card_demo_context",
           "cap_latency_roi",
-          "cap_telephone_game",
-          "cap_model_routing",
-          "cap_distractor_06"
+          "cap_telephone_game"
         ]
       }
     },
@@ -302,8 +302,8 @@
           "cap_aipm_demand"
         ],
         "G3_full_v3": [
-          "cap_aipm_demand",
           "card_demo_demand",
+          "cap_aipm_demand",
           "card_demo_boundary"
         ]
       }
@@ -333,11 +333,11 @@
           "cap_latency_roi"
         ],
         "G3_full_v3": [
+          "card_demo_pkm",
+          "card_demo_routing",
+          "card_demo_silence",
           "cap_pkm_compare",
-          "cap_model_routing",
-          "cap_distractor_09",
-          "cap_mcp",
-          "cap_latency_roi"
+          "cap_model_routing"
         ]
       }
     },
@@ -366,11 +366,11 @@
           "cap_distractor_02"
         ],
         "G3_full_v3": [
+          "card_demo_mcp",
+          "card_demo_boundary",
+          "card_demo_routing",
           "cap_mcp",
-          "cap_model_routing",
-          "cap_telephone_game",
-          "cap_aipm_demand",
-          "cap_distractor_02"
+          "cap_model_routing"
         ]
       }
     },
@@ -397,11 +397,11 @@
           "cap_distractor_06"
         ],
         "G3_full_v3": [
+          "card_demo_concurrency",
+          "card_demo_latency",
+          "card_demo_routing",
           "cap_latency_roi",
-          "cap_mcp",
-          "cap_telephone_game",
-          "cap_distractor_06",
-          "card_demo_telephone"
+          "cap_mcp"
         ]
       }
     },
@@ -458,11 +458,11 @@
           "cap_aipm_demand"
         ],
         "G3_full_v3": [
+          "card_demo_eval",
+          "card_demo_telephone",
+          "card_demo_mcp",
           "cap_latency_roi",
-          "cap_pkm_compare",
-          "cap_telephone_game",
-          "cap_aipm_demand",
-          "card_demo_demand"
+          "cap_pkm_compare"
         ]
       }
     },
@@ -490,11 +490,11 @@
           "cap_distractor_07"
         ],
         "G3_full_v3": [
+          "card_demo_context",
+          "card_demo_telephone",
+          "card_demo_routing",
           "cap_telephone_game",
-          "cap_model_routing",
-          "cap_distractor_04",
-          "cap_mcp",
-          "cap_distractor_07"
+          "cap_model_routing"
         ]
       }
     },
@@ -516,10 +516,11 @@
           "cap_aipm_demand"
         ],
         "G3_full_v3": [
+          "card_demo_silence",
+          "card_demo_telephone",
+          "card_demo_routing",
           "cap_telephone_game",
-          "cap_aipm_demand",
-          "card_demo_demand",
-          "card_demo_telephone"
+          "cap_aipm_demand"
         ]
       }
     },
@@ -548,11 +549,11 @@
           "cap_telephone_game"
         ],
         "G3_full_v3": [
+          "card_demo_quote",
+          "card_demo_silence",
+          "card_demo_pkm",
           "cap_distractor_08",
-          "cap_pkm_compare",
-          "cap_distractor_09",
-          "cap_distractor_07",
-          "cap_telephone_game"
+          "cap_pkm_compare"
         ]
       }
     },
@@ -574,10 +575,11 @@
           "cap_telephone_game"
         ],
         "G3_full_v3": [
+          "card_demo_context",
+          "card_demo_latency",
           "cap_model_routing",
           "cap_telephone_game",
-          "card_demo_telephone",
-          "card_demo_routing"
+          "card_demo_telephone"
         ]
       }
     },
@@ -604,17 +606,119 @@
         "G2_vector_plus_fts": [],
         "G3_full_v3": []
       }
+    },
+    {
+      "id": "q21",
+      "query": "比特币的 UTXO 模型如何工作",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q22",
+      "query": "味噌汤的做法和发酵原理",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q23",
+      "query": "如何用 Python 爬取微博热搜",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q24",
+      "query": "英超联赛的越位规则是什么",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [
+          "cap_distractor_02"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_distractor_02"
+        ],
+        "G3_full_v3": [
+          "cap_distractor_02"
+        ]
+      }
+    },
+    {
+      "id": "q25",
+      "query": "明天上海会不会下雨",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q26",
+      "query": "A 股半导体板块的市盈率是多少",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q27",
+      "query": "去冰岛看极光几月份最合适",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q28",
+      "query": "红烧肉怎么炒糖色不苦",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
     }
   ],
-  "avg_prompt_chars": 671,
+  "avg_prompt_chars": 579,
   "corpus": {
     "notes": 20,
     "chunks": 86,
     "cards": 12,
     "units": 98,
-    "queries": 20,
+    "queries": 28,
     "positives": 18,
-    "negatives": 2
+    "negatives": 10
   },
   "threshold": 0.46,
   "max_prompt_chars": 14000

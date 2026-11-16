@@ -226,15 +226,15 @@ database:
 
 ```bash
 # 启动 Hermes 网关（用户说的"前后端"就是这个）
-cd /Users/pipi/Downloads/hermes-agent-main
-.venv/bin/python -m hermes_cli.main gateway run --replace
+cd <hermes-agent-main>
+.venv/bin/python -m hermes_cli.main gateway run --replace   # Windows: .venv\Scripts\python.exe
 
-# 跑测试（112 个，全部通过）
-cd /Users/pipi/hermes-custom
-.venv/bin/python -m pytest tests/ -q
+# 跑测试（当前全量 1290+ 用例，以实际收集数为准）
+cd <hermes-custom>
+.venv/bin/python -m pytest tests/ -q                         # Windows: .venv\Scripts\python.exe -m pytest tests -q
 
 # 启动 FastAPI 后端（Dashboard API，默认仅本机，port 8000）
-cd /Users/pipi/hermes-custom
+cd <hermes-custom>
 .venv/bin/python -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
 
 # 如确需监听局域网，必须先设置高强度随机 token；客户端使用 Bearer token

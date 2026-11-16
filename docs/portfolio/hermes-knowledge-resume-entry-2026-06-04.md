@@ -48,7 +48,7 @@ AI Product Management / Agent Workflow / RAG / Knowledge Management / Web Produc
 - 这是个人可用的 v0.1 产品原型。
 - 核心知识库 pipeline 已跑通。
 - 多模态和极长文处理还需要更多真实样本继续验证。
-- RAG 已支持 evidence-first 检索、图谱扩展和可读来源；已完成一次 20 条 query 的 DashScope 重跑（Recall@5 0.389→0.833），答案质量仍需持续评测。
+- RAG 已支持 evidence-first 检索、图谱扩展和可读来源；已完成一次 28 条 query 的 DashScope 重跑（Recall@5 0.389→0.833，G3 1.0，负样本 9/10），答案质量仍需持续评测。
 - 如果要给其他用户使用，还需要安装配置、权限隔离、错误恢复和运行观测产品化。
 
 避免口径：

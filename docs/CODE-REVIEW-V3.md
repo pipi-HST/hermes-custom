@@ -4,7 +4,7 @@
 评审方式：逐文件读真实 diff（`--ignore-cr-at-eol`）→ 写两个可复现脚本证伪 → 重跑测试与真实库 → 交叉核对文档数字。
 **本文件里每一个缺陷都附实测输出或源码行号；没有"看起来可能有问题"的条目。**
 
-> **评审快照（2026-11-16）**：文中的 `MIN_VECTOR_SCORE=0.20`、G0 0.833、0/4 vs 1/4 等是评审当时发现的问题/旧数据，不是当前口径。当前值：阈值 0.46（`docs/calibration-dashscope.json`）；离线 post-fix 四组 0.389（`docs/benchmark-rag-v3-offline-postfix.json`）；真实 DashScope post-fix 为 G0 0.389 vs G1–G3 0.833（`docs/benchmark-rag-v3-dashscope.json`）；卡片排序 1/4 vs 4/4（`docs/card-ordering-judge.json`）。面试引用请看 `docs/PRODUCT-REFACTOR-STORY.md`。
+> **评审快照（2026-11-16）**：文中的 `MIN_VECTOR_SCORE=0.20`、G0 0.833、0/4 vs 1/4 等是评审当时发现的问题/旧数据，不是当前口径。当前值：阈值 0.46（`docs/calibration-dashscope.json`）；离线 post-fix 四组 0.389（`docs/benchmark-rag-v3-offline-postfix.json`）；真实 DashScope post-fix 为 G0 0.389、G1/G2 0.833、G3 1.0（`docs/benchmark-rag-v3-dashscope.json`）；卡片排序 5/8 vs 8/8（`docs/card-ordering-judge.json`）。面试引用请看 `docs/PRODUCT-REFACTOR-STORY.md`。
 
 ---
 
@@ -194,9 +194,9 @@ chunks from a single 3000-char paragraph: 2 [3000, 211]
 
 ### P2-6 卡片排序"对抗结论"缺可复核凭证
 
-当时 `docs/card-ordering-judge.json` 只有 `boundary_mentioned: bool` 和 `answer_len`，**没有 prompt、没有答案正文**（后续重跑已补 `answer` 字段）。n=4、单次判官、关键词级判定 → 0/4 vs 1/4 差异的证据强度约等于"一条方向性轶事"；修正后的 1/4 vs 4/4 见 `PRODUCT-REFACTOR-STORY.md` §8.14。
+当时 `docs/card-ordering-judge.json` 只有 `boundary_mentioned: bool` 和 `answer_len`，**没有 prompt、没有答案正文**（后续重跑已补 `answer` 字段）。n=4、单次判官、关键词级判定 → 0/4 vs 1/4 差异的证据强度约等于"一条方向性轶事"；修正后先得到 1/4 vs 4/4，随后扩到 n=8（5/8 vs 8/8），见 `PRODUCT-REFACTOR-STORY.md` §8.14。
 
-文档 §8.14 已经老实写了"n=4 只能算定向信号"，这点值得肯定；但**artifact 本身无法复核**，评审者只能选择相信脚本。
+文档 §8.14 已经老实写了"n=8 仍只能算定向信号"，这点值得肯定；当前 artifact 已存答案与判官原文，可复核。
 
 **修法**：JSON 里存 `query / 上下文 source 顺序 / 两个答案全文 / 判官原始返回`。成本几乎为零。
 
@@ -243,7 +243,7 @@ chunks from a single 3000-char paragraph: 2 [3000, 211]
 | D4 | `calibration-dashscope.json` 的 `note`："语义引擎实测分布，**可直接用于生产阈值**" vs 同文件 `separation = -0.0601` | P10(正)=0.429 < P95(负)=0.489，分布重叠时不存在能同时保 Recall 又全拦负样本的单阈值。这句 note 与自己的数据相反，应改成"仅作起点，生产需 rerank/分数融合" |
 | D5 | benchmark md "已知限制" 第一条："离线 hash 引擎只衡量字面重合，真实语义指标需配置 key 后重跑" | 这份文档本来就是 dashscope 版，这句话是 hash 版残留 |
 
-反过来说，§8.3（130 秒是超时预算不是 P95）、§8.12（`rejected≥1` 是契约误判）、§8.13/8.14（n=4 只能算定向信号）这三处**自查自纠写得很好**，是全篇最值钱的部分，不要为了好看把它们删掉。
+反过来说，§8.3（130 秒是超时预算不是 P95）、§8.12（`rejected≥1` 是契约误判）、§8.13/8.14（n=8 仍只能算定向信号）这三处**自查自纠写得很好**，是全篇最值钱的部分，不要为了好看把它们删掉。
 
 ---
 
@@ -281,11 +281,11 @@ chunks from a single 3000-char paragraph: 2 [3000, 211]
 3. "旧版 Recall 0.5 是哪份代码跑出来的？" → 是本轮新组件砍一半，不是旧版（P2-7）。
 4. "0/4 和 1/4 的判官结果，能给我看答案原文吗？" → artifact 里没有（P2-6）。
 5. "测试都绿吗？" → 7 红 + 浏览器崩（P1-4）。
-6. "卡片排序结论能推广吗？" → 不能，n=4；这条目前文档里已经老实写了，保持住。
+6. "卡片排序结论能推广吗？" → 不能，n=8；这条目前文档里已经老实写了，保持住。
 
 ---
 
-## 9. 全量问题清单
+## 9. 全量问题清单（修复前快照；当前状态见 §10）
 
 > §2–§5 是深挖版；本节是**完整索引**，已含此前未展开的 11 个 P2 与 18 个 P3。
 > 级别含义：**阻断** = 不修就会被问穿；**P2** = 功能或口径错、有确定修法；**P3** = 工程质量/卫生/性能。
@@ -318,7 +318,7 @@ chunks from a single 3000-char paragraph: 2 [3000, 211]
 | P2-3 | `api/routes/garden.py:149` | `source_theme` 写列、读 `payload_json`；运行时新建卡片专题为空 |
 | P2-4 | `capture_indexer.py:120` | 单段超 1600 字无法切分 → `_clip` 静默丢弃（实测 3000 字丢 1400） |
 | P2-5 | `capture_indexer.py:95` | 分块后缀「（第 2 部分）」泄漏成用户可见章节名（2 个红灯的根因） |
-| P2-6 | `docs/card-ordering-judge.json` | 无 prompt、无答案正文；n=4 的结果无法复核 |
+| P2-6 | `docs/card-ordering-judge.json` | 评审时无 prompt、无答案正文；现已补答案与判官原文，n=8 |
 | P2-7 | `eval_rag_benchmark.py` | G0 用新 FTS+新 tokenizer 冒充旧版；artifact 无逐条 query 明细 |
 | P2-8 | `rag_bridge.py:564` | FTS 命中的 section 行 hydrate 后不带 `section_title`，却被标成 `capture_section` → 章节空、面板点不中 |
 | P2-9 | `rag_bridge.py:~200` | `extend(keyword_hits)` 之后紧接 `results[:7]`：graph 返 6 条时补召回最多留 1 条，静默丢弃 |
@@ -440,9 +440,9 @@ chunks from a single 3000-char paragraph: 2 [3000, 211]
 
 ### 10.3 结论发生变化的三处（口径必须更新）
 
-1. **G0 不再是稻草人**：真实旧版子串基线在离线引擎下与 V3 打平（四组 0.389，`docs/benchmark-rag-v3-offline-postfix.json`）；G0 dispatcher 修复前的 DashScope 运行显示 0.833，但该数字因 G0 误走 G3 作废。2026-11-16 修复后真实重跑：G0 0.389 vs G1–G3 0.833（`docs/benchmark-rag-v3-dashscope.json`）。
-   → 旧口径「0.5 → 0.833」作废（旧版真实基线是 0.389）；可以说「本套 20 条 query 上语义召回优于字面基线」，但不能说「层数越多越好」，也不能外推。
-2. **判官 bug 修复后结果反转**：`max_tokens=64` 被推理模型的 `reasoning_content` 吃光 → 全空 → 全 NO；修好后同一批对抗样本 **卡片优先 1/4 vs 证据优先 4/4**。
+1. **G0 不再是稻草人**：真实旧版子串基线在离线引擎下与 V3 打平（四组 0.389，`docs/benchmark-rag-v3-offline-postfix.json`）；G0 dispatcher 修复前的 DashScope 运行显示 0.833，但该数字因 G0 误走 G3 作废。2026-11-16 修复后真实重跑：G0 0.389、G1/G2 0.833、G3 1.0（`docs/benchmark-rag-v3-dashscope.json`）。
+   → 旧口径「0.5 → 0.833」作废（旧版真实基线是 0.389）；可以说「本套 28 条 query 上语义召回优于字面基线」，但不能说「层数越多越好」，也不能外推。
+2. **判官 bug 修复后结果反转**：`max_tokens=64` 被推理模型的 `reasoning_content` 吃光 → 全空 → 全 NO；修好后同一批对抗样本 **卡片优先 5/8 vs 证据优先 8/8**（n=8）。
    → 之前「0/4 vs 1/4」和「0/4 vs 0/4」都是判官预算问题。
 3. **demo 向量语义化**：`_concept_vector` 的合成随机向量已替换为真向量，同篇 chunk 余弦 0.99→0.81，两阶段检索在 demo 上才开始有意义。
 
@@ -450,11 +450,11 @@ chunks from a single 3000-char paragraph: 2 [3000, 211]
 
 | 条目 | 状态 |
 | :-- | :-- |
-| P2-2 Workbench 视图黄条 | 仅 Library 视图接线；GatewayChat 的消息模型没有 `provider_status`，需要另做 plumbing |
-| P3-2 FTS 删除 O(n) / 每次 apply 全量 rebuild | 未改，30 行规模无感，上万 chunk 前必须换 rowid 映射 |
+| P2-2 Workbench 视图黄条 | 已接线：`research_trace.search_backend` + `provider_status` 同时下发，GatewayChat 的 `KnowledgeAnswerView` 可显示；历史评审时只有 Library 视图 |
+| P3-2 FTS 删除 O(n) / 每次 apply 全量 rebuild | 已改为 `capture_search_fts_map` + rowid 定点删除；全量 rebuild 只保留迁移/修复入口 |
 | P3-9 `_default_search_backend()` 读磁盘 | 未加缓存，一次研究调用 ≥2 次 |
 | P3-22 `citation_events` 索引 | 未加 run_id/cited_at 索引 |
-| P3-29/P3-30 写路径读配置、图刷新无日志 | 未改 |
+| P3-29/P3-30 写路径读配置、图刷新无日志 | 图刷新已加 warning + exc_info；写路径读配置仍未缓存 |
 | 异步裁判链路分项计时 | 只汇总 `critic_ms`，`initial/minimal/batch` 恒 0（已在测试注释标注） |
-| 负样本只有 2 条 | 拦截率只能写 2/2；要比率需扩到 ≥10 条 |
-| P2-6 judge n=4 | 已可复核（存了答案与判官原文），但样本量仍是 4 |
+| 负样本已扩到 10 条 | G1–G3 实际拦截 9/10（q24 漏过 `cap_distractor_02`）；不能写 100% |
+| P2-6 judge 样本量 | 已扩到 n=8（5/8 vs 8/8），仍可复核答案与判官原文；仍非大样本 |

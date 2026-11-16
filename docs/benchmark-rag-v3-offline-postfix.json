@@ -5,36 +5,36 @@
       "recall_at_5": 0.389,
       "mrr_at_5": 0.389,
       "negative_rejection": 1.0,
-      "latency_p50_ms": 0.06,
-      "latency_p95_ms": 709.65
+      "latency_p50_ms": 0.07,
+      "latency_p95_ms": 516.07
     },
     "G1_vector_only": {
       "recall_at_3": 0.389,
       "recall_at_5": 0.389,
       "mrr_at_5": 0.389,
       "negative_rejection": 1.0,
-      "latency_p50_ms": 1.63,
-      "latency_p95_ms": 4.57
+      "latency_p50_ms": 1.07,
+      "latency_p95_ms": 2.57
     },
     "G2_vector_plus_fts": {
       "recall_at_3": 0.389,
       "recall_at_5": 0.389,
       "mrr_at_5": 0.389,
       "negative_rejection": 1.0,
-      "latency_p50_ms": 2.35,
-      "latency_p95_ms": 4.93
+      "latency_p50_ms": 0.83,
+      "latency_p95_ms": 1.76
     },
     "G3_full_v3": {
       "recall_at_3": 0.389,
       "recall_at_5": 0.389,
       "mrr_at_5": 0.361,
       "negative_rejection": 1.0,
-      "latency_p50_ms": 2.02,
-      "latency_p95_ms": 4.67
+      "latency_p50_ms": 1.49,
+      "latency_p95_ms": 7.1
     }
   },
   "engine": "char-ngram-blake2b-hash-1024",
-  "embed_api_mean_ms": 0.07,
+  "embed_api_mean_ms": 0.1,
   "per_query_details": [
     {
       "id": "q01",
@@ -403,6 +403,102 @@
         "G2_vector_plus_fts": [],
         "G3_full_v3": []
       }
+    },
+    {
+      "id": "q21",
+      "query": "比特币的 UTXO 模型如何工作",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q22",
+      "query": "味噌汤的做法和发酵原理",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q23",
+      "query": "如何用 Python 爬取微博热搜",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q24",
+      "query": "英超联赛的越位规则是什么",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q25",
+      "query": "明天上海会不会下雨",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q26",
+      "query": "A 股半导体板块的市盈率是多少",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q27",
+      "query": "去冰岛看极光几月份最合适",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q28",
+      "query": "红烧肉怎么炒糖色不苦",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
     }
   ],
   "avg_prompt_chars": 222,
@@ -411,9 +507,9 @@
     "chunks": 86,
     "cards": 12,
     "units": 98,
-    "queries": 20,
+    "queries": 28,
     "positives": 18,
-    "negatives": 2
+    "negatives": 10
   },
   "threshold": 0.46,
   "max_prompt_chars": 14000

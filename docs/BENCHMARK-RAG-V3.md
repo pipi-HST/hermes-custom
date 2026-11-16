@@ -1,6 +1,6 @@
 > ⚠️ **本文件是 G0 dispatcher 修复前的离线 hash 冒烟记录，数字已过期，不要对外引用。**
 > 当前离线口径请看 `docs/BENCHMARK-RAG-V3-offline-postfix.md` / `docs/benchmark-rag-v3-offline-postfix.json`。
-> DashScope 真实重跑已于 2026-11-16 完成，语义结果看 `docs/BENCHMARK-RAG-V3-dashscope.md`（G0 0.389 vs G1–G3 0.833）；本文件的 0.5/0.667 仍是历史记录，不要引用。
+> DashScope 真实重跑已于 2026-11-16 完成，语义结果看 `docs/BENCHMARK-RAG-V3-dashscope.md`（G0 0.389、G1/G2 0.833、G3 1.0）；本文件的 0.5/0.667 仍是历史记录，不要引用。
 > hash 引擎只衡量字面重合，其 Recall 与负样本拦截率都不可迁移到真实语义库。
 
 # RAG 检索消融评测（V3.0，历史记录）
@@ -12,7 +12,7 @@
 - Query：20 条（18 正样本 + 2 负样本）
 - G3 单次 RAG Prompt 平均字符数：362（上限 14000；样本相关，不是固定指标）
 
-以下数字为 G0 修复前记录，不能与 post-fix 数据混用（离线 hash post-fix 四组均为 0.389；真实 DashScope post-fix 为 G0 0.389 vs G1–G3 0.833）。
+以下数字为 G0 修复前记录，不能与 post-fix 数据混用（离线 hash post-fix 四组均为 0.389；真实 DashScope post-fix 为 G0 0.389、G1/G2 0.833、G3 1.0）。
 
 | 组 | Recall@3 | Recall@5 | MRR@5 | 负样本拦截 | P50 ms | P95 ms |
 | --- | --- | --- | --- | --- | --- | --- |

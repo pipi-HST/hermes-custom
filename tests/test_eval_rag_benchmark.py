@@ -25,9 +25,9 @@ def test_corpus_is_large_enough_to_be_meaningful(tmp_path):
     assert corpus["notes"] == 20
     assert corpus["cards"] == 12
     assert corpus["units"] >= 90, "语料必须接近百个检索单元，否则 Recall 没有统计区分度"
-    assert corpus["queries"] == 20
+    assert corpus["queries"] == 28
     assert corpus["positives"] == 18
-    assert corpus["negatives"] == 2
+    assert corpus["negatives"] == 10
 
 
 def test_threshold_contract_matches_code_and_artifact(tmp_path):
@@ -77,8 +77,10 @@ def test_ablation_groups_are_reported(tmp_path):
 
 
 def test_refactored_groups_beat_legacy_baseline(tmp_path):
+    from bridge.rag_bridge import MIN_VECTOR_SCORE
+
     module = _load_benchmark()
-    report = module.run_benchmark(tmp_path, threshold=0.20)
+    report = module.run_benchmark(tmp_path, threshold=MIN_VECTOR_SCORE)
     legacy = report["groups"]["G0_title_summary_substring"]
     vector = report["groups"]["G1_vector_only"]
     full = report["groups"]["G3_full_v3"]
@@ -86,5 +88,5 @@ def test_refactored_groups_beat_legacy_baseline(tmp_path):
     assert full["recall_at_5"] >= legacy["recall_at_5"]
     assert full["negative_rejection"] >= legacy["negative_rejection"]
     # 逐条明细必须落盘，否则"哪条 query 命中"无法复核。
-    assert len(report["per_query_details"]) == 20
+    assert len(report["per_query_details"]) == 28
     assert all(entry["hits"] for entry in report["per_query_details"])

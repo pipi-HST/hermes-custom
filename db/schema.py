@@ -486,6 +486,9 @@ def init_db(db_path: str) -> sqlite3.Connection:
         conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION
         and _table_exists(conn, "captures")
     ):
+        # An interrupted captures-table swap can leave captures_new behind
+        # even after the schema version was stamped.
+        _recover_interrupted_captures_swap(conn)
         if capture_search_fts_available(conn):
             try:
                 fts_count = conn.execute(

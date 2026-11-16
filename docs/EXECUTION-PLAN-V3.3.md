@@ -268,7 +268,7 @@ if len(prompt_ids) != len(source_map) or len(ids) != len(set(ids)):
 | `bridge/deepseek_web_tools.py:130,179` | 区分 `content`/`summary`（加 `content_is_summary`）；删 `strong+weak` |
 | `web/src/components/KnowledgeAnswerView.tsx:82` | fence-aware + 列表/表格安全切分 💡 段 |
 | `web/src/pages/knowledge-chat/GatewayChat.tsx:55` | 初始选题标注「示例选题（点击右侧扫描生成实时跨篇提案）」 |
-| `docs/*.md` | 数字全部从 Step 3b 的 JSON 回填；负样本写 `2/2(n=2)`；统一 130 秒超时预算口径；补「单篇单节取舍」「卡片向量已落盘未接检索」两段 |
+| `docs/*.md` | 数字全部从 Step 3b 的 JSON 回填；负样本写实际拦截数（当前 G0 10/10、G1–G3 9/10）；统一 130 秒超时预算口径；补「单篇单节取舍」「卡片向量已落盘未接检索」两段 |
 
 **Gate 5**：`pytest tests` 全绿；前端 8 个 `npm run check:*` + `npx tsc -b` + `npx eslint .` 全绿；`git status` 干净。
 
@@ -292,10 +292,12 @@ if len(prompt_ids) != len(source_map) or len(ids) != len(set(ids)):
 
 ## 4. 执行清单（可勾选）
 
-- [ ] Step 0 快照提交 + renorm 提交 + 基线日志
-- [ ] Step 1 图检索 1 席 / select_render 拆分 / rag_bridge 统一编号 / FTS 章节 / 引用正则 / repro 脚本 → Gate 1
-- [ ] Step 2 关键词重写 + `build_fts_or_query` + 补足回退 + 2 席保底 + 闸门放宽 → Gate 2
-- [ ] Step 3a 阈值 0.46（带 config 覆盖）+ recompute + seed 双模式 + 评测脚本去偏 → Gate 3a
-- [ ] Step 4 章节去后缀 / 分块摘要 / 单段硬切 / 两个契约测试 / 计时精度 8 处 / 浏览器隔离 → Gate 4
-- [ ] Step 3b seed + benchmark + calibration + judge 重跑 → Gate 3b
-- [ ] Step 5 接线 6 处 + 前端 3 处 + 文档 D1–D8 → Gate 5
+- [x] Step 0 快照提交 + renorm 提交 + 基线日志
+- [x] Step 1 图检索 1 席 / select_render 拆分 / rag_bridge 统一编号 / FTS 章节 / 引用正则 / repro 脚本 → Gate 1
+- [x] Step 2 关键词重写 + `build_fts_or_query` + 补足回退 + 2 席保底 + 闸门放宽 → Gate 2
+- [x] Step 3a 阈值 0.46（带 config 覆盖）+ recompute + seed 双模式 + 评测脚本去偏 → Gate 3a
+- [x] Step 4 章节去后缀 / 分块摘要 / 单段硬切 / 两个契约测试 / 计时精度 8 处 / 浏览器隔离 → Gate 4
+- [x] Step 3b seed + benchmark + calibration + judge 重跑 → Gate 3b
+- [x] Step 5 接线 6 处 + 前端 3 处 + 文档 D1–D8 → Gate 5
+
+> 状态（2026-11-16）：以上七步已落地并提交；负样本已扩到 10 条、judge 已扩到 n=8、卡片级召回 6/6；剩余风险（G1–G3 负样本 9/10、G3 MRR 0.769 < 0.806）记录在 `CODE-REVIEW-V3.md` §10.4 与 `PRODUCT-REFACTOR-STORY.md`。

@@ -329,6 +329,14 @@ QUERIES: list[dict[str, Any]] = [
     {"id": "q18", "query": "大小模型协同的成本怎么测算", "gold": ["cap_model_routing"], "kind": "semantic"},
     {"id": "q19", "query": "怎么给猫做绝育手术恢复快", "gold": [], "kind": "negative"},
     {"id": "q20", "query": "量子计算机的退相干时间怎么延长", "gold": [], "kind": "negative"},
+    {"id": "q21", "query": "比特币的 UTXO 模型如何工作", "gold": [], "kind": "negative"},
+    {"id": "q22", "query": "味噌汤的做法和发酵原理", "gold": [], "kind": "negative"},
+    {"id": "q23", "query": "如何用 Python 爬取微博热搜", "gold": [], "kind": "negative"},
+    {"id": "q24", "query": "英超联赛的越位规则是什么", "gold": [], "kind": "negative"},
+    {"id": "q25", "query": "明天上海会不会下雨", "gold": [], "kind": "negative"},
+    {"id": "q26", "query": "A 股半导体板块的市盈率是多少", "gold": [], "kind": "negative"},
+    {"id": "q27", "query": "去冰岛看极光几月份最合适", "gold": [], "kind": "negative"},
+    {"id": "q28", "query": "红烧肉怎么炒糖色不苦", "gold": [], "kind": "negative"},
 ]
 
 
@@ -401,7 +409,14 @@ def _keyword_hits(conn, query: str, limit: int) -> list[str]:
 def _card_hits(conn, query: str, limit: int) -> list[str]:
     from bridge.rag_bridge import _search_garden_cards
 
-    cards = _search_garden_cards(query, conn, limit=limit)
+    # Production retrieval passes the query embedding; calling the card
+    # retriever without it silently downgrades G3 to literal-only matching.
+    cards = _search_garden_cards(
+        query,
+        conn,
+        limit=limit,
+        query_embedding=_blob(query),
+    )
     return [str(card.get("id") or "") for card in cards if card.get("id")]
 
 
