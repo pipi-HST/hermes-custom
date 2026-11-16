@@ -460,5 +460,5 @@ chunks from a single 3000-char paragraph: 2 [3000, 211]
 | P2-6 judge 样本量 | 已扩到 n=8（5/8 vs 8/8），仍可复核答案与判官原文；仍非大样本 |
 | T11 时间戳全表扫描 | 已改为 `timestamp_format_v1` 标记 + 写时触发器；二次 init 不再重扫，测试锁死 |
 | T13 卡片候选 `LIMIT 200` | 已改为 200 行分页、最多扫描 2000 张；测试覆盖后页命中 |
-| T26 巨型页面组件 | 产品套件已默认运行、槽位与 sidebar 错误态已修；`KnowledgeLibraryPage` 本体仍未拆分 |
+| T26 巨型页面组件 | 已拆出 `KnowledgeLibraryHeader` 与 `KnowledgeLibrarySidebar`；主组件约 1.8k 行，页面文件仍包含共用 helper，后续可继续下沉 |
 | P10 `web_only` UI 不可达 | 产品决策保留二态开关（local_only/local_web）+ `force_web`；`web_only` 仅作 API/历史兼容，不在 UI 暴露。若后续删除死分支，需同步兼容测试 |
