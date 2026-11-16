@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import struct
 from pathlib import Path
@@ -345,6 +346,85 @@ def test_indexed_search_relevance_gate_keeps_literal_keyword_hits(tmp_path):
 
     ids = {item["id"] for item in results}
     assert ids == {"cap-high", "cap-literal"}
+
+
+def test_indexed_search_uses_per_kind_threshold(tmp_path):
+    from bridge.rag_bridge import _indexed_search
+
+    conn = init_db(str(tmp_path / "captures.db"))
+    for capture_id in ("cap-identity", "cap-section"):
+        conn.execute(
+            "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+            (capture_id, f"captures/{capture_id}.md"),
+        )
+    repo = CaptureEmbeddingRepo(conn)
+    score = 0.44
+    second = math.sqrt(1 - score * score)
+    repo.upsert(
+        capture_id="cap-identity",
+        kind="identity",
+        index_text="无关标题",
+        embedding=_vec(score, second),
+        source_hash="identity",
+        file_path="captures/cap-identity.md",
+    )
+    repo.upsert(
+        capture_id="cap-section",
+        kind="section",
+        section_id="s1",
+        section_title="无关章节",
+        index_text="无关正文",
+        embedding=_vec(score, second),
+        source_hash="section",
+        file_path="captures/cap-section.md",
+    )
+
+    class FakeEmbedder:
+        def embed(self, _text: str) -> bytes:
+            return _vec(1.0, 0.0)
+
+    results = _indexed_search(
+        "无关问题",
+        CaptureRepo(conn),
+        FakeEmbedder(),
+        limit=5,
+        query_embedding=_vec(1.0, 0.0),
+    )
+
+    assert {item["id"] for item in results} == {"cap-identity"}
+
+
+def test_low_score_bigram_still_fails_gate(tmp_path):
+    from bridge.rag_bridge import _indexed_search
+
+    conn = init_db(str(tmp_path / "captures.db"))
+    conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES ('cap-noise', 'captures/noise.md')"
+    )
+    CaptureEmbeddingRepo(conn).upsert(
+        capture_id="cap-noise",
+        kind="section",
+        section_id="s1",
+        section_title="",
+        index_text="大模型 传话 效应",
+        embedding=_vec(-1.0),
+        source_hash="noise",
+        file_path="captures/noise.md",
+    )
+
+    class FakeEmbedder:
+        def embed(self, _text: str) -> bytes:
+            return _vec(1.0, 0.0)
+
+    results = _indexed_search(
+        "大模型传话筒效应",
+        CaptureRepo(conn),
+        FakeEmbedder(),
+        limit=5,
+        query_embedding=_vec(1.0, 0.0),
+    )
+
+    assert results == []
 
 
 # ---------------------------------------------------------------------------

@@ -69,6 +69,13 @@ _HEADING_RE = re.compile(r"^(#{2,6})\s+(.+?)\s*$", re.MULTILINE)
 # negative, i.e. the distributions overlap: this is a first-pass filter only,
 # the literal-keyword exemption and the synthesis guard handle the edges.
 MIN_VECTOR_SCORE = 0.46
+# Identity rows are short title/summary texts; their cosine distribution is not
+# the section distribution the 0.46 threshold was calibrated on.
+IDENTITY_MIN_VECTOR_SCORE = 0.42
+# A long CJK term split into bigrams is only a near-miss rescue, not a licence
+# to admit a clearly irrelevant note.
+LITERAL_NEAR_MISS_FACTOR = 0.75
+LITERAL_BIGRAM_MIN_HITS = 3
 
 # Retrieval slots handed to the prompt.  Keyword hits get a reserved share so
 # a literal match can never be pushed out by weaker vector neighbours.
@@ -1122,25 +1129,40 @@ def _indexed_search(
 
     keywords = _extract_query_keywords(query)
 
-    def _has_literal_keyword(row: dict) -> bool:
+    def _has_literal_keyword(row: dict, *, row_gate: float) -> bool:
         haystack = f"{row.get('index_text') or ''} {row.get('section_title') or ''}".lower()
+        score = float(row.get("score") or 0.0)
         for keyword in keywords:
             if keyword in haystack:
                 return True
-            # A compound CJK term rarely appears verbatim; two of its bigrams
-            # inside one document is strong enough to count as a literal hit.
-            if len(keyword) >= 5 and keyword_bigram_hits(keyword, haystack) >= 2:
+            # A compound CJK term rarely appears verbatim.  Two bigrams used to
+            # be enough for any score, which admitted clearly irrelevant notes;
+            # require a near-miss score plus three bigrams instead.
+            if (
+                len(keyword) >= 6
+                and LITERAL_BIGRAM_MIN_HITS <= keyword_bigram_hits(keyword, haystack)
+                and score >= row_gate * LITERAL_NEAR_MISS_FACTOR
+            ):
                 return True
         return False
 
-    # Relevance gate: drop weak vector hits unless they contain a literal query
-    # term.  Keeps stale/loosely-related notes out of the prompt without losing
-    # exact technical matches.
-    gate = MIN_VECTOR_SCORE if threshold is None else float(threshold)
+    def _row_gate(row: dict) -> float:
+        if threshold is not None:
+            return float(threshold)
+        return (
+            IDENTITY_MIN_VECTOR_SCORE
+            if str(row.get("kind") or "") == "identity"
+            else MIN_VECTOR_SCORE
+        )
+
+    # Relevance gate: identity and section rows use separate thresholds because
+    # the calibrated 0.46 only describes section-text scores.  Exact literal
+    # terms still bypass the gate.
     rows = [
         row
         for row in rows
-        if float(row.get("score") or 0.0) >= gate or _has_literal_keyword(row)
+        if float(row.get("score") or 0.0) >= _row_gate(row)
+        or _has_literal_keyword(row, row_gate=_row_gate(row))
     ]
     if not rows:
         return []

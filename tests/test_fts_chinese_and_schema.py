@@ -114,6 +114,57 @@ def test_cjk_substring_and_two_char_words_match(conn):
 # --------------------------------------------------------------------------
 # 断言 2：schema 迁移后的列与表
 # --------------------------------------------------------------------------
+def test_schema_records_user_version(conn):
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
+def test_garden_cards_recall_index_exists(conn):
+    indexes = {
+        row["name"]
+        for row in conn.execute("PRAGMA index_list(garden_cards)").fetchall()
+    }
+    assert "idx_garden_cards_recall" in indexes
+
+
+def test_captures_migration_keeps_unknown_columns(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    raw = sqlite3.connect(db_path)
+    raw.execute(
+        """CREATE TABLE captures (
+               id TEXT PRIMARY KEY,
+               file_path TEXT NOT NULL DEFAULT '',
+               legacy_note TEXT NOT NULL DEFAULT ''
+           )"""
+    )
+    raw.execute(
+        "INSERT INTO captures (id, file_path, legacy_note) VALUES ('cap1', 'captures/a.md', 'keep me')"
+    )
+    raw.commit()
+    raw.close()
+
+    conn = init_db(str(db_path))
+    try:
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(captures)").fetchall()
+        }
+        assert "legacy_note" in columns
+        assert conn.execute(
+            "SELECT legacy_note FROM captures WHERE id = 'cap1'"
+        ).fetchone()[0] == "keep me"
+    finally:
+        conn.close()
+
+
+def test_captures_created_at_index_exists(conn):
+    indexes = {
+        row["name"]
+        for row in conn.execute("PRAGMA index_list(captures)").fetchall()
+    }
+    assert "idx_captures_created_at" in indexes
+
+
 def test_schema_migrations_applied(conn):
     card_columns = _columns(conn, "garden_cards")
     assert {"source_theme", "embedding", "citation_count", "last_cited_at"} <= card_columns

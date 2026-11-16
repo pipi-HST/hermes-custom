@@ -58,6 +58,18 @@ def test_imported_through_symlink_keeps_its_own_root(monkeypatch, tmp_path):
         sys.modules.pop("symlinked_bridge_config_paths", None)
 
 
+def test_load_config_reads_retrieval_threshold(tmp_path):
+    from agents.capture_agent import load_config
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "retrieval:\n  min_vector_score: 0.51\n",
+        encoding="utf-8",
+    )
+
+    assert load_config(str(config_path)).min_vector_score == 0.51
+
+
 def test_missing_config_falls_back_to_defaults(monkeypatch, tmp_path):
     from agents.capture_agent import CaptureConfig
 

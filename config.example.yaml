@@ -23,6 +23,10 @@ asr:
   provider: dashscope
   api_key: "REPLACE_WITH_ASR_API_KEY"
 
+retrieval:
+  # Optional override for MIN_VECTOR_SCORE; leave blank to use the code default.
+  min_vector_score:
+
 database:
   path: "./data/captures.db"
 

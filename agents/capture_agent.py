@@ -81,6 +81,7 @@ class CaptureConfig:
     qwen_api_key: str = ""
     vault_path: str = "~/Hermes/knowledge"
     db_path: str = "./data/captures.db"
+    min_vector_score: float | None = None
 
 
 @dataclass
@@ -131,6 +132,14 @@ def load_config(config_path: str = "config.yaml") -> CaptureConfig:
     llm = cfg.get("llm", {})
     vault = cfg.get("vault", {})
     database = cfg.get("database", {})
+    retrieval = cfg.get("retrieval", {})
+    raw_threshold = retrieval.get("min_vector_score", cfg.get("min_vector_score"))
+    try:
+        min_vector_score = (
+            float(raw_threshold) if raw_threshold is not None and str(raw_threshold).strip() != "" else None
+        )
+    except (TypeError, ValueError):
+        min_vector_score = None
     return CaptureConfig(
         llm_api_key=llm.get("api_key", ""),
         llm_provider=llm.get("provider", "openai"),
@@ -139,6 +148,7 @@ def load_config(config_path: str = "config.yaml") -> CaptureConfig:
         qwen_api_key=cfg.get("qwen", {}).get("api_key", llm.get("api_key", "")),
         vault_path=vault.get("path", "~/Hermes/knowledge"),
         db_path=database.get("path", "./data/captures.db"),
+        min_vector_score=min_vector_score,
     )
 
 

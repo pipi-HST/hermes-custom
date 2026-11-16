@@ -55,6 +55,8 @@ def capture_library_item(
     *,
     conn=None,
     full: bool = False,
+    indexed_ids: set[str] | None = None,
+    garden_counts: dict[str, int] | None = None,
 ) -> dict:
     """Build the dashboard's ``capture`` library item from one capture row."""
     frontmatter, body = read_capture_note(vault_path, row)
@@ -85,13 +87,27 @@ def capture_library_item(
         "word_count": int(data.get("word_count") or len(body)),
         "created_at": str(data.get("created_at") or ""),
         "updated_at": str(data.get("updated_at") or ""),
-        "indexed": _capture_is_indexed(conn, capture_id, data.get("embedding")),
+        "indexed": (
+            capture_id in indexed_ids
+            if indexed_ids is not None
+            else _capture_is_indexed(conn, capture_id, data.get("embedding"))
+        ),
         "title_source": str(frontmatter.get("title_source") or "").strip(),
-        "garden_card_count": _garden_card_count(conn, capture_id),
+        "garden_card_count": (
+            int(garden_counts.get(capture_id, 0))
+            if garden_counts is not None
+            else _garden_card_count(conn, capture_id)
+        ),
     }
 
 
-def draft_library_item(draft: dict, *, conn=None, full: bool = False) -> dict:
+def draft_library_item(
+    draft: dict,
+    *,
+    conn=None,
+    full: bool = False,
+    garden_counts: dict[str, int] | None = None,
+) -> dict:
     """Build the dashboard's ``capture_draft`` library item from a draft row."""
     capture_intent = _json_dict(draft.get("capture_intent"))
     draft_text = str(draft.get("draft_text") or "")
@@ -119,7 +135,11 @@ def draft_library_item(draft: dict, *, conn=None, full: bool = False) -> dict:
         "indexed": False,
         "title_source": str(capture_intent.get("title_source") or "").strip(),
         "committed_capture_id": committed_capture_id,
-        "garden_card_count": _garden_card_count(conn, committed_capture_id),
+        "garden_card_count": (
+            int(garden_counts.get(committed_capture_id, 0))
+            if garden_counts is not None
+            else _garden_card_count(conn, committed_capture_id)
+        ),
     }
 
 
@@ -325,15 +345,28 @@ def list_library_items(
     search_text = (search or "").strip().lower()
 
     items: list[dict] = []
+    indexed_ids = _indexed_capture_ids(conn)
+    garden_counts = _garden_card_counts(conn)
     for row in conn.execute(
         "SELECT * FROM captures WHERE COALESCE(review_state, '') != 'archived'"
     ).fetchall():
         # ``full=True`` keeps the note body available for the search filter;
         # list responses blank it out again below (same shape as the detail
         # view, matching the runtime's non-full library item).
-        items.append(capture_library_item(vault_path, dict(row), conn=conn, full=True))
+        items.append(
+            capture_library_item(
+                vault_path,
+                dict(row),
+                conn=conn,
+                full=True,
+                indexed_ids=indexed_ids,
+                garden_counts=garden_counts,
+            )
+        )
     for row in _open_draft_rows(conn):
-        items.append(draft_library_item(row, conn=conn, full=True))
+        items.append(
+            draft_library_item(row, conn=conn, full=True, garden_counts=garden_counts)
+        )
 
     filtered: list[dict] = []
     for item in items:
@@ -427,6 +460,38 @@ def _capture_is_indexed(conn, capture_id: str, embedding: Any) -> bool:
     except Exception:  # noqa: BLE001 - indexing is advisory metadata
         return False
     return row is not None
+
+
+def _indexed_capture_ids(conn) -> set[str]:
+    if not conn:
+        return set()
+    try:
+        return {
+            str(row["capture_id"])
+            for row in conn.execute(
+                """SELECT DISTINCT capture_id FROM capture_embeddings
+                   WHERE kind = 'identity' AND embedding IS NOT NULL"""
+            ).fetchall()
+        }
+    except Exception:  # noqa: BLE001 - indexing is advisory metadata
+        return set()
+
+
+def _garden_card_counts(conn) -> dict[str, int]:
+    """Count card references in one pass instead of one query per row."""
+    counts: dict[str, int] = {}
+    if not conn:
+        return counts
+    try:
+        rows = conn.execute("SELECT capture_ids FROM garden_cards").fetchall()
+    except Exception:  # noqa: BLE001 - optional table
+        return counts
+    for row in rows:
+        for capture_id in {
+            str(item) for item in _json_list(row["capture_ids"]) if str(item)
+        }:
+            counts[capture_id] = counts.get(capture_id, 0) + 1
+    return counts
 
 
 def _garden_card_count(conn, capture_id: str) -> int:

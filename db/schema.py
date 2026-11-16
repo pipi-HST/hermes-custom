@@ -28,6 +28,16 @@ CREATE TABLE IF NOT EXISTS captures (
 )
 """
 
+CREATE_CAPTURES_CREATED_AT_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_captures_created_at
+ON captures(created_at DESC)
+"""
+
+CREATE_GARDEN_CARDS_RECALL_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_garden_cards_recall
+ON garden_cards(citation_count DESC, updated_at DESC)
+"""
+
 CAPTURE_COLUMNS = [
     "id",
     "file_path",
@@ -42,6 +52,24 @@ CAPTURE_COLUMNS = [
     "created_at",
     "updated_at",
 ]
+
+# ADD COLUMN cannot use a non-constant default such as datetime('now'), so
+# missing timestamp columns are added nullable and backfilled once.
+CAPTURE_COLUMN_ALTER_DDL = {
+    "file_path": "TEXT NOT NULL DEFAULT ''",
+    "raw_path": "TEXT NOT NULL DEFAULT ''",
+    "embedding": "BLOB",
+    "review_state": "TEXT NOT NULL DEFAULT 'new'",
+    "review_interval": "INTEGER NOT NULL DEFAULT 0",
+    "review_count": "INTEGER NOT NULL DEFAULT 0",
+    "last_reviewed": "TEXT",
+    "next_review": "TEXT",
+    "theme_scanned_at": "TEXT",
+    "created_at": "TEXT",
+    "updated_at": "TEXT",
+}
+
+SCHEMA_VERSION = 1
 
 CREATE_GARDEN_CARDS_TABLE = """
 CREATE TABLE IF NOT EXISTS garden_cards (
@@ -450,6 +478,29 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # Once the schema version is current, only the timestamp self-heal runs;
+    # re-executing the whole DDL batch on every bridge/tool call was pure
+    # overhead.  Keep the timestamp pass because SQLite's datetime('now')
+    # default still writes the legacy space-separated form.
+    if (
+        conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION
+        and _table_exists(conn, "captures")
+    ):
+        if capture_search_fts_available(conn):
+            try:
+                fts_count = conn.execute(
+                    "SELECT count(*) FROM capture_search_fts"
+                ).fetchone()[0]
+                map_count = conn.execute(
+                    "SELECT count(*) FROM capture_search_fts_map"
+                ).fetchone()[0]
+                if fts_count == 0 or map_count != fts_count:
+                    _backfill_capture_search_fts(conn)
+                    _repair_capture_search_fts_map(conn)
+            except sqlite3.OperationalError:
+                pass
+        _migrate_timestamp_formats(conn)
+        return conn
     # The whole DDL batch runs in one explicit transaction so an interrupted
     # upgrade cannot leave the database half-migrated (e.g. rows parked in
     # ``captures_new`` after ``captures`` was already dropped).  PRAGMAs above
@@ -457,6 +508,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
     with transaction(conn):
         conn.execute(CREATE_CAPTURES_TABLE)
         _migrate_captures_table(conn)
+        conn.execute(CREATE_CAPTURES_CREATED_AT_INDEX)
         conn.execute(CREATE_CHANGE_LOG_TABLE)
         conn.execute(CREATE_AGENT_RUNS_TABLE)
         conn.execute(CREATE_AGENT_RUN_EVENTS_TABLE)
@@ -465,6 +517,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
         conn.execute(CREATE_GARDEN_CARDS_TABLE)
         conn.execute(CREATE_GARDEN_DRAFTS_TABLE)
         _migrate_garden_tables(conn)
+        conn.execute(CREATE_GARDEN_CARDS_RECALL_INDEX)
         conn.execute(CREATE_PENDING_QUESTIONS_TABLE)
         conn.execute(CREATE_CAPTURE_DRAFTS_TABLE)
         _migrate_capture_drafts_table(conn)
@@ -493,6 +546,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
         conn.execute(CREATE_KNOWLEDGE_EDGES_LOOKUP_INDEX)
         conn.execute(CREATE_KNOWLEDGE_EDGES_RELATION_INDEX)
         _migrate_timestamp_formats(conn)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     return conn
 
@@ -594,28 +648,44 @@ def _migrate_captures_table(conn: sqlite3.Connection) -> None:
     existing = [
         row["name"] for row in conn.execute("PRAGMA table_info(captures)").fetchall()
     ]
-    if existing == CAPTURE_COLUMNS:
+    if not existing:
+        return
+    if "id" not in existing:
+        # A table without the primary key cannot be repaired with ALTER; the
+        # legacy rebuild is the only safe path.
+        conn.execute("DROP TABLE IF EXISTS captures_new")
+        conn.execute(
+            CREATE_CAPTURES_TABLE.replace(
+                "CREATE TABLE IF NOT EXISTS captures",
+                "CREATE TABLE captures_new",
+                1,
+            )
+        )
+        common = [column for column in CAPTURE_COLUMNS if column in existing]
+        if common:
+            columns = ", ".join(common)
+            conn.execute(
+                f"INSERT OR REPLACE INTO captures_new ({columns}) "
+                f"SELECT {columns} FROM captures"
+            )
+        conn.execute("DROP TABLE captures")
+        conn.execute("ALTER TABLE captures_new RENAME TO captures")
         return
 
-    conn.execute("DROP TABLE IF EXISTS captures_new")
-    conn.execute(
-        CREATE_CAPTURES_TABLE.replace(
-            "CREATE TABLE IF NOT EXISTS captures",
-            "CREATE TABLE captures_new",
-            1,
-        )
-    )
-
-    common = [column for column in CAPTURE_COLUMNS if column in existing]
-    if common:
-        columns = ", ".join(common)
+    # Preserve unknown/legacy columns instead of rebuilding the table and
+    # copying only the current whitelist (which silently dropped user data).
+    added_timestamps: list[str] = []
+    for column in CAPTURE_COLUMNS:
+        if column in existing:
+            continue
+        ddl = CAPTURE_COLUMN_ALTER_DDL[column]
+        conn.execute(f"ALTER TABLE captures ADD COLUMN {column} {ddl}")
+        if column in {"created_at", "updated_at"}:
+            added_timestamps.append(column)
+    for column in added_timestamps:
         conn.execute(
-            f"INSERT OR REPLACE INTO captures_new ({columns}) "
-            f"SELECT {columns} FROM captures"
+            f"UPDATE captures SET {column} = COALESCE({column}, datetime('now'))"
         )
-
-    conn.execute("DROP TABLE captures")
-    conn.execute("ALTER TABLE captures_new RENAME TO captures")
 
 
 def _migrate_capture_drafts_table(conn: sqlite3.Connection) -> None:
