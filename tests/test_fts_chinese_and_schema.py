@@ -118,6 +118,28 @@ def test_schema_records_user_version(conn):
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
 
 
+def test_reinit_backfills_garden_content_from_payload(tmp_path):
+    import json
+
+    db_path = str(tmp_path / "cards.db")
+    conn = init_db(db_path)
+    conn.execute(
+        "INSERT INTO garden_cards (id, title, payload_json) VALUES (?, ?, ?)",
+        ("card1", "卡片", json.dumps({"content_markdown": "# 正文\n\n完整内容"}, ensure_ascii=False)),
+    )
+    conn.commit()
+    conn.close()
+
+    reopened = init_db(db_path)
+    try:
+        row = reopened.execute(
+            "SELECT content_markdown FROM garden_cards WHERE id = 'card1'"
+        ).fetchone()
+        assert row["content_markdown"] == "# 正文\n\n完整内容"
+    finally:
+        reopened.close()
+
+
 def test_garden_cards_recall_index_exists(conn):
     indexes = {
         row["name"]

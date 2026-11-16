@@ -489,6 +489,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
         # An interrupted captures-table swap can leave captures_new behind
         # even after the schema version was stamped.
         _recover_interrupted_captures_swap(conn)
+        _backfill_garden_content(conn)
         if capture_search_fts_available(conn):
             try:
                 fts_count = conn.execute(
@@ -757,8 +758,11 @@ def _migrate_garden_tables(conn: sqlite3.Connection) -> None:
             )
         except sqlite3.OperationalError:
             pass
-    # Backfill card bodies written by the demo seeder/older payloads.  Empty
-    # rows are skipped so init_db stays cheap after the first migration.
+    _backfill_garden_content(conn)
+
+
+def _backfill_garden_content(conn: sqlite3.Connection) -> None:
+    """Backfill top-level card bodies from payloads, including new seed rows."""
     try:
         conn.execute(
             "UPDATE garden_cards "
