@@ -270,16 +270,16 @@ Hermes 主 Agent 是唯一入口，负责理解你的微信/飞书消息、判�
 
 ```bash
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-backup_dir="/Users/pipi/.hermes/session_backups/$stamp"
-mkdir -p "$backup_dir" /Users/pipi/.hermes/logs /Users/pipi/.hermes/sessions
-cp -a /Users/pipi/.hermes/sessions/. "$backup_dir/" 2>/dev/null || true
-find /Users/pipi/.hermes/sessions -mindepth 1 -maxdepth 1 -delete 2>/dev/null || true
+backup_dir="$HOME/.hermes/session_backups/$stamp"
+mkdir -p "$backup_dir" $HOME/.hermes/logs $HOME/.hermes/sessions
+cp -a $HOME/.hermes/sessions/. "$backup_dir/" 2>/dev/null || true
+find $HOME/.hermes/sessions -mindepth 1 -maxdepth 1 -delete 2>/dev/null || true
 pkill -f "[h]ermes_cli.main gateway run" 2>/dev/null || true
-nohup /Users/pipi/Downloads/hermes-agent-main/.venv/bin/python -m hermes_cli.main gateway run --replace > "/Users/pipi/.hermes/logs/gateway-restart-$stamp.log" 2>&1 &
+nohup $HOME/Downloads/hermes-agent-main/.venv/bin/python -m hermes_cli.main gateway run --replace > "$HOME/.hermes/logs/gateway-restart-$stamp.log" 2>&1 &
 sleep 4
 pgrep -fl "hermes_cli.main gateway run"
-cat /Users/pipi/.hermes/gateway_state.json
-find /Users/pipi/.hermes/sessions -mindepth 1 -maxdepth 1 | wc -l | tr -d ' '
+cat $HOME/.hermes/gateway_state.json
+find $HOME/.hermes/sessions -mindepth 1 -maxdepth 1 | wc -l | tr -d ' '
 ```
 
 验收标准：
