@@ -45,7 +45,7 @@ def run_real_browser_acceptance(
     browser_env["HERMES_REAL_E2E_TITLE"] = BROWSER_E2E_TITLE
     started = time.perf_counter()
     completed = subprocess.run(
-        ["npm", "run", "test:knowledge:product"],
+        ["npm.cmd" if os.name == "nt" else "npm", "run", "test:knowledge:product"],
         cwd=RUNTIME_ROOT / "web",
         env=browser_env,
         text=True,

@@ -1,5 +1,6 @@
 import importlib
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -248,7 +249,7 @@ def test_real_browser_runner_allows_live_provider_latency(monkeypatch, tmp_path)
     )
 
     assert observed == {
-        "command": ["npm", "run", "test:knowledge:product"],
+        "command": ["npm.cmd" if os.name == "nt" else "npm", "run", "test:knowledge:product"],
         "timeout": 300,
     }
     assert result["ok"] is True

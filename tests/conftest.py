@@ -86,9 +86,9 @@ def real_db(tmp_path):
 # These modules spawn a real Chromium child process.  On Windows the browser
 # occasionally dies inside crashpad and takes the whole pytest process with it
 # (exit 4294930435), which hides every other result.  They are opt-in.
-BROWSER_TEST_FILES = {
-    "test_knowledge_product_e2e.py",
-}
+# The product suite mocks the browser process; the real Playwright tests live
+# in hermes-agent-main/web/e2e.  Do not skip these unit-level product checks.
+BROWSER_TEST_FILES: set[str] = set()
 
 
 def pytest_addoption(parser):
