@@ -1,12 +1,15 @@
 """Repository helpers for capture identity and section embeddings."""
 from __future__ import annotations
 
+import logging
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 
 from agents.embedder import batch_cosine_similarity
 from db.fts_tokenizer import tokenize_for_fts
+
+logger = logging.getLogger(__name__)
 
 
 def _delete_fts_row(
@@ -18,8 +21,8 @@ def _delete_fts_row(
 ) -> None:
     """Keep the derived FTS index in step with ``capture_embeddings``.
 
-    Silently skipped when the database was built without FTS5; the keyword
-    search path then degrades to its legacy implementation.
+    Degrades when the database was built without FTS5, but logs the failure so
+    a broken derived index is not invisible.
     """
     try:
         row = conn.execute(
@@ -41,8 +44,14 @@ def _delete_fts_row(
             "WHERE capture_id = ? AND kind = ? AND section_id = ?",
             (capture_id, kind, section_id),
         )
-    except sqlite3.OperationalError:
-        pass
+    except sqlite3.OperationalError as exc:
+        logger.warning(
+            "[fts] delete failed for %s/%s/%s: %s",
+            capture_id,
+            kind,
+            section_id,
+            exc,
+        )
 
 
 def delete_fts_for_capture(conn: sqlite3.Connection, capture_id: str) -> int:
@@ -115,8 +124,14 @@ def _insert_fts_row(
             "(capture_id, kind, section_id, fts_rowid, source_hash) VALUES (?, ?, ?, ?, ?)",
             (capture_id, kind, section_id, int(cur.lastrowid), str(source_hash or "")),
         )
-    except sqlite3.OperationalError:
-        pass
+    except sqlite3.OperationalError as exc:
+        logger.warning(
+            "[fts] insert failed for %s/%s/%s: %s",
+            capture_id,
+            kind,
+            section_id,
+            exc,
+        )
 
 
 def rebuild_fts_from_embeddings(conn: sqlite3.Connection) -> int:
