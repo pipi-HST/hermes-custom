@@ -12,7 +12,7 @@
 - **产品形态**：当前 Hermes 是 Web-native 三栏工作台（左侧资料定位，中间阅读/审阅，右侧来源与 AI 辅助），配自研卡片板（Cards Board）和知识图谱。Obsidian 只作为可选的 Markdown 导出/外部编辑兼容，不是主界面，也不是存储真相。
 - **卡片类别只有四类**：洞察/金句、新知/概念、方法/框架、避坑/边界。Golden Demo 预置 9 张卡片，不是“九类模板”。
 - **主链路**：资料 → 卡片 → 专题；检索先证据后卡片（evidence-first），卡片可以按来源数与引用数加权，但不能无条件置顶。
-- **检索证据**：当前可复现的是离线 hash 引擎的 post-fix 结果（`docs/BENCHMARK-RAG-V3-offline-postfix.md` / `docs/benchmark-rag-v3-offline-postfix.json`）；旧 DashScope 报告里的 0.833 与“0.5 → 0.833”因 G0 dispatcher 缺陷已作废（`docs/BENCHMARK-RAG-V3-dashscope.md`）。DashScope 真实重跑待 API key 恢复，未重跑前不引用语义增益数字。
+- **检索证据**：真实 DashScope 重跑已于 2026-11-16 完成（`docs/BENCHMARK-RAG-V3-dashscope.md` / `docs/benchmark-rag-v3-dashscope.json`）：G0 旧版字面基线 Recall@5 = 0.389，G1–G3 = 0.833，负样本 2/2；只能表述为“本语料（20 query）上的语义召回增益”，不能外推。离线 hash post-fix 四组 0.389（`docs/BENCHMARK-RAG-V3-offline-postfix.md`）仍保留为字面回归基线。G0 dispatcher 修复前的旧 0.833 报告已作废；新 0.833 是修好 G0 后独立重跑的结果，两者不要混用。
 - **数字规则**：正文中的评测数字必须能指到 docs 下的 JSON/Markdown 产物；没有产物的数字标“待重跑/待补 artifact”，不当作当前证据。
 
 ---
@@ -318,7 +318,7 @@ python scripts/seed_interview_demo.py
 | 2-gram 预分词 + phrase 查询（当前实现） | `收敛策略` / `工具` / `传话筒` 均命中；负样本词不命中 |
 | 真实库升级（30 条 chunk） | 迁移后 FTS 为空 → 启动自动回填 → `fts=30`，与 `capture_embeddings` 一致 |
 
-### 8.2 检索消融（当前可复现：离线 hash post-fix）
+### 8.2 检索消融（离线 hash post-fix：字面回归基线）
 
 数据源：`docs/benchmark-rag-v3-offline-postfix.json`；报告：`docs/BENCHMARK-RAG-V3-offline-postfix.md`。语料 20 篇资料 / 86 chunk / 12 卡片 = 98 单元 / 20 条标注 Query。
 
@@ -331,12 +331,31 @@ python scripts/seed_interview_demo.py
 
 **必须同时说出的三条限制**：
 1. 本次运行的是离线字符哈希引擎（`char-ngram-blake2b-hash-1024`），它衡量字面重合，**不代表语义能力**。
-2. G0 是修复 dispatcher 后的真实旧版字面基线，不是稻草人；四组打平说明这套 query 的收益已被字面匹配吃掉，不能宣称“语义检索带来提升”，也不能写“G0 < G1 < G2 < G3”。
-3. 真实 DashScope 重跑待 API key 恢复；当前没有可引用的 DashScope 检索分数。阈值不可跨引擎迁移。
+2. G0 是修复 dispatcher 后的真实旧版字面基线，不是稻草人；在本离线引擎下四组打平，说明离线字符哈希分不出差异，不能据此宣称“语义检索带来提升”，也不能写“G0 < G1 < G2 < G3”。真实语义结论见 §8.2.1。
+3. 这张表只代表离线 hash 引擎；真实语义结果见 §8.2.1。阈值不可跨引擎迁移。
 
 阈值现状：代码与 `docs/calibration-dashscope.json` 均为 `MIN_VECTOR_SCORE = 0.46`（当前值）；`0.20` 是未标定的历史值。标定显示正负分布重叠（`separation = -0.0601`），单阈值只能做首轮粗筛，见 §8.9。
 
 G3 的 MRR 略低于其它三组：卡片前置会把「相近但不对」的卡片顶到前面。这是卡片优先策略的真实代价，需要靠 `citation_count` 与来源数量继续调权，而不是假设卡片一定更好。
+
+### 8.2.1 真实 DashScope 重跑（2026-11-16，当前语义口径）
+
+数据源：`docs/benchmark-rag-v3-dashscope.json`；报告：`docs/BENCHMARK-RAG-V3-dashscope.md`。同一套语料：20 篇资料 / 86 chunk / 12 卡片 = 98 单元 / 20 条 Query（18 正样本 + 2 负样本）；引擎 `dashscope-text-embedding-v4`，阈值 `0.46`。
+
+| 组 | Recall@3 | Recall@5 | MRR@5 | 负样本拦截 | P50 ms | P95 ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| G0 旧版：标题/摘要字面子串 | 0.389 | 0.389 | 0.389 | 2/2 | 0.06 | 38.26 |
+| G1 仅两阶段向量 | 0.833 | 0.833 | 0.806 | 2/2 | 0.85 | 1.69 |
+| G2 + 中文 FTS | 0.833 | 0.833 | 0.806 | 2/2 | 1.1 | 2.88 |
+| G3 + 卡片召回与 1-hop | 0.833 | 0.833 | 0.778 | 2/2 | 1.74 | 4.3 |
+
+口径：
+
+- G0 0.389 → G1–G3 0.833：在这套 query 上，真实语义 embedding 的 Recall@5 明显高于旧版字面基线；这是本语料结论，换语料必须重跑。
+- G1 = G2：中文 FTS 在这套 query 上没有带来额外 Recall；G3 Recall 相同但 MRR 0.778 < 0.806，卡片/1-hop 扩展会把相近但不对的卡片顶前。不能写「G0 < G1 < G2 < G3」。
+- 负样本只有 2 条，只能写 2/2，不能写成百分比。
+- 卡片专属 query（q14/q15/q16）在 G3 仍未召回目标卡片：卡片向量接入尚未转化为 card-only recall，需继续排查 `CARD_MIN_VECTOR_SCORE` 与卡片索引。
+- P50/P95 只含检索层，不含 embedding API 往返（计时前已预热缓存）和 LLM 合成。
 
 ### 8.3 口径修正：「130 秒」是超时预算，不是实测 P95
 
@@ -395,23 +414,29 @@ G3 的 MRR 略低于其它三组：卡片前置会把「相近但不对」的卡
 
 单测锁死：`test_capture_folder_mirrors_frontmatter_and_card_inherits_theme`（资料 `AI 产品面试` → 卡片 `source_theme == AI 产品面试`）。
 
-### 8.9 DashScope 检索重跑：待重跑（旧 0.833 数字已作废）
+### 8.9 DashScope 检索重跑：已完成（2026-11-16）
 
-`docs/BENCHMARK-RAG-V3-dashscope.md` / `docs/benchmark-rag-v3-dashscope.json` 里的四组 0.833 不能引用：生成时 G0 的 dispatcher 条件与 `GROUPS` 名称不一致，G0 实际走了 G3 分支，所以“四组打平”是调度 bug，不是模型结论。因此：
+2026-11-16 已用修复后的 dispatcher + `text-embedding-v4` 完成真实重跑，结果见 §8.2.1：G0 0.389，G1–G3 0.833，负样本 2/2。旧报告里的四组 0.833 仍然不能引用——那是 G0 误走 G3 的调度 bug；新 0.833 是 G1–G3 的真实成绩，两者数字相同但来源不同，引用时必须指向 2026-11-16 重跑后的 `docs/benchmark-rag-v3-dashscope.json`。
 
-- “旧版 0.5 → 新版 0.833”作废；
-- “G0 < G1 < G2 < G3”作废；
-- 不能把 0.833 当作 DashScope 语义检索的当前成绩。
+可以说的：
 
-当前环境没有可用的 DashScope/embedding API key，真实重跑 **待重跑**；配好 key 后运行 `scripts/eval_rag_benchmark.py`，替换报告与 JSON 后再对外引用。
+- 在这套 20 条 query 上，语义 embedding 相对旧版标题/摘要子串把 Recall@5 从 0.389 提到 0.833；
+- 负样本 2/2 拦截；
+- FTS 与卡片/1-hop 没有提升 Recall，G3 的 MRR 反而略低（0.778 vs 0.806）。
 
-仍然有效的独立证据是阈值标定（`docs/calibration-dashscope.json`，直接对 embedding 分数做统计，不经过 G0 dispatcher）：
+不能说的：
+
+- “旧版 0.5 → 新版 0.833”：旧版真实基线是 0.389，0.5 是更早的残缺 G0；
+- “G0 < G1 < G2 < G3”：G1=G2=G3 的 Recall 相同，G3 的 MRR 更低；
+- 外推到其他语料或真实用户问题分布。
+
+阈值标定仍是独立证据（`docs/calibration-dashscope.json`，直接对 embedding 分数做统计，不经过 G0 dispatcher）：
 
 - 30 组正样本 P10 = 0.4286，168 组负样本 P95 = 0.4887，`separation = -0.0601`，正负分布重叠；
 - 建议工作点与当前代码值均为 `0.46`；`0.20` 是历史未标定值；
 - 单阈值只能做首轮粗筛，生产上仍需 rerank 或分数融合。
 
-结论：**0.46 是当前代码值，但不是“语义检索已证明更好”的证据**；后者必须等真实 DashScope 重跑。
+结论：**0.46 是当前代码值；真实重跑在这套小语料上支持“语义召回优于字面基线”，但不支持“层数越多越好”，也不足以证明线上答案质量。**
 
 ### 8.10 实验 5 的新阻塞（不是凭证问题）
 
@@ -484,11 +509,11 @@ reliable adopted web sources below minimum when answered: 0 < 1
 
 ### 8.15 执行 V3.3 方案后的口径更新（2026-11-16）
 
-1. **G0 基线不再是稻草人，但也没有语义增益证据**：`G0_title_summary_substring` 用真实的旧版「标题/摘要字面子串」实现（不走新 FTS）。修复 dispatcher 后的离线 post-fix 结果是四组 Recall@5 全部 0.389（`docs/benchmark-rag-v3-offline-postfix.json`），G0 与 V3 打平；旧报告里的 0.833 是 G0 误走 G3 的产物，已作废。
-   - 结论：不能再用「旧版 0.5 → 新版 0.833」，也不能写「G0 < G1 < G2 < G3」。这套 query 的收益已被字面匹配吃掉，要证明语义收益必须换问法或换语料，并等 DashScope 重跑。
+1. **G0 基线已修好，真实语义重跑也已完成**：`G0_title_summary_substring` 用真实的旧版「标题/摘要字面子串」实现（不走新 FTS）。离线 hash post-fix 四组 0.389（`docs/benchmark-rag-v3-offline-postfix.json`）说明离线引擎分不出差异；2026-11-16 的真实 DashScope 重跑则是 G0 0.389 vs G1–G3 0.833（`docs/benchmark-rag-v3-dashscope.json`），支持本语料上的语义召回增益。
+   - 结论：不能用「旧版 0.5 → 新版 0.833」（旧版真实基线是 0.389），也不能写「G0 < G1 < G2 < G3」（G1=G2=G3 的 Recall 相同，G3 的 MRR 更低）。语义增益只对本套 20 条 query 成立。
 2. **判官结果修正**：上一版 `max_tokens=64` 让推理模型把预算全花在 `reasoning_content` 上，返回空串 → 全判 NO。修好后同一批 4 组对抗样本为 **卡片优先 1/4 vs 证据优先 4/4**（不是之前的 0/4 vs 1/4），详见 §8.14 与 `docs/card-ordering-judge.json`。
 3. **阈值已回写代码**：`MIN_VECTOR_SCORE = 0.46`，`docs/calibration-dashscope.json` 的 `current_min_vector_score` 也是 0.46；`0.20` 只作为历史未标定值保留。demo 库的真实问句抽测曾显示 Top-1 余弦集中在 0.67~0.84，但该次运行没有归档 artifact，面试不引用具体数值。
-4. **demo 库向量已重灌真语义向量**：9 张卡片已有真实 embedding，V3.1 已把卡片向量接入 `_search_garden_cards()`（见 §8.4）；但真实 DashScope 语料重跑尚未完成，同篇 chunk 余弦的具体变化也没有归档为 JSON，不作为对外指标。
+4. **demo 库向量已重灌真语义向量**：9 张卡片已有真实 embedding，V3.1 已把卡片向量接入 `_search_garden_cards()`（见 §8.4）；benchmark 语料的真实 DashScope 重跑已完成（§8.2.1），但 demo 库同篇 chunk 余弦的前后变化没有单独归档为 JSON，不作为对外指标。
 
 搜索后端状态已接入 Library 与 Workbench 的 `KnowledgeAnswerView` 降级黄条；真实后端名来自本次实际搜索的返回值，而不是配置意图。历史问题见 `CODE-REVIEW-V3.md` P2-2（该文为评审快照）。
 
@@ -518,7 +543,7 @@ reliable adopted web sources below minimum when answered: 0 < 1
 | G2_vector_plus_fts | 0.833 | 0.806 |
 | G3_full_v3 | 0.833 | 0.778 |
 
-来源：`docs/BENCHMARK-RAG-V3-dashscope.md`。四组 0.833 是 G0 误走 G3 的调度 bug 结果；真实 DashScope 重跑待 API key 恢复。不要引用 0.833，也不要写“G0 < G1 < G2 < G3”。
+来源：`docs/BENCHMARK-RAG-V3-dashscope.md` 的修复前版本。四组 0.833 是 G0 误走 G3 的调度 bug 结果，本表继续作废。2026-11-16 修复 dispatcher 后已独立重跑，新结果为 G0 0.389、G1–G3 0.833（见 §8.2.1）；数字相同但来源不同，引用时必须指向重跑后的 JSON。
 
 ### A.3 旧卡片排序判官（判官 bug，已作废）
 

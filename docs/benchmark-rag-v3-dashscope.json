@@ -1,40 +1,40 @@
 {
   "groups": {
     "G0_title_summary_substring": {
-      "recall_at_3": 0.833,
-      "recall_at_5": 0.833,
-      "mrr_at_5": 0.778,
+      "recall_at_3": 0.389,
+      "recall_at_5": 0.389,
+      "mrr_at_5": 0.389,
       "negative_rejection": 1.0,
-      "latency_p50_ms": 1.2,
-      "latency_p95_ms": 34.86
+      "latency_p50_ms": 0.06,
+      "latency_p95_ms": 38.26
     },
     "G1_vector_only": {
       "recall_at_3": 0.833,
       "recall_at_5": 0.833,
       "mrr_at_5": 0.806,
       "negative_rejection": 1.0,
-      "latency_p50_ms": 0.77,
-      "latency_p95_ms": 1.9
+      "latency_p50_ms": 0.85,
+      "latency_p95_ms": 1.69
     },
     "G2_vector_plus_fts": {
       "recall_at_3": 0.833,
       "recall_at_5": 0.833,
       "mrr_at_5": 0.806,
       "negative_rejection": 1.0,
-      "latency_p50_ms": 0.91,
-      "latency_p95_ms": 2.15
+      "latency_p50_ms": 1.1,
+      "latency_p95_ms": 2.88
     },
     "G3_full_v3": {
       "recall_at_3": 0.833,
       "recall_at_5": 0.833,
       "mrr_at_5": 0.778,
       "negative_rejection": 1.0,
-      "latency_p50_ms": 1.18,
-      "latency_p95_ms": 2.41
+      "latency_p50_ms": 1.74,
+      "latency_p95_ms": 4.3
     }
   },
   "engine": "dashscope-text-embedding-v4",
-  "embed_api_mean_ms": 1160.49,
+  "embed_api_mean_ms": 3858.44,
   "per_query_details": [
     {
       "id": "q01",
@@ -45,11 +45,9 @@
       ],
       "hits": {
         "G0_title_summary_substring": [
-          "card_demo_boundary",
           "cap_aipm_demand",
-          "cap_mcp",
-          "cap_pkm_compare",
-          "cap_telephone_game"
+          "cap_model_routing",
+          "cap_pkm_compare"
         ],
         "G1_vector_only": [
           "cap_aipm_demand",
@@ -81,13 +79,7 @@
         "card_demo_telephone"
       ],
       "hits": {
-        "G0_title_summary_substring": [
-          "cap_telephone_game",
-          "cap_distractor_08",
-          "cap_latency_roi",
-          "card_demo_telephone",
-          "card_demo_latency"
-        ],
+        "G0_title_summary_substring": [],
         "G1_vector_only": [
           "cap_telephone_game",
           "cap_distractor_08",
@@ -116,11 +108,7 @@
       ],
       "hits": {
         "G0_title_summary_substring": [
-          "cap_latency_roi",
-          "cap_model_routing",
-          "cap_distractor_09",
-          "cap_telephone_game",
-          "cap_distractor_04"
+          "cap_latency_roi"
         ],
         "G1_vector_only": [
           "cap_latency_roi",
@@ -154,9 +142,7 @@
       ],
       "hits": {
         "G0_title_summary_substring": [
-          "cap_mcp",
-          "card_demo_mcp",
-          "card_demo_context"
+          "cap_mcp"
         ],
         "G1_vector_only": [
           "cap_mcp"
@@ -181,11 +167,7 @@
       ],
       "hits": {
         "G0_title_summary_substring": [
-          "cap_model_routing",
-          "cap_mcp",
-          "cap_telephone_game",
-          "card_demo_telephone",
-          "card_demo_mcp"
+          "cap_model_routing"
         ],
         "G1_vector_only": [
           "cap_model_routing",
@@ -215,11 +197,7 @@
       ],
       "hits": {
         "G0_title_summary_substring": [
-          "cap_pkm_compare",
-          "cap_latency_roi",
-          "cap_telephone_game",
-          "card_demo_telephone",
-          "card_demo_latency"
+          "cap_pkm_compare"
         ],
         "G1_vector_only": [
           "cap_pkm_compare",
@@ -249,13 +227,7 @@
         "card_demo_mcp"
       ],
       "hits": {
-        "G0_title_summary_substring": [
-          "cap_mcp",
-          "cap_latency_roi",
-          "cap_telephone_game",
-          "cap_model_routing",
-          "cap_distractor_05"
-        ],
+        "G0_title_summary_substring": [],
         "G1_vector_only": [
           "cap_mcp",
           "cap_latency_roi",
@@ -289,11 +261,7 @@
       ],
       "hits": {
         "G0_title_summary_substring": [
-          "card_demo_latency",
-          "cap_latency_roi",
-          "cap_telephone_game",
-          "cap_model_routing",
-          "cap_distractor_06"
+          "cap_latency_roi"
         ],
         "G1_vector_only": [
           "cap_latency_roi",
@@ -326,11 +294,7 @@
         "cap_aipm_demand"
       ],
       "hits": {
-        "G0_title_summary_substring": [
-          "cap_aipm_demand",
-          "card_demo_demand",
-          "card_demo_boundary"
-        ],
+        "G0_title_summary_substring": [],
         "G1_vector_only": [
           "cap_aipm_demand"
         ],
@@ -353,13 +317,7 @@
         "cap_pkm_compare"
       ],
       "hits": {
-        "G0_title_summary_substring": [
-          "cap_pkm_compare",
-          "cap_model_routing",
-          "cap_distractor_09",
-          "cap_mcp",
-          "cap_latency_roi"
-        ],
+        "G0_title_summary_substring": [],
         "G1_vector_only": [
           "cap_pkm_compare",
           "cap_model_routing",
@@ -392,13 +350,7 @@
         "card_demo_mcp"
       ],
       "hits": {
-        "G0_title_summary_substring": [
-          "cap_mcp",
-          "cap_model_routing",
-          "cap_telephone_game",
-          "cap_aipm_demand",
-          "cap_distractor_02"
-        ],
+        "G0_title_summary_substring": [],
         "G1_vector_only": [
           "cap_mcp",
           "cap_model_routing",
@@ -431,13 +383,7 @@
         "cap_latency_roi"
       ],
       "hits": {
-        "G0_title_summary_substring": [
-          "cap_latency_roi",
-          "cap_mcp",
-          "cap_telephone_game",
-          "cap_distractor_06",
-          "card_demo_telephone"
-        ],
+        "G0_title_summary_substring": [],
         "G1_vector_only": [
           "cap_latency_roi",
           "cap_mcp",
@@ -469,11 +415,9 @@
       ],
       "hits": {
         "G0_title_summary_substring": [
-          "card_demo_boundary",
           "cap_aipm_demand",
-          "cap_latency_roi",
-          "card_demo_demand",
-          "card_demo_latency"
+          "cap_model_routing",
+          "cap_pkm_compare"
         ],
         "G1_vector_only": [
           "cap_aipm_demand",
@@ -500,13 +444,7 @@
         "card_demo_eval"
       ],
       "hits": {
-        "G0_title_summary_substring": [
-          "cap_latency_roi",
-          "cap_pkm_compare",
-          "cap_telephone_game",
-          "cap_aipm_demand",
-          "card_demo_demand"
-        ],
+        "G0_title_summary_substring": [],
         "G1_vector_only": [
           "cap_latency_roi",
           "cap_pkm_compare",
@@ -536,13 +474,7 @@
         "card_demo_context"
       ],
       "hits": {
-        "G0_title_summary_substring": [
-          "cap_telephone_game",
-          "cap_model_routing",
-          "cap_distractor_04",
-          "cap_mcp",
-          "cap_distractor_07"
-        ],
+        "G0_title_summary_substring": [],
         "G1_vector_only": [
           "cap_telephone_game",
           "cap_model_routing",
@@ -574,12 +506,7 @@
         "card_demo_silence"
       ],
       "hits": {
-        "G0_title_summary_substring": [
-          "cap_telephone_game",
-          "cap_aipm_demand",
-          "card_demo_demand",
-          "card_demo_telephone"
-        ],
+        "G0_title_summary_substring": [],
         "G1_vector_only": [
           "cap_telephone_game",
           "cap_aipm_demand"
@@ -605,13 +532,7 @@
         "cap_pkm_compare"
       ],
       "hits": {
-        "G0_title_summary_substring": [
-          "cap_distractor_08",
-          "cap_pkm_compare",
-          "cap_distractor_09",
-          "cap_distractor_07",
-          "cap_telephone_game"
-        ],
+        "G0_title_summary_substring": [],
         "G1_vector_only": [
           "cap_distractor_08",
           "cap_pkm_compare",
@@ -643,12 +564,7 @@
         "cap_model_routing"
       ],
       "hits": {
-        "G0_title_summary_substring": [
-          "cap_model_routing",
-          "cap_telephone_game",
-          "card_demo_telephone",
-          "card_demo_routing"
-        ],
+        "G0_title_summary_substring": [],
         "G1_vector_only": [
           "cap_model_routing",
           "cap_telephone_game"

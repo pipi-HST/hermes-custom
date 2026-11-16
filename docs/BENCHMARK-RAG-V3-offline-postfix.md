@@ -1,6 +1,6 @@
 # RAG 检索消融评测（V3.0，离线 hash post-fix）
 
-> 这是 G0 dispatcher 修复后的离线回归口径，数据源为 `docs/benchmark-rag-v3-offline-postfix.json`。它只衡量字面重合，**不代表语义能力**；对外引用时必须同时说明离线引擎和 20 条 query 的语料限制。DashScope 真实重跑因当前环境没有可用 API key，状态为 **待重跑**，见 `docs/BENCHMARK-RAG-V3-dashscope.md`。
+> 这是 G0 dispatcher 修复后的离线回归口径，数据源为 `docs/benchmark-rag-v3-offline-postfix.json`。它只衡量字面重合，**不代表语义能力**；对外引用时必须同时说明离线引擎和 20 条 query 的语料限制。真实 DashScope 重跑已于 2026-11-16 完成，见 `docs/BENCHMARK-RAG-V3-dashscope.md` / `docs/benchmark-rag-v3-dashscope.json`（G0 0.389 vs G1–G3 0.833）。
 
 - Embedding engine: `char-ngram-blake2b-hash-1024`
 - 生效阈值 MIN_VECTOR_SCORE = `0.46`（与 `bridge/rag_bridge.py` 一致）
@@ -24,6 +24,6 @@
 
 已知限制（必须写进面试口径）：
 
-- 离线 hash 引擎只衡量字面重合：G3 Recall@5 0.389、MRR@5 0.361。真实语义指标需配置 embedding key 后重跑，**阈值不可跨引擎迁移**。
-- G0 是修复 dispatcher 后的真实旧版字面基线（标题/摘要子串，不用 FTS）。本次四组 Recall@5 全部 0.389，说明这套 query 的收益已被字面匹配吃掉；不能宣称“语义检索带来提升”，也不能写“G0 < G1 < G2 < G3”。
+- 离线 hash 引擎只衡量字面重合：G3 Recall@5 0.389、MRR@5 0.361。真实语义指标看 `docs/BENCHMARK-RAG-V3-dashscope.md`，**阈值不可跨引擎迁移**。
+- G0 是修复 dispatcher 后的真实旧版字面基线（标题/摘要子串，不用 FTS）。在本离线引擎下四组 Recall@5 全部 0.389，说明这套 query 的字面收益已被字面匹配吃掉；这不能否定真实语义引擎的结果（见 DashScope 重跑），也不能写“G0 < G1 < G2 < G3”。
 - 阈值按 DashScope v4 标定（`docs/calibration-dashscope.json`）；separation<0 说明正负分布重叠，单阈值只是首轮粗筛。`0.46` 是当前代码值，`0.20` 是历史未标定值。
