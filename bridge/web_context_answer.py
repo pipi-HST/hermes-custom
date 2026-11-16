@@ -390,6 +390,7 @@ def web_context_answer(
         },
         "stage_timings": stage_timings,
         "synthesis_skipped": synthesis_skipped,
+        "search_backend": str(provider_status.get("search_backend") or ""),
         "query_statuses": query_statuses,
         "total_elapsed_ms": total_elapsed_ms,
         "warnings": list(warnings),

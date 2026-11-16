@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import sys
+from contextvars import ContextVar
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from typing import Any, Awaitable, Callable
 
@@ -117,6 +118,7 @@ def _legacy_search_web(
 
 
 def _default_web_search(query: str, limit: int) -> str | dict[str, Any]:
+    reset_search_backend()
     credentials = _deepseek_credentials()
     if credentials:
         api_key, base_url = credentials
@@ -131,8 +133,7 @@ def _default_web_search(query: str, limit: int) -> str | dict[str, Any]:
             logger.warning("[research] DeepSeek web search failed: %s", exc)
             results = []
         if results:
-            global _LAST_SEARCH_BACKEND
-            _LAST_SEARCH_BACKEND = "deepseek"
+            _LAST_SEARCH_BACKEND.set("deepseek")
             return {"success": True, "data": {"web": results}, "backend": "deepseek"}
 
     _ensure_main_repo_on_path()
@@ -148,15 +149,23 @@ def _default_web_search(query: str, limit: int) -> str | dict[str, Any]:
     if isinstance(raw, dict):
         # The caller must be able to tell that DeepSeek was *not* used.
         raw = {**raw, "backend": "fallback"}
+    _LAST_SEARCH_BACKEND.set("fallback")
     return raw
 
 
-_LAST_SEARCH_BACKEND = ""
+_LAST_SEARCH_BACKEND: ContextVar[str] = ContextVar(
+    "hermes_last_search_backend", default=""
+)
 
 
 def current_search_backend() -> str:
     """Backend that actually served the most recent search ('' if unknown)."""
-    return _LAST_SEARCH_BACKEND
+    return _LAST_SEARCH_BACKEND.get()
+
+
+def reset_search_backend() -> None:
+    """Clear request-local backend state before starting a new search."""
+    _LAST_SEARCH_BACKEND.set("")
 
 
 def _default_search_backend() -> str:
@@ -198,6 +207,7 @@ def _fallback_search_adapter(backend: str) -> ResearchSearchAdapter:
 
 
 def _web_search_with_backend(query: str, limit: int, backend: str) -> str | dict[str, Any]:
+    reset_search_backend()
     _ensure_main_repo_on_path()
     from agent.web_search_registry import get_provider
     from tools import web_tools
@@ -207,6 +217,7 @@ def _web_search_with_backend(query: str, limit: int, backend: str) -> str | dict
     if provider is None or not provider.supports_search():
         raise RuntimeError(f"搜索后端不可用：{backend}")
     result = provider.search(query, limit)
+    _LAST_SEARCH_BACKEND.set(backend)
     if isinstance(result, dict):
         return {**result, "backend": backend}
     if isinstance(result, str):
