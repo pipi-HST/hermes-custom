@@ -90,6 +90,53 @@ def test_create_garden_card(repo):
     assert row["status"] == "seed"
     assert row["schema_version"] == "garden_card.v2"
     assert json.loads(row["payload_json"])["claim"] == "核心结论"
+    assert row["content_markdown"].startswith("# 测试卡片")
+    assert "核心结论" in row["content_markdown"]
+    assert json.loads(row["payload_json"])["content_markdown"] == row["content_markdown"]
+
+
+def test_card_search_selects_content_markdown_column(repo):
+    from bridge.rag_bridge import _search_garden_cards
+
+    create_garden_card(repo, {
+        "title": "检索正文卡片",
+        "one_liner": "一句话",
+        "payload": {
+            "content_markdown": "# 检索正文卡片\n\n这里有一个独特术语：证据锚点。",
+        },
+        "core_arguments": [],
+        "knowledge_links": [],
+        "key_materials": [],
+        "capture_ids": [],
+    })
+
+    hits = _search_garden_cards("证据锚点", repo.conn, query_embedding=None)
+
+    assert hits
+    assert hits[0]["body"].startswith("# 检索正文卡片")
+    assert "证据锚点" in hits[0]["body"]
+
+
+def test_card_body_text_uses_full_content_not_one_liner(repo):
+    from bridge.rag_bridge import _card_body_text
+
+    card_id = create_garden_card(repo, {
+        "title": "正文卡片",
+        "one_liner": "只有一句话",
+        "core_arguments": [{"claim": "正文里的关键判断", "consensus": True, "source_ids": []}],
+        "knowledge_links": [],
+        "key_materials": [],
+        "capture_ids": [],
+    })
+    row = dict(repo.conn.execute(
+        "SELECT * FROM garden_cards WHERE id = ?", (card_id,)
+    ).fetchone())
+
+    body = _card_body_text(row)
+
+    assert "只有一句话" in body
+    assert "正文里的关键判断" in body
+    assert body != "只有一句话"
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")

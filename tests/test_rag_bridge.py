@@ -380,6 +380,81 @@ def test_search_knowledge_base_warns_when_answer_has_no_citations(monkeypatch, t
     }
 
 
+def test_search_knowledge_base_does_not_repair_empty_answer(monkeypatch, tmp_path):
+    from bridge import rag_bridge
+
+    db_path = tmp_path / "captures.db"
+    vault = tmp_path / "vault"
+    rel_path = _write_capture(vault)
+    conn = init_db(str(db_path))
+    conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap1", rel_path),
+    )
+    CaptureEmbeddingRepo(conn).upsert(
+        capture_id="cap1",
+        kind="section",
+        section_id="second",
+        section_title="第二部分",
+        index_text="节奏狙击 Terminal-Bench 故意留坑",
+        embedding=_vec(1.0, 0.0),
+        source_hash="second",
+        file_path=rel_path,
+    )
+
+    class FakeEmbedder:
+        def __init__(self, **_kwargs):
+            pass
+
+        def embed(self, _text: str) -> bytes:
+            return _vec(1.0, 0.0)
+
+    class FakeRagAgent:
+        repair_calls = 0
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def query(self, _question, captures, *, context_pack=None):
+            return {
+                "answer": "",
+                "sources": [
+                    {
+                        "title": captures[0]["title"],
+                        "file_path": captures[0]["file_path"],
+                        "section_title": captures[0].get("section_title", ""),
+                    }
+                ],
+            }
+
+        def repair_citations(self, answer_text, source_map):
+            FakeRagAgent.repair_calls += 1
+            return "这是 repair 凭空造出来的答案。[1]"
+
+    monkeypatch.setattr(
+        rag_bridge,
+        "load_config",
+        lambda _path: CaptureConfig(
+            vault_path=str(vault),
+            db_path=str(db_path),
+            qwen_api_key="qwen-test",
+            llm_api_key="llm-test",
+        ),
+    )
+    monkeypatch.setattr(rag_bridge, "Embedder", FakeEmbedder)
+    monkeypatch.setattr(rag_bridge, "RagAgent", FakeRagAgent)
+    rag_bridge._config = None
+    rag_bridge._repo = None
+
+    envelope = rag_bridge.search_knowledge_base("Terminal-Bench 的坑是什么？")
+
+    assert envelope["meta"]["empty_answer"] is True
+    assert envelope["meta"]["citation_repaired"] is False
+    assert FakeRagAgent.repair_calls == 0
+    assert "知识库中没有找到相关信息" in envelope["chat_preview"]
+    assert "凭空造出来" not in envelope["chat_preview"]
+
+
 def test_search_knowledge_base_repairs_missing_citations_once(monkeypatch, tmp_path):
     from bridge import rag_bridge
 

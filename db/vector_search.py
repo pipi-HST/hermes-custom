@@ -38,9 +38,22 @@ def search(query: str, repo: CaptureRepo, embedder: Embedder,
         if len(top_ids) >= top_k:
             break
 
-    # Return in score order: rows used to come back in created_at order, so the
-    # caller's first source was the newest note instead of the best match.
-    return [id_to_row[cid] for cid, _score in scored if cid in top_ids]
+    # Return in score order with the same routing fields as the indexed path.
+    # The graph expander drops seeds without ``matched_kind`` and ranks by
+    # ``score``; returning bare capture rows made every fallback seed look like
+    # a 0-score, unroutable hit.
+    results: list[dict] = []
+    for cid, score in scored:
+        if cid not in top_ids:
+            continue
+        item = dict(id_to_row[cid])
+        item["score"] = float(score)
+        item["matched_kind"] = "identity"
+        item["section_id"] = ""
+        item.setdefault("index_text", str(item.get("title") or ""))
+        item["vector_source"] = "capture_summary"
+        results.append(item)
+    return results
 
 
 def _list_embedding_captures(repo: CaptureRepo) -> list[dict]:

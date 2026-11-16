@@ -153,9 +153,31 @@ def _dedupe_captures(captures: list[dict]) -> list[dict]:
     return [picked[key] for key in order] + passthrough
 
 
+EMPTY_ANSWER_TEXT = "知识库中没有找到相关信息。"
+
+
+def is_empty_answer(answer: str | None) -> bool:
+    """Return True when the model produced no answer body.
+
+    Citation repair must never run on an empty answer: the repair prompt would
+    receive an empty string and can return a freshly invented answer.  Callers
+    should check this before validation/repair and record ``empty_answer`` in
+    their metadata.
+    """
+    return not _clean_partial_citation_suffix(answer or "").strip()
+
+
 def format_answer(answer: str, sources: list[dict]) -> str:
-    # 答案截断（微信友好）
+    # Empty answers must not look like a normal sources-only reply.  Keep the
+    # source list for traceability, but make the missing answer explicit.
     raw_answer = _clean_partial_citation_suffix(answer or "")
+    if not raw_answer.strip():
+        source_lines = _format_source_lines("", sources)
+        if not source_lines:
+            return EMPTY_ANSWER_TEXT
+        return _join_answer_and_sources(EMPTY_ANSWER_TEXT, source_lines)
+
+    # 答案截断（微信友好）
     answer = raw_answer
     if len(raw_answer) > ANSWER_PREVIEW_LIMIT:
         answer = _truncate_answer(raw_answer, ANSWER_PREVIEW_LIMIT)

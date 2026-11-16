@@ -487,16 +487,21 @@ def create_garden_card(repo, garden_data: dict) -> str:
         ),
         legacy=garden_data,
     )
+    content_markdown = str(payload.get("content_markdown") or "").strip()
+    if not content_markdown:
+        content_markdown = render_garden_card_body(payload).strip()
+    payload["content_markdown"] = content_markdown
     legacy = project_legacy_fields(payload)
     repo.conn.execute(
-        """INSERT INTO garden_cards (id, title, one_liner, card_kind, schema_version,
+        """INSERT INTO garden_cards (id, title, one_liner, content_markdown, card_kind, schema_version,
            payload_json, core_arguments, knowledge_links, key_materials, my_view, status, capture_ids,
            created_at, updated_at, review_interval)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'seed', ?, ?, ?, '1d')""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'seed', ?, ?, ?, '1d')""",
         (
             card_id,
             legacy["title"],
             legacy["one_liner"],
+            content_markdown,
             _normalize_card_kind(legacy["card_kind"]),
             GARDEN_CARD_SCHEMA_VERSION,
             payload_to_json(payload),
@@ -768,17 +773,22 @@ def update_garden_card(repo, card_id: str, garden_data: dict) -> Optional[dict]:
         ),
         legacy={**dict(existing), **garden_data},
     )
+    content_markdown = str(payload.get("content_markdown") or "").strip()
+    if not content_markdown:
+        content_markdown = render_garden_card_body(payload).strip()
+    payload["content_markdown"] = content_markdown
     legacy = project_legacy_fields(payload)
     # 合并参数（追加新论点, 去重）
     # 简化实现：覆盖更新
     repo.conn.execute(
-        """UPDATE garden_cards SET title=?, one_liner=?, card_kind=?, schema_version=?,
+        """UPDATE garden_cards SET title=?, one_liner=?, content_markdown=?, card_kind=?, schema_version=?,
            payload_json=?, core_arguments=?, knowledge_links=?, key_materials=?,
            my_view=?, capture_ids=?, updated_at=?, status='seed'
            WHERE id=?""",
         (
             legacy["title"],
             legacy["one_liner"],
+            content_markdown,
             _normalize_card_kind(legacy["card_kind"]),
             GARDEN_CARD_SCHEMA_VERSION,
             payload_to_json(payload),

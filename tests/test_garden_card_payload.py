@@ -18,6 +18,21 @@ def test_garden_tables_include_v2_payload_columns(tmp_path):
         assert columns["payload_json"][4] == "'{}'"
 
 
+def test_payload_preserves_full_card_content():
+    from agents.garden_card_payload import normalize_garden_payload, payload_to_json
+
+    payload = normalize_garden_payload(
+        {
+            "title": "完整卡片",
+            "claim": "一句话结论",
+            "content_markdown": "# 完整卡片\n\n这里是完整正文，而不是只有 one_liner。",
+        }
+    )
+
+    assert payload["content_markdown"].startswith("# 完整卡片")
+    assert "完整正文" in json.loads(payload_to_json(payload))["content_markdown"]
+
+
 def test_legacy_row_normalizes_to_v2_payload():
     from agents.garden_card_payload import normalize_garden_payload
 

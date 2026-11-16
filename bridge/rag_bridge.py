@@ -16,6 +16,7 @@ from agents.rag_agent import (
     RagAgent,
     _dedupe_captures,
     format_answer,
+    is_empty_answer,
     select_prompt_sources,
 )
 from agents.rag_citations import validate_citations
@@ -198,6 +199,7 @@ def _retrieve_knowledge_bundle(query: str, config, repo: CaptureRepo) -> dict:
 
     embedder = Embedder(api_key=config.qwen_api_key)
     used_fallback = False
+    used_vector_fallback = False
     used_index = False
     graph = None
     query_embedding = None
@@ -224,6 +226,7 @@ def _retrieve_knowledge_bundle(query: str, config, repo: CaptureRepo) -> dict:
             results = vector_search(
                 query, repo, embedder, top_k=5, query_embedding=query_embedding
             )
+            used_vector_fallback = bool(results)
             _log(f"VECTOR: {len(results)} hits")
             logger.info("[RAG] vector_search returned %d results", len(results))
         except Exception as e:
@@ -231,7 +234,11 @@ def _retrieve_knowledge_bundle(query: str, config, repo: CaptureRepo) -> dict:
             logger.warning("[RAG] vector_search failed: %s", e)
             results = []
 
-    if results:
+    # The legacy fallback scores ``captures.embedding`` (summary), while the
+    # indexed path scores ``capture_embeddings`` (identity/section index_text).
+    # Do not mix the two score spaces by expanding summary seeds against
+    # index_text rows; the expanded rows would outrank their own seeds.
+    if results and not used_vector_fallback:
         if query_embedding is None:
             query_embedding = embedder.embed(query)
         graph = build_graph_retrieval(
@@ -312,6 +319,7 @@ def _retrieve_knowledge_bundle(query: str, config, repo: CaptureRepo) -> dict:
             "graph": graph,
             "used_index": used_index,
             "used_fallback": used_fallback,
+            "used_vector_fallback": used_vector_fallback,
             "omitted_source_count": 0,
             "titles": [],
         }
@@ -350,6 +358,7 @@ def _retrieve_knowledge_bundle(query: str, config, repo: CaptureRepo) -> dict:
         "graph": graph,
         "used_index": used_index,
         "used_fallback": used_fallback,
+        "used_vector_fallback": used_vector_fallback,
         "omitted_source_count": omitted_source_count,
         "titles": titles,
     }
@@ -402,6 +411,7 @@ def _search_knowledge_base(
     graph = bundle["graph"]
     used_index = bundle["used_index"]
     used_fallback = bundle["used_fallback"]
+    used_vector_fallback = bundle["used_vector_fallback"]
     omitted_source_count = bundle["omitted_source_count"]
     titles = bundle["titles"]
     source_map = bundle["source_map"]
@@ -414,8 +424,14 @@ def _search_knowledge_base(
     resp = rag.query(query, results, context_pack=context_pack)
     for item in results:  # internal field must never reach API/artifact
         item.pop(SELECTED_BODY_KEY, None)
-    _log(f"ANSWER: {len(resp.get('answer', ''))} chars")
-    logger.info("[RAG] answer generated (%d chars)", len(resp.get("answer", "")))
+    resp["answer"] = str(resp.get("answer") or "")
+    empty_answer = is_empty_answer(resp["answer"])
+    _log(f"ANSWER: {len(resp['answer'])} chars")
+    logger.info(
+        "[RAG] answer generated (%d chars, empty=%s)",
+        len(resp["answer"]),
+        empty_answer,
+    )
 
     artifacts = []
     if export_file:
@@ -433,7 +449,15 @@ def _search_knowledge_base(
 
     citation_validation = validate_citations(resp["answer"], source_map)
     repaired = False
-    if not citation_validation.valid and source_map and hasattr(rag, "repair_citations"):
+    # An empty answer must never enter citation repair.  The repair prompt
+    # assumes an existing answer to preserve; given "", it can invent one that
+    # then passes citation validation and looks like a genuine result.
+    if (
+        not empty_answer
+        and not citation_validation.valid
+        and source_map
+        and hasattr(rag, "repair_citations")
+    ):
         try:
             repaired_answer = rag.repair_citations(resp["answer"], source_map)
             repaired_validation = validate_citations(repaired_answer, source_map)
@@ -447,10 +471,11 @@ def _search_knowledge_base(
         except Exception as exc:
             logger.warning("[RAG] citation repair failed: %s", exc)
 
-    try:
-        record_card_citations(repo.conn, resp["answer"], source_map, query=query)
-    except Exception as exc:  # never fail an answer because bookkeeping failed
-        logger.warning("[RAG] citation recording failed: %s", exc)
+    if not empty_answer:
+        try:
+            record_card_citations(repo.conn, resp["answer"], source_map, query=query)
+        except Exception as exc:  # never fail an answer because bookkeeping failed
+            logger.warning("[RAG] citation recording failed: %s", exc)
 
     return success_envelope(
         agent="rag",
@@ -464,6 +489,7 @@ def _search_knowledge_base(
             "answer": resp["answer"],
             "used_index": used_index,
             "used_fallback": used_fallback,
+            "used_vector_fallback": used_vector_fallback,
             "result_count": len(results),
             "omitted_source_count": omitted_source_count,
             "context_pack": {
@@ -474,11 +500,20 @@ def _search_knowledge_base(
             },
             "graph_trace": (graph or {}).get("trace", {}),
             "trace": {
-                "retrieval": "indexed" if used_index else "fallback" if used_fallback else "vector",
+                "retrieval": (
+                    "indexed"
+                    if used_index
+                    else "text_fallback"
+                    if used_fallback
+                    else "vector_fallback"
+                    if used_vector_fallback
+                    else "vector"
+                ),
                 "source_titles": titles,
             },
             "citation_validation": citation_validation.to_meta(),
             "citation_repaired": repaired,
+            "empty_answer": empty_answer,
             "export_file": export_file,
         },
     )
@@ -693,7 +728,16 @@ def _garden_card_match_score(
 
 
 def _card_body_text(card: dict) -> str:
-    """Card body lives in payload_json; the old code read a column that never existed."""
+    """Return the full card body, not just the one-line claim.
+
+    New cards store ``content_markdown`` in both the column and payload.  Demo
+    cards and pre-migration rows may only have the payload key or structured
+    fields, so render a body from the payload before falling back to
+    ``one_liner``.
+    """
+    content = str(card.get("content_markdown") or "").strip()
+    if content:
+        return content
     payload = card.get("payload_json")
     if payload:
         try:
@@ -701,10 +745,18 @@ def _card_body_text(card: dict) -> str:
         except (TypeError, ValueError):
             data = {}
         if isinstance(data, dict):
-            content = str(data.get("content_markdown") or "")
+            content = str(data.get("content_markdown") or "").strip()
             if content:
                 return content
-    return str(card.get("content_markdown") or "")
+            try:
+                from agents.garden_card_payload import render_garden_card_body
+
+                rendered = render_garden_card_body(data).strip()
+                if rendered:
+                    return rendered
+            except Exception as exc:  # never fail retrieval over card rendering
+                logger.debug("[RAG] card body render failed: %s", exc)
+    return str(card.get("one_liner") or "")
 
 
 CARD_MIN_VECTOR_SCORE = 0.42
@@ -737,7 +789,7 @@ def _search_garden_cards(
         return []
     try:
         rows = conn.execute(
-            """SELECT id, title, one_liner, card_kind, source_theme,
+            """SELECT id, title, one_liner, content_markdown, card_kind, source_theme,
                       core_arguments, payload_json, capture_ids,
                       embedding, citation_count, updated_at
                FROM garden_cards

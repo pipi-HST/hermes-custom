@@ -2,7 +2,20 @@
 from __future__ import annotations
 
 from unittest.mock import patch
-from agents.rag_agent import RagAgent, format_answer, build_rag_prompt
+from agents.rag_agent import RagAgent, format_answer, build_rag_prompt, is_empty_answer
+
+
+def test_format_answer_empty_input_is_explicit():
+    sources = [{"title": "测试来源", "story": "摘要"}]
+
+    result = format_answer("", sources)
+
+    assert "知识库中没有找到相关信息" in result
+    assert "[1] 测试来源" in result
+    assert format_answer("", []) == "知识库中没有找到相关信息。"
+    assert is_empty_answer("") is True
+    assert is_empty_answer("   ") is True
+    assert is_empty_answer("正常答案") is False
 
 
 def test_format_answer_with_sources():

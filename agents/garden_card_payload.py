@@ -61,6 +61,8 @@ def normalize_garden_payload(
         "title": title,
         "card_kind": card_kind,
         "claim": claim,
+        "content_markdown": _text(payload.get("content_markdown"))
+        or _text(legacy.get("content_markdown")),
         "confidence": _normalize_confidence(payload.get("confidence")),
         "when_to_use": _dedupe_texts(
             payload.get("when_to_use")

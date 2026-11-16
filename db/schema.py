@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS garden_cards (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '',
     one_liner TEXT NOT NULL DEFAULT '',
+    content_markdown TEXT NOT NULL DEFAULT '',
     card_kind TEXT NOT NULL DEFAULT 'viewpoint',
     schema_version TEXT NOT NULL DEFAULT 'garden_card.v1',
     payload_json TEXT NOT NULL DEFAULT '{}',
@@ -668,6 +669,7 @@ def _migrate_garden_tables(conn: sqlite3.Connection) -> None:
         ("last_cited_at", "TEXT"),
         ("embedding_source_hash", "TEXT NOT NULL DEFAULT ''"),
         ("embedding_updated_at", "TEXT"),
+        ("content_markdown", "TEXT NOT NULL DEFAULT ''"),
     ):
         if column not in card_columns:
             conn.execute(f"ALTER TABLE garden_cards ADD COLUMN {column} {ddl}")
@@ -682,6 +684,17 @@ def _migrate_garden_tables(conn: sqlite3.Connection) -> None:
             )
         except sqlite3.OperationalError:
             pass
+    # Backfill card bodies written by the demo seeder/older payloads.  Empty
+    # rows are skipped so init_db stays cheap after the first migration.
+    try:
+        conn.execute(
+            "UPDATE garden_cards "
+            "SET content_markdown = json_extract(payload_json, '$.content_markdown') "
+            "WHERE COALESCE(content_markdown, '') = '' "
+            "  AND COALESCE(json_extract(payload_json, '$.content_markdown'), '') != ''"
+        )
+    except sqlite3.OperationalError:
+        pass
 
 
 def _migrate_capture_metadata_table(conn: sqlite3.Connection) -> None:
