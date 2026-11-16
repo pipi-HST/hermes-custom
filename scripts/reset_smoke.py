@@ -26,7 +26,7 @@ from db.schema import init_db
 
 SMOKE_TEXT = (
     "reset_smoke 验证 Hermes Knowledge 从空库重新开始。"
-    "材料说明 Knowledge File 只保留 Capture Note 和 Raw Evidence，"
+    "材料说明 Knowledge File 只保留资料笔记和原始证据，"
     "结构化对象留在 SQLite 和 Web 工作台中。"
     "这个样本还包含 RAG 检索关键词 reset_smoke_workflow。"
 ) * 3

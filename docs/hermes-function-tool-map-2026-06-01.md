@@ -2,6 +2,8 @@
 
 更新日期：2026-06-01
 
+> **历史文档（2026-06-01）**：文中的 Theme/MOC、Obsidian Canvas、Garden Card 等是早期产品形态和工具名。当前口径是 Topic/Knowledge Card、自研卡片板和知识图谱；Obsidian 仅作为可选导出/外部编辑兼容。面试引用请看 `docs/PRODUCT-REFACTOR-STORY.md`。
+
 这份文档用来回答两个问题：
 
 1. 现在 Hermes 到底有哪些功能和工具。

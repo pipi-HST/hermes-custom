@@ -1,0 +1,420 @@
+{
+  "groups": {
+    "G0_title_summary_substring": {
+      "recall_at_3": 0.389,
+      "recall_at_5": 0.389,
+      "mrr_at_5": 0.389,
+      "negative_rejection": 1.0,
+      "latency_p50_ms": 0.06,
+      "latency_p95_ms": 709.65
+    },
+    "G1_vector_only": {
+      "recall_at_3": 0.389,
+      "recall_at_5": 0.389,
+      "mrr_at_5": 0.389,
+      "negative_rejection": 1.0,
+      "latency_p50_ms": 1.63,
+      "latency_p95_ms": 4.57
+    },
+    "G2_vector_plus_fts": {
+      "recall_at_3": 0.389,
+      "recall_at_5": 0.389,
+      "mrr_at_5": 0.389,
+      "negative_rejection": 1.0,
+      "latency_p50_ms": 2.35,
+      "latency_p95_ms": 4.93
+    },
+    "G3_full_v3": {
+      "recall_at_3": 0.389,
+      "recall_at_5": 0.389,
+      "mrr_at_5": 0.361,
+      "negative_rejection": 1.0,
+      "latency_p50_ms": 2.02,
+      "latency_p95_ms": 4.67
+    }
+  },
+  "engine": "char-ngram-blake2b-hash-1024",
+  "embed_api_mean_ms": 0.07,
+  "per_query_details": [
+    {
+      "id": "q01",
+      "query": "怎么判断一个 AI 功能是真需求还是伪需求",
+      "kind": "semantic",
+      "gold": [
+        "cap_aipm_demand"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_aipm_demand",
+          "cap_model_routing",
+          "cap_pkm_compare"
+        ],
+        "G1_vector_only": [
+          "cap_aipm_demand",
+          "cap_pkm_compare"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_aipm_demand",
+          "cap_pkm_compare"
+        ],
+        "G3_full_v3": [
+          "card_demo_boundary",
+          "cap_aipm_demand",
+          "cap_pkm_compare",
+          "card_demo_demand",
+          "card_demo_pkm"
+        ]
+      }
+    },
+    {
+      "id": "q02",
+      "query": "传话筒效应为什么会让原文失真",
+      "kind": "semantic",
+      "gold": [
+        "cap_telephone_game",
+        "card_demo_telephone"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q03",
+      "query": "Research 管线哪几个阶段可以砍掉",
+      "kind": "detail",
+      "gold": [
+        "cap_latency_roi"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_latency_roi"
+        ],
+        "G1_vector_only": [
+          "cap_latency_roi"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_latency_roi"
+        ],
+        "G3_full_v3": [
+          "cap_latency_roi",
+          "card_demo_latency",
+          "card_demo_eval"
+        ]
+      }
+    },
+    {
+      "id": "q04",
+      "query": "MCP 解决了什么问题",
+      "kind": "term",
+      "gold": [
+        "cap_mcp"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_mcp"
+        ],
+        "G1_vector_only": [
+          "cap_mcp"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_mcp"
+        ],
+        "G3_full_v3": [
+          "cap_mcp",
+          "card_demo_mcp",
+          "card_demo_context"
+        ]
+      }
+    },
+    {
+      "id": "q05",
+      "query": "Model Routing 怎么按任务分档",
+      "kind": "semantic",
+      "gold": [
+        "cap_model_routing",
+        "card_demo_routing"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_model_routing"
+        ],
+        "G1_vector_only": [
+          "cap_model_routing"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_model_routing"
+        ],
+        "G3_full_v3": [
+          "cap_model_routing",
+          "card_demo_routing"
+        ]
+      }
+    },
+    {
+      "id": "q06",
+      "query": "NotebookLM 和 Readwise 在证据层有什么差异",
+      "kind": "detail",
+      "gold": [
+        "cap_pkm_compare"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_pkm_compare"
+        ],
+        "G1_vector_only": [
+          "cap_pkm_compare"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_pkm_compare"
+        ],
+        "G3_full_v3": [
+          "cap_pkm_compare",
+          "card_demo_pkm",
+          "card_demo_quote"
+        ]
+      }
+    },
+    {
+      "id": "q07",
+      "query": "工具收敛策略建议保留多少个工具",
+      "kind": "detail",
+      "gold": [
+        "cap_mcp",
+        "card_demo_mcp"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q08",
+      "query": "130 秒到 20 秒砍掉了哪些低 ROI 阶段",
+      "kind": "term",
+      "gold": [
+        "cap_latency_roi",
+        "card_demo_latency"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_latency_roi"
+        ],
+        "G1_vector_only": [
+          "cap_latency_roi"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_latency_roi"
+        ],
+        "G3_full_v3": [
+          "card_demo_latency",
+          "cap_latency_roi",
+          "card_demo_eval"
+        ]
+      }
+    },
+    {
+      "id": "q09",
+      "query": "面试中被问需求真假应该怎么反问",
+      "kind": "semantic",
+      "gold": [
+        "cap_aipm_demand"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q10",
+      "query": "卡片和资料在知识库里应该怎么分工",
+      "kind": "card",
+      "gold": [
+        "card_demo_pkm",
+        "cap_pkm_compare"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q11",
+      "query": "为什么工具太多模型会选错",
+      "kind": "semantic",
+      "gold": [
+        "cap_mcp",
+        "card_demo_mcp"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q12",
+      "query": "并发抓取能省多少时间",
+      "kind": "card",
+      "gold": [
+        "card_demo_concurrency",
+        "cap_latency_roi"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q13",
+      "query": "强监管场景适不适合先上生成式 AI",
+      "kind": "detail",
+      "gold": [
+        "card_demo_boundary",
+        "cap_aipm_demand"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [
+          "cap_aipm_demand",
+          "cap_model_routing",
+          "cap_pkm_compare"
+        ],
+        "G1_vector_only": [
+          "cap_aipm_demand",
+          "cap_pkm_compare",
+          "cap_latency_roi"
+        ],
+        "G2_vector_plus_fts": [
+          "cap_aipm_demand",
+          "cap_pkm_compare",
+          "cap_latency_roi"
+        ],
+        "G3_full_v3": [
+          "card_demo_boundary",
+          "cap_aipm_demand",
+          "cap_pkm_compare",
+          "cap_latency_roi",
+          "card_demo_demand"
+        ]
+      }
+    },
+    {
+      "id": "q14",
+      "query": "怎么证明检索重构有效",
+      "kind": "card",
+      "gold": [
+        "card_demo_eval"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q15",
+      "query": "上下文太多会有什么问题",
+      "kind": "card",
+      "gold": [
+        "card_demo_context"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q16",
+      "query": "用户只发一个链接不说话应该怎么处理",
+      "kind": "card",
+      "gold": [
+        "card_demo_silence"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q17",
+      "query": "收藏了很多文章但记不住怎么办",
+      "kind": "semantic",
+      "gold": [
+        "card_demo_quote",
+        "cap_pkm_compare"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q18",
+      "query": "大小模型协同的成本怎么测算",
+      "kind": "semantic",
+      "gold": [
+        "cap_model_routing"
+      ],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q19",
+      "query": "怎么给猫做绝育手术恢复快",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    },
+    {
+      "id": "q20",
+      "query": "量子计算机的退相干时间怎么延长",
+      "kind": "negative",
+      "gold": [],
+      "hits": {
+        "G0_title_summary_substring": [],
+        "G1_vector_only": [],
+        "G2_vector_plus_fts": [],
+        "G3_full_v3": []
+      }
+    }
+  ],
+  "avg_prompt_chars": 222,
+  "corpus": {
+    "notes": 20,
+    "chunks": 86,
+    "cards": 12,
+    "units": 98,
+    "queries": 20,
+    "positives": 18,
+    "negatives": 2
+  },
+  "threshold": 0.46,
+  "max_prompt_chars": 14000
+}

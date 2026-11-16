@@ -41,6 +41,43 @@ class Embedder:
             vec = data["data"][0]["embedding"]
             return struct.pack(f"{DIM}f", *vec)
 
+    def embed_batch(self, texts: list[str], batch_size: int = 10) -> list[bytes]:
+        """Embed several texts in one DashScope request.
+
+        The provider returns an ``index`` for each row; never assume response
+        order.  If a whole batch fails, fall back to one-by-one embedding so a
+        single malformed row cannot fail the entire maintenance pass.
+        """
+        if not texts:
+            return []
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        results: list[bytes] = []
+        size = max(1, int(batch_size))
+        with httpx.Client(timeout=60) as client:
+            for start in range(0, len(texts), size):
+                batch = texts[start : start + size]
+                try:
+                    resp = client.post(
+                        f"{self.base_url}/embeddings",
+                        headers=headers,
+                        json={"model": MODEL, "input": batch},
+                    )
+                    resp.raise_for_status()
+                    rows = resp.json().get("data") or []
+                    ordered = sorted(rows, key=lambda row: int(row.get("index", 0)))
+                    if len(ordered) != len(batch):
+                        raise ValueError("embedding response row count mismatch")
+                    results.extend(
+                        struct.pack(f"{DIM}f", *row["embedding"]) for row in ordered
+                    )
+                except Exception:
+                    for text in batch:
+                        results.append(self.embed(text))
+        return results
+
 
 def _bytes_to_matrix(embeddings: list[bytes]) -> np.ndarray:
     """Convert list of 4096-byte embedding blobs to (N, DIM) float32 matrix."""

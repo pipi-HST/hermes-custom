@@ -128,7 +128,7 @@ def _draft_preview(
         if source_lines else ""
     )
     return (
-        f"已生成 Knowledge Card {label}草稿：《{title}》\n\n"
+        f"已生成知识卡片（{label}）草稿：《{title}》\n\n"
         f"一句话：{one_liner}\n\n"
         f"卡片预览：\n{claims_text}\n\n"
         f"草稿编号：{draft_id}\n"

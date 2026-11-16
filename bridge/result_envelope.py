@@ -122,6 +122,9 @@ def source_ref(
     source_kind: Any = _SOURCE_REF_MISSING,
     reading_session_id: Any = _SOURCE_REF_MISSING,
     reading_draft_id: Any = _SOURCE_REF_MISSING,
+    score: Any = _SOURCE_REF_MISSING,
+    source_count: Any = _SOURCE_REF_MISSING,
+    citation_count: Any = _SOURCE_REF_MISSING,
 ) -> dict[str, str]:
     """Build a Source Reference for a Source Map."""
     item = {
@@ -142,6 +145,9 @@ def source_ref(
         "source_kind": source_kind,
         "reading_session_id": reading_session_id,
         "reading_draft_id": reading_draft_id,
+        "score": score,
+        "source_count": source_count,
+        "citation_count": citation_count,
     }
     item.update({key: value for key, value in optional.items() if value is not _SOURCE_REF_MISSING})
     return item

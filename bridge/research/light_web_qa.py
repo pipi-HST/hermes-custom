@@ -428,7 +428,15 @@ def _extract_urls_for_selected(
     if not selected:
         return []
     if _local_concept_summary_mode(query, research_plan):
-        return []
+        # A summary-only answer has no source with a real page body, which
+        # starves the evidence contract.  Fetch the top page as an anchor; the
+        # generic summary branch below did this already, but this early return
+        # bypassed it.
+        top_url = next(
+            (str(item.get("url")) for item in selected if item.get("url")),
+            "",
+        )
+        return [top_url] if top_url else []
     if _summary_only_is_enough(query, selected, research_plan):
         # Fetch at least the top page: a summary-only answer has no
         # "正文已抓取" source, which starves the evidence contract and makes

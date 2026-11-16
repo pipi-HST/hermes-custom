@@ -104,7 +104,7 @@ def test_summarize_reading_session_asks_when_output_type_missing(reading_config)
     assert result["meta"]["needs_clarification"] is True
     assert "你想整理成哪种" in result["chat_preview"]
     assert "原文增强版主笔记" in result["chat_preview"]
-    assert "Capture Note" in result["chat_preview"]
+    assert "资料笔记" in result["chat_preview"]
     assert "知识卡片" in result["chat_preview"]
     assert "讨论札记" not in result["chat_preview"]
     assert result["meta"]["choices"] == [
@@ -149,7 +149,7 @@ def test_summarize_reading_session_creates_learning_note_draft(reading_config):
     assert result["status"] == "success"
     assert result["durable_artifacts"][0]["type"] == "reading_draft"
     assert result["meta"]["output_type"] == "local_learning_note"
-    assert "已生成Capture Note草稿" in result["chat_preview"]
+    assert "已生成资料笔记草稿" in result["chat_preview"]
 
 
 def test_summarize_reading_session_metadata_uses_full_draft_text(reading_config):
@@ -272,7 +272,9 @@ def test_commit_learning_note_writes_capture_note_file(reading_config):
 
     text = (Path(reading_config.vault_path) / artifact["path"]).read_text(encoding="utf-8")
     assert "type: capture_note" in text
-    assert f"id: {result['meta']['capture_id']}" in text
+    capture_id = result["meta"]["capture_id"]
+    # YAML quotes all-digit ids to preserve them as strings.
+    assert f"id: {capture_id}" in text or f"id: '{capture_id}'" in text
     assert "reading_draft_id:" in text
 
 

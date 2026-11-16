@@ -271,16 +271,23 @@ def test_rag_bridge_source_map_marks_garden_card_as_viewpoint(monkeypatch, tmp_p
 
     envelope = rag_bridge.search_knowledge_base("什么是 MCP 协议？")
 
+    # Evidence now owns the reserved front seats; the card is still present and
+    # remains a first-class viewpoint source.
     first = envelope["source_map"][0]
-    assert first["type"] == "knowledge_card"
-    assert first["role"] == "viewpoint"
-    assert first["title"].startswith("【知识卡片】")
-    assert envelope["meta"]["result_count"] >= 2
+    assert first["type"] in {"capture_note", "capture_section"}
+    assert first["role"] == "evidence"
     capture_entries = [
         entry for entry in envelope["source_map"] if entry["type"] != "knowledge_card"
     ]
+    card_entries = [
+        entry for entry in envelope["source_map"] if entry["type"] == "knowledge_card"
+    ]
     assert capture_entries
+    assert card_entries
     assert all(entry["role"] == "evidence" for entry in capture_entries)
+    assert card_entries[0]["role"] == "viewpoint"
+    assert card_entries[0]["title"].startswith("【知识卡片】")
+    assert envelope["meta"]["result_count"] >= 2
 
 
 def test_indexed_search_relevance_gate_keeps_literal_keyword_hits(tmp_path):

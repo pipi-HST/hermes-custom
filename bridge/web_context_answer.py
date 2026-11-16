@@ -20,7 +20,9 @@ import httpx
 from agents.capture_agent import load_config
 
 from bridge.result_envelope import success_envelope
-from bridge.research.adapters import _default_search_backend
+from bridge.prompt_contracts import MODEL_SUPPLEMENT_CONTRACT
+from bridge.research.adapters import _default_search_backend, current_search_backend
+from bridge.research.source_filter import filter_local_sources_for_web
 from bridge.research.planner import (
     _max_initial_search_queries_for_plan,
     plan_research,
@@ -67,6 +69,7 @@ WEB_CONTEXT_ANSWER_STYLE_CONTRACT_LINES = (
     "不要为了形式整齐而省略关键解释；如果问题更适合段落、列表或定义，就不要强行表格。",
     "不要以“从搜索结果看”“根据检索结果”“需要先明确一点”等过程语开头。",
     "不要写系统反思或免责声明；必要的不确定性要写成答案内容的一部分。",
+    MODEL_SUPPLEMENT_CONTRACT,
 )
 WEB_CONTEXT_ANSWER_STYLE_CONTRACT = "\n".join(WEB_CONTEXT_ANSWER_STYLE_CONTRACT_LINES)
 
@@ -191,6 +194,14 @@ def web_context_answer(
             article_context=article_context,
             selection_context=selection_context,
         )
+        if use_web:
+            knowledge_sources = filter_local_sources_for_web(
+                knowledge_sources,
+                keep_ids={str(article_context.get("id") or "").strip()},
+                keep_paths={
+                    str(article_context.get("file_path") or article_context.get("path") or "").strip()
+                },
+            )
         _add_web_context_stage_timing(stage_timings, "local_search_ms", local_started)
 
     candidates: list[dict[str, Any]] = []
@@ -868,12 +879,16 @@ def _search_candidates(
         try:
             raw = _search_with_timeout(search_adapter, search_query, WEB_CONTEXT_RESULTS_PER_QUERY)
             parsed = _parse_web_search(raw)
+            actual_backend = ""
+            if isinstance(raw, dict):
+                actual_backend = str(raw.get("backend") or "").strip()
             query_status = {
                 "query": search_query,
                 "status": "success",
                 "duration_ms": round((time.monotonic() - query_started) * 1000.0, 3),
                 "result_count": len(parsed),
                 "error": "",
+                "backend": actual_backend or current_search_backend(),
             }
         except Exception as exc:
             query_status = {
@@ -1154,7 +1169,7 @@ def _generate_answer(
         {
             "ref": source.get("ref"),
             "title": source.get("title"),
-            "excerpt": _clip_text(str(source.get("excerpt") or source.get("content") or ""), 600),
+            "excerpt": _clip_text(str(source.get("excerpt") or source.get("content") or ""), 1200),
         }
         for source in payload.get("knowledge_sources") or []
     ]
@@ -1182,7 +1197,7 @@ def _generate_answer(
             history_block,
             selection_block,
             article_block,
-            f"本地材料：{_clip_text(str(payload.get('local_answer') or ''), 1000)}",
+            f"本地材料：{_clip_text(str(payload.get('local_answer') or ''), 1200)}",
             f"本地来源：{json.dumps(knowledge_rows, ensure_ascii=False)}",
             f"网页材料：{json.dumps(source_rows, ensure_ascii=False)}",
         ]
@@ -1528,7 +1543,14 @@ def _provider_status(
     if web_attempted:
         status.update(
             {
-                "search_backend": _default_search_backend(),
+                "search_backend": next(
+                (
+                    str(status.get("backend") or "").strip()
+                    for status in query_statuses
+                    if str(status.get("backend") or "").strip()
+                ),
+                _default_search_backend(),
+            ),
                 "extract_backend": "",
                 "search_elapsed_ms": int(stage_timings.get("search_ms") or 0),
                 "candidate_count": len(candidates),

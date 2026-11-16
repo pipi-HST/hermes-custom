@@ -26,6 +26,7 @@ def run_with_ledger(
     trigger: str = "wechat",
     input_ref: dict[str, Any] | None = None,
     operation: Callable[[], Mapping[str, Any]],
+    run_id_out: dict[str, str] | None = None,
 ) -> Mapping[str, Any]:
     with _RUN_LOCK:
         return _run_with_ledger_unlocked(
@@ -35,6 +36,7 @@ def run_with_ledger(
             trigger=trigger,
             input_ref=input_ref,
             operation=operation,
+            run_id_out=run_id_out,
         )
 
 
@@ -46,6 +48,7 @@ def _run_with_ledger_unlocked(
     trigger: str,
     input_ref: dict[str, Any] | None,
     operation: Callable[[], Mapping[str, Any]],
+    run_id_out: dict[str, str] | None = None,
 ) -> Mapping[str, Any]:
     repo = AgentRunRepo(conn)
     run = repo.start_run(
@@ -54,6 +57,8 @@ def _run_with_ledger_unlocked(
         trigger=trigger,
         input_ref=input_ref or {},
     )
+    if run_id_out is not None:
+        run_id_out["run_id"] = str(run["id"])
     repo.record_event(run["id"], event_type="started", payload=input_ref or {})
     repo.record_object_refs(
         run["id"],

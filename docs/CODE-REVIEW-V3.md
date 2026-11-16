@@ -4,6 +4,8 @@
 评审方式：逐文件读真实 diff（`--ignore-cr-at-eol`）→ 写两个可复现脚本证伪 → 重跑测试与真实库 → 交叉核对文档数字。
 **本文件里每一个缺陷都附实测输出或源码行号；没有"看起来可能有问题"的条目。**
 
+> **评审快照（2026-11-16）**：文中的 `MIN_VECTOR_SCORE=0.20`、G0 0.833、0/4 vs 1/4 等是评审当时发现的问题/旧数据，不是当前口径。当前值：阈值 0.46（`docs/calibration-dashscope.json`）；离线 post-fix 四组 0.389（`docs/benchmark-rag-v3-offline-postfix.json`）；卡片排序 1/4 vs 4/4（`docs/card-ordering-judge.json`）。面试引用请看 `docs/PRODUCT-REFACTOR-STORY.md`。
+
 ---
 
 ## 0. 总体结论
@@ -192,7 +194,7 @@ chunks from a single 3000-char paragraph: 2 [3000, 211]
 
 ### P2-6 卡片排序"对抗结论"缺可复核凭证
 
-`docs/card-ordering-judge.json` 只有 `boundary_mentioned: bool` 和 `answer_len`，**没有 prompt、没有答案正文**。n=4、单次判官、关键词级判定 → 0/4 vs 1/4 差异的证据强度约等于"一条方向性轶事"。
+当时 `docs/card-ordering-judge.json` 只有 `boundary_mentioned: bool` 和 `answer_len`，**没有 prompt、没有答案正文**（后续重跑已补 `answer` 字段）。n=4、单次判官、关键词级判定 → 0/4 vs 1/4 差异的证据强度约等于"一条方向性轶事"；修正后的 1/4 vs 4/4 见 `PRODUCT-REFACTOR-STORY.md` §8.14。
 
 文档 §8.14 已经老实写了"n=4 只能算定向信号"，这点值得肯定；但**artifact 本身无法复核**，评审者只能选择相信脚本。
 
@@ -438,8 +440,8 @@ chunks from a single 3000-char paragraph: 2 [3000, 211]
 
 ### 10.3 结论发生变化的三处（口径必须更新）
 
-1. **G0 不再是稻草人**：真实旧版子串基线在本语料 **Recall@5 0.833**，与 V3 打平；只有 MRR 略高（0.806 vs 0.778）。
-   → 旧口径「0.5 → 0.833」作废；只能说「该语料的收益已被字面匹配吃掉，语义收益需要更难的问题集来测」。
+1. **G0 不再是稻草人**：真实旧版子串基线在本语料与 V3 打平。G0 dispatcher 修复前的 DashScope 运行显示 0.833，但该数字因 G0 误走 G3 作废；修复后的离线 post-fix 四组均为 0.389（`docs/benchmark-rag-v3-offline-postfix.json`）。
+   → 旧口径「0.5 → 0.833」作废；只能说「该语料的收益已被字面匹配吃掉，语义收益需要更难的问题集来测，并等 DashScope 重跑」。
 2. **判官 bug 修复后结果反转**：`max_tokens=64` 被推理模型的 `reasoning_content` 吃光 → 全空 → 全 NO；修好后同一批对抗样本 **卡片优先 1/4 vs 证据优先 4/4**。
    → 之前「0/4 vs 1/4」和「0/4 vs 0/4」都是判官预算问题。
 3. **demo 向量语义化**：`_concept_vector` 的合成随机向量已替换为真向量，同篇 chunk 余弦 0.99→0.81，两阶段检索在 demo 上才开始有意义。

@@ -22,8 +22,22 @@ def _delete_fts_row(
     search path then degrades to its legacy implementation.
     """
     try:
+        row = conn.execute(
+            "SELECT fts_rowid FROM capture_search_fts_map "
+            "WHERE capture_id = ? AND kind = ? AND section_id = ?",
+            (capture_id, kind, section_id),
+        ).fetchone()
+        if row is not None:
+            conn.execute("DELETE FROM capture_search_fts WHERE rowid = ?", (row["fts_rowid"],))
+        else:
+            # Compatibility for a database whose map has not been backfilled yet.
+            conn.execute(
+                "DELETE FROM capture_search_fts "
+                "WHERE capture_id = ? AND kind = ? AND section_id = ?",
+                (capture_id, kind, section_id),
+            )
         conn.execute(
-            "DELETE FROM capture_search_fts "
+            "DELETE FROM capture_search_fts_map "
             "WHERE capture_id = ? AND kind = ? AND section_id = ?",
             (capture_id, kind, section_id),
         )
@@ -39,9 +53,10 @@ def _insert_fts_row(
     section_id: str,
     section_title: str,
     index_text: str,
+    source_hash: str = "",
 ) -> None:
     try:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO capture_search_fts "
             "(capture_id, kind, section_id, section_title_tokens, index_text_tokens) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -52,6 +67,11 @@ def _insert_fts_row(
                 tokenize_for_fts(section_title),
                 tokenize_for_fts(index_text),
             ),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO capture_search_fts_map "
+            "(capture_id, kind, section_id, fts_rowid, source_hash) VALUES (?, ?, ?, ?, ?)",
+            (capture_id, kind, section_id, int(cur.lastrowid), str(source_hash or "")),
         )
     except sqlite3.OperationalError:
         pass
@@ -65,36 +85,80 @@ def rebuild_fts_from_embeddings(conn: sqlite3.Connection) -> int:
     would otherwise keep an empty index forever and keyword search would look
     broken for no visible reason.
     """
-    from db.schema import CREATE_CAPTURE_SEARCH_FTS_TABLE
+    from db.schema import (
+        CREATE_CAPTURE_SEARCH_FTS_MAP_ROWID_INDEX,
+        CREATE_CAPTURE_SEARCH_FTS_MAP_TABLE,
+        CREATE_CAPTURE_SEARCH_FTS_TABLE,
+    )
 
     try:
         conn.execute(CREATE_CAPTURE_SEARCH_FTS_TABLE)
+        conn.execute(CREATE_CAPTURE_SEARCH_FTS_MAP_TABLE)
+        conn.execute(CREATE_CAPTURE_SEARCH_FTS_MAP_ROWID_INDEX)
         conn.execute("DELETE FROM capture_search_fts")
+        conn.execute("DELETE FROM capture_search_fts_map")
     except sqlite3.OperationalError:
         return 0
     rows = conn.execute(
-        "SELECT capture_id, kind, section_id, section_title, index_text "
+        "SELECT capture_id, kind, section_id, section_title, index_text, source_hash "
         "FROM capture_embeddings"
     ).fetchall()
-    payload = [
-        (
-            str(row["capture_id"] or ""),
-            str(row["kind"] or ""),
-            str(row["section_id"] or ""),
-            tokenize_for_fts(str(row["section_title"] or "")),
-            tokenize_for_fts(str(row["index_text"] or "")),
-        )
-        for row in rows
-    ]
-    if payload:
-        conn.executemany(
-            "INSERT INTO capture_search_fts "
-            "(capture_id, kind, section_id, section_title_tokens, index_text_tokens) "
-            "VALUES (?, ?, ?, ?, ?)",
-            payload,
+    for row in rows:
+        _insert_fts_row(
+            conn,
+            capture_id=str(row["capture_id"] or ""),
+            kind=str(row["kind"] or ""),
+            section_id=str(row["section_id"] or ""),
+            section_title=str(row["section_title"] or ""),
+            index_text=str(row["index_text"] or ""),
+            source_hash=str(row["source_hash"] or ""),
         )
     conn.commit()
-    return len(payload)
+    return len(rows)
+
+
+def ensure_fts_synced(conn: sqlite3.Connection) -> int:
+    """Repair only stale/missing FTS rows instead of rebuilding every chunk.
+
+    The map is the source of truth for rowid lookup and source-hash comparison.
+    A missing map (legacy DB) triggers a full rebuild once; after that, normal
+    ``upsert`` writes maintain both structures incrementally.
+    """
+    try:
+        fts_count = conn.execute("SELECT count(*) FROM capture_search_fts").fetchone()[0]
+        map_count = conn.execute("SELECT count(*) FROM capture_search_fts_map").fetchone()[0]
+    except sqlite3.OperationalError:
+        return rebuild_fts_from_embeddings(conn)
+    if fts_count == 0 or map_count != fts_count:
+        return rebuild_fts_from_embeddings(conn)
+    stale = conn.execute(
+        """SELECT ce.capture_id, ce.kind, ce.section_id, ce.section_title,
+                  ce.index_text, ce.source_hash
+           FROM capture_embeddings ce
+           LEFT JOIN capture_search_fts_map m
+             ON ce.capture_id = m.capture_id
+            AND ce.kind = m.kind
+            AND ce.section_id = m.section_id
+           WHERE m.source_hash IS NULL OR m.source_hash != ce.source_hash"""
+    ).fetchall()
+    for row in stale:
+        _delete_fts_row(
+            conn,
+            capture_id=str(row["capture_id"] or ""),
+            kind=str(row["kind"] or ""),
+            section_id=str(row["section_id"] or ""),
+        )
+        _insert_fts_row(
+            conn,
+            capture_id=str(row["capture_id"] or ""),
+            kind=str(row["kind"] or ""),
+            section_id=str(row["section_id"] or ""),
+            section_title=str(row["section_title"] or ""),
+            index_text=str(row["index_text"] or ""),
+            source_hash=str(row["source_hash"] or ""),
+        )
+    conn.commit()
+    return len(stale)
 
 
 class CaptureEmbeddingRepo:
@@ -151,6 +215,7 @@ class CaptureEmbeddingRepo:
             section_id=section_id,
             section_title=section_title,
             index_text=index_text,
+            source_hash=source_hash,
         )
         self.conn.commit()
         return self.get(capture_id, kind, section_id) or {}

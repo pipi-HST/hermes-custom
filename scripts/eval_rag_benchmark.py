@@ -436,7 +436,10 @@ def _dedupe(ids: list[str], limit: int) -> list[str]:
 
 
 def run_group(group: str, conn, query: str, limit: int = 5, threshold: float | None = None) -> list[str]:
-    if group == "G0_legacy_identity_keyword":
+    # Keep the historical alias accepted so old reports/scripts that still
+    # pass ``G0_legacy_identity_keyword`` keep working.  The public group name
+    # in GROUPS is ``G0_title_summary_substring``.
+    if group in {"G0_legacy_identity_keyword", "G0_title_summary_substring"}:
         return _legacy_hits(conn, query, limit)
     vector = _vector_hits(conn, query, limit, threshold)
     if group == "G1_vector_only":

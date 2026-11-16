@@ -133,6 +133,7 @@ def save_answer_to_knowledge(
     sources: list[dict[str, Any]] | None = None,
     target_capture_id: str = "",
     answer_source: str = "auto",
+    folder_path: str = "",
 ) -> dict:
     sources = sources or []
     if answer_source not in ANSWER_SOURCES:
@@ -156,6 +157,7 @@ def save_answer_to_knowledge(
             sources=sources,
             target_capture_id=target_capture_id,
             answer_source=answer_source,
+            folder_path=folder_path,
         ),
     )
 
@@ -251,6 +253,7 @@ def _save_answer_to_knowledge(
     sources: list[dict[str, Any]],
     target_capture_id: str,
     answer_source: str,
+    folder_path: str = "",
 ) -> dict:
     config, repo = _init()
     resolved = _resolve_answer_source(
@@ -281,7 +284,7 @@ def _save_answer_to_knowledge(
             chat_preview=(
                 "这段回答涉及多个材料，我不能自动判断要补进哪一篇主笔记。\n\n"
                 f"候选材料：\n{choices}\n\n"
-                "你可以改成保存为 Capture Note/知识卡片，或明确说要补进哪一篇。"
+                "你可以改成保存为资料笔记/知识卡片，或明确说要补进哪一篇。"
             ),
             meta={
                 "needs_target_choice": True,
@@ -360,11 +363,12 @@ def _save_answer_to_knowledge(
             "source_type": source_groups["source_type"],
             "research_mode": source_groups["research_mode"],
             "answer_source": resolved["answer_source"],
+            "folder_path": folder_path,
             "metadata": metadata,
         },
     )
     label = {
-        "local_learning_note": "Capture Note",
+        "local_learning_note": "资料笔记",
         "knowledge_card": "知识卡片",
         "enhance_capture": "主笔记增强",
     }[decision["output_type"]]
@@ -477,7 +481,7 @@ def _latest_rag_full_answer(repo: ReadingRepo) -> dict[str, Any] | None:
         """SELECT input_json, output_json
            FROM agent_runs
            WHERE agent = 'rag'
-             AND intent = 'search_knowledge_base'
+             AND intent IN ('search_knowledge_base', 'web_context_answer', 'retrieve_knowledge_sources')
              AND status = 'success'
              AND output_json IS NOT NULL
              AND output_json != ''

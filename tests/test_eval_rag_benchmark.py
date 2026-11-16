@@ -30,6 +30,25 @@ def test_corpus_is_large_enough_to_be_meaningful(tmp_path):
     assert corpus["negatives"] == 2
 
 
+def test_g0_dispatches_to_legacy(monkeypatch):
+    module = _load_benchmark()
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        module,
+        "_legacy_hits",
+        lambda *args, **kwargs: calls.append("legacy") or ["legacy-hit"],
+    )
+    monkeypatch.setattr(
+        module,
+        "_vector_hits",
+        lambda *args, **kwargs: calls.append("vector") or ["vector-hit"],
+    )
+
+    assert module.run_group("G0_title_summary_substring", None, "q") == ["legacy-hit"]
+    assert calls == ["legacy"]
+
+
 def test_ablation_groups_are_reported(tmp_path):
     module = _load_benchmark()
     report = module.run_benchmark(tmp_path, threshold=0.20)

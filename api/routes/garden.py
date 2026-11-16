@@ -32,6 +32,9 @@ class GardenDraftRequest(BaseModel):
     title: str = ""
     card_kind: str = ""
     instruction: str = ""
+    # Existing dashboard callers expect the legacy synthesize-and-commit
+    # behavior.  New review flows explicitly send False (or use /preview).
+    auto_commit: bool = True
 
 
 def create_garden_router(
@@ -81,11 +84,68 @@ def create_garden_router(
                     break
         if not draft_id:
             return result
+        if not body.auto_commit:
+            return result
         return garden_bridge.commit_garden_draft(
             draft_id=draft_id,
             token_verified=True,
             context=context,
         )
+
+    @router.post("/garden/drafts/preview")
+    def preview_garden_draft(body: GardenDraftRequest):
+        return create_garden_draft(body.model_copy(update={"auto_commit": False}))
+
+    @router.get("/garden/drafts")
+    def list_garden_drafts(
+        limit: int = Query(default=50, ge=1, le=200),
+        status: str = Query(default="draft_ready"),
+    ):
+        status_filter = (status or "").strip()
+        if status_filter:
+            rows = capture_repo.conn.execute(
+                """SELECT id, title, one_liner, card_kind, status, markdown,
+                          capture_ids, created_at, updated_at
+                   FROM garden_drafts
+                   WHERE status = ?
+                   ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
+                            id DESC
+                   LIMIT ?""",
+                (status_filter, limit),
+            ).fetchall()
+        else:
+            rows = capture_repo.conn.execute(
+                """SELECT id, title, one_liner, card_kind, status, markdown,
+                          capture_ids, created_at, updated_at
+                   FROM garden_drafts
+                   ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
+                            id DESC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        items = [dict(row) for row in rows]
+        return {"items": items, "total": len(items)}
+
+    @router.post("/garden/drafts/{draft_id}/commit")
+    def commit_garden_draft(draft_id: str):
+        from bridge import garden_bridge
+
+        return garden_bridge.commit_garden_draft(
+            draft_id=draft_id,
+            token_verified=True,
+            context=_context(),
+        )
+
+    @router.delete("/garden/drafts/{draft_id}")
+    def discard_garden_draft(draft_id: str):
+        cur = capture_repo.conn.execute(
+            "UPDATE garden_drafts SET status = 'discarded', updated_at = datetime('now') WHERE id = ?",
+            (draft_id,),
+        )
+        capture_repo.conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="garden draft not found")
+        return {"ok": True, "draft_id": draft_id, "status": "discarded"}
 
     @router.get("/garden/cards")
     def list_garden_cards(

@@ -360,13 +360,14 @@ class LibraryAgent:
         ).fetchall()
         report = self._maintain_embedding_index_rows(rows, apply=apply)
         if apply:
-            # The FTS index is derived data covering *every* chunk, including
-            # the ones the incremental pass just skipped.  Rebuilding it here
-            # is what makes a pre-FTS database searchable on the next run.
+            # FTS is derived data, but it must be repaired incrementally: a
+            # full rebuild on every maintenance pass is O(n²) at scale.  The
+            # map table keeps the rowid and source hash for each chunk; a
+            # legacy database is rebuilt exactly once.
             try:
-                from db.embedding_repo import rebuild_fts_from_embeddings
+                from db.embedding_repo import ensure_fts_synced
 
-                report["fts_rows"] = rebuild_fts_from_embeddings(conn)
+                report["fts_rows"] = ensure_fts_synced(conn)
             except Exception as exc:  # pragma: no cover - defensive
                 report["fts_error"] = str(exc)
             try:
@@ -388,30 +389,58 @@ class LibraryAgent:
             pass
 
     def _maintain_card_embeddings(self, conn, *, apply: bool = False) -> dict[str, Any]:
-        """Give knowledge cards their own vector so they can be recalled semantically."""
+        """Give knowledge cards a vector and keep it in step with their text.
+
+        The old implementation only filled ``embedding IS NULL`` and embedded
+        one card per HTTP request.  We now hash the embedding source text so an
+        edited card is re-embedded, and use DashScope's batch endpoint.
+        """
         rows = conn.execute(
-            "SELECT id, title, one_liner, core_arguments, embedding FROM garden_cards"
+            "SELECT id, title, one_liner, core_arguments, embedding, "
+            "embedding_source_hash FROM garden_cards"
         ).fetchall()
-        missing = [row for row in rows if not row["embedding"]]
+        pending: list[tuple[Any, str, str]] = []
+        missing = 0
+        for row in rows:
+            text = _card_embedding_text(row)
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            if not row["embedding"]:
+                missing += 1
+            if not text.strip():
+                continue
+            if not row["embedding"] or str(row["embedding_source_hash"] or "") != digest:
+                pending.append((row, text, digest))
+
         updated = 0
         errors = 0
-        if apply:
-            for row in missing:
-                text = _card_embedding_text(row)
-                if not text.strip():
-                    continue
+        if apply and pending:
+            if self.embedder is None:
+                errors = len(pending)
+            else:
                 try:
-                    conn.execute(
-                        "UPDATE garden_cards SET embedding = ?, updated_at = datetime('now') WHERE id = ?",
-                        (self.embedder.embed(text), row["id"]),
-                    )
-                    updated += 1
+                    embeddings = self.embedder.embed_batch([text for _row, text, _digest in pending])
                 except Exception:
-                    errors += 1
+                    embeddings = []
+                    errors = len(pending)
+                if len(embeddings) == len(pending):
+                    for (row, _text, digest), embedding in zip(pending, embeddings):
+                        try:
+                            conn.execute(
+                                "UPDATE garden_cards SET embedding = ?, "
+                                "embedding_source_hash = ?, embedding_updated_at = datetime('now'), "
+                                "updated_at = datetime('now') WHERE id = ?",
+                                (embedding, digest, row["id"]),
+                            )
+                            updated += 1
+                        except Exception:
+                            errors += 1
+                else:
+                    errors += len(pending)
             conn.commit()
         return {
             "scanned": len(rows),
-            "missing": len(missing),
+            "missing": missing,
+            "stale": len(pending),
             "updated": updated,
             "errors": errors,
         }

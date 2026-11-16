@@ -1,14 +1,18 @@
-> ⚠️ **本文件是离线 hash 引擎的冒烟回归口径，不是对外主口径。**
-> 对外/面试引用请看 `docs/BENCHMARK-RAG-V3-dashscope.md`（DashScope v4 实测，阈值 0.46）。
+> ⚠️ **本文件是 G0 dispatcher 修复前的离线 hash 冒烟记录，数字已过期，不要对外引用。**
+> 当前离线口径请看 `docs/BENCHMARK-RAG-V3-offline-postfix.md` / `docs/benchmark-rag-v3-offline-postfix.json`。
+> DashScope 真实重跑待 API key 恢复（`docs/BENCHMARK-RAG-V3-dashscope.md` 中的 0.833 已作废）。
 > hash 引擎只衡量字面重合，其 Recall 与负样本拦截率都不可迁移到真实语义库。
 
-# RAG 检索消融评测（V3.0）
+# RAG 检索消融评测（V3.0，历史记录）
 
+- 数据源：`docs/benchmark-rag-v3.json`（历史快照，不可引用）
 - Embedding engine: `char-ngram-blake2b-hash-1024`（离线字符 n-gram，**不代表语义能力**）
-- 生效阈值 MIN_VECTOR_SCORE = `0.2`
+- 生效阈值 MIN_VECTOR_SCORE = `0.2`（历史未标定值；当前代码为 `0.46`）
 - 语料：20 篇资料 / 86 chunk / 12 张卡片 = 98 个检索单元
 - Query：20 条（18 正样本 + 2 负样本）
-- G3 单次 RAG Prompt 平均字符数：362（上限 14000）
+- G3 单次 RAG Prompt 平均字符数：362（上限 14000；样本相关，不是固定指标）
+
+以下数字为 G0 修复前记录，不能与 post-fix 数据混用（当前 post-fix 四组均为 0.389）。
 
 | 组 | Recall@3 | Recall@5 | MRR@5 | 负样本拦截 | P50 ms | P95 ms |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -23,5 +27,5 @@
 - 延迟只含检索层，不含 LLM 合成与 embedding API 往返。
 
 已知限制（必须写进面试口径）：
-- 离线 hash 引擎在阈值 0.20 下负样本拦截 100%、Recall@5 0.667；换成校准值 0.09 时 Recall@5 升到 0.722 但负样本全部漏过——这是清晰的 precision/recall 权衡，也说明**阈值不可跨引擎迁移**。
+- 历史记录：离线 hash 引擎在阈值 0.20 下负样本拦截 100%、Recall@5 0.667；换成校准值 0.09 时 Recall@5 升到 0.722 但负样本全部漏过——这是清晰的 precision/recall 权衡，也说明**阈值不可跨引擎迁移**。当前代码阈值是 0.46，不是 0.20。
 - 因此 G1~G3 的 Recall 衡量的是字面重合下的检索排序，不是语义能力。

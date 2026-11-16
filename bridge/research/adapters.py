@@ -206,7 +206,19 @@ def _web_search_with_backend(query: str, limit: int, backend: str) -> str | dict
     provider = get_provider(backend)
     if provider is None or not provider.supports_search():
         raise RuntimeError(f"搜索后端不可用：{backend}")
-    return provider.search(query, limit)
+    result = provider.search(query, limit)
+    if isinstance(result, dict):
+        return {**result, "backend": backend}
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            return {**parsed, "backend": backend}
+        if isinstance(parsed, list):
+            return {"success": True, "results": parsed, "backend": backend}
+    return {"success": True, "raw": result, "backend": backend}
 
 
 def _deepseek_web_extract(

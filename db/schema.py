@@ -394,6 +394,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS capture_search_fts USING fts5(
 )
 """
 
+CREATE_CAPTURE_SEARCH_FTS_MAP_TABLE = """
+CREATE TABLE IF NOT EXISTS capture_search_fts_map (
+    capture_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    section_id TEXT NOT NULL,
+    fts_rowid INTEGER NOT NULL,
+    source_hash TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (capture_id, kind, section_id)
+)
+"""
+
+CREATE_CAPTURE_SEARCH_FTS_MAP_ROWID_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_capture_search_fts_map_rowid
+ON capture_search_fts_map (fts_rowid)
+"""
+
 CREATE_CITATION_EVENTS_TABLE = """
 CREATE TABLE IF NOT EXISTS citation_events (
     id TEXT PRIMARY KEY,
@@ -456,7 +472,10 @@ def init_db(db_path: str) -> sqlite3.Connection:
         conn.execute(CREATE_CAPTURE_METADATA_TABLE)
         _migrate_capture_metadata_table(conn)
         _create_capture_search_fts(conn)
+        conn.execute(CREATE_CAPTURE_SEARCH_FTS_MAP_TABLE)
+        conn.execute(CREATE_CAPTURE_SEARCH_FTS_MAP_ROWID_INDEX)
         _backfill_capture_search_fts(conn)
+        _repair_capture_search_fts_map(conn)
         conn.execute(CREATE_CITATION_EVENTS_TABLE)
         conn.execute(CREATE_CITATION_EVENTS_CARD_INDEX)
         conn.execute(CREATE_REVIEW_ITEMS_TABLE)
@@ -647,6 +666,8 @@ def _migrate_garden_tables(conn: sqlite3.Connection) -> None:
         ("embedding", "BLOB"),
         ("citation_count", "INTEGER NOT NULL DEFAULT 0"),
         ("last_cited_at", "TEXT"),
+        ("embedding_source_hash", "TEXT NOT NULL DEFAULT ''"),
+        ("embedding_updated_at", "TEXT"),
     ):
         if column not in card_columns:
             conn.execute(f"ALTER TABLE garden_cards ADD COLUMN {column} {ddl}")
@@ -736,6 +757,30 @@ def _backfill_capture_search_fts(conn: sqlite3.Connection) -> int:
         ],
     )
     return len(rows)
+
+
+def _repair_capture_search_fts_map(conn: sqlite3.Connection) -> None:
+    """Backfill the rowid map for databases created before it existed."""
+    try:
+        fts_count = conn.execute("SELECT count(*) FROM capture_search_fts").fetchone()[0]
+        map_count = conn.execute("SELECT count(*) FROM capture_search_fts_map").fetchone()[0]
+        if fts_count == map_count:
+            return
+        conn.execute("DELETE FROM capture_search_fts_map")
+        conn.execute(
+            """INSERT INTO capture_search_fts_map
+               (capture_id, kind, section_id, fts_rowid, source_hash)
+               SELECT f.capture_id, f.kind, f.section_id, f.rowid,
+                      COALESCE(ce.source_hash, '')
+               FROM capture_search_fts f
+               LEFT JOIN capture_embeddings ce
+                 ON ce.capture_id = f.capture_id
+                AND ce.kind = f.kind
+                AND ce.section_id = f.section_id"""
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
 
 def _migrate_review_items_table(conn: sqlite3.Connection) -> None:

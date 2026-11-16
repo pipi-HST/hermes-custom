@@ -39,6 +39,7 @@ class AnswerDraftRequest(BaseModel):
     output_type: str = "auto"
     sources: list[dict[str, Any]] = []
     target_capture_id: str = ""
+    folder_path: str = ""
 
 
 class ReviseDraftRequest(BaseModel):
@@ -68,6 +69,7 @@ def create_knowledge_router(
             output_type=body.output_type,
             sources=body.sources,
             target_capture_id=body.target_capture_id,
+            folder_path=body.folder_path,
         )
         return bridge_result_response(result)
 

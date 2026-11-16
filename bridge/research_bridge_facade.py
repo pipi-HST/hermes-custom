@@ -25,21 +25,27 @@ def _bridge_module():
 
 def _search_local(query: str, warnings: list[str]) -> tuple[str, list[dict[str, Any]]]:
     try:
-        from bridge.rag_bridge import search_knowledge_base
+        from bridge.rag_bridge import retrieve_knowledge_sources
 
-        result = search_knowledge_base(query)
+        bundle = retrieve_knowledge_sources(query)
     except Exception as exc:
         warnings.append(f"本地知识库检索失败：{exc}")
         return "", []
 
-    meta = result.get("meta") if isinstance(result, dict) else {}
-    source_map = result.get("source_map") if isinstance(result, dict) else []
-    answer = str(meta.get("answer") or result.get("chat_preview") or "").strip()
+    source_map = bundle.get("source_map") if isinstance(bundle, dict) else []
+    results = bundle.get("results") if isinstance(bundle, dict) else []
     sources: list[dict[str, Any]] = []
     if isinstance(source_map, list):
         for index, item in enumerate(source_map[:8], 1):
             if not isinstance(item, dict):
                 continue
+            raw = results[index - 1] if isinstance(results, list) and index <= len(results) else {}
+            evidence = str(
+                (raw or {}).get("body")
+                or (raw or {}).get("story")
+                or item.get("excerpt")
+                or ""
+            ).strip()
             sources.append(
                 {
                     "ref": f"K{index}",
@@ -49,13 +55,20 @@ def _search_local(query: str, warnings: list[str]) -> tuple[str, list[dict[str, 
                     "path": str(item.get("path") or ""),
                     "file_path": str(item.get("file_path") or item.get("path") or ""),
                     "section": str(item.get("section") or ""),
-                    "excerpt": str(item.get("excerpt") or item.get("section") or ""),
+                    # The web synthesizer gets first-hand section text, not the
+                    # 500-char API excerpt.  The source_map stays short for UI.
+                    "excerpt": evidence[:1200],
                     "source_kind": str(item.get("source_kind") or ""),
                     "reading_session_id": str(item.get("reading_session_id") or ""),
                     "reading_draft_id": str(item.get("reading_draft_id") or ""),
+                    "score": item.get("score"),
+                    "source_count": item.get("source_count"),
+                    "citation_count": item.get("citation_count"),
                 }
             )
-    return answer, sources
+    # No local answer is generated here: the whole point of the split is to let
+    # the outer synthesizer read first-hand evidence exactly once.
+    return "", sources
 
 
 def _search_web(

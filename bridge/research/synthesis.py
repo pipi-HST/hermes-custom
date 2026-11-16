@@ -15,6 +15,7 @@ from bridge.research.types import (
     MAX_WEB_QUERIES,
     SYNTHESIS_LLM_TIMEOUT_SECONDS,
 )
+from bridge.prompt_contracts import MODEL_SUPPLEMENT_CONTRACT
 from bridge.research.utils import (
     _clip_text,
     _current_date_for_prompt,
@@ -127,6 +128,7 @@ def _build_synthesis_prompt(payload: dict[str, Any]) -> str:
         "- 需要引用本地知识库时，只能使用提供的 [K1] [K2] ... 编号。",
         "- 需要引用联网资料时，只能使用提供的 [W1] [W2] ... 编号。",
         "- 方括号来源标记只允许使用上述 [K数字]/[W数字]；不要写 [文档目录：...]、[来源：...] 或其他自定义来源标签。",
+        f"- {MODEL_SUPPLEMENT_CONTRACT}",
         "- 不要编造来源；没有依据时明确说不确定。",
         "- 如果官方/原始来源与媒体、百科、博客等二手来源冲突，必须以官方/原始来源为准；除非有更新的官方来源证明变更，不能用二手报道覆盖官方来源。",
         '- 回答"现任/当前/现在"类职位问题时，官方机构页面、任命公告、政府公告优先级最高；媒体报道只能作为补充，不能推翻官方来源。',

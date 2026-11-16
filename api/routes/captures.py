@@ -125,7 +125,7 @@ def apply_capture_update(
         raise HTTPException(status_code=400, detail="capture has no editable note")
     note = read_note(vault, file_path)
     if note is None:
-        raise HTTPException(status_code=404, detail="capture note file not found")
+        raise HTTPException(status_code=404, detail="资料笔记文件不存在")
 
     frontmatter, current_body = note
     updated_body = (body or current_body or "").strip()

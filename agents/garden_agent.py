@@ -96,10 +96,10 @@ INVALID_FILENAME_CHARS = '/:*?"<>|'
 
 CARD_KINDS = {"viewpoint", "fact", "method", "risk"}
 CARD_KIND_LABELS = {
-    "viewpoint": "观点卡",
-    "fact": "事实卡",
-    "method": "方法卡",
-    "risk": "风险卡",
+    "viewpoint": "洞察 / 金句",
+    "fact": "新知 / 概念",
+    "method": "方法 / 框架",
+    "risk": "避坑 / 边界",
 }
 
 

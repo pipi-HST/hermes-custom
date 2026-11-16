@@ -26,7 +26,7 @@ from bridge.capture_view import build_capture_view, hydrate_capture, read_captur
 from bridge.file_artifacts import write_markdown_export
 from bridge.context import KnowledgeContext
 from bridge.knowledge_search import search_captures
-from bridge.result_envelope import artifact_ref, source_ref, success_envelope
+from bridge.result_envelope import _SOURCE_REF_MISSING, artifact_ref, source_ref, success_envelope
 from bridge.run_ledger import run_with_ledger
 from db.embedding_repo import CaptureEmbeddingRepo
 from db.fts_tokenizer import (
@@ -159,13 +159,40 @@ def search_knowledge_base(
     )
 
 
-def _search_knowledge_base(
-    query: str,
-    config,
-    repo: CaptureRepo,
-    *,
-    export_file: bool = False,
-) -> dict:
+def _evidence_digest(results: list[dict], *, per_source_chars: int = 1200) -> str:
+    """Build the internal, non-API evidence block used by the web synthesizer.
+
+    ``source_map`` intentionally keeps a short excerpt (500 chars) because it
+    is a public/UI contract.  The synthesizer needs the first-hand section text
+    though, so it gets a separate block with a larger per-source budget.
+    """
+    blocks: list[str] = []
+    for index, item in enumerate(results, 1):
+        title = str(item.get("title") or item.get("file_path") or f"来源 {index}")
+        section = str(item.get("section_title") or "").strip()
+        body = str(
+            item.get(SELECTED_BODY_KEY)
+            or item.get("body")
+            or item.get("story")
+            or item.get("summary")
+            or ""
+        )
+        body = re.sub(r"\s+", " ", body).strip()[:per_source_chars]
+        heading = f"[K{index}] {title}"
+        if section and section not in title:
+            heading += f" · {section}"
+        blocks.append(f"{heading}\n{body}" if body else heading)
+    return "\n\n".join(blocks)
+
+
+def _retrieve_knowledge_bundle(query: str, config, repo: CaptureRepo) -> dict:
+    """Retrieve and rank local sources without calling an LLM.
+
+    This is the shared retrieval core for both the legacy WeChat answer path
+    (``search_knowledge_base``) and the newer web/research paths
+    (``retrieve_knowledge_sources``).  Keeping the retrieval here means the
+    prompt and ``source_map`` are always built from the same deduped list.
+    """
     _log(f"QUERY: {query}")
     logger.info("[RAG] query=%r", query)
 
@@ -241,20 +268,32 @@ def _search_knowledge_base(
     existing_ids = {str(item.get("id") or "") for item in results}
     new_cards = [
         card
-        for card in _search_garden_cards(query, repo.conn, limit=3)
+        for card in _search_garden_cards(
+            query,
+            repo.conn,
+            limit=3,
+            query_embedding=query_embedding,
+        )
         if str(card.get("id") or "") not in existing_ids
     ]
     if new_cards:
         _log(f"CARDS: {len(new_cards)} hits")
         logger.info("[RAG] knowledge cards matched %d results", len(new_cards))
 
-    # Assemble with reserved seats: cards lead, literal keyword hits are
-    # guaranteed a slot, the rest is vector/graph evidence.  Appending them at
-    # the tail and slicing results[:7] silently dropped the exact-term hits.
-    slots_for_evidence = max(
-        0, MAX_RAG_SOURCES - len(new_cards) - len(keyword_hits)
+    # Reserve first-hand evidence seats, keyword seats, and at most two card
+    # seats.  Cards no longer win simply by being concatenated first; an
+    # isolated card is always demoted below evidence.
+    from bridge.retrieval_ranking import rank_sources
+
+    results = rank_sources(
+        evidence=results,
+        keywords=keyword_hits,
+        cards=new_cards,
+        max_sources=MAX_RAG_SOURCES,
+        evidence_reserved=2,
+        keyword_reserved=KEYWORD_RESERVED_SLOTS,
+        max_cards=2,
     )
-    results = new_cards + results[:slots_for_evidence] + keyword_hits
 
     if not results:
         used_fallback = True
@@ -265,13 +304,17 @@ def _search_knowledge_base(
     if not results:
         _log("NO_RESULTS")
         logger.info("[RAG] no results found")
-        return success_envelope(
-            agent="rag",
-            intent="search_knowledge_base",
-            chat_preview="无知识库资料：当前本地知识库没有可引用的资料。",
-            source_map=[],
-            meta={"query": query, "result_count": 0, "answer": "无知识库资料：当前本地知识库没有可引用的资料。"},
-        )
+        return {
+            "results": [],
+            "source_map": [],
+            "evidence_digest": "",
+            "context_pack": {},
+            "graph": graph,
+            "used_index": used_index,
+            "used_fallback": used_fallback,
+            "omitted_source_count": 0,
+            "titles": [],
+        }
 
     titles = [r.get("title") or r.get("file_path", "?") for r in results]
     _log(f"SOURCES: {json.dumps(titles, ensure_ascii=False)}")
@@ -283,11 +326,6 @@ def _search_knowledge_base(
         graph=graph,
     )
 
-    rag = RagAgent(
-        llm_api_key=config.llm_api_key,
-        llm_model=config.llm_model,
-        llm_base_url=config.llm_base_url or "https://api.deepseek.com",
-    )
     # Single point of numbering: dedupe + budget-trim ONCE, then use the
     # returned list for both the prompt and ``source_map``.  Rendering a
     # different (re-deduped) list is what used to shift every [n] by one.
@@ -301,6 +339,78 @@ def _search_knowledge_base(
         logger.info(
             "[RAG] prompt budget dropped %d sources", omitted_source_count
         )
+
+    return {
+        "results": results,
+        "source_map": [
+            _source_entry(item, index) for index, item in enumerate(results, 1)
+        ],
+        "evidence_digest": _evidence_digest(results),
+        "context_pack": context_pack,
+        "graph": graph,
+        "used_index": used_index,
+        "used_fallback": used_fallback,
+        "omitted_source_count": omitted_source_count,
+        "titles": titles,
+    }
+
+
+def retrieve_knowledge_sources(
+    query: str,
+    *,
+    context: KnowledgeContext | None = None,
+) -> dict:
+    """Pure retrieval entry point for the web/research paths.
+
+    No LLM is called here.  The returned ``source_map`` is safe for the public
+    API; ``evidence_digest`` is internal prompt material and can be much longer.
+    A stable ``run_id`` is returned so the final answer can attribute card
+    citations without a second LLM call.
+    """
+    if context is None:
+        config, repo = _init()
+    else:
+        config = context.config
+        repo = context.capture_repo()
+    bundle = _retrieve_knowledge_bundle(query, config, repo)
+    return {
+        "query": query,
+        "run_id": uuid.uuid4().hex,
+        **bundle,
+    }
+
+
+def _search_knowledge_base(
+    query: str,
+    config,
+    repo: CaptureRepo,
+    *,
+    export_file: bool = False,
+) -> dict:
+    bundle = _retrieve_knowledge_bundle(query, config, repo)
+    results = bundle["results"]
+    if not results:
+        return success_envelope(
+            agent="rag",
+            intent="search_knowledge_base",
+            chat_preview="无知识库资料：当前本地知识库没有可引用的资料。",
+            source_map=[],
+            meta={"query": query, "result_count": 0, "answer": "无知识库资料：当前本地知识库没有可引用的资料。"},
+        )
+
+    context_pack = bundle["context_pack"]
+    graph = bundle["graph"]
+    used_index = bundle["used_index"]
+    used_fallback = bundle["used_fallback"]
+    omitted_source_count = bundle["omitted_source_count"]
+    titles = bundle["titles"]
+    source_map = bundle["source_map"]
+
+    rag = RagAgent(
+        llm_api_key=config.llm_api_key,
+        llm_model=config.llm_model,
+        llm_base_url=config.llm_base_url or "https://api.deepseek.com",
+    )
     resp = rag.query(query, results, context_pack=context_pack)
     for item in results:  # internal field must never reach API/artifact
         item.pop(SELECTED_BODY_KEY, None)
@@ -321,9 +431,6 @@ def _search_knowledge_base(
     if export_file:
         chat_preview = "已生成 RAG 完整回答与引用报告文件。我会把文件发给你。"
 
-    source_map = [
-        _source_entry(item, index) for index, item in enumerate(results, 1)
-    ]
     citation_validation = validate_citations(resp["answer"], source_map)
     repaired = False
     if not citation_validation.valid and source_map and hasattr(rag, "repair_citations"):
@@ -554,6 +661,9 @@ def _source_entry(item: dict, index: int) -> dict:
         source_kind=str(item.get("source_kind") or ""),
         reading_session_id=str(item.get("reading_session_id") or ""),
         reading_draft_id=str(item.get("reading_draft_id") or ""),
+        score=item.get("score") if item.get("score") is not None else _SOURCE_REF_MISSING,
+        source_count=item.get("source_count") if item.get("source_count") is not None else _SOURCE_REF_MISSING,
+        citation_count=item.get("citation_count") if item.get("citation_count") is not None else _SOURCE_REF_MISSING,
     )
 
 
@@ -597,13 +707,28 @@ def _card_body_text(card: dict) -> str:
     return str(card.get("content_markdown") or "")
 
 
-def _search_garden_cards(query: str, conn, limit: int = 3) -> list[dict]:
-    """Recall the user's curated Knowledge Cards by literal keyword match.
+CARD_MIN_VECTOR_SCORE = 0.42
 
-    Cards are stored in the slim ``garden_cards`` table, so richer fields
-    (``source_theme``/``content_markdown``/``file_path``) are read opportunistically
-    via ``dict(row)``: older databases only have title/one_liner and still work.
+
+def _search_garden_cards(
+    query: str,
+    conn,
+    limit: int = 3,
+    *,
+    query_embedding: bytes | None = None,
+    threshold: float | None = None,
+) -> list[dict]:
+    """Recall curated Knowledge Cards by literal and vector match.
+
+    The card table already stores a 1024-dim embedding (added by the schema
+    migration).  Older databases may have NULL embeddings; those still work
+    through the literal path.  The vector and literal components are combined
+    by ``retrieval_ranking.card_score`` so the promotion rule is shared with
+    the slot allocator.
     """
+    from agents.embedder import cosine_similarity
+    from bridge.retrieval_ranking import card_score
+
     if conn is None or limit <= 0:
         return []
     keywords = _extract_query_keywords(query)
@@ -613,20 +738,23 @@ def _search_garden_cards(query: str, conn, limit: int = 3) -> list[dict]:
     try:
         rows = conn.execute(
             """SELECT id, title, one_liner, card_kind, source_theme,
-                      core_arguments, payload_json
+                      core_arguments, payload_json, capture_ids,
+                      embedding, citation_count, updated_at
                FROM garden_cards
                WHERE COALESCE(status, 'accepted') != 'archived'
+               ORDER BY COALESCE(citation_count, 0) DESC, updated_at DESC
                LIMIT 200"""
         ).fetchall()
     except Exception as exc:
         logger.debug("[RAG] garden_cards lookup unavailable: %s", exc)
         return []
 
-    scored: list[tuple[int, dict]] = []
+    gate = CARD_MIN_VECTOR_SCORE if threshold is None else float(threshold)
+    scored: list[tuple[float, dict]] = []
     for row in rows:
         card = dict(row)
         title = str(card.get("title") or "")
-        score = _garden_card_match_score(
+        raw_literal = _garden_card_match_score(
             keywords,
             needle,
             title=title.lower(),
@@ -635,15 +763,37 @@ def _search_garden_cards(query: str, conn, limit: int = 3) -> list[dict]:
             content=str(card.get("content_markdown") or "").lower(),
             arguments=str(card.get("core_arguments") or "").lower(),
         )
-        if score <= 0:
+        literal_score = round(min(1.0, raw_literal / 9.0), 6) if raw_literal > 0 else 0.0
+        vec_score = 0.0
+        embedding = card.get("embedding")
+        if query_embedding and embedding:
+            try:
+                vec_score = max(0.0, min(1.0, cosine_similarity(query_embedding, embedding)))
+            except Exception:
+                vec_score = 0.0
+        if vec_score < gate and literal_score <= 0:
             continue
-        scored.append((score, card))
+        try:
+            capture_ids = json.loads(card.get("capture_ids") or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            capture_ids = []
+        if not isinstance(capture_ids, list):
+            capture_ids = []
+        candidate = {
+            **card,
+            "vec_score": vec_score,
+            "literal_score": literal_score,
+            "source_count": len([item for item in capture_ids if str(item).strip()]),
+            "citation_count": int(card.get("citation_count") or 0),
+        }
+        candidate["score"] = card_score(candidate)
+        scored.append((candidate["score"], candidate))
     if not scored:
         return []
     scored.sort(key=lambda pair: pair[0], reverse=True)
 
     cards: list[dict] = []
-    for raw_score, row in scored[:limit]:
+    for _final_score, row in scored[:limit]:
         one_liner = str(row.get("one_liner") or "")
         cards.append(
             {
@@ -660,9 +810,11 @@ def _search_garden_cards(query: str, conn, limit: int = 3) -> list[dict]:
                 "source_kind": "garden_card",
                 "file_path": row.get("file_path")
                 or f"garden/{row.get('id', '')}.md",
-                # Literal match score normalised into the same 0..1 space as
-                # cosine hits instead of the old hard-coded 0.85.
-                "score": round(min(1.0, raw_score / 9.0), 3),
+                "score": round(float(row.get("score") or 0.0), 6),
+                "vec_score": round(float(row.get("vec_score") or 0.0), 6),
+                "literal_score": round(float(row.get("literal_score") or 0.0), 6),
+                "source_count": int(row.get("source_count") or 0),
+                "citation_count": int(row.get("citation_count") or 0),
             }
         )
     return cards

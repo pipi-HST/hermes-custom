@@ -453,6 +453,52 @@ _search_infra_module._fetch_url_summary = _fetch_url_summary
 # access via ``agents.source_registry.get_registry()``.
 
 
+def _record_web_answer_ledger(result: dict[str, Any], query: str) -> dict[str, Any]:
+    """Record the final web answer and its card citations exactly once.
+
+    The retrieval-only split means there is no ``RagAgent`` ledger row anymore.
+    Without this, "存为笔记" cannot find the latest full answer and card
+    ``citation_count`` never reflects web usage.  Keep it best-effort: a
+    bookkeeping failure must never fail an answer.
+    """
+    import os
+
+    if not isinstance(result, dict) or os.environ.get("PYTEST_CURRENT_TEST"):
+        # Tests frequently use fake adapters and a throwaway config; do not
+        # write a real agent_runs row from the test process.
+        return result
+    try:
+        from bridge.rag_bridge import _init, record_card_citations
+        from bridge.run_ledger import run_with_ledger
+
+        _config, repo = _init()
+        run_id_box: dict[str, str] = {}
+        recorded = run_with_ledger(
+            repo.conn,
+            agent="rag",
+            intent="web_context_answer",
+            trigger="web",
+            input_ref={"query": query},
+            operation=lambda: result,
+            run_id_out=run_id_box,
+        )
+        meta = recorded.get("meta") if isinstance(recorded, dict) else {}
+        meta = meta if isinstance(meta, dict) else {}
+        answer = str(meta.get("answer") or recorded.get("chat_preview") or "").strip()
+        source_map = recorded.get("source_map") if isinstance(recorded, dict) else []
+        if answer and isinstance(source_map, list):
+            record_card_citations(
+                repo.conn,
+                answer,
+                source_map,
+                query=query,
+                run_id=run_id_box.get("run_id", ""),
+            )
+        return dict(recorded)
+    except Exception:
+        return result
+
+
 def web_assist_answer(
     *,
     query: str,
@@ -491,7 +537,7 @@ def web_assist_answer(
         force_web=force_web,
     )
     result["intent"] = "web_assist_answer"
-    return result
+    return _record_web_answer_ledger(result, query)
 
 
 def _web_context_local_search(query: str, warnings: list[str]) -> tuple[str, list[dict[str, Any]]]:
@@ -610,7 +656,7 @@ def _web_assist_answer_impl(
     )
     result["meta"]["path"] = path_label
     result["meta"]["legacy_research"] = False
-    return result
+    return _record_web_answer_ledger(result, query)
 
 
 async def async_web_assist_answer(
@@ -648,7 +694,7 @@ async def async_web_assist_answer(
         force_web=force_web,
     )
     result["intent"] = "web_assist_answer"
-    return result
+    return _record_web_answer_ledger(result, query)
 
 
 async def async_light_web_answer(
@@ -794,7 +840,7 @@ async def _async_web_assist_answer_impl(
     result["meta"]["legacy_research"] = False
     if warnings:
         await _emit_research_event_async(event_callback, "warnings", warnings=_unique(warnings))
-    return result
+    return _record_web_answer_ledger(result, query)
 
 
 def _finalize_research_answer(

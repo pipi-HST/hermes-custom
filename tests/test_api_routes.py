@@ -462,6 +462,7 @@ def test_save_answer_draft_calls_bridge(client):
         output_type="local_learning_note",
         sources=[],
         target_capture_id="",
+        folder_path="",
     )
 
 

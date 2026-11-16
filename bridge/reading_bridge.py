@@ -49,14 +49,14 @@ logger = logging.getLogger(__name__)
 CLARIFY_OUTPUT_TYPE = (
     "你想整理成哪种？\n"
     "1. 原文增强版主笔记：保留文章主线，并把刚才讨论补进去\n"
-    "2. Capture Note：把这次卡住的概念/段落保存为知识文件\n"
+    "2. 资料笔记：把这次卡住的概念/段落保存为知识文件\n"
     "3. 知识卡片：提炼成以后可复用的观点、方法、事实或风险\n"
     "回复 1/2/3 即可。"
 )
 
 OUTPUT_TYPES = {
     "enhance_capture": "原文增强版主笔记",
-    "local_learning_note": "Capture Note",
+    "local_learning_note": "资料笔记",
     "knowledge_card": "知识卡片",
 }
 
@@ -640,6 +640,54 @@ def _commit_reading_artifact(draft_id: str = "", context: KnowledgeContext | Non
     )
 
 
+def _resolve_note_folder(conn, draft: dict, explicit: str = "") -> str:
+    """Resolve the logical topic folder for an answer-derived note.
+
+    Explicit UI selection wins.  Otherwise use a strict majority of the cited
+    local sources' ``capture_metadata.folder_path`` / card ``source_theme``;
+    ties or no majority fall back to Inbox instead of guessing.
+    """
+    from bridge.path_safety import safe_vault_relative_path
+
+    selected = safe_vault_relative_path(explicit, default="")
+    if selected:
+        return selected
+    meta = draft.get("meta_json") if isinstance(draft.get("meta_json"), dict) else {}
+    sources = meta.get("knowledge_sources") or meta.get("sources") or []
+    candidates: list[str] = []
+    for source in sources if isinstance(sources, list) else []:
+        if not isinstance(source, dict):
+            continue
+        source_id = str(source.get("id") or source.get("source_id") or "").strip()
+        if not source_id:
+            continue
+        kind = str(source.get("type") or source.get("source_kind") or "").lower()
+        row = None
+        if kind in {"garden_card", "knowledge_card"}:
+            row = conn.execute(
+                "SELECT source_theme FROM garden_cards WHERE id = ?", (source_id,)
+            ).fetchone()
+            folder = str(row["source_theme"] or "").strip() if row else ""
+        else:
+            row = conn.execute(
+                "SELECT folder_path FROM capture_metadata WHERE capture_id = ?",
+                (source_id,),
+            ).fetchone()
+            folder = str(row["folder_path"] or "").strip() if row else ""
+        folder = safe_vault_relative_path(folder, default="")
+        if folder:
+            candidates.append(folder)
+    if not candidates:
+        return "Inbox"
+    counts: dict[str, int] = {}
+    for folder in candidates:
+        counts[folder] = counts.get(folder, 0) + 1
+    best_folder, best_count = max(counts.items(), key=lambda item: (item[1], item[0]))
+    if best_count >= (len(candidates) + 1) // 2:
+        return best_folder
+    return "Inbox"
+
+
 def _commit_independent_note(
     config,
     vault_path: Path,
@@ -666,8 +714,13 @@ def _commit_independent_note(
     # Enrich frontmatter for better RAG identity embedding
     if draft_summary:
         frontmatter["story"] = draft_summary
-    metadata = draft.get("meta_json") if isinstance(draft.get("meta_json"), dict) else {}
-    metadata = metadata.get("metadata") if isinstance(metadata.get("metadata"), dict) else {}
+    draft_meta = draft.get("meta_json") if isinstance(draft.get("meta_json"), dict) else {}
+    explicit_folder = str(draft_meta.get("folder_path") or "").strip()
+    note_folder = _resolve_note_folder(capture_repo.conn, draft, explicit_folder)
+    frontmatter["folder_path"] = note_folder
+    if explicit_folder or note_folder != "Inbox":
+        frontmatter["source_kind"] = "topic_synthesis"
+    metadata = draft_meta.get("metadata") if isinstance(draft_meta.get("metadata"), dict) else {}
     metadata_tags = metadata.get("tags") if isinstance(metadata.get("tags"), list) else []
     tags = [str(tag).strip() for tag in metadata_tags if str(tag).strip()][:8]
     if not tags:
@@ -1213,9 +1266,9 @@ def _draft_title(session: dict, output_type: str) -> str:
     if output_type == "enhance_capture":
         return str(base)
     suffix = {
-        "local_learning_note": "Capture Note",
+        "local_learning_note": "资料笔记",
         "knowledge_card": "知识卡片",
-    }.get(output_type, "Capture Note")
+    }.get(output_type, "资料笔记")
     return f"{base}-{suffix}"
 
 
