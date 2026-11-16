@@ -11,7 +11,7 @@
 ## 架构
 
 ```
-微信/飞书 → Hermes Gateway (/Users/pipi/Downloads/hermes-agent-main)
+微信/飞书 → Hermes Gateway (<hermes-agent-main>)
               ↓
          AI Agent (deepseek-v4-pro) — Supervisor 路由
               ↓
@@ -29,7 +29,7 @@
 ## 目录结构
 
 ```
-/Users/pipi/hermes-custom/           # 本项目
+<hermes-custom>/           # 本项目
 ├── config.yaml                      # LLM密钥、vault路径、数据库路径
 ├── agents/
 │   ├── capture_agent.py             # 草稿工作流：create_draft→revise_draft→commit_draft
@@ -65,7 +65,7 @@
 │   └── rag.log                      # RAG 调用日志（query/命中数/来源）
 └── HANDOFF.md                       # 本文件
 
-/Users/pipi/Downloads/hermes-agent-main/  # Hermes 框架
+<hermes-agent-main>/  # Hermes 框架
 ├── tools/capture_tool.py                 # capture_content 工具注册
 ├── tools/refine_capture_tool.py          # refine_capture 工具注册（别名→revise）
 ├── tools/revise_capture_draft_tool.py    # revise_capture_draft 工具注册
@@ -205,7 +205,7 @@ capture_content → 存草稿 → revise → commit → 入库
 ## 配置
 
 ```yaml
-# /Users/pipi/hermes-custom/config.yaml
+# <hermes-custom>/config.yaml
 llm:
   provider: deepseek
   model: deepseek-v4-pro
@@ -219,7 +219,7 @@ qwen:
   api_key: "sk-..."  # 用于向量嵌入
 
 database:
-  path: "/Users/pipi/hermes-custom/data/captures.db"
+  path: "<hermes-custom>/data/captures.db"
 ```
 
 ## 运行命令
@@ -242,7 +242,7 @@ HERMES_API_TOKEN='<replace-with-random-token>' \
   .venv/bin/python -m uvicorn api.main:create_app --factory --host 0.0.0.0 --port 8000
 
 # 启动 Next.js 仪表盘（port 3000）
-cd /Users/pipi/hermes-custom/dashboard
+cd <hermes-custom>/dashboard
 npm run dev
 
 # 查看 RAG 调用日志
@@ -255,7 +255,7 @@ tail -f data/rag.log
 
 2. **DB schema 迁移**：`schema.py` 内有自动迁移逻辑（`_migrate_captures_table`），一般无需手动删库。若出现列不存在的错误，先删旧库：
    ```bash
-   rm -f /Users/pipi/hermes-custom/data/captures.db*
+   rm -f <hermes-custom>/data/captures.db*
    ```
 
 3. **标题为"未命名"**：纯文本输入无标题时，slug 生成 `untitled`。标题提取逻辑在 `_derive_title()`（capture_agent.py 底部）。
