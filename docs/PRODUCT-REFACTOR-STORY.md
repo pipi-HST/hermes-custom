@@ -459,7 +459,7 @@ PermissionError: [WinError 5] 拒绝访问。
 | 搜索阶段 | 6.1 s（search_backend = deepseek） |
 | 候选 / 采纳 | 30 / 6 |
 | 抽取状态 | 6 条全部 `summary`，0 条 full fetch |
-| 用例判定 | `passed=False`（历史运行；2026-11-16 按 assist 路径修正契约后重跑为 `1/1 passed`，见 §8.16） |
+| 用例判定 | `passed=False`（历史运行；2026-11-16 按 assist 路径修正契约后单例 `1/1 passed`，完整 5 例为 `4/5`，见 §8.16） |
 
 这说明两件事：一是轻量链路的**端到端确实落在 20~30 秒量级**，不再是 130 秒；二是**摘要优先策略真的跳过了全部正文抓取**，和阈值标定暴露的问题一样，属于"延迟降了、但证据强度下降"的同一类权衡，需要按问题类型区分（概念题可只吃摘要，需要论证的题必须 fetch）。
 
@@ -521,7 +521,7 @@ reliable adopted web sources below minimum when answered: 0 < 1
 
 - **阈值路线**：当前是 `0.46` + identity/section 分阈值 + 字面词豁免 + FTS 保底席位；rerank / 分数融合仍未实现，单阈值只做首轮粗筛。
 - **卡片级召回**：benchmark 修复 query embedding 传递后，q10/q11/q12/q14/q15/q16 的卡片目标为 6/6；生产路径仍需用真实卡片库复核，不能只凭 benchmark 宣称线上卡片召回已满。
-- **Canary**：2026-11-16 在普通终端重跑 `--live --canary --limit 1 --case-timeout 0` 已 `1/1 passed`（34.1s）；canary 契约已按 assist/web_context 路径区分（不再要求 legacy 的 `rejected>=1`，summary-only 来源可计入可用证据）。这只是单例，完整 5 例 canary 仍需跑。
+- **Canary**：2026-11-16 重跑 `--live --canary --limit 1 --case-timeout 0` 为 `1/1 passed`；完整 5 例为 **4/5 passed**，`concept_coding_agent` 仍在 critic 阶段失败（`claim definition was not supported`）。canary 契约已按 assist/web_context 路径区分，但概念题的证据支持仍需修，不能写“端到端质量已全部通过”。
 - **统计功效**：benchmark 已扩到 10 条负样本，但 G1–G3 仍漏 1 条（9/10）；judge 已扩到 n=8（5/8 vs 8/8），仍只能写方向性。
 
 ---
