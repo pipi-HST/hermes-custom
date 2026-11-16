@@ -34,6 +34,24 @@ CASES = [
 ]
 
 
+def evaluate_rows(
+    rows: list[dict], target_id: str, gate: float
+) -> tuple[float, int, bool]:
+    """Return (top1_score, target_rank, passed) for one demo case."""
+    seen: list[str] = []
+    best: dict[str, float] = {}
+    for row in rows:
+        cid = str(row.get("capture_id") or "")
+        score = float(row.get("score") or 0.0)
+        if cid and cid not in best:
+            best[cid] = score
+            seen.append(cid)
+    ranked = [cid for cid in seen if best[cid] >= gate]
+    top1 = max(best.values()) if best else 0.0
+    rank = ranked.index(target_id) + 1 if target_id in ranked else -1
+    return top1, rank, rank > 0
+
+
 def main() -> int:
     config = load_config()
     conn = init_db(str(config.db_path))
@@ -45,18 +63,7 @@ def main() -> int:
     passed = 0
     for capture_id, query in CASES:
         rows = repo.search(embedder.embed(query), kinds=("identity", "section"), limit=20)
-        seen: list[str] = []
-        best: dict[str, float] = {}
-        for row in rows:
-            cid = str(row.get("capture_id") or "")
-            score = float(row.get("score") or 0.0)
-            if cid and cid not in best:
-                best[cid] = score
-                seen.append(cid)
-        ranked = [cid for cid in seen if best[cid] >= gate]
-        top1 = max(best.values()) if best else 0.0
-        rank = ranked.index(capture_id) + 1 if capture_id in ranked else -1
-        ok = rank > 0
+        top1, rank, ok = evaluate_rows(rows, capture_id, gate)
         passed += 1 if ok else 0
         print(
             f"{query[:38]:<40} {top1:>6.3f} {capture_id[:7]:>7} {rank:>5}  "

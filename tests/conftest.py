@@ -103,7 +103,11 @@ def pytest_addoption(parser):
 def pytest_collection_modifyitems(config, items):
     if config.getoption("--run-browser"):
         return
-    skip_browser = pytest.mark.skip(reason="browser e2e: pass --run-browser to run")
+    # Chromium's crashpad can kill the whole pytest process on Windows; keep
+    # the opt-in there, but let Linux/macOS CI exercise the browser path.
+    if os.name != "nt":
+        return
+    skip_browser = pytest.mark.skip(reason="browser e2e on Windows: pass --run-browser to run")
     for item in items:
         if Path(str(item.fspath)).name in BROWSER_TEST_FILES:
             item.add_marker(skip_browser)

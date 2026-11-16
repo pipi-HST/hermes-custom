@@ -93,17 +93,14 @@ def _garden_cards_for_captures(
     limit: int,
 ) -> list[dict[str, Any]]:
     wanted = set(capture_ids)
-    if not wanted:
+    if not wanted or not _table_columns(conn, "garden_cards"):
         return []
-    try:
-        rows = conn.execute(
-            """SELECT id, title, one_liner, core_arguments, knowledge_links, capture_ids
-               FROM garden_cards
-               WHERE status != 'archived'
-               ORDER BY updated_at DESC"""
-        ).fetchall()
-    except Exception:
-        return []
+    rows = conn.execute(
+        """SELECT id, title, one_liner, core_arguments, knowledge_links, capture_ids
+           FROM garden_cards
+           WHERE status != 'archived'
+           ORDER BY updated_at DESC"""
+    ).fetchall()
     cards = []
     for row in rows:
         card_capture_ids = _json_list(row["capture_ids"])
@@ -115,19 +112,16 @@ def _garden_cards_for_captures(
 
 
 def _garden_cards_by_ids(conn, card_ids: list[str], *, limit: int) -> list[dict[str, Any]]:
-    if not card_ids:
+    if not card_ids or not _table_columns(conn, "garden_cards"):
         return []
     placeholders = ",".join("?" for _ in card_ids)
-    try:
-        rows = conn.execute(
-            f"""SELECT id, title, one_liner, core_arguments, knowledge_links, capture_ids
-                FROM garden_cards
-                WHERE id IN ({placeholders}) AND status != 'archived'
-                ORDER BY updated_at DESC""",
-            tuple(card_ids),
-        ).fetchall()
-    except Exception:
-        return []
+    rows = conn.execute(
+        f"""SELECT id, title, one_liner, core_arguments, knowledge_links, capture_ids
+            FROM garden_cards
+            WHERE id IN ({placeholders}) AND status != 'archived'
+            ORDER BY updated_at DESC""",
+        tuple(card_ids),
+    ).fetchall()
     return [_garden_card_dict(row, _json_list(row["capture_ids"])) for row in rows[:limit]]
 
 
