@@ -270,10 +270,13 @@ def test_search_knowledge_base_accepts_explicit_context(monkeypatch, tmp_path):
             return _vec(1.0, 0.0)
 
     class FakeRagAgent:
+        seen_capture_ids: list[str] = []
+
         def __init__(self, **_kwargs):
             pass
 
         def query(self, _question, captures, *, context_pack=None):
+            FakeRagAgent.seen_capture_ids = [str(item.get("id")) for item in captures]
             return {
                 "answer": "显式 context 能完成检索。[1]",
                 "sources": [
@@ -305,6 +308,7 @@ def test_search_knowledge_base_accepts_explicit_context(monkeypatch, tmp_path):
     assert envelope["status"] == "success"
     assert envelope["meta"]["answer"] == "显式 context 能完成检索。[1]"
     assert envelope["source_map"][0]["section"] == "第二部分"
+    assert [item["id"] for item in envelope["source_map"]] == FakeRagAgent.seen_capture_ids
     assert CaptureRepo(context.conn).get_by_id("cap1") is not None
 
 
