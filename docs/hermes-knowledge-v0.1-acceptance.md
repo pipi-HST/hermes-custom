@@ -250,6 +250,16 @@ Hermes 主 Agent 是唯一入口，负责理解你的微信/飞书消息、判�
 - 重置脚本：`pytest tests/test_reset_hermes_local_data.py tests/test_reset_smoke.py -q`
 - 前端构建：在 `hermes-agent-main/web` 运行 `npm run build`
 
+当前验收记录：
+
+- [x] 后端全量 pytest（Windows 实测 1300+ 用例，0 failed；以收集数为准）
+- [x] 评测阈值契约 `tests/test_eval_rag_benchmark.py`
+- [x] 重置脚本 `tests/test_reset_hermes_local_data.py` / `tests/test_reset_smoke.py`
+- [x] 产品分层单测 `tests/test_knowledge_product_e2e.py`
+- [x] 前端构建 `npm run build`
+- [ ] 微信/飞书真实账号 `connected`（人工，需外部账号）
+- [ ] Obsidian/Canvas 目视检查（人工，历史兼容项）
+
 微信/飞书“connected”、Obsidian/Canvas 目视类检查仍是人工项，不要把它们写成自动通过。
 
 当前主线还建议保留这些重点测试文件：
