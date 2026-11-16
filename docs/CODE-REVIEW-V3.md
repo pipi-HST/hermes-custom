@@ -462,3 +462,23 @@ chunks from a single 3000-char paragraph: 2 [3000, 211]
 | T13 卡片候选 `LIMIT 200` | 已改为 200 行分页、最多扫描 2000 张；测试覆盖后页命中 |
 | T26 巨型页面组件 | 已拆出 `KnowledgeLibraryHeader` 与 `KnowledgeLibrarySidebar`；主组件约 1.8k 行，页面文件仍包含共用 helper，后续可继续下沉 |
 | P10 `web_only` UI 不可达 | 产品决策保留二态开关（local_only/local_web）+ `force_web`；`web_only` 仅作 API/历史兼容，不在 UI 暴露。若后续删除死分支，需同步兼容测试 |
+
+### 10.5 验收线（2026-11-17 定稿）
+
+本轮验收线定为 **「本轮相关套件 + 前端 build + 服务健康全绿」**，全量套件里 Windows 平台专属用例单独记录为环境限制，不作为本轮阻塞项。
+
+| 验收项 | 结果 |
+| :-- | :-- |
+| `hermes-custom` 全量 `pytest tests` | **exit 0**（全部通过，含 RAG / repair / reset / schema / library / research） |
+| `hermes-agent-main` 本轮相关套件 | **764 passed, 87 skipped, exit 0**（gateway discord、ACP、CLI/cron 平台隔离、knowledge client/toolsets、tui_gateway research、search hidden dirs） |
+| 前端构建 | `hermes-agent-main/web` → `npm run build` **exit 0**，✓ built in 16.06s |
+| Knowledge API | `/api/health` → `status=ok`、`database=ok`、`vault=ok`、`version=d92886b` |
+| Dashboard | `/api/status` → `gateway_running=true`、`gateway_state=running` |
+
+Windows 平台限制（单独记录，不计入验收线）：
+
+- `tests/gateway/test_config_env_bridge_authority.py`：Windows 子进程导入 `gateway.run` 触发 `WinError 10106`，模块级 skip。
+- `tests/gateway/test_discord_allowed_mentions.py` / Discord mock 顺序：相关套件内单独验证通过；全量组合运行曾受其他 mock 顺序影响，已用 gateway 专项命令复验。
+- `prompt_toolkit` 控制台、POSIX 0600/0700 权限、Windows symlink 权限、bash cron / inline shell、Windows `cr_frame` / ProactorEventLoop 管道：这些用例在 Windows 上 skip，Linux/macOS CI 仍会执行。
+
+以上限制不改变「相关套件 + build + 服务健康」的验收结论。
