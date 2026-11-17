@@ -30,9 +30,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_ROOT = Path(
     os.environ.get(
         "HERMES_RUNTIME_ROOT",
-        "/Users/pipi/Downloads/hermes-agent-main",
+        str(PROJECT_ROOT.parent / "hermes-agent-main"),
     )
 ).expanduser()
+
+
+def _venv_python(root: Path) -> Path:
+    """Return the checkout's venv Python on Windows or POSIX."""
+    if os.name == "nt":
+        return root / ".venv" / "Scripts" / "python.exe"
+    return root / ".venv" / "bin" / "python"
+
+
 E2E_SIGNAL = "HERMES-E2E-PIPELINE-SIGNAL"
 BROWSER_E2E_SIGNAL = "HERMES-E2E-BROWSER-SIGNAL"
 BROWSER_E2E_TITLE = "Browser Real Pipeline Article"
@@ -84,7 +93,7 @@ def run_pipeline_e2e(
         env = _subprocess_env(paths, embedding_base_url)
         api_process, api_log = _start_process(
             [
-                str(PROJECT_ROOT / ".venv/bin/python"),
+                str(_venv_python(PROJECT_ROOT)),
                 "-m",
                 "uvicorn",
                 "api.main:create_app",
@@ -100,7 +109,7 @@ def run_pipeline_e2e(
         )
         runtime_process, runtime_log = _start_process(
             [
-                str(RUNTIME_ROOT / ".venv/bin/python"),
+                str(_venv_python(RUNTIME_ROOT)),
                 "-m",
                 "hermes_cli.main",
                 "dashboard",
@@ -520,7 +529,7 @@ def _rag_pipeline(
         "print('E2E_RESULT='+json.dumps(result, ensure_ascii=False))"
     )
     completed = subprocess.run(
-        [str(PROJECT_ROOT / ".venv/bin/python"), "-c", code],
+        [str(_venv_python(PROJECT_ROOT)), "-c", code],
         cwd=paths["custom_root"],
         env=env,
         capture_output=True,
@@ -862,7 +871,7 @@ def _run_bridge_subprocess(
 ) -> tuple[subprocess.CompletedProcess, dict[str, Any]]:
     code = f"import json; {statement}; print('E2E_RESULT='+json.dumps(result, ensure_ascii=False))"
     completed = subprocess.run(
-        [str(PROJECT_ROOT / ".venv/bin/python"), "-c", code],
+        [str(_venv_python(PROJECT_ROOT)), "-c", code],
         cwd=paths["custom_root"],
         env=env,
         capture_output=True,
