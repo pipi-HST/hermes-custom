@@ -1,15 +1,15 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-17
-verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+last_verified: 2026-11-18
+verified_against: "3e6b974 (hermes-custom) + 2026-11-18 并行修复分支"
 ---
 
 # Hermes Knowledge Context
 
 > **当前术语表：** [GLOSSARY.md](GLOSSARY.md)。
 > **当前架构：** [ARCHITECTURE.md](ARCHITECTURE.md)。
-> `Knowledge Map / Knowledge Area / Map Proposal / Health Report` 目前是 **deferred** 设计，不是已实现功能；实现前不要把这段当作当前产品说明。
+> `Knowledge Map / Knowledge Area / Map Dimension / Map Entry / Map Proposal / Knowledge Health Check / Health Report` 都是 **deferred 设计稿词汇**，没有代码、表或接口；不要用它们描述已实现的 `Topic` 或 `Theme View`。
 
 Hermes is a personal knowledge-management system where WeChat/Hermes inputs become a reviewable Knowledge Workflow: confirmed material may become Knowledge Files, while reusable views, cards, graph relationships, and review state live as structured Web/DB objects.
 
@@ -32,7 +32,7 @@ Long answers, extracted material, and generated reports should be available as d
 
 ## Product Vocabulary
 
-Default user-facing terms:
+Implemented user-facing terms:
 
 | Term | User meaning | Internal implementation may include |
 | --- | --- | --- |
@@ -40,15 +40,29 @@ Default user-facing terms:
 | Reading Session | A temporary discussion around one or more sources | reading sessions, turns, evidence, reading drafts |
 | Draft | Reviewable AI output before durable write | capture drafts, reading drafts, garden drafts |
 | Knowledge File | A persistent Markdown knowledge file | Capture Note, Raw Evidence |
-| Theme View | A Web view that groups material around a theme | theme candidates, graph edges, on-demand Markdown export |
-| Knowledge Map | The confirmed navigation structure for Hermes Knowledge | knowledge areas, map dimensions, map entries, confirmed map items |
-| Knowledge Area | A top-level area inside the Knowledge Map | interview library, animal encyclopedia, AI product materials |
-| Map Proposal | A reviewable AI suggestion for changing the Knowledge Map | proposed areas, dimensions, entries, item assignments |
-| Knowledge Health Check | A user-invoked Theme Agent assessment of map and material structure | Health Report, unassigned material counts, suggested map changes |
+| Topic | The folder-based subject a Capture or Knowledge Card belongs to | `folder_path`, `capture_metadata.folder_path`, `garden_cards.source_theme`, `knowledge_folders.json` |
+| Theme View | An advanced view that groups material around a theme | theme scan, `pending_questions`, `knowledge_edges`, optional Markdown export |
 | Knowledge Card | A structured reusable knowledge object | Garden Card, `garden_cards`, card payload JSON |
+| Library | Browse, filter and edit committed material and topics | library views, `capture_metadata` |
+| Review | Scheduled recall of knowledge points | `review_items`, daily review |
+| Research | Answer questions from local knowledge plus public web sources | research bridge, `agents/research`, run ledger |
 | Source | Citable evidence used by AI output | Capture, Capture Section, Theme View, Knowledge Card, Source Map |
 
-Avoid making normal users think in these implementation terms by default: Agent names, Theme scan, MOC, Canvas, Run Ledger, embedding index, or raw database table names.
+Avoid making normal users think in these implementation terms by default: Agent names, Theme scan, MOC, Canvas, Run Ledger, embedding index, deferred map vocabulary, or raw database table names.
+
+## Deferred Design Vocabulary
+
+These are design-draft terms for a possible future navigation model. **None of them is implemented**: there is no table, API, or user surface for them in the current service. ADR 0005 remains deferred. Do not use them as default user words, and do not confuse them with the implemented **Topic** or **Theme View**.
+
+| Term | Design intent (not current behavior) |
+| --- | --- |
+| Knowledge Map | A confirmed navigation structure for Hermes Knowledge, divided into Knowledge Areas, dimensions, and entries |
+| Knowledge Area | A top-level library-like area inside the Knowledge Map |
+| Map Dimension | A confirmed index axis inside one Knowledge Area |
+| Map Entry | A named entry under one Map Dimension |
+| Map Proposal | A reviewable AI suggestion for changing the Knowledge Map |
+| Knowledge Health Check | A user-invoked assessment of map and material structure |
+| Health Report | The readable output of a Knowledge Health Check |
 
 ## Language
 
@@ -81,8 +95,8 @@ A topic concept that groups related **Capture Notes** around a recurring subject
 _Avoid_: MOC, tag, garden card.
 
 **Theme View**:
-The Web view for a **Theme**. It groups related material, open questions, and graph relationships without requiring a standing Markdown page.
-_Avoid_: Theme Page as the primary business term, MOC, garden card.
+An advanced view that groups related material, open questions, and graph relationships around a **Theme** without requiring a standing Markdown page. Its real storage is `pending_questions`, `knowledge_edges`, and `captures.theme_scanned_at`; Markdown under `themes/` is only an optional export. It is not the default word for **Topic**.
+_Avoid_: using Theme View as the default word for 专题, Theme Page as the primary business term, MOC, garden card.
 
 **Theme Page**:
 The legacy name for a Markdown export or older Obsidian-backed representation of a **Theme View**.
@@ -92,9 +106,13 @@ _Avoid_: using Theme Page for the current product model unless explicitly discus
 A legacy page structure that links related notes and questions; it is a writing/export pattern, not the main domain term.
 _Avoid_: using MOC when the domain meaning is Theme or Theme View.
 
+### Deferred design vocabulary (not implemented)
+
+The following definitions are design notes only. They are not current product behavior, not default user vocabulary, and have no table or API.
+
 **Knowledge Map**:
-The confirmed navigation structure for the Hermes Knowledge context. In the first version Hermes Knowledge has one Knowledge Map, and that map is divided into **Knowledge Areas** before area-specific dimensions and entries.
-_Avoid_: graph, MOC, folder tree, multiple competing maps, separate knowledge base, deleting underlying material when deleting map structure.
+The proposed navigation structure for the Hermes Knowledge context. In the design draft, Hermes Knowledge has one Knowledge Map, divided into **Knowledge Areas** before area-specific dimensions and entries.
+_Avoid_: describing current behavior; graph, MOC, folder tree, multiple competing maps, separate knowledge base, deleting underlying material when deleting map structure.
 
 **Knowledge Area**:
 A top-level library-like area inside the **Knowledge Map**, such as high-quality human interviews, animal encyclopedia, or AI product materials. It may be created manually before dimensions exist, may later receive AI-proposed dimensions, and the same material may belong to multiple Knowledge Areas.
@@ -119,6 +137,8 @@ _Avoid_: scheduled automatic map update, Knowledge Map, graph report.
 **Health Report**:
 The durable readable output of a **Knowledge Health Check**, summarizing coverage, unassigned material, and suggested follow-up. It is not itself part of the long-term **Knowledge Map**.
 _Avoid_: Knowledge Map, permanent dimension, Map Entry.
+
+### Implemented domain terms (continued)
 
 **Open Question**:
 An unresolved question kept in a **Theme View** when there is not yet a current viewpoint or hypothesis.
@@ -198,17 +218,18 @@ Next Actions that write durable artifacts, delete or repair data, create knowled
 
 ## Flagged Ambiguities
 
+- **Knowledge Map**, **Knowledge Area**, **Map Dimension**, **Map Entry**, **Map Proposal**, **Knowledge Health Check**, and **Health Report** are deferred design-draft terms. No current table, API, or user surface implements them. Do not use them as default words for **Topic** or **Theme View**.
 - "Capture" was previously used for an agent, an action, a directory, a SQLite table, and a Markdown note. Resolved: use **Capture** for the intake action, **Capture Draft** for pre-commit working material, and **Capture Note** for the committed processed Markdown note.
-- "Theme" and "MOC" were previously mixed. Resolved: **Theme** is the topic concept, **Theme View** is the current Web product object, **Theme Page** is legacy/export language, and **MOC** is a legacy page structure.
+- "Theme" and "MOC" were previously mixed. Resolved: **Topic** is the default folder-based user word; **Theme View** is the implemented advanced view; **Theme Page** is legacy/export language; **MOC** is a legacy page structure.
 - "Garden Card" is now treated as an implementation/legacy name for **Knowledge Card**. Use **Knowledge Card** in normal user-facing copy unless referring to code or database tables.
-- "Knowledge Graph" and **Knowledge Map** must not be mixed. A Knowledge Map is the confirmed navigation structure for Hermes Knowledge; a graph is a relationship browser or relationship data.
-- **Knowledge Health Check** and **Knowledge Map** must not be mixed. A Health Check can produce a report and proposal, but it does not proactively or automatically rewrite the confirmed map.
-- A **Health Report** is a **Durable Artifact**, not a **Knowledge Map** object and not default RAG evidence.
-- A **Map Proposal** is a reviewable state object, not a **Durable Artifact**. It may be referenced by a Health Report or Agent Result Envelope.
-- **Map Entry** and **Theme View** are close in the UI but distinct in the domain. A Map Entry is the user's navigation entry; a Theme View is an optional deeper workspace for a theme-like entry.
-- "Knowledge Base" is not a first-version Knowledge domain boundary. What may feel like different knowledge bases to the user should usually be modeled as **Knowledge Areas** unless there is a separate storage, reset, permission, or retrieval boundary.
-- **Knowledge Area** is not an exclusive folder. Material may appear in multiple Knowledge Areas when there is evidence for each placement.
-- **Map Dimension** is not a mutually exclusive category tree. It is an index perspective inside a Knowledge Area, so the same material may appear under multiple dimensions and entries.
+- "Knowledge Graph" and **Knowledge Map** must not be mixed. A Knowledge Graph is the implemented relationship browser over `knowledge_edges`; a Knowledge Map is only a deferred design term.
+- **Knowledge Health Check** and **Knowledge Map** are both deferred; if that model is ever built, a Health Check may produce a report and proposal but must not automatically rewrite confirmed structure.
+- A **Health Report** is a deferred design artifact, not a current Knowledge Map object and not default RAG evidence.
+- A **Map Proposal** is a deferred reviewable state object, not a **Durable Artifact**.
+- **Map Entry** and **Theme View** are both design-adjacent terms, but only **Theme View** is implemented. Do not describe a current Theme View as a Map Entry.
+- "Knowledge Base" is not a first-version Knowledge domain boundary. In the current product, use **Library** for browsing and **Topic** for folder-based grouping; **Knowledge Area** belongs to the deferred map design only.
+- **Knowledge Area** is a deferred design term, not a current folder or storage boundary.
+- **Map Dimension** is a deferred design term, not a current category tree.
 - A **Knowledge Card** can look like a long-running question, but a pure unresolved question belongs as an **Open Question** in a **Theme View**. A Knowledge Card must contain reusable knowledge, not only a question.
 - **Obsidian vault** is legacy storage language. It may be used as an optional external Markdown editor, but it is no longer the primary product carrier or storage truth.
 - A **Seed Garden Card** is not the user's accepted view. Only an **Accepted Garden Card** may be described by RAG as "the user's view."
@@ -236,7 +257,7 @@ Domain expert: "No. A Capture Note is processed material. A Knowledge Card is wh
 
 Dev: "Should the agent create a MOC for this?"
 
-Domain expert: "Say Theme View. Markdown export may use a MOC-like structure, but the domain object is the Theme View."
+Domain expert: "Say Topic for the folder-based subject. If you need the advanced aggregation, say Theme View. Markdown export may use a MOC-like structure, but MOC is not the domain word."
 
 Dev: "Can we make a Knowledge Card called 'Why does AI engineering get stuck in organizations?'"
 

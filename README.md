@@ -1,8 +1,8 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-17
-verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+last_verified: 2026-11-18
+verified_against: "3e6b974 (hermes-custom) + 2026-11-18 并行修复分支"
 ---
 
 # Hermes Knowledge
@@ -15,8 +15,8 @@ Hermes Knowledge 是 Hermes 的**知识库能力层**：把微信、飞书、网
 
 | 仓库 | 作用 |
 |---|---|
-| `hermes-custom`（本仓库） | Capture、Library、Reading、RAG、Theme、Knowledge Card、Review、Canvas bridge、Knowledge API、SQLite / Knowledge File 存储 |
-| `hermes-agent-main` | 微信 / 飞书网关、工具注册、主 Agent、用户侧 Dashboard（默认 `127.0.0.1:9119`） |
+| `hermes-custom`（本仓库） | Capture、Library / Topic、Reading、RAG、Theme、Knowledge Card、Review、Canvas、Research、Librarian、Answer、Knowledge Graph、Folder write jobs、Run ledger、Knowledge API、SQLite / Knowledge File 存储 |
+| `hermes-agent-main` | 微信 / 飞书网关、工具注册、主 Agent、用户侧原生 Dashboard（默认 `127.0.0.1:9119`） |
 | `hermes-life`（可选） | Life Assistant；不在本仓库，未配置时 Life 工具会返回明确的错误信封 |
 
 ```text
@@ -29,17 +29,23 @@ Hermes Runtime（gateway / tools / dashboard）
         v
 Hermes Knowledge Service（FastAPI，默认 127.0.0.1:8000）
         |
+        +-- Capture / Library & Topic / Reading / RAG / Theme / Card / Review
+        +-- Canvas / Research / Librarian / Answer / Knowledge Graph
+        +-- Folder write jobs / Run ledger
         +-- SQLite：卡片、主题、复习、运行记录
         +-- Knowledge Files：captures/*.md、_archive/raw/*.md
         +-- 专题注册表：<vault>/.hermes/knowledge_folders.json
 ```
+
+Research 是独立研究子系统：入口为 `bridge/research_bridge.py`，实现代码在 `agents/research/`（planner / synthesis / evidence / orchestration，约 8800 行；基线 `3e6b974` 仍位于 `bridge/research/`，迁移在并行分支进行）。
 
 ## 当前状态
 
 - Knowledge 全量测试：收集数见 `docs/CURRENT-STATE.md`；维护者环境最近一次全量运行 exit 0。
 - 推荐部署：Runtime 通过 HTTP 调 Knowledge Service。
 - 本地 checkout 模式（`HERMES_KNOWLEDGE_LOCAL_ROOT`）只用于开发和离线调试。
-- 当前仍有一部分 Runtime Dashboard 路由保留本地回退；见 `ARCHITECTURE.md` 的“当前拆分状态”。
+- 用户侧只有 Hermes Runtime 原生 Dashboard（`127.0.0.1:9119`）。本仓库旧的 Next.js 自定义 Dashboard 已删除，不再提供 `npm run dev` 入口。
+- 当前仍有一部分 Runtime Dashboard 读路由保留本地回退；见 `ARCHITECTURE.md` 的“当前拆分状态”。
 
 ## 5 分钟启动（Windows）
 

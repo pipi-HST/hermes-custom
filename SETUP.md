@@ -1,8 +1,8 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-17
-verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+last_verified: 2026-11-18
+verified_against: "3e6b974 (hermes-custom) + 2026-11-18 并行修复分支"
 ---
 
 # Hermes Knowledge 启动说明
@@ -13,7 +13,7 @@ verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-
 
 这个仓库现在只管 Hermes 的知识库能力层。
 
-它负责 Capture、Library、RAG、Theme View、Garden / Knowledge Cards、Review、Canvas bridge、Knowledge File 同步和 Knowledge API。Life Assistant 已经拆到独立仓库，不再放在这里。
+它负责 Capture、Library / Topic、Reading、RAG、Theme、Knowledge Card、Review、Canvas、Research、Librarian、Answer、Knowledge Graph、Folder write jobs、Run ledger、Knowledge File 同步和 Knowledge API。Life Assistant 已经拆到独立仓库，不再放在这里。
 
 ## 三个仓库分别管什么
 
@@ -70,11 +70,11 @@ True
 False
 ```
 
-## Knowledge Dashboard
+## 用户侧 Dashboard
 
-`<repos>/hermes-custom/dashboard` 是旧的自定义 Next.js Dashboard，已经废弃。`dashboard/package.json` 中的 `dev`、`build`、`start` 会主动退出并提示使用 Hermes runtime dashboard。
+本仓库不再包含自定义 Dashboard：旧的 Next.js 项目（`dashboard/`，端口 3000）已于 2026-06-16 废弃、2026-11-18 删除。不要再按 `npm run dev` 启动它。
 
-当前用户侧 Dashboard 由 Hermes Runtime 提供，默认地址是：
+当前用户侧只有一个 Dashboard，由 Hermes Runtime 提供，默认地址是：
 
 ```text
 http://127.0.0.1:9119/
@@ -84,10 +84,10 @@ http://127.0.0.1:9119/
 
 ```bash
 cd <repos>/hermes-agent-main
-.venv/bin/python hermes dashboard
+.venv/bin/python -m hermes_cli.main dashboard
 ```
 
-如果需要查看旧 Dashboard 的历史说明，读 `dashboard/DEPRECATED.md`，不要再按旧 `npm run dev` 路径启动。
+服务端的 `api/routes/dashboard_read.py` 为这个原生 Dashboard 提供草稿、卡片详情、依赖和时间线读形状；`api/routes/captures.py` 的 `GET /api/captures` 也是 Runtime client 使用的服务 API。两者都保留，不属于已删除的 Next.js 项目。
 
 ## 启动 Hermes Runtime
 
