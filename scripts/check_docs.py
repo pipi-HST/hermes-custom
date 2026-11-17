@@ -20,6 +20,7 @@ CURRENT_DOCS = [
     "docs/PRODUCT-REFACTOR-STORY.md",
     "docs/PLAN-P10-T9-T26.md",
     "docs/local-data-reset-runbook.md",
+    "docs/folder-write-jobs.md",
 ]
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 

@@ -5,5 +5,5 @@
 - Date: 2026-11-17
 - Branch: `main`
 - Commit: see `git log -1` (this file is generated before its own commit)
-- Tests collected: 1313
+- Tests collected: 1314
 - SQLite business tables: 24
