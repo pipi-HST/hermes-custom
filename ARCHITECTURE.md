@@ -114,6 +114,8 @@ Runtime 的 envelope 工具统一通过 `bridge/result_envelope.py` 返回结果
    - Canvas：`bridge/canvas_bridge.py`（只导出）
    - Librarian：`bridge/librarian_bridge.py`（审计；修复委托 `agents/library_agent.py`）
 
+   `docs/INVENTORY.md` 的 “Table writers” 是代码级清单，不是“每张表只能有一个 SQL 文件”。同一个领域写服务可以由 repo、agent、迁移/修复脚本多个模块组成；判定标准是**同一对象不能有第二条 HTTP/业务写路径**。迁移和 repair 脚本不算业务写路径，但必须默认 dry-run 或可回滚。
+
 3. **写操作必须可审计：**
    - 使用 `knowledge_write_jobs` 记录阶段；
    - 使用 `agent_runs` 记录运行；
