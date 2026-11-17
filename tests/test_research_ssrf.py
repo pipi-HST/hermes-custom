@@ -37,7 +37,7 @@ def test_dns_resolving_to_localhost_is_rejected(monkeypatch):
 
 def test_research_adapter_uses_the_guard(monkeypatch):
     """The research fetch path must reject private targets, not fetch them."""
-    from bridge.research import search
+    from agents.research import search
 
     monkeypatch.setattr(search, "_direct_probe_budget_available", lambda: True)
     assert search._fetch_url_summary("http://127.0.0.1:9/") is None

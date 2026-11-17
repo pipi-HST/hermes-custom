@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from bridge.research import adapters
+from agents.research import adapters
 
 
 def test_deepseek_extract_fetches_urls_concurrently(monkeypatch):

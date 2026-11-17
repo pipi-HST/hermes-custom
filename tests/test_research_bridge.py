@@ -28,7 +28,7 @@ def test_default_query_planner_loads_repo_root_config(monkeypatch):
     import agents.capture_agent as capture_agent
     monkeypatch.setattr(capture_agent, "load_config", fake_load_config)
 
-    import bridge.research.synthesis as synthesis
+    import agents.research.synthesis as synthesis
 
     def fake_call_llm(**kwargs):
         recorded["llm_kwargs"] = kwargs
@@ -3702,7 +3702,7 @@ def test_fallback_plan_empty_critic_limited_adopts_direct_overview_source(monkey
 
 def test_low_risk_overview_critic_failure_limited_adopts_direct_source():
     warnings = []
-    from bridge.research.timing import _empty_stage_timings
+    from agents.research.timing import _empty_stage_timings
 
     stage_timings = _empty_stage_timings()
 
@@ -4916,7 +4916,7 @@ def test_light_web_answer_skips_evidence_critic_and_reads_selected_candidates(mo
         },
     )
     monkeypatch.setattr(
-        "bridge.research.light_web_qa._llm_selected_refs",
+        "agents.research.light_web_qa._llm_selected_refs",
         lambda *_args, **_kwargs: ["W2", "W4", "W6", "W8"],
     )
     monkeypatch.setattr(
@@ -5038,7 +5038,7 @@ def test_light_web_answer_keeps_summary_sources_when_extract_fails(monkeypatch):
             "evidence_contract": {"allow_summary_only": True, "minimum_independent_sources": 1},
         },
     )
-    monkeypatch.setattr("bridge.research.light_web_qa._llm_selected_refs", lambda *_args, **_kwargs: ["W1", "W2", "W3"])
+    monkeypatch.setattr("agents.research.light_web_qa._llm_selected_refs", lambda *_args, **_kwargs: ["W1", "W2", "W3"])
 
     result = research_bridge.light_web_answer(
         query="人工智能和深度学习的关系是什么？",
@@ -5077,7 +5077,7 @@ def test_light_web_answer_keeps_summary_sources_when_extract_fails(monkeypatch):
 
 
 def test_light_web_answer_times_out_extract_and_keeps_summaries(monkeypatch):
-    from bridge.research import light_web_qa
+    from agents.research import light_web_qa
 
     monkeypatch.setattr(light_web_qa, "LIGHT_EXTRACT_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(
@@ -5172,7 +5172,7 @@ def test_light_web_strong_fact_keeps_weak_sources_as_clues(monkeypatch):
 
 
 def test_light_candidate_selection_contract_separates_extract_and_summary(monkeypatch):
-    from bridge.research import light_web_qa
+    from agents.research import light_web_qa
 
     monkeypatch.setattr(
         light_web_qa,
@@ -5199,7 +5199,7 @@ def test_light_candidate_selection_contract_separates_extract_and_summary(monkey
 def test_light_extract_urls_skip_llm_extract_when_low_risk_summaries_are_enough(
     monkeypatch,
 ):
-    from bridge.research import light_web_qa
+    from agents.research import light_web_qa
 
     # ``_summary_only_is_enough`` only trusts DeepSeek's query-conditioned
     # summaries; pin the backend for this summary-mode test.
@@ -5232,7 +5232,7 @@ def test_light_extract_urls_skip_llm_extract_when_low_risk_summaries_are_enough(
 
 
 def test_light_extract_urls_keep_llm_extract_for_fresh_fact_even_with_summaries():
-    from bridge.research import light_web_qa
+    from agents.research import light_web_qa
 
     selected = [
         {
@@ -5254,7 +5254,7 @@ def test_light_extract_urls_keep_llm_extract_for_fresh_fact_even_with_summaries(
 
 
 def test_light_extract_urls_skip_extract_for_single_summary_concept_explainer():
-    from bridge.research import light_web_qa
+    from agents.research import light_web_qa
 
     selected = [
         {
@@ -5281,8 +5281,8 @@ def test_light_extract_urls_skip_extract_for_single_summary_concept_explainer():
 
 
 def test_light_path_promotes_url_mentioned_in_search_summary(monkeypatch):
-    from bridge.research import light_web_qa
-    import bridge.research.search_infra as search_infra
+    from agents.research import light_web_qa
+    import agents.research.search_infra as search_infra
 
     monkeypatch.setattr(
         search_infra,
@@ -5373,7 +5373,7 @@ def test_default_web_extract_uses_dashscope_extract_backend(monkeypatch):
 
 
 def test_default_web_extract_times_out_provider_and_allows_summary_fallback(monkeypatch):
-    from bridge.research import adapters
+    from agents.research import adapters
 
     fake_tools_pkg = types.ModuleType("tools")
     fake_tools = types.ModuleType("tools.web_tools")

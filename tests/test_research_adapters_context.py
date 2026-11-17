@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from bridge.research import adapters
+from agents.research import adapters
 
 
 def test_search_backend_context_is_isolated_per_thread():
