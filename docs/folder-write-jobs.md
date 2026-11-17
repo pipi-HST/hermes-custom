@@ -1,25 +1,29 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-17
-verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+last_verified: 2026-11-18
+verified_against: "working tree (fix/kc-data, based on 3e6b974)"
 ---
 
 # Folder write jobs
 
-Opt-in background queue for **folder renames**. It exists so bulk or scheduled
-renames can be retried and audited, without adding a second synchronous write
-path to the HTTP API.
+Opt-in background queue for **folder renames**. It exists so renames can be
+retried and audited, and so the HTTP API uses the same validated domain service
+as batch or scheduled work.
 
 ## Scope
 
 - Supported intent: `rename_folder`.
-- The HTTP endpoint `PATCH /api/library/folders/{path}` still renames
-  synchronously (`rename_topic` + `rename_stored_folder`); that is the only
-  production writer today. The queue is not wired into the endpoint, and
-  `folder_service` is the job-path writer, not a second production path.
-- If you enqueue a rename, do not also call the endpoint for the same folder
-  while the job is pending.
+- `PATCH /api/library/folders/{path}` has two modes, selected by
+  `worker.enabled` in `config.yaml`:
+  - `false` (default): rename synchronously through `rename_topic` +
+    `rename_stored_folder`. No job row is created.
+  - `true`: submit a `rename_folder` job and wait for the worker
+    (`submit_folder_rename_job` + `wait_for_job`). The worker process must
+    already be running; see below.
+- Do not call the endpoint for a folder whose rename job is still pending: in
+  worker mode the endpoint waits, but a second client can still queue a
+  conflicting rename.
 - Delete, merge and archive intents are **not** implemented. Do not add a
   submit helper for them until the executor and tests exist.
 
@@ -60,12 +64,33 @@ Defaults come from `config.yaml`:
 
 ```yaml
 worker:
+  enabled: false                 # PATCH /library/folders: sync when false
+  rename_timeout_seconds: 30.0   # HTTP wait budget in worker mode
   poll_interval_seconds: 2.0
   max_retry_count: 3
   batch_size: 10
 ```
 
+## Failure and timeout behaviour
+
+With `worker.enabled: true` the HTTP endpoint submits the job and waits up to
+`worker.rename_timeout_seconds`:
+
+- `503` `worker_unavailable`: the job did not finish in time, usually because
+  no worker is running. The response includes `job_id`; start the worker and
+  inspect/retry the job. It is not a silent success.
+- `500` `folder_rename_failed`: the worker ran the job and it ended `failed`
+  or `repair_needed`; the response includes the job id and the error text.
+- `200` only after the job is `completed`, so the returned folder list already
+  reflects the rename.
+
+With `worker.enabled: false` (default) no job row exists and errors are the
+same synchronous `rename_topic` errors as before.
+
 ## Submit a job
+
+The HTTP endpoint does this for you when `worker.enabled: true`. To enqueue one
+directly (batch tooling, smoke check):
 
 ```python
 from bridge.knowledge_job_submit import submit_folder_rename_job

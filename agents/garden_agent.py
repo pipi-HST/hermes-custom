@@ -22,6 +22,7 @@ from agents.garden_card_payload import (
     parse_payload_json,
     project_legacy_fields,
     render_garden_card_body,
+    with_canonical_content_markdown,
 )
 
 logger = logging.getLogger(__name__)
@@ -484,20 +485,23 @@ def _card_use_hint(card_kind: str) -> str:
 
 
 def create_garden_card(repo, garden_data: dict, *, in_transaction: bool = False) -> str:
-    """写入 garden_cards 表，返回 card ID。"""
+    """写入 garden_cards 表，返回 card ID。
+
+    ``payload_json.content_markdown`` is the card body's source of truth.  The
+    column is a derived cache written from the same value in this one place.
+    """
     card_id = uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc).isoformat()
-    payload = normalize_garden_payload(
-        _canonicalize_payload_sources(
-            garden_data.get("payload"),
-            _json_list(garden_data.get("capture_ids")),
-        ),
-        legacy=garden_data,
+    payload = with_canonical_content_markdown(
+        normalize_garden_payload(
+            _canonicalize_payload_sources(
+                garden_data.get("payload"),
+                _json_list(garden_data.get("capture_ids")),
+            ),
+            legacy=garden_data,
+        )
     )
-    content_markdown = str(payload.get("content_markdown") or "").strip()
-    if not content_markdown:
-        content_markdown = render_garden_card_body(payload).strip()
-    payload["content_markdown"] = content_markdown
+    content_markdown = payload["content_markdown"]
     with (nullcontext() if in_transaction else transaction(repo.conn)):
         repo.conn.execute(
             """INSERT INTO garden_cards (id, title, content_markdown, card_kind, schema_version,
@@ -774,17 +778,16 @@ def update_garden_card(repo, card_id: str, garden_data: dict) -> Optional[dict]:
         return None
 
     now = datetime.now(timezone.utc).isoformat()
-    payload = normalize_garden_payload(
-        _canonicalize_payload_sources(
-            garden_data.get("payload"),
-            _json_list(garden_data.get("capture_ids") or existing["capture_ids"]),
-        ),
-        legacy={**dict(existing), **garden_data},
+    payload = with_canonical_content_markdown(
+        normalize_garden_payload(
+            _canonicalize_payload_sources(
+                garden_data.get("payload"),
+                _json_list(garden_data.get("capture_ids") or existing["capture_ids"]),
+            ),
+            legacy={**dict(existing), **garden_data},
+        )
     )
-    content_markdown = str(payload.get("content_markdown") or "").strip()
-    if not content_markdown:
-        content_markdown = render_garden_card_body(payload).strip()
-    payload["content_markdown"] = content_markdown
+    content_markdown = payload["content_markdown"]
     # 合并参数（追加新论点, 去重）
     # 简化实现：覆盖更新
     repo.conn.execute(

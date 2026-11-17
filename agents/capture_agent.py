@@ -81,6 +81,10 @@ class CaptureConfig:
     vault_path: str = "~/Hermes/knowledge"
     db_path: str = "./data/captures.db"
     min_vector_score: float | None = None
+    # Folder renames go through the knowledge_write_jobs queue only when this
+    # switch is on; the default keeps the synchronous HTTP path.
+    worker_enabled: bool = False
+    worker_rename_timeout_seconds: float = 30.0
 
 
 @dataclass
@@ -132,6 +136,8 @@ def load_config(config_path: str = "config.yaml") -> CaptureConfig:
     vault = cfg.get("vault", {})
     database = cfg.get("database", {})
     retrieval = cfg.get("retrieval", {})
+    worker = cfg.get("worker")
+    worker = worker if isinstance(worker, dict) else {}
     raw_threshold = retrieval.get("min_vector_score", cfg.get("min_vector_score"))
     try:
         min_vector_score = (
@@ -139,6 +145,10 @@ def load_config(config_path: str = "config.yaml") -> CaptureConfig:
         )
     except (TypeError, ValueError):
         min_vector_score = None
+    try:
+        worker_rename_timeout_seconds = float(worker.get("rename_timeout_seconds", 30.0))
+    except (TypeError, ValueError):
+        worker_rename_timeout_seconds = 30.0
     return CaptureConfig(
         llm_api_key=llm.get("api_key", ""),
         llm_provider=llm.get("provider", "openai"),
@@ -148,6 +158,9 @@ def load_config(config_path: str = "config.yaml") -> CaptureConfig:
         vault_path=vault.get("path", "~/Hermes/knowledge"),
         db_path=database.get("path", "./data/captures.db"),
         min_vector_score=min_vector_score,
+        worker_enabled=str(worker.get("enabled", False)).strip().lower()
+        in {"1", "true", "yes", "on"},
+        worker_rename_timeout_seconds=worker_rename_timeout_seconds,
     )
 
 

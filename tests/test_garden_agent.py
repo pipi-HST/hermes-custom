@@ -808,3 +808,149 @@ def test_synthesize_without_existing_cards(mock_call):
     )
     assert result["knowledge_links"] == []
     assert mock_call.call_count == 1  # only step 1, no step 2
+
+
+def test_create_and_update_card_keep_column_equal_to_payload(repo):
+    card_id = create_garden_card(repo, {
+        "title": "正文同源",
+        "one_liner": "列和 payload 必须一致。",
+        "core_arguments": [{"claim": "同一份正文"}],
+        "knowledge_links": [],
+        "key_materials": [],
+        "capture_ids": [],
+    })
+    row = repo.conn.execute(
+        "SELECT content_markdown, payload_json FROM garden_cards WHERE id = ?",
+        (card_id,),
+    ).fetchone()
+    assert json.loads(row["payload_json"])["content_markdown"] == row["content_markdown"]
+
+    update_garden_card(repo, card_id, {
+        "title": "正文同源（改）",
+        "one_liner": "更新后仍然一致。",
+        "payload": {"content_markdown": "# 正文同源（改）\n\n更新后的正文。\n"},
+        "capture_ids": [],
+    })
+    row = repo.conn.execute(
+        "SELECT content_markdown, payload_json FROM garden_cards WHERE id = ?",
+        (card_id,),
+    ).fetchone()
+    assert row["content_markdown"] == "# 正文同源（改）\n\n更新后的正文。"
+    assert json.loads(row["payload_json"])["content_markdown"] == row["content_markdown"]
+
+
+def test_card_read_prefers_payload_over_stale_column(repo):
+    from bridge.rag_bridge import _card_body_text, _search_garden_cards
+
+    repo.conn.execute(
+        """INSERT INTO garden_cards
+           (id, title, content_markdown, payload_json, status, capture_ids)
+           VALUES (?, ?, ?, ?, 'accepted', '[]')""",
+        (
+            "card-drift",
+            "漂移卡片",
+            "旧列正文：不应被读到。",
+            json.dumps(
+                {
+                    "schema_version": "garden_card.v2",
+                    "title": "漂移卡片",
+                    "claim": "payload 正文",
+                    "card_kind": "viewpoint",
+                    "content_markdown": "payload 正文：这是唯一真相。",
+                    "source_ids": [],
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    )
+    repo.conn.commit()
+    row = dict(repo.conn.execute(
+        "SELECT * FROM garden_cards WHERE id = 'card-drift'"
+    ).fetchone())
+
+    body = _card_body_text(row)
+
+    assert body == "payload 正文：这是唯一真相。"
+    assert "旧列正文" not in body
+    hits = _search_garden_cards("唯一真相", repo.conn)
+    assert hits and "旧列正文" not in hits[0]["body"]
+
+
+def test_card_read_falls_back_to_column_when_payload_body_missing(repo):
+    from bridge.rag_bridge import _card_body_text
+
+    repo.conn.execute(
+        """INSERT INTO garden_cards
+           (id, title, content_markdown, payload_json, status, capture_ids)
+           VALUES (?, ?, ?, ?, 'accepted', '[]')""",
+        (
+            "card-fallback",
+            "回退卡片",
+            "只有列里有正文。",
+            json.dumps(
+                {
+                    "schema_version": "garden_card.v2",
+                    "title": "回退卡片",
+                    "claim": "一句话",
+                    "card_kind": "viewpoint",
+                    "source_ids": [],
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    )
+    repo.conn.commit()
+    row = dict(repo.conn.execute(
+        "SELECT * FROM garden_cards WHERE id = 'card-fallback'"
+    ).fetchone())
+
+    assert _card_body_text(row) == "只有列里有正文。"
+
+
+def test_repair_garden_content_dry_run_then_apply(tmp_path):
+    from scripts.repair_garden_content import repair_garden_content
+
+    db_path = str(tmp_path / "repair.db")
+    conn = init_db(db_path)
+    conn.execute(
+        """INSERT INTO garden_cards
+           (id, title, content_markdown, payload_json, status, capture_ids)
+           VALUES (?, ?, ?, ?, 'seed', '[]')""",
+        (
+            "card-mismatch",
+            "待修复卡片",
+            "payload 正文\n",
+            json.dumps(
+                {
+                    "schema_version": "garden_card.v2",
+                    "title": "待修复卡片",
+                    "claim": "一句话",
+                    "card_kind": "viewpoint",
+                    "content_markdown": "payload 正文",
+                    "source_ids": [],
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    )
+    conn.commit()
+
+    dry_run = repair_garden_content(db_path)
+
+    assert dry_run["mode"] == "dry-run"
+    assert [item["card_id"] for item in dry_run["mismatches"]] == ["card-mismatch"]
+    assert dry_run["changed"] == 0
+    row = conn.execute(
+        "SELECT content_markdown FROM garden_cards WHERE id = 'card-mismatch'"
+    ).fetchone()
+    assert row["content_markdown"] == "payload 正文\n"
+
+    applied = repair_garden_content(db_path, apply=True)
+
+    assert applied["changed"] == 1
+    row = conn.execute(
+        "SELECT content_markdown, payload_json FROM garden_cards WHERE id = 'card-mismatch'"
+    ).fetchone()
+    assert row["content_markdown"] == "payload 正文"
+    assert json.loads(row["payload_json"])["content_markdown"] == row["content_markdown"]
+    conn.close()

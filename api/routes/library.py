@@ -261,7 +261,19 @@ def create_library_router(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if old_folder == "Inbox":
             raise HTTPException(status_code=400, detail="Inbox cannot be renamed")
-        if old_folder != new_folder:
+        if old_folder == new_folder:
+            return {
+                "ok": True,
+                "folders": folder_response(capture_repo.conn, vault)["folders"],
+            }
+        if config is not None and getattr(config, "worker_enabled", False):
+            _rename_folder_via_worker(
+                capture_repo.conn,
+                old_folder,
+                new_folder,
+                getattr(config, "worker_rename_timeout_seconds", 30.0),
+            )
+        else:
             # rename_topic delegates to agents.folder_service, which also
             # updates the folder registry.
             rename_topic(capture_repo.conn, vault, old_folder, new_folder)
@@ -317,6 +329,51 @@ def create_library_router(
         return {"ok": True, "status": "deleted"}
 
     return router
+
+
+def _rename_folder_via_worker(
+    conn,
+    old_folder: str,
+    new_folder: str,
+    timeout_seconds: float,
+) -> str:
+    """Submit a folder rename job and block until the worker finishes it."""
+    from bridge.knowledge_job_submit import submit_folder_rename_job, wait_for_job
+
+    try:
+        job_id = submit_folder_rename_job(old_folder, new_folder, conn)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_folder", "message": str(exc)},
+        ) from exc
+    timeout = max(0.0, float(timeout_seconds))
+    try:
+        wait_for_job(job_id, conn, timeout_seconds=timeout)
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "worker_unavailable",
+                "message": (
+                    f"folder rename job {job_id} did not finish within {timeout:g}s. "
+                    "Start the knowledge write worker (python start_worker.py) "
+                    "before enabling worker.enabled, then retry. "
+                    f"Details: {exc}"
+                ),
+                "job_id": job_id,
+            },
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "folder_rename_failed",
+                "message": f"folder rename job {job_id} failed: {exc}",
+                "job_id": job_id,
+            },
+        ) from exc
+    return job_id
 
 
 def _draft_id_from_result(result: Any) -> str:

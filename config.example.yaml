@@ -30,5 +30,13 @@ retrieval:
 database:
   path: "./data/captures.db"
 
+worker:
+  # When false (default), PATCH /api/library/folders/{path} renames synchronously.
+  # When true, the endpoint submits a rename_folder job and waits for the
+  # knowledge write worker; start `python start_worker.py` first.
+  enabled: false
+  # How long the HTTP request waits for the worker before returning 503.
+  rename_timeout_seconds: 30.0
+
 vault:
   path: "~/Hermes/knowledge"
