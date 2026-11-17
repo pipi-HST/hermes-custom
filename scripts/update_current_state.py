@@ -24,15 +24,22 @@ def _git(*args: str) -> str:
         return ""
 
 
-def _test_count() -> int | None:
+def _test_count() -> tuple[int | None, str]:
     completed = subprocess.run(
         [sys.executable, "-m", "pytest", "tests", "--collect-only"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
     )
-    match = re.search(r"(\d+)\s+tests?\s+collected", completed.stdout + completed.stderr)
-    return int(match.group(1)) if match else None
+    output = completed.stdout + completed.stderr
+    match = re.search(r"(\d+)\s+tests?\s+collected", output)
+    count = int(match.group(1)) if match else None
+    problems = ""
+    if completed.returncode != 0:
+        # Surface collection errors; otherwise a broken import just looks like
+        # a stale count and the job log says nothing useful.
+        problems = output.strip()[-3000:]
+    return count, problems
 
 
 def _table_count() -> int | None:
@@ -62,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail if the file is stale")
     args = parser.parse_args(argv)
-    tests = _test_count()
+    tests, collect_problems = _test_count()
     tables = _table_count()
     branch = _git("rev-parse", "--abbrev-ref", "HEAD") or "unknown"
     lines = [
@@ -77,6 +84,9 @@ def main(argv: list[str] | None = None) -> int:
         f"- SQLite business tables: {tables if tables is not None else 'data/captures.db not found'}",
     ]
     content = "\n".join(lines) + "\n"
+    if collect_problems:
+        print("pytest collection reported errors:")
+        print(collect_problems)
     if args.check:
         current = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""
         # Date and branch are informational; do not fail CI every day, or on
