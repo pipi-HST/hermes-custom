@@ -21,6 +21,7 @@ Every `docs/*.md` file must appear below; `scripts/check_docs.py` fails otherwis
 - `../SETUP.md` — supplementary setup notes
 - `CURRENT-STATE.md` — generated test/table counts (banner is the status)
 - `INVENTORY.md` — generated routes / table writers / local-only routes
+- `capture-intent.md` — CaptureIntent fields, allowed values and readers
 - `adr/` — architecture decisions (0001-0004 implemented; 0005 deferred)
 - `folder-write-jobs.md` — opt-in folder-rename worker (not wired to the API)
 - `PRODUCT-REFACTOR-STORY.md` — product narrative / interview material

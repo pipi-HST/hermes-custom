@@ -26,13 +26,13 @@ from agents.extractors.voice_extractor import VoiceExtractor
 from agents.extractors.image_extractor import ImageExtractor
 from agents.extractors.xiaohongshu_extractor import XiaohongshuExtractor
 from agents.extractors.document_extractor import DocumentExtractor
-from agents.library_agent import (
-    LibraryAgent,
-    _directory_absolute_url_free,
-    _directory_links_match_content_headings,
-    _has_capture_processing_note,
-    _has_directory_content_heading_coverage_gap,
+from agents.directory_contract import (
+    directory_absolute_url_free,
+    directory_links_match_content_headings,
+    has_capture_processing_note,
+    has_directory_content_heading_coverage_gap,
 )
+from agents.library_agent import LibraryAgent
 from agents.outliner import Outliner
 from bridge.ai_cancel import raise_if_cancelled
 from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest
@@ -85,19 +85,40 @@ class CaptureConfig:
 
 @dataclass
 class CaptureIntent:
+    """Structured plan for one Capture request.
+
+    Field semantics, allowed values and readers are documented in
+    ``docs/capture-intent.md``.  Keep this dataclass and that document in sync;
+    ``tests/test_capture_intent_contract.py`` checks the field list.
+    """
+
+    # Original user instruction, unmodified.
     user_request: str
+    # verbatim_full_text | enhanced_note | focused_note | refined_note
     material_intent: str
+    # capture | organize | rewrite | translate
     task_type: str
+    # full_article | selected_sections
     coverage: str
+    # User-named focus points; [] means no special emphasis.
     emphasis: list[str]
+    # source_fidelity | main_thread | user_named_focus | source_layering
     must_preserve: list[str]
+    # full_text | natural_draft
     output_shape: list[str]
+    # brief | medium | deep | source_like
     detail_level: str = "medium"
+    # let_model_decide | verbatim
     draft_guidance: str = "let_model_decide"
+    # none | low | medium | high
     compression: str = "medium"
+    # original_wording | data | examples | methodology
     preserve: list[str] | None = None
+    # fallback | deterministic_full_text | llm
     plan_source: str = "fallback"
+    # Free-form one-sentence guidance for detail allocation.
     detail_policy: str = ""
+    # Optional title extracted from the material by the planner.
     semantic_title: str = ""
 
     def to_dict(self) -> dict:
@@ -117,6 +138,111 @@ class CaptureIntent:
             "detail_policy": self.detail_policy,
             "semantic_title": self.semantic_title,
         }
+
+
+CAPTURE_INTENT_ENUMS: dict[str, frozenset[str]] = {
+    "material_intent": frozenset(
+        {"verbatim_full_text", "enhanced_note", "focused_note", "refined_note"}
+    ),
+    "task_type": frozenset({"capture", "organize", "rewrite", "translate"}),
+    "coverage": frozenset({"full_article", "selected_sections"}),
+    "detail_level": frozenset({"brief", "medium", "deep", "source_like"}),
+    "draft_guidance": frozenset({"let_model_decide", "verbatim"}),
+    "compression": frozenset({"none", "low", "medium", "high"}),
+    "plan_source": frozenset({"fallback", "deterministic_full_text", "llm"}),
+}
+CAPTURE_INTENT_LIST_ENUMS: dict[str, frozenset[str]] = {
+    "output_shape": frozenset({"full_text", "natural_draft"}),
+    "must_preserve": frozenset(
+        {"source_fidelity", "main_thread", "user_named_focus", "source_layering"}
+    ),
+    "preserve": frozenset({"original_wording", "data", "examples", "methodology"}),
+}
+CAPTURE_INTENT_LIST_FIELDS = ("emphasis", "must_preserve", "output_shape", "preserve")
+CAPTURE_INTENT_REQUIRED = (
+    "user_request",
+    "material_intent",
+    "task_type",
+    "coverage",
+    "emphasis",
+    "must_preserve",
+    "output_shape",
+)
+
+
+def capture_intent_schema() -> dict:
+    """Return the JSON-schema-like contract for CaptureIntent.
+
+    The shape intentionally allows additional keys: the editable-draft path
+    adds ``entry_mode``, ``folder_path`` and similar runtime keys.  Unknown keys
+    are preserved and reported by :func:`validate_capture_intent` instead of
+    being dropped.
+    """
+    properties: dict[str, dict] = {
+        "user_request": {"type": "string"},
+        "emphasis": {"type": "array", "items": {"type": "string"}},
+        "detail_policy": {"type": "string"},
+        "semantic_title": {"type": "string"},
+    }
+    for name, allowed in CAPTURE_INTENT_ENUMS.items():
+        properties[name] = {"type": "string", "enum": sorted(allowed)}
+    for name, allowed in CAPTURE_INTENT_LIST_ENUMS.items():
+        properties[name] = {
+            "type": "array",
+            "items": {"type": "string", "enum": sorted(allowed)},
+        }
+    return {
+        "type": "object",
+        "required": list(CAPTURE_INTENT_REQUIRED),
+        "properties": properties,
+        "additionalProperties": True,
+    }
+
+
+def validate_capture_intent(value: object) -> list[str]:
+    """Return human-readable contract issues; never raises or mutates value.
+
+    Invalid enum/list values are reported.  Unknown keys are reported too, but
+    callers should keep them (the editable-draft API relies on that).
+    """
+    if not isinstance(value, dict):
+        return ["capture_intent must be an object"]
+    issues: list[str] = []
+    for name in CAPTURE_INTENT_REQUIRED:
+        if name not in value:
+            issues.append(f"missing required field: {name}")
+    for name, allowed in CAPTURE_INTENT_ENUMS.items():
+        if name not in value:
+            continue
+        actual = value.get(name)
+        if actual not in allowed:
+            issues.append(
+                f"{name} must be one of {sorted(allowed)}, got {actual!r}"
+            )
+    for name, allowed in CAPTURE_INTENT_LIST_ENUMS.items():
+        if name not in value:
+            continue
+        actual = value.get(name)
+        if not isinstance(actual, list):
+            issues.append(f"{name} must be a list of strings")
+            continue
+        for item in actual:
+            if not isinstance(item, str):
+                issues.append(f"{name} must contain only strings, got {item!r}")
+            elif item not in allowed:
+                issues.append(f"{name} has unknown value {item!r}")
+    for name in CAPTURE_INTENT_LIST_FIELDS:
+        if name in value and not isinstance(value.get(name), list):
+            issues.append(f"{name} must be a list")
+    known = set(CAPTURE_INTENT_ENUMS) | set(CAPTURE_INTENT_LIST_ENUMS) | {
+        "user_request",
+        "emphasis",
+        "detail_policy",
+        "semantic_title",
+    }
+    for name in sorted(set(value) - known):
+        issues.append(f"unknown key preserved: {name}")
+    return issues
 
 
 @dataclass
@@ -691,7 +817,7 @@ class CaptureAgent:
             compression = "low" if compression == "medium" else compression
             if "original_wording" not in preserve:
                 preserve.append("original_wording")
-        return CaptureIntent(
+        intent = CaptureIntent(
             user_request=fallback.user_request,
             material_intent=fallback.material_intent,
             task_type=task_type,
@@ -720,6 +846,10 @@ class CaptureAgent:
             detail_policy=detail_policy,
             semantic_title=semantic_title,
         )
+        issues = validate_capture_intent(intent.to_dict())
+        if issues:
+            logger.warning("CaptureIntent contract issues: %s", "; ".join(issues))
+        return intent
 
     def _is_full_text_save_intent(self, capture_intent: dict) -> bool:
         return capture_intent.get("output_shape") == ["full_text"]
@@ -1715,13 +1845,13 @@ class CaptureAgent:
         directory_warning = _directory_contract_warning(body)
         if directory_warning:
             return directory_warning
-        if _has_capture_processing_note(body):
+        if has_capture_processing_note(body):
             return "正式 Capture 正文仍包含整理说明"
-        if not _directory_absolute_url_free(body):
+        if not directory_absolute_url_free(body):
             return "正式 Capture 目录包含绝对链接"
-        if _has_directory_content_heading_coverage_gap(body):
+        if has_directory_content_heading_coverage_gap(body):
             return "正式 Capture 目录未覆盖全部正文主章节"
-        if not _directory_links_match_content_headings(body):
+        if not directory_links_match_content_headings(body):
             return "正式 Capture 目录链接未匹配正文 heading"
         if not is_long:
             return ""

@@ -13,6 +13,7 @@ edits, ``bridge.knowledge_write_service`` for Markdown writes and
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,9 @@ class CaptureDraftUpdateRequest(BaseModel):
     summary: str | None = None
     tags: list[str] | None = None
     capture_intent: dict[str, Any] | None = None
+
+
+logger = logging.getLogger(__name__)
 
 
 def create_library_router(
@@ -286,10 +290,20 @@ def create_library_router(
         if body.tags is not None:
             updates["tags"] = list(body.tags)
         if body.capture_intent is not None:
-            updates["capture_intent"] = {
+            merged_intent = {
                 **_json_dict(draft.get("capture_intent")),
                 **body.capture_intent,
             }
+            from agents.capture_agent import validate_capture_intent
+
+            issues = validate_capture_intent(merged_intent)
+            if issues:
+                logger.warning(
+                    "capture_intent contract issues for draft %s: %s",
+                    draft_id,
+                    "; ".join(issues),
+                )
+            updates["capture_intent"] = merged_intent
         with transaction(draft_repo.conn):
             updated = draft_repo.update(draft_id, **updates) or draft
         return {
