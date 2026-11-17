@@ -21,21 +21,21 @@ from agents.capture_agent import load_config
 
 from bridge.result_envelope import success_envelope
 from bridge.prompt_contracts import MODEL_SUPPLEMENT_CONTRACT
-from bridge.research.adapters import _default_search_backend, current_search_backend
-from bridge.research.source_filter import filter_local_sources_for_web
-from bridge.research.planner import (
+from agents.research.adapters import _default_search_backend, current_search_backend
+from agents.research.source_filter import filter_local_sources_for_web
+from agents.research.planner import (
     _max_initial_search_queries_for_plan,
     plan_research,
 )
-from bridge.research.synthesis import _call_llm
-from bridge.research.types import (
+from agents.research.synthesis import _call_llm
+from agents.research.types import (
     MAX_WEB_QUERIES,
     ResearchEventCallback,
     ResearchExtractAdapter,
     ResearchSearchAdapter,
     ResearchSynthesizeAdapter,
 )
-from bridge.research.utils import (
+from agents.research.utils import (
     _clean_web_url,
     _clip_text,
     _domain,

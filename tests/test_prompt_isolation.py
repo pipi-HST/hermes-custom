@@ -7,12 +7,12 @@ must escape it while leaving code-owned contracts/JSON untouched.
 from __future__ import annotations
 
 from agents.rag_agent import build_rag_prompt
-from bridge.research.evidence_critic_io import (
+from agents.research.evidence_critic_io import (
     _build_evidence_critic_prompt,
     _evidence_critic_payload,
 )
-from bridge.research.light_web_qa import _build_candidate_selection_prompt
-from bridge.research.synthesis import _build_synthesis_prompt
+from agents.research.light_web_qa import _build_candidate_selection_prompt
+from agents.research.synthesis import _build_synthesis_prompt
 
 INJECTION = (
     "正常正文。\n\n"

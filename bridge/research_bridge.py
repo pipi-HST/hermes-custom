@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.source_registry import get_registry
 from bridge.result_envelope import success_envelope
-from bridge.research.types import (
+from agents.research.types import (
     ResearchSearchAdapter,
     ResearchExtractAdapter,
     ResearchSynthesizeAdapter,
@@ -57,7 +57,7 @@ from bridge.research.types import (
     LAW_CONCEPT_RE,
     DEFAULT_RESEARCH_YEAR,
 )
-from bridge.research.utils import (
+from agents.research.utils import (
     _coerce_bool,
     _enum_value,
     _string_list,
@@ -95,7 +95,7 @@ from bridge.research.utils import (
     _claim_requires_observed_metric_value,
     _source_has_observed_metric_value,
 )
-from bridge.research.synthesis import (
+from agents.research.synthesis import (
     _synthesize_answer,
     _build_synthesis_prompt,
     _synthesis_max_tokens,
@@ -141,8 +141,8 @@ from bridge.research.synthesis import (
     _rewrite_answer_refs,
     _source_map_item,
 )
-from bridge.research.timing import _add_stage_timing, _ensure_stage_timings
-from bridge.research.search import (
+from agents.research.timing import _add_stage_timing, _ensure_stage_timings
+from agents.research.search import (
     _normalize_mode,
     _no_web_sources_warning,
     should_search_web,
@@ -187,7 +187,7 @@ from bridge.research.search import (
     extract_ranked_web_sources,
     extract_ranked_web_sources_async,
 )
-from bridge.research.planner import (
+from agents.research.planner import (
     plan_web_queries,
     plan_research,
     detect_query_intent,
@@ -230,7 +230,7 @@ from bridge.research.planner import (
     _has_required_term_match,
     _source_title_or_url_contains_term,
 )
-from bridge.research.evidence import (
+from agents.research.evidence import (
     _ranked_sources_for_evidence,
     _evidence_claims_for_plan,
     _web_provider_status,
@@ -286,7 +286,7 @@ from bridge.research.evidence import (
     _source_rejected_by_contract,
     _apply_critic_rejections_to_classified,
 )
-from bridge.research.search_infra import (
+from agents.research.search_infra import (
     collect_web_search_results,
     _search_query_candidates,
     _friendly_search_error,
@@ -304,13 +304,13 @@ from bridge.research.search_infra import (
     _direct_source_kind_candidates,
     _direct_mentioned_url_candidates,
 )
-from bridge.research.orchestration import (
+from agents.research.orchestration import (
     WebResearchDeps,
     empty_web_research,
     run_web_research,
     run_web_research_async,
 )
-from bridge.research.light_web_qa import (
+from agents.research.light_web_qa import (
     run_light_web_qa,
     run_light_web_qa_async,
 )
@@ -318,8 +318,8 @@ from bridge.web_context_answer import (
     web_context_answer as _web_context_answer,
     async_web_context_answer as _async_web_context_answer,
 )
-from bridge.research.results import web_research_result
-from bridge.research.adapters import (
+from agents.research.results import web_research_result
+from agents.research.adapters import (
     _legacy_search_web as _adapter_legacy_search_web,
     _default_web_search as _adapter_default_web_search,
     _default_search_backend,
@@ -370,7 +370,7 @@ def _legacy_search_web(
     )
 
 
-import bridge.research.planner as _planner_module
+import agents.research.planner as _planner_module
 
 # Save original planner function before patching
 _original_default_query_planner = _planner_module._default_query_planner
@@ -403,7 +403,7 @@ _planner_module._default_query_planner = _default_query_planner
 
 # Wrapper for _default_evidence_critic that can be patched by tests.
 # Same closure-based pattern as the query planner wrapper above.
-import bridge.research.evidence as _evidence_module
+import agents.research.evidence as _evidence_module
 _original_default_evidence_critic = _evidence_module._default_evidence_critic
 
 
@@ -427,8 +427,8 @@ _evidence_module._default_evidence_critic = _default_evidence_critic
 
 # Wrapper for _fetch_url_summary that can be patched by tests.
 # Same closure-based pattern as the query planner wrapper above.
-import bridge.research.search_infra as _search_infra_module
-from bridge.research.search import _fetch_url_summary as _original_fetch_url_summary
+import agents.research.search_infra as _search_infra_module
+from agents.research.search import _fetch_url_summary as _original_fetch_url_summary
 
 
 def _make_fetch_url_summary_wrapper():

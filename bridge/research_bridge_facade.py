@@ -3,18 +3,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from bridge.research.types import (
+from agents.research.types import (
     ResearchEventCallback,
     ResearchExtractAdapter,
     ResearchSearchAdapter,
 )
-from bridge.research.orchestration import (
+from agents.research.orchestration import (
     WebResearchDeps,
     empty_web_research,
     run_web_research,
     run_web_research_async,
 )
-from bridge.research.results import web_research_result
+from agents.research.results import web_research_result
 
 
 def _bridge_module():

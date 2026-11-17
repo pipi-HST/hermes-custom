@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from bridge.research import orchestration
+from agents.research import orchestration
 
 
 def test_async_low_quality_result_returns_empty_research_result(monkeypatch):
