@@ -1,5 +1,9 @@
 # Hermes Knowledge Context
 
+> **当前术语表：** [GLOSSARY.md](GLOSSARY.md)。
+> **当前架构：** [ARCHITECTURE.md](ARCHITECTURE.md)。
+> `Knowledge Map / Knowledge Area / Map Proposal / Health Report` 目前是 **deferred** 设计，不是已实现功能；实现前不要把这段当作当前产品说明。
+
 Hermes is a personal knowledge-management system where WeChat/Hermes inputs become a reviewable Knowledge Workflow: confirmed material may become Knowledge Files, while reusable views, cards, graph relationships, and review state live as structured Web/DB objects.
 
 ## Product Workflow

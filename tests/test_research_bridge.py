@@ -5196,8 +5196,14 @@ def test_light_candidate_selection_contract_separates_extract_and_summary(monkey
     assert selection["answerable_from_summary_refs"] == ["W2"]
 
 
-def test_light_extract_urls_skip_llm_extract_when_low_risk_summaries_are_enough():
+def test_light_extract_urls_skip_llm_extract_when_low_risk_summaries_are_enough(
+    monkeypatch,
+):
     from bridge.research import light_web_qa
+
+    # ``_summary_only_is_enough`` only trusts DeepSeek's query-conditioned
+    # summaries; pin the backend for this summary-mode test.
+    monkeypatch.setattr(light_web_qa, "_default_search_backend", lambda: "deepseek")
 
     selected = [
         {

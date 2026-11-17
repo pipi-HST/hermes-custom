@@ -68,11 +68,12 @@ def test_unknown_module_and_function_are_rejected(env):
 def test_whitelist_covers_runtime_tool_calls():
     expected = {
         "agent_run_bridge": {"get_agent_run_status"},
-        "answer_bridge": {"save_answer_to_knowledge"},
+        "answer_bridge": {"revise_answer_draft", "save_answer_to_knowledge"},
         "canvas_bridge": {"generate_canvas"},
         "capture_bridge": {
             "capture_content",
             "commit_capture_draft",
+            "create_editable_capture_draft",
             "revise_capture_draft",
             "show_capture_draft",
         },

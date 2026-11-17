@@ -379,6 +379,52 @@ def test_library_folder_lifecycle(env):
     assert "研究" not in store_after["folders"]
 
 
+def test_folder_rename_syncs_metadata_mirror_and_card_topic(env):
+    config, app, vault = env
+    capture_id = _add_capture(config, vault, name="sync-topic", folder="研究")
+
+    conn = _db_conn(config)
+    try:
+        conn.execute(
+            """INSERT INTO capture_metadata
+                   (capture_id, folder_path, created_at, updated_at)
+               VALUES (?, '研究', datetime('now'), datetime('now'))
+               ON CONFLICT(capture_id) DO UPDATE SET folder_path='研究'""",
+            (capture_id,),
+        )
+        conn.execute(
+            """INSERT INTO garden_cards
+                   (id, title, source_theme, capture_ids, created_at, updated_at)
+               VALUES ('card-topic-sync', 'Topic sync', '研究', ?, datetime('now'), datetime('now'))""",
+            (json.dumps([capture_id]),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with _client(app) as client:
+        renamed = client.patch(
+            f"/api/library/folders/{quote('研究', safe='')}",
+            json={"name": "深度研究"},
+        )
+        assert renamed.status_code == 200
+
+    conn = _db_conn(config)
+    try:
+        metadata = conn.execute(
+            "SELECT folder_path FROM capture_metadata WHERE capture_id = ?",
+            (capture_id,),
+        ).fetchone()
+        card = conn.execute(
+            "SELECT source_theme FROM garden_cards WHERE id = 'card-topic-sync'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert metadata["folder_path"] == "深度研究"
+    assert card["source_theme"] == "深度研究"
+
+
 def test_library_folders_accepts_legacy_plain_list_store(env):
     config, app, vault = env
     store_path = vault / STORE_RELATIVE_PATH

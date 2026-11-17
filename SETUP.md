@@ -1,5 +1,8 @@
 # Hermes Knowledge 启动说明
 
+> **当前入口：** [README.md](README.md) 和 [RUNBOOK.md](RUNBOOK.md)。
+> 本文保留作补充说明；示例里的 `/Users/pipi/...` 是旧机器路径，实际路径以当前 checkout 为准。
+
 这个仓库现在只管 Hermes 的知识库能力层。
 
 它负责 Capture、Library、RAG、Theme View、Garden / Knowledge Cards、Review、Canvas bridge、Knowledge File 同步和 Knowledge API。Life Assistant 已经拆到独立仓库，不再放在这里。

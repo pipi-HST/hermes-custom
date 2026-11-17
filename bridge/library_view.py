@@ -229,13 +229,18 @@ def folder_response(conn, vault_path: str | Path) -> dict:
     return {"folders": folders, "smart_views": smart_views}
 
 
-def rename_folder_everywhere(
+def rename_topic(
     conn,
     vault_path: str | Path,
     old_folder: str,
     new_folder: str,
 ) -> int:
-    """Move capture notes and drafts from ``old_folder`` to ``new_folder``."""
+    """Move Capture notes and their derived topic copies to ``new_folder``.
+
+    Frontmatter is the source of truth; this function also updates the SQL
+    mirror (``capture_metadata.folder_path``) and card labels
+    (``garden_cards.source_theme``) in the same DB transaction.
+    """
     vault = Path(vault_path).expanduser()
     write_service = KnowledgeWriteService(vault)
     draft_updates: list[tuple[str, str]] = []
@@ -296,19 +301,43 @@ def rename_folder_everywhere(
             )
         )
 
-    # Phase 3: commit the index changes in one short transaction.
+    # Phase 3: commit the index changes in one short transaction.  The SQL
+    # mirror and card topic are derived from the frontmatter, so a rename must
+    # update them in the same transaction; otherwise filters keep the old name
+    # until the next full Library scan.
+    timestamp = now_iso()
     with transaction(conn):
         for intent_json, draft_id in draft_updates:
             conn.execute(
                 "UPDATE capture_drafts SET capture_intent = ?, updated_at = ? WHERE id = ?",
-                (intent_json, now_iso(), draft_id),
+                (intent_json, timestamp, draft_id),
             )
         for item in file_updates:
+            capture_id = item["capture_id"]
             conn.execute(
                 "UPDATE captures SET updated_at = ? WHERE id = ?",
-                (now_iso(), item["capture_id"]),
+                (timestamp, capture_id),
             )
+            conn.execute(
+                """INSERT INTO capture_metadata
+                       (capture_id, folder_path, created_at, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(capture_id) DO UPDATE SET
+                       folder_path=excluded.folder_path,
+                       updated_at=excluded.updated_at""",
+                (capture_id, new_folder, timestamp, timestamp),
+            )
+        conn.execute(
+            """UPDATE garden_cards
+               SET source_theme = ?, updated_at = ?
+               WHERE source_theme = ?""",
+            (new_folder, timestamp, old_folder),
+        )
     return len(draft_updates) + len(file_updates)
+
+
+# Compatibility alias for older callers/tests; new code should use rename_topic.
+rename_folder_everywhere = rename_topic
 
 
 def render_markdown(frontmatter: dict, body: str) -> str:

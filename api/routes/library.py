@@ -33,7 +33,7 @@ from bridge.library_view import (
     get_library_item as get_library_item_view,
     list_library_items as list_library_items_view,
     now_iso,
-    rename_folder_everywhere,
+    rename_topic,
 )
 from db.concurrency import transaction
 from db.repo import CaptureDraftRepo, CaptureRepo
@@ -263,7 +263,7 @@ def create_library_router(
         if old_folder == "Inbox":
             raise HTTPException(status_code=400, detail="Inbox cannot be renamed")
         if old_folder != new_folder:
-            rename_folder_everywhere(capture_repo.conn, vault, old_folder, new_folder)
+            rename_topic(capture_repo.conn, vault, old_folder, new_folder)
             rename_stored_folder(vault, old_folder, new_folder)
         return {
             "ok": True,

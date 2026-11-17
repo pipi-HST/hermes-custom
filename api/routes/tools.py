@@ -47,7 +47,7 @@ _BRIDGE_TOOL_WHITELIST: dict[str, tuple[str, frozenset[str]]] = {
     ),
     "answer_bridge": (
         "bridge.answer_bridge",
-        frozenset({"save_answer_to_knowledge"}),
+        frozenset({"revise_answer_draft", "save_answer_to_knowledge"}),
     ),
     "canvas_bridge": (
         "bridge.canvas_bridge",
@@ -59,6 +59,7 @@ _BRIDGE_TOOL_WHITELIST: dict[str, tuple[str, frozenset[str]]] = {
             {
                 "capture_content",
                 "commit_capture_draft",
+                "create_editable_capture_draft",
                 "revise_capture_draft",
                 "show_capture_draft",
             }
