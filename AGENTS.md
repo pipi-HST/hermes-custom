@@ -28,6 +28,10 @@ If a task conflicts with these, stop and ask. Do not silently pick one interpret
 5. **No new table or column without:** migration in `db/schema.py`, a reader/writer, an invariant test, and a doc update.
 6. **No new user-facing term without** adding it to `GLOSSARY.md` and removing the old term from current docs.
 7. **No big rename.** Do not rename database tables, directories, or public bridge functions just to match product copy. Add a compatibility layer and a migration plan first.
+8. **Research lives in `agents/research/`.** `bridge/research/` is a compatibility shell only; new planner/synthesis/evidence/orchestration code goes under `agents/research/`.
+9. **Garden card creation is two-step.** `POST /garden/drafts` only synthesizes a draft; commit requires `POST /garden/drafts/{id}/confirmation` and a single-use token. Do not add `auto_commit` or a one-request synthesize-and-commit path.
+10. **Card body truth is `payload_json.content_markdown`.** `garden_cards.content_markdown` is a derived cache; use `agents.garden_card_payload.with_canonical_content_markdown()` and the repair script, never write two different bodies.
+11. **CaptureIntent is a contract.** Fields, allowed values and readers live in `docs/capture-intent.md`; update `capture_intent_schema()` and `tests/test_capture_intent_contract.py` with any change.
 
 ## 3. Definition of Done
 
@@ -71,6 +75,9 @@ Do not use real LLM / embedding providers in tests. Use the local fake provider 
 - `capture_embeddings` is the only capture vector index; `captures.embedding` was removed in schema v4.
 - `review_items` is the review scheduler; `captures.review_*` was removed in schema v4.
 - `captures.archived_at` is the only archive marker; do not add a second status column.
+- `garden_cards.payload_json.content_markdown` is the card body truth; the `content_markdown` column is a cache and must equal it after every write.
+- A `garden_draft` is not durable knowledge; only a token-confirmed `commit_garden_draft` writes `garden_cards`.
+- `reading_drafts` with `output_type=enhance_capture` must write a `capture_version_backups` row before changing the Capture Note.
 - Deleting a Topic must not delete the underlying Capture or Card.
 
 Add a regression test for any invariant you touch.
