@@ -752,6 +752,15 @@ def test_history_summary_failure_is_visible_without_breaking_answer(monkeypatch)
     assert any("长期记忆压缩失败" in warning for warning in result["warnings"])
 
 
+def test_emit_ignores_non_callable_callback():
+    # HTTP dispatch JSON-encodes kwargs, so a callback arrives as a string.
+    asyncio.run(
+        web_context_answer._emit(
+            "not-a-callback", "planning_start", path="web_context", mode="local_only"
+        )
+    )
+
+
 def test_async_web_context_answer_emits_candidate_trace(monkeypatch):
     events = []
     patch_research_plan(monkeypatch, queries=["Harness engineer"])

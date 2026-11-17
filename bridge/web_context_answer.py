@@ -1597,7 +1597,9 @@ def _progress(progress_callback: ProgressCallback | None, event: str, **kwargs: 
 
 
 async def _emit(event_callback: ResearchEventCallback | None, event: str, **kwargs: Any) -> None:
-    if event_callback is None:
+    # HTTP dispatch can only carry JSON, so a callback arrives as a string.
+    # Treat anything non-callable as "no listener" instead of crashing the run.
+    if not callable(event_callback):
         return
     result = event_callback({"type": event, **kwargs})
     if asyncio.iscoroutine(result):
