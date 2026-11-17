@@ -15,6 +15,7 @@ from db.reading_repo import ReadingRepo
 from agents.markdown_writer import read_note
 from api.routes.reading import create_reading_router
 from api.routes.knowledge import create_knowledge_router
+from api.routes.garden import create_garden_router
 from api.routes.capture_drafts import create_capture_draft_router
 from api.routes.captures import create_capture_router
 
@@ -63,6 +64,10 @@ def client(tmp_path, reading_repo, capture_repo, draft_repo):
     )
     app.include_router(
         create_capture_draft_router(draft_repo),
+        prefix="/api",
+    )
+    app.include_router(
+        create_garden_router(capture_repo, str(tmp_path)),
         prefix="/api",
     )
     return TestClient(app)
@@ -1334,3 +1339,137 @@ def test_capture_list_rejects_negative_offset(client):
     resp = client.get("/api/captures", params={"offset": -1})
 
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Garden draft confirmation tokens
+# ---------------------------------------------------------------------------
+
+def _create_garden_draft_row(capture_repo, title: str = "待确认卡片") -> str:
+    from agents.garden_agent import create_garden_draft
+
+    return create_garden_draft(capture_repo, {
+        "title": title,
+        "one_liner": "确认后才能落库。",
+        "core_arguments": [],
+        "key_materials": [],
+        "knowledge_links": [],
+        "markdown": f"# {title}\n",
+        "capture_ids": [],
+    })
+
+
+def test_garden_commit_requires_single_use_confirmation_token(
+    client, capture_repo, monkeypatch
+):
+    from bridge import garden_bridge
+
+    draft_id = _create_garden_draft_row(capture_repo)
+    calls: list[dict] = []
+
+    def fake_commit(**kwargs):
+        calls.append(kwargs)
+        return {"status": "success", "intent": "commit_garden_draft"}
+
+    monkeypatch.setattr(garden_bridge, "commit_garden_draft", fake_commit)
+
+    missing = client.post(f"/api/garden/drafts/{draft_id}/commit", json={})
+    assert missing.status_code == 403
+    assert calls == []
+
+    invalid = client.post(
+        f"/api/garden/drafts/{draft_id}/commit",
+        json={"confirmation_token": "not-a-token"},
+    )
+    assert invalid.status_code == 403
+
+    issued = client.post(f"/api/garden/drafts/{draft_id}/confirmation")
+    assert issued.status_code == 200
+    issued_body = issued.json()
+    assert issued_body["intent"] == "commit_garden_draft"
+    assert issued_body["token"]
+    assert issued_body["expires_at"]
+
+    committed = client.post(
+        f"/api/garden/drafts/{draft_id}/commit",
+        json={"confirmation_token": issued_body["token"]},
+    )
+    assert committed.status_code == 200
+    assert committed.json()["intent"] == "commit_garden_draft"
+    assert calls == [
+        {
+            "draft_id": draft_id,
+            "confirmation_source": "api",
+            "token_verified": True,
+            "context": None,
+        }
+    ]
+
+    reused = client.post(
+        f"/api/garden/drafts/{draft_id}/commit",
+        json={"confirmation_token": issued_body["token"]},
+    )
+    assert reused.status_code == 403
+
+
+def test_garden_commit_rejects_token_for_another_draft(
+    client, capture_repo, monkeypatch
+):
+    from bridge import garden_bridge
+
+    first = _create_garden_draft_row(capture_repo, "卡片一")
+    second = _create_garden_draft_row(capture_repo, "卡片二")
+    monkeypatch.setattr(
+        garden_bridge,
+        "commit_garden_draft",
+        lambda **kwargs: {"status": "success", "intent": "commit_garden_draft"},
+    )
+    token = client.post(f"/api/garden/drafts/{first}/confirmation").json()["token"]
+
+    resp = client.post(
+        f"/api/garden/drafts/{second}/commit",
+        json={"confirmation_token": token},
+    )
+
+    assert resp.status_code == 403
+
+
+def test_garden_draft_creation_never_commits_even_with_legacy_auto_commit(
+    client, capture_repo, monkeypatch
+):
+    from bridge import garden_bridge
+
+    draft_id = _create_garden_draft_row(capture_repo)
+    commits: list[dict] = []
+    envelope = {
+        "status": "success",
+        "agent": "garden",
+        "intent": "synthesize_garden",
+        "chat_preview": "已生成卡片草稿",
+        "durable_artifacts": [
+            {"type": "garden_draft", "id": draft_id, "title": "卡片", "status": "draft_ready"}
+        ],
+        "meta": {"draft_id": draft_id},
+    }
+    monkeypatch.setattr(
+        garden_bridge, "synthesize_garden", lambda **kwargs: envelope
+    )
+    monkeypatch.setattr(
+        garden_bridge,
+        "commit_garden_draft",
+        lambda **kwargs: (commits.append(kwargs) or {"status": "success"}),
+    )
+
+    created = client.post("/api/garden/drafts", json={"capture_ids": ["cap-1"]})
+    assert created.status_code == 200
+    assert created.json() == envelope
+    assert commits == []
+
+    # Old clients send auto_commit=True; the field is ignored, not honoured.
+    legacy = client.post(
+        "/api/garden/drafts",
+        json={"capture_ids": ["cap-1"], "auto_commit": True},
+    )
+    assert legacy.status_code == 200
+    assert legacy.json() == envelope
+    assert commits == []

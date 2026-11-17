@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -16,6 +18,8 @@ from bridge.folder_store import STORE_RELATIVE_PATH
 from db.reading_repo import ReadingRepo
 from db.repo import CaptureDraftRepo, CaptureRepo
 from db.schema import init_db
+from db.write_job_repo import KnowledgeWriteJobRepo
+from workers.knowledge_write_worker import KnowledgeWriteWorker
 
 LOOPBACK = ("127.0.0.1", 50000)
 
@@ -107,6 +111,46 @@ def _add_draft(config, *, title: str = "草稿", folder: str = "Inbox") -> str:
     finally:
         conn.close()
     return draft["id"]
+
+
+def _worker_config(config: CaptureConfig, *, timeout: float) -> CaptureConfig:
+    return CaptureConfig(
+        llm_api_key=config.llm_api_key,
+        qwen_api_key=config.qwen_api_key,
+        llm_base_url=config.llm_base_url,
+        vault_path=config.vault_path,
+        db_path=config.db_path,
+        worker_enabled=True,
+        worker_rename_timeout_seconds=timeout,
+    )
+
+
+def _start_worker(config: CaptureConfig, stop: threading.Event) -> threading.Thread:
+    """Run one worker loop on its own connection until ``stop`` is set."""
+
+    def run() -> None:
+        conn = _db_conn(config)
+        try:
+            worker = KnowledgeWriteWorker(
+                {
+                    "vault_path": config.vault_path,
+                    "db_path": config.db_path,
+                    "poll_interval": 0.02,
+                    "max_retry": 3,
+                    "batch_size": 10,
+                }
+            )
+            worker.conn = conn
+            worker.repo = KnowledgeWriteJobRepo(conn)
+            while not stop.is_set():
+                if worker._process_batch() == 0:
+                    time.sleep(0.02)
+        finally:
+            conn.close()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +467,102 @@ def test_folder_rename_syncs_metadata_mirror_and_card_topic(env):
 
     assert metadata["folder_path"] == "深度研究"
     assert card["source_theme"] == "深度研究"
+
+
+def test_folder_rename_defaults_to_sync_path(env):
+    config, app, vault = env
+    _add_capture(config, vault, name="sync-default", folder="研究")
+
+    with _client(app) as client:
+        renamed = client.patch(
+            f"/api/library/folders/{quote('研究', safe='')}",
+            json={"name": "深度研究"},
+        )
+
+    assert renamed.status_code == 200
+    note_text = (vault / "captures" / "sync-default.md").read_text(encoding="utf-8")
+    assert yaml.safe_load(note_text.split("---", 2)[1])["folder_path"] == "深度研究"
+    conn = _db_conn(config)
+    try:
+        jobs = conn.execute(
+            "SELECT count(*) AS n FROM knowledge_write_jobs WHERE intent = 'rename_folder'"
+        ).fetchone()["n"]
+    finally:
+        conn.close()
+    assert jobs == 0
+
+
+def test_folder_rename_uses_worker_queue_when_enabled(env):
+    config, _, vault = env
+    capture_id = _add_capture(config, vault, name="queued-rename", folder="研究")
+    worker_config = _worker_config(config, timeout=10.0)
+    app = api_main.create_app(config=worker_config)
+    stop = threading.Event()
+    worker_thread = _start_worker(worker_config, stop)
+    try:
+        with _client(app) as client:
+            renamed = client.patch(
+                f"/api/library/folders/{quote('研究', safe='')}",
+                json={"name": "深度研究"},
+            )
+        assert renamed.status_code == 200
+        assert any(
+            folder["path"] == "深度研究" for folder in renamed.json()["folders"]
+        )
+    finally:
+        stop.set()
+        worker_thread.join(timeout=5)
+
+    conn = _db_conn(config)
+    try:
+        job = conn.execute(
+            """SELECT status, object_id
+               FROM knowledge_write_jobs
+               WHERE intent = 'rename_folder'
+               ORDER BY created_at DESC LIMIT 1"""
+        ).fetchone()
+        metadata = conn.execute(
+            "SELECT folder_path FROM capture_metadata WHERE capture_id = ?",
+            (capture_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert job is not None
+    assert job["status"] == "completed"
+    assert job["object_id"] == "研究"
+    assert metadata["folder_path"] == "深度研究"
+
+
+def test_folder_rename_reports_timeout_when_worker_missing(env):
+    config, _, vault = env
+    _add_capture(config, vault, name="no-worker", folder="研究")
+    worker_config = _worker_config(config, timeout=0.2)
+    app = api_main.create_app(config=worker_config)
+
+    with _client(app) as client:
+        renamed = client.patch(
+            f"/api/library/folders/{quote('研究', safe='')}",
+            json={"name": "深度研究"},
+        )
+
+    assert renamed.status_code == 503
+    detail = renamed.json()["detail"]
+    assert detail["code"] == "worker_unavailable"
+    assert detail["job_id"]
+    assert "worker" in detail["message"].lower()
+    assert "did not finish" in detail["message"]
+    conn = _db_conn(config)
+    try:
+        job = conn.execute(
+            "SELECT status FROM knowledge_write_jobs WHERE id = ?",
+            (detail["job_id"],),
+        ).fetchone()
+        note_text = (vault / "captures" / "no-worker.md").read_text(encoding="utf-8")
+    finally:
+        conn.close()
+    assert job["status"] == "pending"
+    # The failed request must not half-apply the rename synchronously.
+    assert yaml.safe_load(note_text.split("---", 2)[1])["folder_path"] == "研究"
 
 
 def test_library_folders_accepts_legacy_plain_list_store(env):

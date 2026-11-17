@@ -77,6 +77,32 @@ def normalize_garden_payload(
     }
 
 
+def canonical_content_markdown(payload: dict[str, Any], *, fallback: str = "") -> str:
+    """Return the card body that belongs in ``payload_json.content_markdown``.
+
+    The payload is the only source of truth for card text; the
+    ``garden_cards.content_markdown`` column is a derived cache.  Rendering
+    happens here (and only here) so every writer stores the exact same string
+    in both places.
+    """
+    card = normalize_garden_payload(payload)
+    content = _text(card.get("content_markdown")) or _text(fallback)
+    if content:
+        return content
+    return render_garden_card_body(card).strip()
+
+
+def with_canonical_content_markdown(
+    payload: dict[str, Any],
+    *,
+    fallback: str = "",
+) -> dict[str, Any]:
+    """Return a normalized payload carrying its canonical ``content_markdown``."""
+    card = normalize_garden_payload(payload)
+    card["content_markdown"] = canonical_content_markdown(card, fallback=fallback)
+    return card
+
+
 def parse_payload_json(text: str | None) -> dict[str, Any]:
     try:
         value = json.loads(text or "{}")
@@ -88,15 +114,19 @@ def parse_payload_json(text: str | None) -> dict[str, Any]:
 def payload_from_row(row: Any) -> dict[str, Any]:
     """Return the normalized v2 payload for a ``garden_cards`` row.
 
-    Only ``payload_json`` and ``capture_ids`` are read; the removed v1 mirror
-    columns are never consulted.
+    ``payload_json`` is authoritative.  The ``content_markdown`` column is a
+    derived cache and is consulted only when the payload has no body at all.
     """
     payload = parse_payload_json(_row_value(row, "payload_json", ""))
     if not payload:
         embedded = _row_value(row, "payload", None)
         if isinstance(embedded, dict):
             payload = embedded
-    legacy = {"capture_ids": _row_value(row, "capture_ids", "[]")}
+    legacy = {
+        "capture_ids": _row_value(row, "capture_ids", "[]"),
+        # Fallback only: ``normalize_garden_payload`` prefers the payload value.
+        "content_markdown": _row_value(row, "content_markdown", ""),
+    }
     return normalize_garden_payload(payload, legacy=legacy)
 
 

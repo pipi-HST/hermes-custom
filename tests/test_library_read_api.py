@@ -620,8 +620,8 @@ def test_garden_cards_list_and_delete_only_unlinks(env):
     assert (vault / "captures" / "source.md").is_file()
 
 
-def test_garden_draft_synthesis_commits_the_draft(env, monkeypatch):
-    """The service mirrors the dashboard: synthesize, then implicit commit."""
+def test_garden_draft_synthesis_stops_at_the_draft(env, monkeypatch):
+    """``POST /garden/drafts`` no longer commits as a side effect."""
     config, app, vault = env
     captured: dict = {}
     commit_calls: list[dict] = []
@@ -635,16 +635,6 @@ def test_garden_draft_synthesis_commits_the_draft(env, monkeypatch):
         ],
         "meta": {"draft_id": "draft-1"},
     }
-    committed = {
-        "status": "success",
-        "agent": "garden",
-        "intent": "commit_garden_draft",
-        "chat_preview": "已写入知识卡片库",
-        "durable_artifacts": [
-            {"type": "garden_card", "id": "card-1", "title": "卡片", "status": "committed"}
-        ],
-        "meta": {},
-    }
 
     def fake_synthesize_garden(**kwargs):
         captured.update(kwargs)
@@ -652,7 +642,7 @@ def test_garden_draft_synthesis_commits_the_draft(env, monkeypatch):
 
     def fake_commit_garden_draft(**kwargs):
         commit_calls.append(kwargs)
-        return committed
+        return {"status": "success", "intent": "commit_garden_draft"}
 
     from bridge import garden_bridge
 
@@ -671,16 +661,14 @@ def test_garden_draft_synthesis_commits_the_draft(env, monkeypatch):
         )
 
     assert response.status_code == 200
-    assert response.json() == committed
+    assert response.json() == envelope
     assert captured["capture_ids"] == ["cap-1", "cap-2"]
     assert captured["title"] == "标题"
     assert captured["card_kind"] == "method"
     assert captured["instruction"] == "按方法论整理"
     assert captured["context"] is not None
-    # Server-side confirmation: the HTTP request already carries the user action.
-    assert commit_calls == [
-        {"draft_id": "draft-1", "token_verified": True, "context": captured["context"]}
-    ]
+    # No token, no commit: synthesis only returns the reviewable draft.
+    assert commit_calls == []
 
 
 # ---------------------------------------------------------------------------

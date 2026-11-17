@@ -1225,15 +1225,18 @@ def _insert_card(conn, card: dict[str, Any]) -> None:
     }
     normalized = normalize_garden_payload(payload)
     payload = {**payload, **normalized, "source_theme": card["theme"]}
+    # Payload is the source of truth; write the same body into the cache column.
+    content_markdown = str(payload.get("content_markdown") or "")
     conn.execute(
         """INSERT OR REPLACE INTO garden_cards
-           (id, title, card_kind, schema_version, payload_json, status,
-            capture_ids, created_at, updated_at, last_reviewed_at,
+           (id, title, content_markdown, card_kind, schema_version, payload_json,
+            status, capture_ids, created_at, updated_at, last_reviewed_at,
             review_interval, skip_count)
-           VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, '3d', 0)""",
+           VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, '3d', 0)""",
         (
             card["id"],
             normalized["title"],
+            content_markdown,
             normalized["card_kind"],
             "garden_card.v2",
             json.dumps(payload, ensure_ascii=False, sort_keys=True),
@@ -1243,7 +1246,6 @@ def _insert_card(conn, card: dict[str, Any]) -> None:
             now,
         ),
     )
-    # The API view reads the column first, so it must be populated here too.
     conn.execute(
         "UPDATE garden_cards SET source_theme = ? WHERE id = ?",
         (card["theme"], card["id"]),

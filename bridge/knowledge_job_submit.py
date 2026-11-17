@@ -1,9 +1,10 @@
 """Knowledge write job submission for background folder operations.
 
 A job is a row in ``knowledge_write_jobs``; ``workers.knowledge_write_worker``
-polls the table, calls the folder domain service, and records the result.  The
-HTTP folder-rename endpoint still runs synchronously, so this queue is opt-in
-for batch or async renames, not a second live write path.
+polls the table, calls the folder domain service, and records the result.
+``PATCH /api/library/folders/{path}`` uses this queue when ``worker.enabled`` is
+true (and waits for the result); with the default ``false`` it keeps the
+synchronous path.
 
 Usage:
     from bridge.knowledge_job_submit import submit_folder_rename_job

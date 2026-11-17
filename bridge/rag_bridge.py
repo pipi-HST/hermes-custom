@@ -11,7 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import load_config
-from agents.garden_card_payload import payload_from_row, render_garden_card_body
+from agents.garden_card_payload import (
+    parse_payload_json,
+    payload_from_row,
+    render_garden_card_body,
+)
 from agents.managed_sections import is_managed_section_title
 from agents.rag_agent import (
     SELECTED_BODY_KEY,
@@ -725,33 +729,41 @@ def _garden_card_match_score(
     return score
 
 
+def _card_content_markdown(card: dict) -> str:
+    """Return the card body from ``payload_json``, then its derived column.
+
+    ``payload_json.content_markdown`` is the single source of truth.  The
+    ``content_markdown`` column is a cache and is read only when the payload
+    carries no body at all (legacy rows written before the contract).
+    """
+    payload = card.get("payload_json")
+    data = parse_payload_json(payload) if isinstance(payload, str) else payload
+    if isinstance(data, dict):
+        content = str(data.get("content_markdown") or "").strip()
+        if content:
+            return content
+    return str(card.get("content_markdown") or "").strip()
+
+
 def _card_body_text(card: dict) -> str:
     """Return the full card body, not just the one-line claim.
 
-    New cards store ``content_markdown`` in both the column and payload.  Demo
-    cards and pre-migration rows may only have the payload key or structured
-    fields, so render a body from the payload before falling back to
-    ``one_liner``.
+    Payload first, cache column second, and only then render from the
+    structured payload fields.  Never prefer the column over the payload: the
+    two can drift and the payload is what writers own.
     """
-    content = str(card.get("content_markdown") or "").strip()
+    content = _card_content_markdown(card)
     if content:
         return content
     payload = card.get("payload_json")
-    if payload:
+    data = parse_payload_json(payload) if isinstance(payload, str) else payload
+    if isinstance(data, dict) and data:
         try:
-            data = json.loads(payload) if isinstance(payload, str) else payload
-        except (TypeError, ValueError):
-            data = {}
-        if isinstance(data, dict):
-            content = str(data.get("content_markdown") or "").strip()
-            if content:
-                return content
-            try:
-                rendered = render_garden_card_body(data).strip()
-                if rendered:
-                    return rendered
-            except Exception as exc:  # never fail retrieval over card rendering
-                logger.debug("[RAG] card body render failed: %s", exc)
+            rendered = render_garden_card_body(data).strip()
+            if rendered:
+                return rendered
+        except Exception as exc:  # never fail retrieval over card rendering
+            logger.debug("[RAG] card body render failed: %s", exc)
     return str(payload_from_row(card)["claim"] or "")
 
 
@@ -821,7 +833,7 @@ def _search_garden_cards(
             title=title.lower(),
             theme=str(card.get("source_theme") or "").lower(),
             one_liner=str(payload["claim"] or "").lower(),
-            content=str(card.get("content_markdown") or "").lower(),
+            content=_card_content_markdown(card).lower(),
             arguments=" ".join(
                 item["statement"] for item in payload["core_judgments"]
             ).lower(),

@@ -118,12 +118,19 @@ curl -X POST http://127.0.0.1:8000/api/capture-drafts/<draft_id>/commit \
   -H "Authorization: Bearer $HERMES_API_TOKEN" -H "Content-Type: application/json" \
   -d '{"confirmation_token":"<token>"}'
 
-# 3. 从资料生成卡片（auto_commit=true，直接落库）
+# 3. 从资料生成卡片草稿（默认不落库）
 curl -X POST http://127.0.0.1:8000/api/garden/drafts \
   -H "Authorization: Bearer $HERMES_API_TOKEN" -H "Content-Type: application/json" \
   -d '{"capture_ids":["<capture_id>"]}'
 
-# 4. RAG 检索（应能命中刚才的资料）
+# 4. 确认卡片草稿后再提交
+curl -X POST http://127.0.0.1:8000/api/garden/drafts/<draft_id>/confirmation \
+  -H "Authorization: Bearer $HERMES_API_TOKEN"
+curl -X POST http://127.0.0.1:8000/api/garden/drafts/<draft_id>/commit \
+  -H "Authorization: Bearer $HERMES_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"confirmation_token":"<token>"}'
+
+# 5. RAG 检索（应能命中刚才的资料）
 curl "http://127.0.0.1:8000/api/knowledge/search?q=MCP" \
   -H "Authorization: Bearer $HERMES_API_TOKEN"
 ```

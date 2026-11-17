@@ -192,7 +192,13 @@ Theme View 是按主题聚合的高级视图/扫描结果，不是专题本身�
 - **local fallback 仅 dev-only，不是生产部署方案。** 不要把 `HERMES_KNOWLEDGE_LOCAL_ROOT` 当成部署开关。
 - UI 仍混用“知识库/资料库”等旧词，术语清扫未覆盖前端全部文案。
 
-2026-11-17 已补齐：selection chat、capture revise、runtime-check、AI cancel 的 HTTP 路径；schema v4 删除了 `captures.embedding`、`captures.review_*` 和 garden v1 镜像列。复习调度只读 `review_items`，Capture 归档只读 `captures.archived_at`，卡片内容只读 `garden_cards.payload_json`。
+2026-11-17 已补齐：selection chat、capture revise、runtime-check、AI cancel 的 HTTP 路径；
+schema v4 删除了 `captures.embedding`、`captures.review_*` 和 garden v1 镜像列。
+复习调度只读 `review_items`，Capture 归档只读 `captures.archived_at`。卡片正文以
+`garden_cards.payload_json.content_markdown` 为唯一真相；`garden_cards.content_markdown`
+只是派生缓存（payload 缺失时才回退），写入时由
+`agents/garden_card_payload.py` 生成同一个值，历史漂移用
+`scripts/repair_garden_content.py --apply` 修复。
 
 HTTP 模式的 selection-chat stream 目前返回 `start` + 完整 `complete`，不转发逐阶段 progress；逐阶段 progress 仍属于本地回退路径。
 
