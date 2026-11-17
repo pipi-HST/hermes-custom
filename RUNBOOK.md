@@ -1,8 +1,8 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-17
-verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+last_verified: 2026-11-18
+verified_against: "3e6b974 (hermes-custom) + 2026-11-18 并行修复分支"
 ---
 
 # Hermes Knowledge Runbook
@@ -19,7 +19,7 @@ verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-
 | Hermes Dashboard | `http://127.0.0.1:9119` | `.venv\Scripts\python.exe -m hermes_cli.main dashboard` |
 | Hermes Gateway | 由平台适配器决定 | `.venv\Scripts\python.exe -m hermes_cli.main gateway run` |
 
-旧的 `hermes-custom/dashboard`（Next.js，端口 3000）已废弃；`npm run dev` 会直接退出。
+本仓库旧的 `dashboard/`（Next.js，端口 3000）已删除，不再提供 `npm run dev`。用户侧 Dashboard 只用 Hermes Runtime 原生 Dashboard（9119）。
 
 ## 2. 启动 Knowledge API
 
@@ -76,10 +76,10 @@ HERMES_KNOWLEDGE_DB=<repos>/hermes-custom/data/captures.db
 HERMES_KNOWLEDGE_VAULT=<repos>/hermes-custom/data/vault
 ```
 
-`HERMES_KNOWLEDGE_DB` / `HERMES_KNOWLEDGE_VAULT` 目前仍是 Dashboard 少数读路由
-（草稿列表、卡片详情、时间线）的直读兜底；纯远程部署前必须让这两个路径与服务端
-一致，否则这些页面会 404。正在把它们改成 HTTP 调用，见
-`docs/AUDIT-2026-11-17-doc-code-consistency.md` 的 P0 清单。
+HTTP 模式跑工具不需要本地 Knowledge checkout；但 Dashboard 的少数读路由
+（草稿列表、卡片详情、时间线）仍会直读 `HERMES_KNOWLEDGE_DB` /
+`HERMES_KNOWLEDGE_VAULT`。这是已知例外，不是推荐生产形态；纯远程部署前必须让
+这两个路径与服务端一致，否则这些页面会 404。
 
 Knowledge 侧：
 
