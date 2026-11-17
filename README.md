@@ -29,7 +29,7 @@ Hermes Knowledge Service（FastAPI，默认 127.0.0.1:8000）
 
 ## 当前状态
 
-- Knowledge 全量测试：见 `docs/CURRENT-STATE.md`（当前 checkout 实测 exit 0）。
+- Knowledge 全量测试：收集数见 `docs/CURRENT-STATE.md`；维护者环境最近一次全量运行 exit 0。
 - 推荐部署：Runtime 通过 HTTP 调 Knowledge Service。
 - 本地 checkout 模式（`HERMES_KNOWLEDGE_LOCAL_ROOT`）只用于开发和离线调试。
 - 当前仍有一部分 Runtime Dashboard 路由保留本地回退；见 `ARCHITECTURE.md` 的“当前拆分状态”。
@@ -42,7 +42,7 @@ Hermes Knowledge Service（FastAPI，默认 127.0.0.1:8000）
 cd <repos>\hermes-custom
 py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
-copy config.example.yaml config.yaml
+copy config.example.yaml config.yaml   # 仅首次；已有 config.yaml 不要覆盖
 # 编辑 config.yaml：填 LLM / DashScope key、vault、database 路径
 .venv\Scripts\python.exe -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
 ```
@@ -84,8 +84,13 @@ HERMES_KNOWLEDGE_LOCAL_ROOT=<repos>\hermes-custom
 cd <repos>\hermes-custom
 .venv\Scripts\python.exe -m pytest tests -q
 
+# HTTP-only smoke（临时 DB/vault；需要同级 hermes-agent-main；建议指定 work-dir）
+.venv\Scripts\python.exe scripts\http_only_smoke.py --work-dir .tmp\hermes-http-only
+
 # 跨进程 pipeline（会启动真实 API；外部 LLM 用本地假服务替代）
-.venv\Scripts\python.exe scripts\knowledge_pipeline_e2e.py --work-dir <tmp>\hermes-pipeline-e2e
+# 需要同级 hermes-agent-main checkout；不在同级时设置 HERMES_RUNTIME_ROOT
+$env:HERMES_RUNTIME_ROOT = "<repos>\hermes-agent-main"
+.venv\Scripts\python.exe scripts\knowledge_pipeline_e2e.py --work-dir .tmp\hermes-pipeline-e2e
 
 # Runtime 侧 Knowledge 相关
 cd <repos>\hermes-agent-main

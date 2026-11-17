@@ -21,9 +21,10 @@
 Everything under `history/` is archival:
 
 - `history/HANDOFF-2026-05.md` — old handoff, superseded
-- `superpowers/plans/` — old implementation plans; treat as history
-- `superpowers/specs/` — old design specs; treat as history
-- `superpowers/reports/` — old status reports
+- `history/plans/` — 50 old implementation plans (`status: historical`)
+- `history/specs/` — 10 old design specs (`status: historical`)
+- `history/reports/` — old status reports and the pre-existing improvement report
+- `superpowers/demos/` — old HTML demos
 - `checkpoints/` — old code snapshots; **never restore over current code**
 
 ## Rules

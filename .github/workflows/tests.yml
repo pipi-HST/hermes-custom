@@ -39,6 +39,12 @@ jobs:
         # example config points at ~/Hermes/knowledge, which is writable here.
         run: cp config.example.yaml config.yaml
 
+      - name: Check docs and generated state
+        run: |
+          python scripts/check_docs.py
+          python -c "from db.schema import init_db; init_db('data/captures.db')"
+          python scripts/update_current_state.py --check
+
       - name: Run unit tests
         env:
           HERMES_API_TOKEN: ""

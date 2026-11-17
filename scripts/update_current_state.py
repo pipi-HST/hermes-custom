@@ -56,7 +56,12 @@ def _table_count() -> int | None:
     return len([name for name in names if name not in shadow])
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="fail if the file is stale")
+    args = parser.parse_args(argv)
     tests = _test_count()
     tables = _table_count()
     branch = _git("rev-parse", "--abbrev-ref", "HEAD") or "unknown"
@@ -71,8 +76,25 @@ def main() -> int:
         f"- Tests collected: {tests if tests is not None else 'unknown'}",
         f"- SQLite business tables: {tables if tables is not None else 'data/captures.db not found'}",
     ]
+    content = "\n".join(lines) + "\n"
+    if args.check:
+        current = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""
+        # Date and branch are informational; do not fail CI every day, or on
+        # the detached HEAD that a pull_request checkout produces.
+        volatile = ("- Date:", "- Branch:")
+        current_lines = [
+            line for line in current.splitlines() if not line.startswith(volatile)
+        ]
+        content_lines = [
+            line for line in content.splitlines() if not line.startswith(volatile)
+        ]
+        if current_lines != content_lines:
+            print(f"{OUTPUT} is stale; run scripts/update_current_state.py")
+            return 1
+        print(f"{OUTPUT} is up to date")
+        return 0
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    OUTPUT.write_text(content, encoding="utf-8")
     print(OUTPUT)
     return 0
 

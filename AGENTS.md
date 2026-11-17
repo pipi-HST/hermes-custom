@@ -69,7 +69,7 @@ Add a regression test for any invariant you touch.
 
 ## 6. Documentation rules
 
-Every current doc starts with:
+Current docs carry a visible status line or YAML front matter:
 
 ```yaml
 ---

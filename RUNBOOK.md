@@ -1,7 +1,7 @@
 # Hermes Knowledge Runbook
 
 > 状态：current  
-> 适用：Windows / macOS / Linux  
+> 适用：命令示例以 Windows PowerShell 为准；macOS/Linux 把 `.venv\Scripts\python.exe` 换成 `.venv/bin/python`。
 > 路径约定：`<repos>` 是同时包含 `hermes-custom` 和 `hermes-agent-main` 的目录。
 
 ## 1. 端口与进程
@@ -9,8 +9,8 @@
 | 服务 | 默认地址 | 启动方式 |
 |---|---|---|
 | Knowledge API | `http://127.0.0.1:8000` | `uvicorn api.main:create_app --factory` |
-| Hermes Dashboard | `http://127.0.0.1:9119` | `hermes dashboard` / `python -m hermes_cli.main dashboard` |
-| Hermes Gateway | 由平台适配器决定 | `hermes gateway run` / `python -m hermes_cli.main gateway run` |
+| Hermes Dashboard | `http://127.0.0.1:9119` | `.venv\Scripts\python.exe -m hermes_cli.main dashboard` |
+| Hermes Gateway | 由平台适配器决定 | `.venv\Scripts\python.exe -m hermes_cli.main gateway run` |
 
 旧的 `hermes-custom/dashboard`（Next.js，端口 3000）已废弃；`npm run dev` 会直接退出。
 
@@ -18,7 +18,7 @@
 
 ```bash
 cd <repos>/hermes-custom
-python -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
+.venv\Scripts\python.exe -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
 Windows PowerShell：
@@ -48,13 +48,13 @@ HERMES_API_TOKEN=<random>
 cd <repos>/hermes-agent-main
 uv run hermes gateway run
 # 或
-python -m hermes_cli.main gateway run --replace
+.venv\Scripts\python.exe -m hermes_cli.main gateway run --replace
 ```
 
 Dashboard：
 
 ```bash
-python -m hermes_cli.main dashboard --no-open
+.venv\Scripts\python.exe -m hermes_cli.main dashboard --no-open
 # http://127.0.0.1:9119
 ```
 
@@ -97,7 +97,7 @@ Hermes Knowledge local-checkout mode is for development only
 
 ```bash
 cd <repos>/hermes-custom
-python -m pytest tests -q
+.venv\Scripts\python.exe -m pytest tests -q
 ```
 
 Windows：
@@ -106,30 +106,32 @@ Windows：
 .venv\Scripts\python.exe -m pytest tests -q
 ```
 
-HTTP-only smoke（真实 API + Runtime 工具，不依赖本地 checkout）：
+HTTP-only smoke（真实 API + Runtime 工具，不需要本地 Knowledge checkout；需要同级 `hermes-agent-main`）：
 
 ```bash
 cd <repos>/hermes-custom
-python scripts/http_only_smoke.py
+.venv\Scripts\python.exe scripts\http_only_smoke.py --work-dir .tmp\hermes-http-only
+.venv\Scripts\python.exe scripts\check_docs.py
+.venv\Scripts\python.exe scripts\update_current_state.py --check
 ```
 
-跨进程 pipeline：
+跨进程 pipeline（需要同级 `hermes-agent-main`；否则设置 `HERMES_RUNTIME_ROOT`）：
 
 ```bash
-python scripts/knowledge_pipeline_e2e.py --work-dir /tmp/hermes-pipeline-e2e
+.venv\Scripts\python.exe scripts\knowledge_pipeline_e2e.py --work-dir .tmp\hermes-pipeline-e2e
 ```
 
 Windows 路径示例：
 
 ```powershell
-.venv\Scripts\python.exe scripts\knowledge_pipeline_e2e.py --work-dir $env:TEMP\hermes-pipeline-e2e
+.venv\Scripts\python.exe scripts\knowledge_pipeline_e2e.py --work-dir .tmp\hermes-pipeline-e2e
 ```
 
 Runtime 侧 Knowledge 测试：
 
 ```bash
 cd <repos>/hermes-agent-main
-python -m pytest tests/tools tests/hermes_cli/test_web_server.py -q
+.venv\Scripts\python.exe -m pytest tests/tools tests/hermes_cli/test_web_server.py -q
 ```
 
 ## 7. 专题修复
@@ -138,19 +140,19 @@ python -m pytest tests/tools tests/hermes_cli/test_web_server.py -q
 
 ```bash
 cd <repos>/hermes-custom
-python scripts/repair_topics.py --config config.yaml
+.venv\Scripts\python.exe scripts\repair_topics.py --config config.yaml
 ```
 
 确认输出后再应用：
 
 ```bash
-python scripts/repair_topics.py --config config.yaml --apply
+.venv\Scripts\python.exe scripts\repair_topics.py --config config.yaml --apply
 ```
 
 如果卡片的 `source_theme` 是非 Inbox 的旧值，并且你确认要以来源资料为准：
 
 ```bash
-python scripts/repair_topics.py --config config.yaml --apply --fix-mismatched
+.venv\Scripts\python.exe scripts\repair_topics.py --config config.yaml --apply --fix-mismatched
 ```
 
 脚本只改：
@@ -189,7 +191,7 @@ python scripts/repair_topics.py --config config.yaml --apply --fix-mismatched
 ### 9.3 专题筛选/卡片所属专题不对
 
 ```bash
-python scripts/repair_topics.py --config config.yaml --apply
+.venv\Scripts\python.exe scripts\repair_topics.py --config config.yaml --apply
 ```
 
 然后重新打开 Library / Cards Board。
@@ -205,8 +207,8 @@ python scripts/repair_topics.py --config config.yaml --apply
 - 重建索引：
 
 ```bash
-python scripts/backfill.py --config config.yaml
-# 只查看：python scripts/backfill.py --config config.yaml --dry-run
+.venv\Scripts\python.exe scripts\backfill.py --config config.yaml
+# 只查看：.venv\Scripts\python.exe scripts\backfill.py --config config.yaml --dry-run
 ```
 
 ## 10. 备份
