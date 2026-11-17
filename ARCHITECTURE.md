@@ -116,10 +116,15 @@ Life Assistant 是第三个、可选的能力项目；本仓库不读写 Life �
 
 仍未完成：
 
-- Runtime Dashboard 仍有若干 local-only 路由（selection chat、open-local、AI operation cancel、graph 读路径等）；
-- `web_server.py` 仍有直接 SQL / vault 写入的本地回退；
+- `open-local` 仍然只能是 local-only：它的语义是打开用户本机文件；
+- `web_server.py` 仍保留 local 模式的直接 SQL / vault 回退（仅 dev-only）；
 - 部分 Runtime 读路径仍直接读 Knowledge SQLite；
-- `captures.embedding`、`captures.review_*`、garden v1 列仍是旧兼容字段。
+- `captures.embedding` 已迁移到 `capture_embeddings` 并在启动时清空旧列值；`captures.review_*` 仍作为聚合兼容字段，调度真相是 `review_items`；
+- garden v1 列仍保留给旧数据/API 兼容。
+
+2026-11-17 已补齐：selection chat、capture revise、runtime-check、AI cancel 的 HTTP 路径。
+
+HTTP 模式的 selection-chat stream 目前返回 `start` + 完整 `complete`，不转发逐阶段 progress；逐阶段 progress 仍属于本地回退路径。
 
 这些是已知技术债，不是“设计如此”。新代码不要继续扩大它们。
 

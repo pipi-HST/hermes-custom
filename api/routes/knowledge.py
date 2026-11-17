@@ -1,6 +1,7 @@
 """Knowledge card and answer draft API routes."""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,23 @@ class ReviseDraftRequest(BaseModel):
 
 class CommitKnowledgeDraftRequest(BaseModel):
     confirmation_token: str = Field(default="", max_length=200)
+
+
+class LibrarySelectionChatRequest(BaseModel):
+    question: str
+    selected_text: str = ""
+    surrounding_before: str = ""
+    surrounding_after: str = ""
+    heading_path: list[str] = []
+    selection_start: int | None = None
+    selection_end: int | None = None
+    selection_confidence: str = "none"
+    mode: str = "local_web"
+    history: list[dict[str, str]] = []
+    history_summary: str = ""
+    history_summary_version: int = 0
+    history_overflow: list[dict[str, str]] = []
+    force_web: bool = False
 
 
 def create_knowledge_router(
@@ -208,6 +226,63 @@ def create_knowledge_router(
             "items": [_strip_binary(item) for item in items],
         }
 
+    def _selection_chat_kwargs(
+        kind: str, item_id: str, body: LibrarySelectionChatRequest
+    ) -> dict[str, Any]:
+        if not body.question.strip():
+            raise HTTPException(status_code=400, detail="question is required")
+        if len((body.selected_text or "").strip()) > 1000:
+            raise HTTPException(
+                status_code=400,
+                detail="选区超过 1000 字，当前不支持基于超长选区检索。请缩短选区后再试。",
+            )
+        from bridge.library_view import get_library_item
+
+        item = get_library_item(capture_repo.conn, vault_path, kind, item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Library item not found")
+        return {
+            "query": body.question.strip(),
+            "mode": body.mode,
+            "article_context": {
+                "kind": kind,
+                "id": item_id,
+                "title": item.get("title") or "",
+                "body": item.get("body") or item.get("preview") or "",
+                "folder_path": item.get("folder_path") or "Inbox",
+                "summary": item.get("summary") or "",
+                "tags": item.get("tags") or [],
+                "file_path": item.get("file_path") or "",
+            },
+            "selection_context": {
+                "selected_text": body.selected_text,
+                "surrounding_before": body.surrounding_before,
+                "surrounding_after": body.surrounding_after,
+                "heading_path": body.heading_path,
+                "selection_start": body.selection_start,
+                "selection_end": body.selection_end,
+                "selection_confidence": body.selection_confidence,
+            },
+            "history": body.history,
+            "history_summary": body.history_summary,
+            "history_summary_version": body.history_summary_version,
+            "history_overflow": body.history_overflow,
+            "force_web": body.force_web,
+        }
+
+    @router.post("/knowledge/library/items/{kind}/{item_id}/selection-chat")
+    async def selection_chat(
+        kind: str, item_id: str, body: LibrarySelectionChatRequest
+    ):
+        from bridge.research_bridge import async_web_assist_answer, web_assist_answer
+
+        kwargs = _selection_chat_kwargs(kind, item_id, body)
+        try:
+            return await async_web_assist_answer(**kwargs)
+        except TypeError:
+            # Old checkouts expose only the sync facade.
+            return await asyncio.to_thread(web_assist_answer, **kwargs)
+
     @router.get("/knowledge/garden-cards")
     def list_garden_cards(limit: int = Query(default=50, le=200)):
         rows = capture_repo.conn.execute(
@@ -216,6 +291,17 @@ def create_knowledge_router(
         ).fetchall()
         items = [_strip_binary(dict(row)) for row in rows]
         return {"items": items}
+
+    @router.post("/knowledge/ai-operations/{operation_id}/cancel")
+    def cancel_ai_operation(operation_id: str):
+        from bridge.ai_cancel import cancel_operation, normalize_operation_id
+
+        normalized = normalize_operation_id(operation_id)
+        return {
+            "ok": bool(cancel_operation(normalized)),
+            "operation_id": normalized,
+            "status": "cancel_requested",
+        }
 
     @router.post("/knowledge/graph/refresh")
     def refresh_knowledge_graph():

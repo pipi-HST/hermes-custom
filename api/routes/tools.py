@@ -34,7 +34,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -154,6 +154,7 @@ def create_tools_router(
         module_name: str,
         function_name: str,
         body: ToolCallRequest,
+        request: Request,
     ):
         """Run one whitelisted bridge function synchronously.
 
@@ -179,15 +180,36 @@ def create_tools_router(
         if _accepts_context(function):
             kwargs["context"] = _context()
 
+        operation_id = (request.headers.get("X-Hermes-AI-Operation-Id") or "").strip()
         try:
-            result = function(*list(body.args), **kwargs)
-            if inspect.isawaitable(result):
-                # research_bridge exposes async entrypoints; this handler runs
-                # in FastAPI's threadpool, so driving the coroutine here is safe.
-                result = asyncio.run(result)
+            if operation_id:
+                from bridge.ai_cancel import operation_context
+
+                with operation_context(operation_id):
+                    result = function(*list(body.args), **kwargs)
+                    if inspect.isawaitable(result):
+                        # research_bridge exposes async entrypoints; this
+                        # handler runs in FastAPI's threadpool, so driving the
+                        # coroutine here is safe.
+                        result = asyncio.run(result)
+            else:
+                result = function(*list(body.args), **kwargs)
+                if inspect.isawaitable(result):
+                    result = asyncio.run(result)
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001 - tool failures become structured 500s
+            from bridge.ai_cancel import AIOperationCancelled
+
+            if isinstance(exc, AIOperationCancelled):
+                return {
+                    "ok": False,
+                    "status": "cancelled",
+                    "cancelled": True,
+                    "operation_id": exc.operation_id,
+                    "cancelled_stage": exc.stage,
+                    "chat_preview": "已停止。",
+                }
             logger.exception(
                 "bridge tool %s.%s failed", module_key, function_key
             )

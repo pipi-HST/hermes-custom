@@ -73,11 +73,17 @@ def run_smoke(work_dir: str | Path | None = None) -> dict[str, Any]:
 
     temp_dir = None
     if work_dir is None:
-        temp_dir = tempfile.mkdtemp(prefix="hermes-http-only-")
+        temp_root = PROJECT_ROOT / ".tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        temp_dir = tempfile.mkdtemp(prefix="http-only-", dir=temp_root)
         root = Path(temp_dir)
     else:
-        root = Path(work_dir).expanduser()
-        root.mkdir(parents=True, exist_ok=True)
+        base = Path(work_dir).expanduser()
+        base.mkdir(parents=True, exist_ok=True)
+        # Every run gets a fresh child so a leftover DB from an interrupted
+        # smoke cannot change the result.
+        root = Path(tempfile.mkdtemp(prefix="run-", dir=base))
+        temp_dir = str(root)
 
     fake = _FakeProviderServer(faults=set())
     server = None
@@ -88,6 +94,7 @@ def run_smoke(work_dir: str | Path | None = None) -> dict[str, Any]:
         vault.mkdir(exist_ok=True)
         db_path = root / "captures.db"
         token = "smoke-token"
+        os.environ["HERMES_RAG_LOG_PATH"] = str(root / "rag.log")
 
         os.environ["HERMES_API_TOKEN"] = token
         os.environ["HERMES_KNOWLEDGE_URL"] = "http://127.0.0.1:0"  # replaced below
@@ -177,6 +184,54 @@ def run_smoke(work_dir: str | Path | None = None) -> dict[str, Any]:
 
         searched = _envelope(search_handler({"query": "HTTP-only smoke"}))
         checks.append(_check("rag_search", searched.get("status") == "success", searched.get("errors")))
+
+        # Differential contract: read the same objects back through the
+        # Service API, not only through the Runtime tool envelopes above.
+        import httpx
+
+        card_meta = (
+            committed_card.get("meta")
+            if isinstance(committed_card.get("meta"), dict)
+            else {}
+        )
+        card_id = str(card_meta.get("card_id") or "")
+        with httpx.Client(
+            base_url=base_url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        ) as service:
+            capture_resp = service.get(f"/api/captures/{capture_id}")
+            cards_resp = service.get("/api/garden/cards")
+            search_resp = service.get(
+                "/api/knowledge/search", params={"q": "HTTP-only smoke"}
+            )
+        capture_payload = capture_resp.json() if capture_resp.status_code == 200 else {}
+        cards_payload = cards_resp.json() if cards_resp.status_code == 200 else {}
+        search_payload = search_resp.json() if search_resp.status_code == 200 else {}
+        card_ids = {
+            str(item.get("id") or "")
+            for item in cards_payload.get("items", [])
+            if isinstance(item, dict)
+        }
+        checks.extend(
+            [
+                _check(
+                    "service_capture_matches_runtime",
+                    bool(capture_payload.get("id") == capture_id and capture_payload.get("body")),
+                    capture_resp.status_code,
+                ),
+                _check(
+                    "service_card_matches_runtime",
+                    bool(card_id and card_id in card_ids),
+                    {"card_id": card_id, "service_count": len(card_ids)},
+                ),
+                _check(
+                    "service_rag_matches_runtime",
+                    bool(search_payload.get("total", 0) > 0),
+                    search_resp.status_code,
+                ),
+            ]
+        )
 
         return {
             "ok": all(item["ok"] for item in checks),

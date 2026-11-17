@@ -130,6 +130,56 @@ def test_health_degrades_when_vault_is_missing(tmp_path):
     assert payload["checks"] == {"database": "ok", "vault": "unavailable"}
 
 
+def test_selection_chat_service_builds_item_context(tmp_path, monkeypatch):
+    (tmp_path / "vault").mkdir()
+    app = _make_app(tmp_path)
+    capture_id = _add_capture(
+        str(tmp_path / "captures.db"),
+        tmp_path / "vault",
+        note_name="selection.md",
+        title="Selection source",
+        story="summary",
+        body="正文内容",
+    )
+    import bridge.research_bridge as research_bridge
+
+    captured = {}
+
+    async def fake_answer(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "success",
+            "chat_preview": "服务端回答",
+            "source_map": [],
+            "warnings": [],
+            "meta": {},
+        }
+
+    monkeypatch.setattr(research_bridge, "async_web_assist_answer", fake_answer)
+
+    with TestClient(app, client=LOOPBACK) as client:
+        response = client.post(
+            f"/api/knowledge/library/items/capture/{capture_id}/selection-chat",
+            json={"question": "这是什么？", "mode": "local_web"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert captured["article_context"]["title"] == "Selection source"
+    assert captured["query"] == "这是什么？"
+
+
+def test_ai_operation_cancel_service_route(tmp_path):
+    (tmp_path / "vault").mkdir()
+    app = _make_app(tmp_path)
+
+    with TestClient(app, client=LOOPBACK) as client:
+        response = client.post("/api/knowledge/ai-operations/op-test/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancel_requested"
+    assert response.json()["operation_id"] == "op-test"
+
+
 # ---------------------------------------------------------------------------
 # GET /api/knowledge/search
 # ---------------------------------------------------------------------------

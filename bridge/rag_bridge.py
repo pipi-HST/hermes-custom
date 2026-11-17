@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import logging
+import os
 import re
 import sqlite3
 import sys
@@ -43,7 +44,10 @@ from bridge.config_paths import load_bridge_config
 
 logger = logging.getLogger(__name__)
 
-_LOG_PATH = Path(__file__).parent.parent / "data" / "rag.log"
+_LOG_PATH = Path(
+    os.environ.get("HERMES_RAG_LOG_PATH")
+    or (Path(__file__).parent.parent / "data" / "rag.log")
+)
 
 def _log(msg: str) -> None:
     """Append a timestamped line to data/rag.log (always writes, regardless of logging config)."""

@@ -42,6 +42,9 @@ dashboard/.playwright-cli/
 
 .superpowers/
 
+# local scratch dirs (HTTP smoke, etc.)
+.tmp/
+
 # pytest temp dirs created inside the repo
 pytest-of-*/
 
