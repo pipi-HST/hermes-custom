@@ -90,6 +90,15 @@ def main(argv: list[str] | None = None) -> int:
         ]
         if current_lines != content_lines:
             print(f"{OUTPUT} is stale; run scripts/update_current_state.py")
+            for committed, expected in zip(current_lines, content_lines):
+                if committed != expected:
+                    print(f"  committed: {committed}")
+                    print(f"  expected:  {expected}")
+            if len(current_lines) != len(content_lines):
+                print(
+                    f"  line count differs: committed {len(current_lines)}, "
+                    f"expected {len(content_lines)}"
+                )
             return 1
         print(f"{OUTPUT} is up to date")
         return 0
