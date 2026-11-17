@@ -98,7 +98,7 @@ CAPTURE_COLUMN_ALTER_DDL = {
     "updated_at": "TEXT",
 }
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 CREATE_GARDEN_CARDS_TABLE = """
 CREATE TABLE IF NOT EXISTS garden_cards (
@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS garden_cards (
     one_liner TEXT NOT NULL DEFAULT '',
     content_markdown TEXT NOT NULL DEFAULT '',
     card_kind TEXT NOT NULL DEFAULT 'viewpoint',
-    schema_version TEXT NOT NULL DEFAULT 'garden_card.v1',
+    schema_version TEXT NOT NULL DEFAULT 'garden_card.v2',
     payload_json TEXT NOT NULL DEFAULT '{}',
     core_arguments TEXT NOT NULL DEFAULT '[]',
     knowledge_links TEXT NOT NULL DEFAULT '[]',
@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS garden_drafts (
     title TEXT NOT NULL DEFAULT '',
     one_liner TEXT NOT NULL DEFAULT '',
     card_kind TEXT NOT NULL DEFAULT 'viewpoint',
-    schema_version TEXT NOT NULL DEFAULT 'garden_card.v1',
+    schema_version TEXT NOT NULL DEFAULT 'garden_card.v2',
     payload_json TEXT NOT NULL DEFAULT '{}',
     core_arguments TEXT NOT NULL DEFAULT '[]',
     knowledge_links TEXT NOT NULL DEFAULT '[]',
@@ -559,6 +559,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
         conn.execute(CREATE_GARDEN_CARDS_TABLE)
         conn.execute(CREATE_GARDEN_DRAFTS_TABLE)
         _migrate_garden_tables(conn)
+        _normalize_garden_schema_version(conn)
         conn.execute(CREATE_GARDEN_CARDS_RECALL_INDEX)
         conn.execute(CREATE_PENDING_QUESTIONS_TABLE)
         conn.execute(CREATE_CAPTURE_DRAFTS_TABLE)
@@ -566,6 +567,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
         _create_capture_draft_indexes(conn)
         conn.execute(CREATE_CAPTURE_EMBEDDINGS_TABLE)
         conn.execute(CREATE_CAPTURE_EMBEDDINGS_SEARCH_INDEX)
+        _migrate_legacy_embeddings(conn)
         conn.execute(CREATE_CAPTURE_METADATA_TABLE)
         _migrate_capture_metadata_table(conn)
         _create_capture_search_fts(conn)
@@ -819,7 +821,7 @@ def _migrate_garden_tables(conn: sqlite3.Connection) -> None:
         if "schema_version" not in existing:
             conn.execute(
                 f"ALTER TABLE {table} "
-                "ADD COLUMN schema_version TEXT NOT NULL DEFAULT 'garden_card.v1'"
+                "ADD COLUMN schema_version TEXT NOT NULL DEFAULT 'garden_card.v2'"
             )
         if "payload_json" not in existing:
             conn.execute(
@@ -857,6 +859,53 @@ def _migrate_garden_tables(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass
     _backfill_garden_content(conn)
+
+
+def _migrate_legacy_embeddings(conn: sqlite3.Connection) -> None:
+    """Move legacy ``captures.embedding`` rows into the identity index once.
+
+    ``captures.embedding`` was the old whole-note vector.  The live index is
+    ``capture_embeddings``; keeping both readable makes RAG fall back to stale
+    vectors after a re-index.  Backfill then clear the legacy column.
+    """
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(captures)").fetchall()
+    }
+    if "embedding" not in columns:
+        return
+    rows = conn.execute(
+        "SELECT id, file_path, embedding FROM captures WHERE embedding IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        capture_id = str(row["id"])
+        conn.execute(
+            """INSERT OR IGNORE INTO capture_embeddings
+                   (id, capture_id, kind, section_id, section_title,
+                    index_text, embedding, source_hash, file_path)
+               VALUES (?, ?, 'identity', '', '', '', ?, 'legacy-captures-embedding', ?)""",
+            (
+                f"legacy-{capture_id}",
+                capture_id,
+                row["embedding"],
+                str(row["file_path"] or ""),
+            ),
+        )
+    if rows:
+        conn.execute("UPDATE captures SET embedding = NULL")
+
+
+def _normalize_garden_schema_version(conn: sqlite3.Connection) -> None:
+    """Normalize persisted garden cards and drafts to the v2 payload schema."""
+    for table in ("garden_cards", "garden_drafts"):
+        columns = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if "schema_version" in columns:
+            conn.execute(
+                f"UPDATE {table} SET schema_version = 'garden_card.v2' "
+                "WHERE schema_version = 'garden_card.v1'"
+            )
 
 
 def _backfill_garden_content(conn: sqlite3.Connection) -> None:

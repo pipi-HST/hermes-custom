@@ -14,7 +14,7 @@ def test_garden_tables_include_v2_payload_columns(tmp_path):
         }
         assert "schema_version" in columns
         assert "payload_json" in columns
-        assert columns["schema_version"][4] == "'garden_card.v1'"
+        assert columns["schema_version"][4] == "'garden_card.v2'"
         assert columns["payload_json"][4] == "'{}'"
 
 

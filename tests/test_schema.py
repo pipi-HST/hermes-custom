@@ -364,3 +364,69 @@ def test_garden_drafts_table_has_card_kind(tmp_path):
     ).fetchone()
     assert row[0] == "'viewpoint'"
     conn.close()
+
+
+def test_schema_migrates_legacy_capture_embedding_to_identity_index(tmp_path):
+    import struct
+
+    from agents.embedder import DIM
+    from db.schema import init_db
+
+    db_path = str(tmp_path / "test.db")
+    conn = init_db(db_path)
+    embedding = struct.pack(f"{DIM}f", *([1.0] + [0.0] * (DIM - 1)))
+    conn.execute(
+        "INSERT INTO captures (id, file_path, embedding) VALUES (?, ?, ?)",
+        ("legacy-cap", "captures/legacy.md", embedding),
+    )
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    conn.close()
+
+    conn = init_db(db_path)
+    try:
+        row = conn.execute(
+            "SELECT kind, embedding FROM capture_embeddings WHERE capture_id = 'legacy-cap'"
+        ).fetchone()
+        legacy = conn.execute(
+            "SELECT embedding FROM captures WHERE id = 'legacy-cap'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert row["kind"] == "identity"
+    assert row["embedding"] == embedding
+    assert legacy["embedding"] is None
+
+
+def test_schema_normalizes_garden_v1_rows_to_v2(tmp_path):
+    from db.schema import init_db
+
+    db_path = str(tmp_path / "test.db")
+    conn = init_db(db_path)
+    conn.execute(
+        "INSERT INTO garden_cards (id, title, schema_version) "
+        "VALUES ('legacy-card', 't', 'garden_card.v1')"
+    )
+    conn.execute(
+        "INSERT INTO garden_drafts (id, title, schema_version) "
+        "VALUES ('legacy-draft', 't', 'garden_card.v1')"
+    )
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    conn.close()
+
+    conn = init_db(db_path)
+    try:
+        card = conn.execute(
+            "SELECT schema_version FROM garden_cards WHERE id = 'legacy-card'"
+        ).fetchone()[0]
+        draft = conn.execute(
+            "SELECT schema_version FROM garden_drafts WHERE id = 'legacy-draft'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert card == "garden_card.v2"
+    assert draft == "garden_card.v2"

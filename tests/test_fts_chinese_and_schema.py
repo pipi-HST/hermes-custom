@@ -115,7 +115,7 @@ def test_cjk_substring_and_two_char_words_match(conn):
 # 断言 2：schema 迁移后的列与表
 # --------------------------------------------------------------------------
 def test_schema_records_user_version(conn):
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
 def test_reinit_backfills_garden_content_from_payload(tmp_path):
