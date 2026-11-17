@@ -1,5 +1,6 @@
 ---
 status: historical
+execution_status: pending
 owner: hermes-knowledge
 last_verified: 2026-11-17
 ---
