@@ -17,7 +17,6 @@ import argparse
 import ast
 import os
 import re
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -99,30 +98,21 @@ def _runtime_routes() -> list[dict]:
 
 
 def _tables() -> list[str]:
-    db = PROJECT_ROOT / "data" / "captures.db"
-    if db.is_file():
-        conn = sqlite3.connect(db)
-        names = [
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-            )
-        ]
-        shadow = {
-            "capture_search_fts_data",
-            "capture_search_fts_idx",
-            "capture_search_fts_content",
-            "capture_search_fts_docsize",
-            "capture_search_fts_config",
-            "messages_fts",
-        }
-        return sorted(name for name in names if name not in shadow)
+    """Return the business tables from the schema, not from a local database.
+
+    Reading ``data/captures.db`` made the generated file depend on whether a
+    developer had ever run the app; CI has no database and produced a different
+    inventory.  ``captures_new`` is the interrupted-swap scratch table and is
+    not part of the schema; ``capture_search_fts`` is created conditionally.
+    """
     schema = (PROJECT_ROOT / "db" / "schema.py").read_text(encoding="utf-8")
     names = set()
     for match in TABLE_RE.finditer(schema):
         name = match.group(1) or match.group(2)
         if name:
             names.add(name)
+    names.discard("captures_new")
+    names.add("capture_search_fts")
     return sorted(names)
 
 
