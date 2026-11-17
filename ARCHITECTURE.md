@@ -38,7 +38,7 @@ verified_against: "3e6b974 (hermes-custom) + 2026-11-18 并行修复分支"
 - 确认令牌、写入任务、运行记录；
 - 对 Runtime 的 HTTP 契约。
 
-Research 是独立研究子系统，不是 RAG 的一个模式：入口是 `bridge/research_bridge.py`，实现放在 `agents/research/`（planner、synthesis、evidence、orchestration 等，约 8800 行）。基线 `3e6b974` 的代码仍在 `bridge/research/`，迁移由并行分支完成；新研究逻辑只写 `agents/research/`，不要再往 `bridge/` 里加。
+Research 是独立研究子系统，不是 RAG 的一个模式：入口是 `bridge/research_bridge.py`，实现放在 `agents/research/`（planner、synthesis、evidence、orchestration 等，约 8800 行）。`bridge/research/` 只保留兼容薄壳，让旧 import 返回同一个模块对象；新研究逻辑只写 `agents/research/`，不要再往兼容壳里加业务代码。
 
 Life Assistant 是第三个、可选的能力项目；本仓库不读写 Life 数据。
 
@@ -68,7 +68,7 @@ Life Assistant 是第三个、可选的能力项目；本仓库不读写 Life �
 | Knowledge Card | `bridge/garden_bridge.py`、`agents/garden_agent.py`、`agents/garden_card_payload.py`；`/api/garden/*`、`/api/knowledge/cards` | `garden_cards`、`garden_drafts`（内容在 `payload_json`） |
 | Review | `agents/review_agent.py`、`bridge/review_bridge.py`；工具 `daily_review` / `review_followup` / `review_feedback` | `review_items` |
 | Canvas | `bridge/canvas_bridge.py`、`agents/canvas_agent.py`；工具 `generate_canvas` | 可选 `.canvas` 导出文件；没有独立表 |
-| Research | `bridge/research_bridge.py`、`bridge/research_bridge_facade.py`、`agents/research/`（基线为 `bridge/research/`）；工具 `research_with_web` | `agent_runs` / `agent_run_events` 运行记录；答案经 Answer 落为 `reading_drafts` |
+| Research | `bridge/research_bridge.py`、`bridge/research_bridge_facade.py`、`agents/research/`（`bridge/research/` 仅为兼容壳）；工具 `research_with_web` | `agent_runs` / `agent_run_events` 运行记录；答案经 Answer 落为 `reading_drafts` |
 | Librarian | `bridge/librarian_bridge.py`、`agents/library_agent.py`；工具 `audit_library` | `data/repair_reports/librarian-*.json`；修复写回 Capture / 索引 |
 | Answer | `bridge/answer_bridge.py`、`bridge/web_context_answer.py`；`/api/knowledge/answer-drafts` | `reading_sessions` / `reading_turns` / `reading_evidence` / `reading_drafts`；确认后写 Capture Note 或 Knowledge Card |
 | Knowledge Graph | `agents/knowledge_graph.py`；`/api/knowledge/graph`、`/api/knowledge/graph/refresh` | `knowledge_edges` |
@@ -199,5 +199,5 @@ HTTP 模式的 selection-chat stream 目前返回 `start` + 完整 `complete`，
 - 不要在 Runtime 里新增直接 SQL 写 Knowledge 的代码。
 - 不要把 `Knowledge Map / Knowledge Area / Map Proposal` 当已实现功能；ADR 0005 仍是 deferred。
 - 不要让 `HERMES_KNOWLEDGE_LOCAL_ROOT` 进入生产部署。
-- **不要把 `bridge/research` 的新代码写回 bridge；新研究逻辑放 `agents/research`。**
+- **不要把新研究逻辑写回 `bridge/research` 兼容壳；只写 `agents/research`。**
 - 不要把已删除的 Next.js `dashboard/` 恢复成产品入口；用户侧只维护原生 Dashboard。

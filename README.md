@@ -37,7 +37,7 @@ Hermes Knowledge Service（FastAPI，默认 127.0.0.1:8000）
         +-- 专题注册表：<vault>/.hermes/knowledge_folders.json
 ```
 
-Research 是独立研究子系统：入口为 `bridge/research_bridge.py`，实现代码在 `agents/research/`（planner / synthesis / evidence / orchestration，约 8800 行；基线 `3e6b974` 仍位于 `bridge/research/`，迁移在并行分支进行）。
+Research 是独立研究子系统：入口为 `bridge/research_bridge.py`，实现代码在 `agents/research/`（planner / synthesis / evidence / orchestration，约 8800 行）。`bridge/research/` 只保留兼容薄壳，新研究逻辑只写 `agents/research/`。
 
 ## 当前状态
 
