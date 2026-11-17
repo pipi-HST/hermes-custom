@@ -484,10 +484,11 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    # Once the schema version is current, only the timestamp self-heal runs;
-    # re-executing the whole DDL batch on every bridge/tool call was pure
-    # overhead.  Keep the timestamp pass because SQLite's datetime('now')
-    # default still writes the legacy space-separated form.
+    # Once the schema version is current, skip the full DDL batch but still run
+    # the cheap recovery/backfill guards below: an interrupted captures swap,
+    # garden content backfill, legacy-column drops, indexes, FTS integrity and
+    # timestamp normalization.  These are idempotent safety checks, not a
+    # second migration pass.
     if (
         conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION
         and _table_exists(conn, "captures")

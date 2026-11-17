@@ -123,6 +123,23 @@ Runtime 的 envelope 工具统一通过 `bridge/result_envelope.py` 返回结果
    - AI 可以生成草稿；
    - 不能在没有确认动作的情况下覆盖、修复或删除持久知识。
 
+### 5.1 一次 Capture commit 实际做什么
+
+用户确认 `commit_capture_draft` 后，`bridge/capture_bridge.py` 会同步完成：
+
+1. 写 `_archive/raw/<slug>.md` 和 `captures/<slug>.md`；
+2. 写 `captures` 行与 identity embedding；
+3. 对长文运行 Library 后处理：生成/重写 `## 目录纲要`、重建 section embedding、刷新 `capture_metadata` 和 FTS；
+4. 返回一个 `next_action` “生成知识卡片”，但**不会**自动创建 Garden Card、Theme View 或 pending question。
+
+所以“存一条笔记”仍会同步改写正文目录和索引，但不会连锁创建别的持久知识对象。卡片/主题必须由后续独立动作确认。后处理失败会让 commit 返回错误，不会留下“文件已写、索引静默缺失”的成功假象。
+
+### 5.2 Agent Result Envelope 的适用范围
+
+- **Agent/工具入口**：`capture_bridge`、`garden_bridge`、`reading_bridge`、`research_bridge`、`answer_bridge`、`theme_bridge`、`review_bridge`、`canvas_bridge`、`librarian_bridge`、`rag_bridge` 的公开入口返回 `bridge/result_envelope.py` 定义的 envelope。
+- **View / retrieval 入口**：`bridge/library_view.py` 返回列表/详情 view model，`rag_bridge.retrieve_knowledge_sources()` 返回检索 bundle；它们不是 agent 结果，不套 envelope。
+- Runtime 的 envelope 适配器要求 10 个字段完全匹配；旧格式的 `json.dumps(payload)` 和顶层 `draft_id` 回退仍在，用于兼容历史工具，不得作为新工具的返回形状。
+
 ## 6. Topic / Folder 模型
 
 当前产品里的“专题”就是文件夹，不是 `Theme View`，也不是 deferred 的 `Knowledge Area`。
