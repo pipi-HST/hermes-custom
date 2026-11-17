@@ -39,7 +39,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from agents.capture_agent import load_config  # noqa: E402
-from agents.garden_card_payload import normalize_garden_payload, project_legacy_fields  # noqa: E402
+from agents.garden_card_payload import normalize_garden_payload  # noqa: E402
 from agents.knowledge_graph import KnowledgeGraphService  # noqa: E402
 from bridge.atomic_io import atomic_write_text  # noqa: E402
 from bridge.folder_store import STORE_RELATIVE_PATH, write_folder_store  # noqa: E402
@@ -850,7 +850,7 @@ CARD_DEFINITIONS: list[dict[str, Any]] = [
         "claim": "在高频、低风险的输入场景里要求用户逐条审批草稿，会让保存成本高于保存收益，最终用户放弃使用；审批应留给高风险写操作，而不是所有 AI 整理。",
         "confidence": "medium",
         "when_to_use": [
-            "设计保存、整理、入库流程时",
+            "设计保存、整理、保存流程时",
             "发现草稿转化率低、用户抱怨步骤多时",
         ],
         "judgments": [
@@ -1088,13 +1088,12 @@ def _insert_capture(conn, capture: dict[str, Any]) -> None:
     identity = _topic_vector(capture["theme"], capture["keywords"])
     conn.execute(
         """INSERT OR REPLACE INTO captures
-           (id, file_path, raw_path, embedding, review_state, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'new', ?, ?)""",
+           (id, file_path, raw_path, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)""",
         (
             capture["id"],
             file_path,
             raw_path,
-            _embedding_blob(identity),
             f"{capture['date']}T09:30:00+08:00",
             now,
         ),
@@ -1226,25 +1225,18 @@ def _insert_card(conn, card: dict[str, Any]) -> None:
     }
     normalized = normalize_garden_payload(payload)
     payload = {**payload, **normalized, "source_theme": card["theme"]}
-    legacy = project_legacy_fields(payload)
     conn.execute(
         """INSERT OR REPLACE INTO garden_cards
-           (id, title, one_liner, card_kind, schema_version, payload_json,
-            core_arguments, knowledge_links, key_materials, my_view, status,
+           (id, title, card_kind, schema_version, payload_json, status,
             capture_ids, created_at, updated_at, last_reviewed_at,
             review_interval, skip_count)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, '3d', 0)""",
+           VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, '3d', 0)""",
         (
             card["id"],
             normalized["title"],
-            normalized["claim"],
             normalized["card_kind"],
             "garden_card.v2",
             json.dumps(payload, ensure_ascii=False, sort_keys=True),
-            json.dumps(legacy["core_arguments"], ensure_ascii=False),
-            json.dumps(legacy["knowledge_links"], ensure_ascii=False),
-            json.dumps(legacy["key_materials"], ensure_ascii=False),
-            legacy["my_view"],
             json.dumps(card["capture_ids"], ensure_ascii=False),
             now,
             now,

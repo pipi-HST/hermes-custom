@@ -1,3 +1,10 @@
+---
+status: current
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+---
+
 # AGENTS.md — Hermes Knowledge
 
 These rules apply to AI agents and developers working in this repository. Read them before editing code.
@@ -61,8 +68,9 @@ Do not use real LLM / embedding providers in tests. Use the local fake provider 
 - `captures/*.md` frontmatter `folder_path` is the source of truth for a Capture's topic.
 - `capture_metadata.folder_path` must match frontmatter after every topic write.
 - `garden_cards.source_theme` must match the card's captured topic after a topic rename.
-- `capture_embeddings` is the main index; `captures.embedding` is legacy.
-- `review_items` is the review scheduler; `captures.review_*` is legacy compatibility.
+- `capture_embeddings` is the only capture vector index; `captures.embedding` was removed in schema v4.
+- `review_items` is the review scheduler; `captures.review_*` was removed in schema v4.
+- `captures.archived_at` is the only archive marker; do not add a second status column.
 - Deleting a Topic must not delete the underlying Capture or Card.
 
 Add a regression test for any invariant you touch.

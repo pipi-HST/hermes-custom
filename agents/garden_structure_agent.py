@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from agents.garden_agent import _parse_json_object
+from agents.garden_card_payload import payload_from_row
 
 STRUCTURE_PROMPT = """你是 Hermes 的 Garden Structure Agent。
 
@@ -185,9 +186,10 @@ def _cards_text(garden_cards: list[dict[str, Any]]) -> str:
     for card in garden_cards[:20]:
         card_id = str(card.get("id") or "").strip()
         title = str(card.get("title") or "").strip()
-        one_liner = str(card.get("one_liner") or "").strip()
+        payload = payload_from_row(card)
+        one_liner = str(payload["claim"] or "").strip()
         kind = str(card.get("card_kind") or "").strip()
-        source_ids = _json_list(card.get("capture_ids"))
+        source_ids = _json_list(card.get("capture_ids") or payload["source_ids"])
         lines.append(
             "- id={id} kind={kind} title={title} one_liner={one_liner} sources={sources}".format(
                 id=card_id,

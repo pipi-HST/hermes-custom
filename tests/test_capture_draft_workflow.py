@@ -538,7 +538,7 @@ def test_commit_editable_draft_uses_edited_body_and_frontmatter(
         agent.summarizer,
         "summarize",
         lambda text, existing_tags=None: {
-            "title": "自由编辑入库",
+            "title": "自由编辑保存",
             "summary": "自由编辑后的内容进入原有检索 Pipeline。",
             "tags": ["ai-product"],
         },
@@ -557,7 +557,7 @@ def test_commit_editable_draft_uses_edited_body_and_frontmatter(
     _raw_frontmatter, raw_body = raw_note
     assert raw_body == "原始粘贴正文"
     assert capture_body == "用户最终编辑后的正文"
-    assert capture_frontmatter["title"] == "自由编辑入库"
+    assert capture_frontmatter["title"] == "自由编辑保存"
     assert capture_frontmatter["entry_mode"] == "editable_capture"
 
 
@@ -582,10 +582,10 @@ def test_commit_editable_draft_does_not_generate_missing_metadata(
     monkeypatch.setattr(
         agent.summarizer,
         "summarize",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("editable 入库不应补跑摘要 LLM")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("editable 保存不应补跑摘要 LLM")),
     )
 
-    draft = agent.create_editable_draft("用户确认直接入库的正文")
+    draft = agent.create_editable_draft("用户确认直接保存的正文")
     committed = agent.commit_draft(draft["id"])
 
     capture_note = read_note(tmp_path, committed["file_path"])
@@ -595,7 +595,7 @@ def test_commit_editable_draft_does_not_generate_missing_metadata(
     assert committed["tags"] == []
     assert capture_frontmatter["story"] == ""
     assert capture_frontmatter["tags"] == []
-    assert capture_body == "用户确认直接入库的正文"
+    assert capture_body == "用户确认直接保存的正文"
     assert capture_frontmatter["title_source"] == "ai"
 
 
@@ -627,7 +627,7 @@ def test_commit_draft_reuses_existing_summary_and_tags_without_resummarizing(
     monkeypatch.setattr(
         agent.summarizer,
         "summarize",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("入库不应重复生成摘要标签")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("保存不应重复生成摘要标签")),
     )
     draft = agent.create_editable_draft("正文内容")
 
@@ -652,7 +652,7 @@ def test_commit_draft_generates_summary_and_tags_when_missing(
         "summarize",
         lambda text, existing_tags=None: {
             "title": "兜底标题不覆盖",
-            "summary": "入库兜底生成摘要。",
+            "summary": "保存兜底生成摘要。",
             "tags": ["fallback-tag"],
         },
     )
@@ -660,7 +660,7 @@ def test_commit_draft_generates_summary_and_tags_when_missing(
         raw_text="原文",
         source="manual",
         source_type="manual",
-        title="待入库草稿",
+        title="待保存草稿",
         word_count=4,
         draft_text=READABLE_CAPTURE_BODY,
         summary="",
@@ -673,9 +673,9 @@ def test_commit_draft_generates_summary_and_tags_when_missing(
     capture_note = read_note(tmp_path, committed["file_path"])
     assert capture_note is not None
     frontmatter, _body = capture_note
-    assert committed["summary"] == "入库兜底生成摘要。"
+    assert committed["summary"] == "保存兜底生成摘要。"
     assert committed["tags"] == ["fallback-tag"]
-    assert frontmatter["story"] == "入库兜底生成摘要。"
+    assert frontmatter["story"] == "保存兜底生成摘要。"
     assert frontmatter["tags"] == ["fallback-tag"]
 
 
@@ -748,7 +748,7 @@ def test_commit_long_editable_draft_reuses_library_section_index(
         + "入口自由度是关键，用户需要先自由粘贴和修改。" * 80
         + "\n\n"
         + "## 检索复用\n\n"
-        + "检索复用也很关键，入库之后仍然应该使用原来的短长文本规则。" * 80
+        + "检索复用也很关键，保存之后仍然应该使用原来的短长文本规则。" * 80
     )
     agent.config.qwen_api_key = "sk-test-qwen"
     monkeypatch.setattr("agents.capture_agent.Embedder", FakeEmbedder, raising=False)
@@ -1116,7 +1116,7 @@ def test_full_text_save_keeps_original_archive_and_formats_capture_text(
         "确保质量检测认为它是一篇真实材料。\n\n\n"
         "关注我们，获取更多精彩内容\n\n"
         "第二段原文也要保留。它包含作者的完整表达、例子和结论，"
-        "全文入库时都不能被清洗器改写。  "
+        "全文保存时都不能被清洗器改写。  "
     )
 
     class FakeExtractor:
@@ -1154,7 +1154,7 @@ def test_full_text_save_keeps_original_archive_and_formats_capture_text(
         lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
     )
 
-    draft = agent.create_draft("ignored", instruction="这篇原文一字不改全文入库")
+    draft = agent.create_draft("ignored", instruction="这篇原文一字不改全文保存")
 
     assert draft["raw_text"] == extracted_text
     assert draft["draft_text"] == ""
@@ -1248,7 +1248,7 @@ def test_long_literal_raw_save_adds_directory_without_changing_raw(
         lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
     )
 
-    draft = agent.create_draft("ignored", instruction="这篇原文一字不改全文入库")
+    draft = agent.create_draft("ignored", instruction="这篇原文一字不改全文保存")
     committed = agent.commit_draft(draft["id"])
 
     assert "error" not in committed
@@ -1319,7 +1319,7 @@ def test_xiaohongshu_full_text_save_keeps_raw_evidence_but_hides_local_paths(
         lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
     )
 
-    draft = agent.create_draft("ignored", instruction="全文提取出来，入库")
+    draft = agent.create_draft("ignored", instruction="全文提取出来，保存")
 
     assert draft["status"] == "raw_extracted"
     assert "本地图片：/tmp/01.jpg" in draft["raw_text"]
@@ -1435,7 +1435,7 @@ def test_xiaohongshu_raw_package_request_preserves_ocr_structure(
         lambda text, existing_tags=None: pytest.fail("raw package save should not summarize with LLM"),
     )
 
-    draft = agent.create_draft("ignored", instruction="保留原始 OCR 抓取包并入库")
+    draft = agent.create_draft("ignored", instruction="保留原始 OCR 抓取包并保存")
 
     assert draft["status"] == "raw_extracted"
     assert draft["draft_text"] == ""
@@ -1492,7 +1492,7 @@ def test_long_raw_package_skips_llm_library_and_embedding_processing(
         lambda **kwargs: pytest.fail("raw package save should not create an embedder"),
     )
 
-    draft = agent.create_draft("ignored", instruction="保留原始 OCR 抓取包并入库")
+    draft = agent.create_draft("ignored", instruction="保留原始 OCR 抓取包并保存")
     committed = agent.commit_draft(draft["id"])
     capture_text = (tmp_path / committed["file_path"]).read_text(encoding="utf-8")
 
@@ -1531,7 +1531,7 @@ def test_revise_draft_full_text_save_runs_readability_revision(
         lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
     )
 
-    revised = agent.revise_draft(draft["id"], "整理过度了，要求全文入库")
+    revised = agent.revise_draft(draft["id"], "整理过度了，要求全文保存")
 
     assert revised["status"] == "draft_ready"
     assert len(calls) == 1
@@ -1623,8 +1623,8 @@ def test_commit_forces_directory_when_long_source_was_compressed(
 def test_long_capture_prompt_makes_presentation_contract_mandatory(agent: CaptureAgent):
     long_text = "长文正文。" * 500
     prompt = agent._build_revision_prompt(
-        instruction="全文入库",
-        capture_intent=agent._build_capture_intent("全文入库").to_dict(),
+        instruction="全文保存",
+        capture_intent=agent._build_capture_intent("全文保存").to_dict(),
         current_text=long_text,
         raw_text=long_text,
     )
@@ -1636,8 +1636,8 @@ def test_long_capture_prompt_makes_presentation_contract_mandatory(agent: Captur
 
 def test_short_capture_prompt_makes_presentation_contract_mandatory(agent: CaptureAgent):
     prompt = agent._build_revision_prompt(
-        instruction="全文入库",
-        capture_intent=agent._build_capture_intent("全文入库").to_dict(),
+        instruction="全文保存",
+        capture_intent=agent._build_capture_intent("全文保存").to_dict(),
         current_text="短文正文。",
         raw_text="短文正文。",
     )
@@ -1675,8 +1675,8 @@ def test_commit_short_capture_rejects_missing_presentation_contract(
 
 
 def test_capture_intent_classifies_four_material_contracts(agent: CaptureAgent):
-    full_text = agent._build_capture_intent("这篇文章全文入库，一字不改保存").to_dict()
-    raw_package = agent._build_capture_intent("保留原始 OCR 抓取包并入库").to_dict()
+    full_text = agent._build_capture_intent("这篇文章全文保存，一字不改保存").to_dict()
+    raw_package = agent._build_capture_intent("保留原始 OCR 抓取包并保存").to_dict()
     refined = agent._build_capture_intent("稍加总结，整理成一篇精炼笔记").to_dict()
     focused = agent._build_capture_intent("总结全文核心内容，方法论那部分详细一些").to_dict()
     enhanced = agent._build_capture_intent("结合刚才讨论，整理成原文增强版笔记").to_dict()
@@ -1752,7 +1752,7 @@ def test_prompt_allows_model_to_choose_draft_strategy(agent: CaptureAgent, monke
     assert "不要把内部计划输出给用户" in prompt
     assert "不要输出标签、摘要或任务合同" in prompt
     assert "必须保留全文的主要脉络和其他关键要点" not in prompt
-    assert "输出应是可入库的完整整理稿" not in prompt
+    assert "输出应是待保存的完整整理稿" not in prompt
     assert "30%" not in prompt
     assert "50%" not in prompt
     assert "不要机械套用固定模板" in prompt
@@ -2155,7 +2155,7 @@ def test_commit_high_fidelity_full_article_blocks_overcompressed_draft(
 
     result = agent.commit_draft(draft["id"])
 
-    assert result == {"error": "整理稿疑似压缩过度，请先修订为高保真全文整理后再入库"}
+    assert result == {"error": "整理稿疑似压缩过度，请先修订为高保真全文整理后再保存"}
 
 
 def test_capture_llm_uses_five_minute_timeout(agent: CaptureAgent, monkeypatch):
@@ -2367,7 +2367,7 @@ def test_commit_draft_builds_identity_embedding_index(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """入库后应立即生成 Theme/RAG 可用的 capture identity 索引。"""
+    """保存后应立即生成 Theme/RAG 可用的 capture identity 索引。"""
 
     class FakeEmbedder:
         def __init__(self, api_key: str):
@@ -2412,7 +2412,7 @@ def test_commit_draft_runs_targeted_library_postprocess(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """入库后应只为当前 capture 补 Library 元数据和章节索引。"""
+    """保存后应只为当前 capture 补 Library 元数据和章节索引。"""
 
     class FakeEmbedder:
         def __init__(self, api_key: str):
@@ -2597,7 +2597,7 @@ def test_commit_long_full_text_save_generates_clickable_sections_and_rag(
         "summarize",
         lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
     )
-    draft = agent.create_draft(long_body, instruction="全文入库")
+    draft = agent.create_draft(long_body, instruction="全文保存")
     committed = agent.commit_draft(draft["id"])
     result = read_note(tmp_path, committed["file_path"])
     raw_result = read_note(tmp_path, committed["raw_path"])
@@ -2689,7 +2689,7 @@ def test_commit_long_capture_repairs_directory_to_cover_primary_headings(
         lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
     )
 
-    draft = agent.create_draft(raw_body, instruction="全文入库")
+    draft = agent.create_draft(raw_body, instruction="全文保存")
     committed = agent.commit_draft(draft["id"])
 
     result = read_note(tmp_path, committed["file_path"])
@@ -2765,7 +2765,7 @@ def test_commit_long_unstructured_full_text_builds_readable_capture(
         "summarize",
         lambda text, existing_tags=None: {"summary": "全文保存。", "tags": ["source-archive"]},
     )
-    draft = agent.create_draft(long_body, instruction="全文原文入库，一字不改保存正文")
+    draft = agent.create_draft(long_body, instruction="全文原文保存，一字不改保存正文")
     committed = agent.commit_draft(draft["id"])
     updated = agent.draft_repo.get_by_id(draft["id"])
 
@@ -2821,7 +2821,7 @@ def test_revise_committed_capture_id_creates_revision_draft(
 
 
 def test_revise_committed_draft_rejected(agent: CaptureAgent, monkeypatch):
-    """已入库的草稿不允许再修改。"""
+    """已保存的草稿不允许再修改。"""
     monkeypatch.setattr(agent, "_call_llm", lambda prompt: READABLE_CAPTURE_BODY)
     monkeypatch.setattr(
         agent.summarizer, "summarize",
@@ -2833,11 +2833,11 @@ def test_revise_committed_draft_rejected(agent: CaptureAgent, monkeypatch):
     result = agent.revise_draft(draft["id"], "再改改")
     assert result is not None
     assert "error" in result
-    assert "入库" in result["error"]
+    assert "保存" in result["error"]
 
 
 def test_commit_already_committed_draft_rejected(agent: CaptureAgent, monkeypatch):
-    """已入库的草稿不允许重复提交。"""
+    """已保存的草稿不允许重复提交。"""
     monkeypatch.setattr(agent, "_call_llm", lambda prompt: READABLE_CAPTURE_BODY)
     monkeypatch.setattr(
         agent.summarizer, "summarize",
@@ -2849,7 +2849,7 @@ def test_commit_already_committed_draft_rejected(agent: CaptureAgent, monkeypatc
     result = agent.commit_draft(draft["id"])
     assert result is not None
     assert "error" in result
-    assert "已入库" in result["error"]
+    assert "已保存" in result["error"]
 
 
 def test_discard_capture_draft_marks_abandoned(agent: CaptureAgent, monkeypatch):
@@ -2869,7 +2869,7 @@ def test_discard_capture_draft_marks_abandoned(agent: CaptureAgent, monkeypatch)
 
 
 def test_discard_committed_capture_draft_rejected(agent: CaptureAgent, monkeypatch):
-    """已入库草稿不能删除。"""
+    """已保存草稿不能删除。"""
     from bridge import capture_bridge
 
     monkeypatch.setattr(agent, "_call_llm", lambda prompt: READABLE_CAPTURE_BODY)
@@ -2885,7 +2885,7 @@ def test_discard_committed_capture_draft_rejected(agent: CaptureAgent, monkeypat
     result = capture_bridge.discard_capture_draft(draft["id"])
 
     assert result["status"] == "error"
-    assert "入库" in result["errors"][0]
+    assert "保存" in result["errors"][0]
 
 
 def test_revise_abandoned_draft_rejected(agent: CaptureAgent, monkeypatch):
@@ -2902,3 +2902,22 @@ def test_revise_abandoned_draft_rejected(agent: CaptureAgent, monkeypatch):
     assert result is not None
     assert "error" in result
     assert "废弃" in result["error"]
+
+
+def test_capture_note_frontmatter_keeps_folder_for_ai_drafts():
+    from agents.capture_agent import _capture_note_intent_frontmatter
+
+    fm = _capture_note_intent_frontmatter(
+        {"folder_path": "AI 产品", "entry_mode": "ai_capture"}
+    )
+    assert fm["folder_path"] == "AI 产品"
+    assert "entry_mode" not in fm
+
+    editable = _capture_note_intent_frontmatter(
+        {"folder_path": "", "entry_mode": "editable_capture", "title_source": "user"}
+    )
+    assert editable == {
+        "folder_path": "Inbox",
+        "entry_mode": "editable_capture",
+        "title_source": "user",
+    }

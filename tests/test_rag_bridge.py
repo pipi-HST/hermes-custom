@@ -125,16 +125,12 @@ def test_search_knowledge_base_uses_best_section_embedding(monkeypatch, tmp_path
     )
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, core_arguments, knowledge_links, key_materials,
-            my_view, status, capture_ids, created_at, updated_at, review_interval)
-           VALUES (?, ?, ?, ?, ?, ?, '', 'seed', ?, ?, ?, '1d')""",
+           (id, title, payload_json, status, capture_ids, created_at, updated_at, review_interval)
+           VALUES (?, ?, ?, 'seed', ?, ?, ?, '1d')""",
         (
             "g1",
             "AI Agent 工程化",
-            "从单次调用走向流程化协作。",
-            "[]",
-            "[]",
-            "[]",
+            '{"schema_version":"garden_card.v2","claim":"从单次调用走向流程化协作。","card_kind":"viewpoint","source_ids":["cap1"]}',
             json.dumps(["cap1"], ensure_ascii=False),
             "2026-05-31T00:00:00+00:00",
             "2026-05-31T00:00:00+00:00",
@@ -391,12 +387,12 @@ def test_card_candidate_pagination_reaches_later_pages(monkeypatch, tmp_path):
     for index in range(5):
         conn.execute(
             """INSERT INTO garden_cards
-               (id, title, one_liner, content_markdown, status, updated_at)
+               (id, title, payload_json, content_markdown, status, updated_at)
                VALUES (?, ?, ?, ?, 'accepted', ?)""",
             (
                 f"card{index}",
                 "分页目标" if index == 0 else f"无关卡片{index}",
-                "",
+                '{"schema_version":"garden_card.v2","claim":"","card_kind":"viewpoint","source_ids":[]}',
                 "分页目标正文" if index == 0 else "无关正文",
                 f"2026-01-0{index + 1}T00:00:00+00:00",
             ),
@@ -653,16 +649,12 @@ story: 工作流材料。
     )
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, core_arguments, knowledge_links, key_materials,
-            my_view, status, capture_ids, created_at, updated_at, review_interval)
-           VALUES (?, ?, ?, ?, ?, ?, '', 'seed', ?, ?, ?, '1d')""",
+           (id, title, payload_json, status, capture_ids, created_at, updated_at, review_interval)
+           VALUES (?, ?, ?, 'seed', ?, ?, ?, '1d')""",
         (
             "g1",
             "AI Agent 工程化",
-            "工程化来自工具、流程和护栏。",
-            "[]",
-            "[]",
-            "[]",
+            '{"schema_version":"garden_card.v2","claim":"工程化来自工具、流程和护栏。","card_kind":"viewpoint","source_ids":["cap1","cap2"]}',
             json.dumps(["cap1", "cap2"], ensure_ascii=False),
             "2026-05-31T00:00:00+00:00",
             "2026-05-31T00:00:00+00:00",

@@ -70,7 +70,7 @@ class TestToolHandlerToAgent:
         assert "想怎么整理" in result
 
     def test_capture_tool_handler_with_instruction_returns_draft(self, monkeypatch):
-        """链接/文本同轮要求总结时，只返回草稿，不直接入库。"""
+        """链接/文本同轮要求总结时，只返回草稿，不直接保存。"""
         from tools.capture_tool import _handler
         monkeypatch.setattr(
             "agents.capture_agent.CaptureAgent._call_llm",
@@ -106,7 +106,7 @@ class TestToolHandlerToAgent:
         assert "show_capture_draft" in intents
         assert "commit_capture_draft" in intents
         assert "展开原文" in labels
-        assert "按当前方向整理入库" in labels
+        assert "按当前方向整理保存" in labels
 
     def test_capture_tool_handler_with_url(self):
         """tool handler 处理 URL 输入"""

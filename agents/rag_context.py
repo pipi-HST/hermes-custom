@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from agents.garden_card_payload import payload_from_row
 from agents.markdown_writer import read_note
 
 _THEME_LINK_RE = re.compile(r"\[\[themes/([^|\]]+)(?:\|([^\]]+))?\]\]")
@@ -46,7 +47,7 @@ def _garden_cards_for_captures(conn, capture_ids: list[str]) -> list[dict[str, A
         return []
     try:
         rows = conn.execute(
-            """SELECT id, title, one_liner, core_arguments, capture_ids
+            """SELECT id, title, payload_json, capture_ids
                FROM garden_cards
                ORDER BY updated_at DESC"""
         ).fetchall()
@@ -63,12 +64,16 @@ def _garden_cards_for_captures(conn, capture_ids: list[str]) -> list[dict[str, A
         if card_id in seen:
             continue
         seen.add(card_id)
+        payload = payload_from_row(row)
         cards.append(
             {
                 "id": card_id,
                 "title": row["title"],
-                "one_liner": row["one_liner"],
-                "core_arguments": _json_list(row["core_arguments"]),
+                "one_liner": payload["claim"],
+                "core_arguments": [
+                    {"claim": item["statement"]}
+                    for item in payload["core_judgments"]
+                ],
                 "capture_ids": list(card_capture_ids),
             }
         )

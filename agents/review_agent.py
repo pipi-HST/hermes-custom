@@ -9,6 +9,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
+from agents.garden_card_payload import payload_from_row
 from agents.markdown_writer import read_note
 
 logger = logging.getLogger(__name__)
@@ -72,15 +73,16 @@ class ReviewAgent:
             cards = self._get_due_garden_cards()
             if cards:
                 card = cards[0]
+                payload_claim = payload_from_row(card)["claim"]
                 messages.append({
                     "type": "garden_review",
                     "card_id": card["id"],
                     "title": card["title"],
-                    "one_liner": card["one_liner"],
+                    "one_liner": payload_claim,
                     "interval": card["review_interval"],
                     "text": (
                         f"今日回顾：{card['title']}\n"
-                        f"核心观点：{card['one_liner']}"
+                        f"核心观点：{payload_claim}"
                     ),
                 })
                 self._touch_card(card["id"], now)
@@ -130,21 +132,13 @@ class ReviewAgent:
             )
         self.repo.conn.commit()
 
-    def mark_capture_reviewed(self, capture_id: str) -> None:
-        """标记一条 capture 已回顾。"""
-        now = datetime.now(timezone.utc).isoformat()
-        self.repo.conn.execute(
-            """UPDATE captures SET last_reviewed=?, review_count=review_count+1,
-               updated_at=? WHERE id=?""",
-            (now, now, capture_id),
-        )
-        self.repo.conn.commit()
-
     def sync_review_items(self, *, now: str | None = None) -> int:
         """Ensure captures have review items without rewriting prose."""
         timestamp = now or datetime.now(timezone.utc).isoformat()
         count = 0
         for row in self.repo.list_all(limit=1000):
+            if row.get("archived_at"):
+                continue
             count += self._sync_capture_review_items(row, timestamp)
         self.repo.conn.commit()
         return count
@@ -215,8 +209,13 @@ class ReviewAgent:
         return due
 
     def _get_due_review_items(self, *, limit: int, now: str) -> list[dict]:
+        # Archived captures keep their review_items rows (history), but must
+        # not surface in the daily list.
         rows = self.repo.conn.execute(
-            "SELECT * FROM review_items WHERE review_state NOT IN ('mastered', 'muted')"
+            """SELECT ri.* FROM review_items ri
+               LEFT JOIN captures c ON c.id = ri.capture_id
+               WHERE ri.review_state NOT IN ('mastered', 'muted')
+                 AND (ri.capture_id = '' OR c.archived_at IS NULL)"""
         ).fetchall()
         due = []
         for row in rows:
@@ -247,11 +246,14 @@ class ReviewAgent:
         day = _date_prefix(now)
         placeholders = ",".join("?" for _ in capture_ids)
         rows = self.repo.conn.execute(
-            f"SELECT id, last_reviewed FROM captures WHERE id IN ({placeholders})",
+            f"""SELECT capture_id, MAX(last_reviewed) AS last_reviewed
+                FROM review_items
+                WHERE capture_id IN ({placeholders})
+                GROUP BY capture_id""",
             tuple(capture_ids),
         ).fetchall()
         return {
-            row["id"] for row in rows
+            row["capture_id"] for row in rows
             if row["last_reviewed"] and _date_prefix(row["last_reviewed"]) == day
         }
 
@@ -260,8 +262,12 @@ class ReviewAgent:
         interval = int(item.get("review_interval") or 7)
         next_review = (datetime.fromisoformat(now) + timedelta(days=interval)).isoformat()
 
-        capture = self.repo.get_by_id(item["capture_id"]) or {}
-        capture_view_count = int(capture.get("review_count") or 0) + 1
+        capture_view_count = int(
+            self.repo.conn.execute(
+                "SELECT COALESCE(SUM(view_count), 0) FROM review_items WHERE capture_id = ?",
+                (item["capture_id"],),
+            ).fetchone()[0]
+        ) + 1
 
         self.repo.conn.execute(
             """UPDATE review_items
@@ -269,12 +275,6 @@ class ReviewAgent:
                    next_review=?, review_state='seen', updated_at=?
                WHERE id=?""",
             (view_count, now, now, next_review, now, item["id"]),
-        )
-        self.repo.conn.execute(
-            """UPDATE captures
-               SET review_count=review_count+1, last_reviewed=?, updated_at=?
-               WHERE id=?""",
-            (now, now, item["capture_id"]),
         )
         self.repo.conn.commit()
 
@@ -466,7 +466,7 @@ class ReviewAgent:
 
         if count == 0:
             return None
-        return f"今天捕获了 {count} 条内容。知识花园共 {gc_count} 张卡片。"
+        return f"今天捕获了 {count} 条内容。知识卡片共 {gc_count} 张。"
 
     def _touch_card(self, card_id: str, now: str) -> None:
         self.repo.conn.execute(

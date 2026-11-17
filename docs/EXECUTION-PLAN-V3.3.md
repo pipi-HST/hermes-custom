@@ -1,3 +1,10 @@
+---
+status: historical
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: snapshot; kept for context, not a current runbook
+---
+
 # V3.3 执行方案（定稿版）
 
 > 本文是**可直接照着改代码**的施工单，不是讨论稿。

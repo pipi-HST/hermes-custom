@@ -291,13 +291,20 @@ def _seed_cards(conn, emb_repo, work_dir: Path) -> list[dict[str, Any]]:
         ("card_demo_eval", "没有评测的重构是重构", "检索改动必须有 Recall 或 MRR 对照", "cap_latency_roi"),
         ("card_demo_concurrency", "串行变并发", "多 URL 抓取应并发，延迟从求和变成取最大值", "cap_latency_roi"),
         ("card_demo_context", "上下文预算", "给 prompt 设硬上限，避免来源堆叠导致成本失控", "cap_mcp"),
-        ("card_demo_silence", "沉默转发默认入库", "只发链接不提问，默认是收藏而非伴读", "cap_aipm_demand"),
+        ("card_demo_silence", "沉默转发默认保存", "只发链接不提问，默认是收藏而非伴读", "cap_aipm_demand"),
     ]
     for card_id, title, one_liner, capture_id in cards:
+        payload = {
+            "schema_version": "garden_card.v2",
+            "title": title,
+            "claim": one_liner,
+            "card_kind": "viewpoint",
+            "source_ids": [capture_id],
+        }
         conn.execute(
-            "INSERT INTO garden_cards (id, title, one_liner, capture_ids, status, source_theme) "
-            "VALUES (?, ?, ?, ?, 'accepted', ?)",
-            (card_id, title, one_liner, json.dumps([capture_id]), "Benchmark"),
+            "INSERT INTO garden_cards (id, title, payload_json, capture_ids, status) "
+            "VALUES (?, ?, ?, ?, 'accepted')",
+            (card_id, title, json.dumps(payload, ensure_ascii=False), json.dumps([capture_id])),
         )
         text = f"标题：{title}\n结论：{one_liner}"
         conn.execute(
@@ -560,9 +567,12 @@ def evaluate(conn, units: list[Unit], cards: list[dict[str, Any]], threshold: fl
             body = str(row["index_text"]) if row else ""
             if not body:
                 card = conn.execute(
-                    "SELECT one_liner FROM garden_cards WHERE id = ?", (capture_id,)
+                    "SELECT payload_json FROM garden_cards WHERE id = ?", (capture_id,)
                 ).fetchone()
-                body = str(card["one_liner"]) if card else ""
+                if card:
+                    from agents.garden_card_payload import payload_from_row
+
+                    body = str(payload_from_row(card)["claim"] or "")
             captures.append(
                 {
                     "id": capture_id,

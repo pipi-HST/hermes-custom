@@ -1,3 +1,10 @@
+---
+status: historical
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: snapshot; kept for context, not a current runbook
+---
+
 # RAG 检索消融评测（V3.0）
 
 > 2026-11-16 修复 G0 dispatcher，并把 benchmark 的 G3 卡片检索改为传入 query embedding（此前只走字面匹配）。本轮 28 条 query（18 正 + 10 负）：G3 Recall@5 1.0、MRR@5 0.769，负样本 9/10（q24 漏过 `cap_distractor_02`）。引用必须指向本次 `docs/benchmark-rag-v3-dashscope.json`。

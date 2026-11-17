@@ -55,9 +55,9 @@ def integration_setup(tmp_path):
         ("draft-1", "Content", json.dumps({"folder_path": "OldFolder"}), "draft_ready"),
     )
     conn.execute(
-        """INSERT INTO captures (id, file_path, review_state)
-           VALUES (?, ?, ?)""",
-        ("capture-1", "captures/test-capture.md", "new"),
+        """INSERT INTO captures (id, file_path)
+           VALUES (?, ?)""",
+        ("capture-1", "captures/test-capture.md"),
     )
     conn.execute(
         """INSERT INTO garden_cards (id, title, source_theme, status)
@@ -253,3 +253,39 @@ def test_worker_handles_partial_failure(integration_setup):
         ("card-1",),
     ).fetchone()
     assert card_row["source_theme"] == "NewFolder"
+
+
+def test_claim_is_exclusive(integration_setup):
+    conn = integration_setup["conn"]
+    job_id = submit_folder_rename_job("OldFolder", "NewFolder", conn)
+    from db.write_job_repo import KnowledgeWriteJobRepo
+
+    repo = KnowledgeWriteJobRepo(conn)
+    assert repo.claim(job_id) is True
+    assert repo.claim(job_id) is False
+
+
+def test_worker_ignores_other_intents(integration_setup):
+    from db.write_job_repo import KnowledgeWriteJobRepo
+
+    vault = integration_setup["vault"]
+    conn = integration_setup["conn"]
+    repo = KnowledgeWriteJobRepo(conn)
+    job_id = repo.start(
+        intent="run_theme_scan", object_type="theme_scan", object_id="latest"
+    )
+
+    worker = KnowledgeWriteWorker(
+        {
+            "vault_path": str(vault),
+            "db_path": integration_setup["db_path"],
+            "poll_interval": 1.0,
+            "max_retry": 3,
+            "batch_size": 10,
+        }
+    )
+    worker.conn = conn
+    worker.repo = repo
+
+    assert worker._process_batch() == 0
+    assert get_job_status(job_id, conn)["status"] == "pending"

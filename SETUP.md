@@ -1,3 +1,10 @@
+---
+status: current
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+---
+
 # Hermes Knowledge 启动说明
 
 > **当前入口：** [README.md](README.md) 和 [RUNBOOK.md](RUNBOOK.md)。
@@ -110,7 +117,7 @@ cd <repos>/hermes-custom
 .venv/bin/python scripts/knowledge_pipeline_e2e.py --work-dir /tmp/hermes-pipeline-e2e
 ```
 
-该报告逐项验证 Capture、Runtime 已入库可见性、Reading、Knowledge Card、RAG、Theme、Review、Canvas 和 Knowledge Graph。返回 `ok: true` 只表示所有阶段合同、数据库状态、Markdown 产物及下游对象均通过，不以单个函数返回 `success` 作为通过标准。
+该报告逐项验证 Capture、Runtime 已保存可见性、Reading、Knowledge Card、RAG、Theme、Review、Canvas 和 Knowledge Graph。返回 `ok: true` 只表示所有阶段合同、数据库状态、Markdown 产物及下游对象均通过，不以单个函数返回 `success` 作为通过标准。
 
 Life 测试在独立仓库：
 

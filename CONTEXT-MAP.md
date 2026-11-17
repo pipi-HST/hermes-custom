@@ -1,3 +1,10 @@
+---
+status: current
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+---
+
 # Context Map
 
 ## Contexts
@@ -14,5 +21,5 @@
 - **Knowledge does not read Life Assistant data in the first version**: questions about lifestyle state should route to Life Assistant; questions about source material, notes, themes, and viewpoints should route to Knowledge.
 - **Life Assistant does not create knowledge artifacts**: first-version records stay in the Life Assistant context and do not promote into the Knowledge context.
 - **Code may share a repository, but the contexts should not depend on each other**: shared Hermes delivery is infrastructure; it is not a domain relationship between the two systems.
-- **Legacy life tables in hermes-custom are residual data**: any `life_*` tables found in `/Users/pipi/hermes-custom/data/captures.db` are split-repository leftovers, not evidence that Knowledge owns Life Assistant data.
-- **The independent Life Assistant store is outside Knowledge reset scope**: `/Users/pipi/hermes-life/data/life.db` is not cleared by the Knowledge local data reset.
+- **Legacy life tables in hermes-custom are residual data**: any `life_*` tables found in `<repos>/hermes-custom/data/captures.db` are split-repository leftovers, not evidence that Knowledge owns Life Assistant data.
+- **The independent Life Assistant store is outside Knowledge reset scope**: `<repos>/hermes-life/data/life.db` is not cleared by the Knowledge local data reset.

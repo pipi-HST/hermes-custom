@@ -51,7 +51,7 @@ def find_garden_duplicate(conn, candidate: dict[str, Any]) -> dict[str, Any]:
 def _existing_items(conn) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for row in conn.execute(
-        """SELECT id, title, one_liner, card_kind, payload_json, core_arguments, capture_ids
+        """SELECT id, title, card_kind, payload_json, capture_ids
            FROM garden_cards
            WHERE status != 'archived'"""
     ).fetchall():
@@ -59,7 +59,7 @@ def _existing_items(conn) -> list[dict[str, Any]]:
 
     placeholders = ",".join("?" for _ in OPEN_DRAFT_STATUSES)
     for row in conn.execute(
-        f"""SELECT id, title, one_liner, card_kind, payload_json, core_arguments, capture_ids
+        f"""SELECT id, title, card_kind, payload_json, capture_ids
             FROM garden_drafts
             WHERE status IN ({placeholders})""",
         OPEN_DRAFT_STATUSES,

@@ -136,8 +136,18 @@ def _default_web_search(query: str, limit: int) -> str | dict[str, Any]:
             _LAST_SEARCH_BACKEND.set("deepseek")
             return {"success": True, "data": {"web": results}, "backend": "deepseek"}
 
-    _ensure_main_repo_on_path()
-    from tools.web_tools import web_search_tool
+    try:
+        _ensure_main_repo_on_path()
+        from tools.web_tools import web_search_tool
+    except Exception as exc:  # runtime checkout not configured on this host
+        logger.warning("[research] runtime web search unavailable: %s", exc)
+        _LAST_SEARCH_BACKEND.set("unavailable")
+        return {
+            "success": False,
+            "data": {"web": []},
+            "backend": "unavailable",
+            "error": "HERMES_AGENT_MAIN_ROOT is not set and no sibling hermes-agent-main checkout exists",
+        }
 
     raw = web_search_tool(query, limit=limit)
     if isinstance(raw, str):

@@ -1,3 +1,10 @@
+---
+status: historical
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: snapshot; kept for context, not a current runbook
+---
+
 # Hermes Knowledge 文档 / 代码 / 术语一致性审计
 
 > **状态：2026-11-17 审计快照。** 第 1 周止血和部分第 2-3 周修复已开始落地；当前入口看 `README.md` / `ARCHITECTURE.md` / `RUNBOOK.md`。

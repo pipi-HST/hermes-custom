@@ -176,7 +176,7 @@ def _capture_revision_prompt(
     *, instruction: str, title: str, current_body: str, raw_body: str
 ) -> str:
     raw_section = raw_body.strip() or "（没有单独 raw 来源材料；以当前笔记为准。）"
-    return f"""你是 Hermes Knowledge 的入库笔记修订助手。
+    return f"""你是 Hermes Knowledge 的保存笔记修订助手。
 
 用户要修改的笔记标题：{title or "未命名"}
 

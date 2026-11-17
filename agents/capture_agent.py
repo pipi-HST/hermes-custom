@@ -38,7 +38,6 @@ from bridge.ai_cancel import raise_if_cancelled
 from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest
 from db.repo import CaptureDraftRepo, CaptureRepo
 from db.embedding_repo import CaptureEmbeddingRepo
-from db.concurrency import connection_lock
 from db.schema import init_db
 
 logger = logging.getLogger(__name__)
@@ -343,7 +342,7 @@ class CaptureAgent:
         if not draft:
             return None
         if draft.get("status") in ("committed", "abandoned"):
-            return {"error": f"草稿已{'入库' if draft['status'] == 'committed' else '废弃'}，无法修改"}
+            return {"error": f"草稿已{'保存' if draft['status'] == 'committed' else '废弃'}，无法修改"}
 
         capture_intent = draft.get("capture_intent") or {}
         if capture_intent.get("entry_mode") != "editable_capture":
@@ -438,7 +437,7 @@ class CaptureAgent:
                 return None
             draft_id = draft["id"]
         if draft.get("status") in ("committed", "abandoned"):
-            return {"error": f"草稿已{'入库' if draft['status'] == 'committed' else '废弃'}，无法修改"}
+            return {"error": f"草稿已{'保存' if draft['status'] == 'committed' else '废弃'}，无法修改"}
         current_text = draft.get("draft_text") or draft.get("raw_text", "")
         timings = getattr(self, "_active_capture_stage_timings", None)
         saved_intent = draft.get("capture_intent") if isinstance(draft.get("capture_intent"), dict) else {}
@@ -727,7 +726,7 @@ class CaptureAgent:
 
     def _is_literal_raw_save_intent(self, capture_intent: dict, instruction: str = "") -> bool:
         user_request = str(instruction or capture_intent.get("user_request") or "")
-        return bool(re.search(r"(一字不改|原封不动|原样).{0,12}(保存|入库|存库|归档)", user_request))
+        return bool(re.search(r"(一字不改|原封不动|原样).{0,12}(保存|保存|存库|归档)", user_request))
 
     def _is_raw_package_intent(self, capture_intent: dict, instruction: str = "") -> bool:
         user_request = str(instruction or capture_intent.get("user_request") or "")
@@ -755,7 +754,7 @@ class CaptureAgent:
         title_source: str = "ai",
         folder_path: str = "",
     ) -> dict:
-        intent = self._build_capture_intent(instruction or "自由编辑后入库").to_dict()
+        intent = self._build_capture_intent(instruction or "自由编辑后保存").to_dict()
         intent.update(
             {
                 "entry_mode": "editable_capture",
@@ -876,8 +875,8 @@ class CaptureAgent:
     def _is_raw_package_request(self, user_request: str) -> bool:
         return bool(
             re.search(
-                r"(保留|保存|入库).{0,12}(OCR|图片编号|本地图片|图片地址|原始抓取|原始包|抓取包)|"
-                r"(OCR|图片编号|本地图片|图片地址|原始抓取|原始包|抓取包).{0,12}(保留|保存|入库)|"
+                r"(保留|保存|保存).{0,12}(OCR|图片编号|本地图片|图片地址|原始抓取|原始包|抓取包)|"
+                r"(OCR|图片编号|本地图片|图片地址|原始抓取|原始包|抓取包).{0,12}(保留|保存|保存)|"
                 r"(不要|不许).{0,6}(清理|去噪|过滤)",
                 user_request or "",
                 flags=re.IGNORECASE,
@@ -887,8 +886,8 @@ class CaptureAgent:
     def _is_full_text_save_request(self, user_request: str) -> bool:
         return bool(
             re.search(
-                r"(全文|原文).{0,12}(保存|入库|存库|归档|存进数据库|存到数据库|进数据库)|"
-                r"(一字不改|原封不动|原样).{0,12}(保存|入库|存库|归档)",
+                r"(全文|原文).{0,12}(保存|保存|存库|归档|存进数据库|存到数据库|进数据库)|"
+                r"(一字不改|原封不动|原样).{0,12}(保存|保存|存库|归档)",
                 user_request or "",
             )
         )
@@ -1046,13 +1045,13 @@ class CaptureAgent:
             )
         if material_intent == "verbatim_full_text":
             return (
-                "- 这是全文高保真入库：raw 原文由系统另存为证据层；你负责把正式正文整理成可读 Markdown。\n"
+                "- 这是全文高保真保存：raw 原文由系统另存为证据层；你负责把正式正文整理成可读 Markdown。\n"
                 "- 默认不得改变原文原意、不得压缩成摘要、不得删除正文论证；可以添加分段、"
                 "`##`/`###` heading、title-only `## 目录纲要` 和少量原文短语加粗。\n"
                 "- 公众号关注、图源尾巴、声明、往期内容等明确页面噪音可以不放入正式正文。\n"
             )
         if material_intent == "refined_note":
-            return "- 这是精炼整理稿：目标是形成可读、可信、便于入库的整理笔记。\n"
+            return "- 这是精炼整理稿：目标是形成可读、可信、便于保存的整理笔记。\n"
         return ""
 
     def _build_capture_body_structure_rule(self) -> str:
@@ -1173,7 +1172,7 @@ class CaptureAgent:
         if incomplete:
             return LLMResult(
                 text=(
-                    "长文分段整理未完整完成，暂不能作为最终草稿入库。\n\n"
+                    "长文分段整理未完整完成，暂不能作为最终草稿保存。\n\n"
                     f"{joined_notes}"
                 ),
                 incomplete=True,
@@ -1402,7 +1401,7 @@ class CaptureAgent:
             "上一次输出没有通过正式 Capture 的可读性合同："
             f"{warning}。请重新输出完整整理稿。正式 Capture 必须包含 `## 目录纲要`、"
             "与目录对应的 `##`/`###` heading、自然分段和至少一处原文重点加粗；"
-            "这些是入库硬合同，不能省略。"
+            "这些是保存硬合同，不能省略。"
         )
         return self._call_llm(retry_prompt)
 
@@ -1456,7 +1455,7 @@ class CaptureAgent:
         )
 
     def commit_draft(self, draft_id: str) -> Optional[dict]:
-        """确认草稿入库：写 _archive/raw/ 与 captures/，再登记正式 captures 表。"""
+        """确认草稿保存：写 _archive/raw/ 与 captures/，再登记正式 captures 表。"""
         total_started = time.perf_counter()
         timings = _empty_capture_stage_timings()
         previous_timings = getattr(self, "_active_capture_stage_timings", None)
@@ -1482,16 +1481,16 @@ class CaptureAgent:
         if not draft:
             return None
         if draft.get("status") == "committed":
-            return {"error": "草稿已入库，请勿重复提交"}
+            return {"error": "草稿已保存，请勿重复提交"}
         if draft.get("status") == "abandoned":
-            return {"error": "草稿已废弃，无法入库"}
+            return {"error": "草稿已废弃，无法保存"}
         if draft.get("status") == "draft_incomplete":
             return {"error": "草稿还没生成完整，请先继续整理后再存库"}
         if (
             draft.get("status") == "committing"
             and not self.draft_repo.commit_claim_is_stale(draft_id)
         ):
-            return {"error": "草稿正在入库，请勿重复提交"}
+            return {"error": "草稿正在保存，请勿重复提交"}
 
         stage_started = time.perf_counter()
         draft = self._finalize_draft_before_commit(draft)
@@ -1523,14 +1522,14 @@ class CaptureAgent:
             if current is None:
                 return None
             if current.get("status") == "committed":
-                return {"error": "草稿已入库，请勿重复提交"}
+                return {"error": "草稿已保存，请勿重复提交"}
             if current.get("status") == "committing":
-                return {"error": "草稿正在入库，请勿重复提交"}
+                return {"error": "草稿正在保存，请勿重复提交"}
             if current.get("status") == "abandoned":
-                return {"error": "草稿已废弃，无法入库"}
+                return {"error": "草稿已废弃，无法保存"}
             if current.get("status") == "draft_incomplete":
                 return {"error": "草稿还没生成完整，请先继续整理后再存库"}
-            return {"error": "草稿当前状态无法入库"}
+            return {"error": "草稿当前状态无法保存"}
 
         try:
             return self._commit_claimed_draft(
@@ -1664,8 +1663,7 @@ class CaptureAgent:
                 tags=tags,
             )
             if summary:
-                self._enrich_async(capture["id"], summary)
-            return _attach_capture_stage_timings({
+                return _attach_capture_stage_timings({
                 "status": "committed",
                 "draft_id": draft_id,
                 "capture_id": capture["id"],
@@ -1675,7 +1673,7 @@ class CaptureAgent:
                 "raw_path": raw_path,
                 "file_path": file_path,
                 "library_postprocess": library_postprocess,
-                "warnings": [f"入库后验收警告：{pipeline_error}"],
+                "warnings": [f"保存后验收警告：{pipeline_error}"],
             }, timings, total_started)
         self.draft_repo.update(
             draft_id,
@@ -1687,8 +1685,6 @@ class CaptureAgent:
             summary=summary,
             tags=tags,
         )
-        if summary:
-            self._enrich_async(capture["id"], summary)
         return _attach_capture_stage_timings({
             "status": "committed",
             "draft_id": draft_id,
@@ -1850,7 +1846,7 @@ class CaptureAgent:
             return ""
         if len(draft_text) >= int(len(raw_text) * CAPTURE_OVERCOMPRESSED_RATIO):
             return ""
-        return "整理稿疑似压缩过度，请先修订为高保真全文整理后再入库"
+        return "整理稿疑似压缩过度，请先修订为高保真全文整理后再保存"
 
     def _write_capture_note(
         self,
@@ -2029,27 +2025,6 @@ class CaptureAgent:
                     for t in fm.get("tags", []):
                         tags.add(t)
         return list(tags)
-
-    def _enrich_async(self, capture_id: str, summary: str) -> None:
-        import threading
-        t = threading.Thread(target=self._do_enrich, args=(capture_id, summary), daemon=True)
-        t.start()
-
-    def _do_enrich(self, capture_id: str, summary: str, retries: int = 3) -> None:
-        import time
-        from agents.embedder import Embedder
-        embedder = Embedder(api_key=self.config.qwen_api_key)
-        for attempt in range(retries):
-            try:
-                emb = embedder.embed(summary)
-                with connection_lock(self.conn):
-                    self.repo.update(capture_id, embedding=emb)
-                break
-            except Exception as e:
-                if attempt == retries - 1:
-                    logger.warning(f"Embedding failed for {capture_id}: {e}")
-                else:
-                    time.sleep([60, 300, 900][attempt])
 
     def _call_llm(self, prompt: str, *, return_meta: bool = False) -> str | LLMResult:
         base_url = self.config.llm_base_url or "https://api.deepseek.com"
@@ -2295,13 +2270,16 @@ def _remove_first_duplicate_markdown_heading(body: str, title: str) -> str:
 def _capture_note_intent_frontmatter(capture_intent: dict) -> dict:
     if not isinstance(capture_intent, dict):
         return {}
-    if capture_intent.get("entry_mode") != "editable_capture":
-        return {}
-    return {
-        "entry_mode": "editable_capture",
-        "title_source": capture_intent.get("title_source") or "ai",
-        "folder_path": capture_intent.get("folder_path") or "Inbox",
+    # Folder is user intent regardless of how the draft was created. Writing it
+    # only for editable drafts made AI drafts land in Inbox after commit even
+    # when the user had picked a topic.
+    frontmatter = {
+        "folder_path": str(capture_intent.get("folder_path") or "").strip() or "Inbox",
     }
+    if capture_intent.get("entry_mode") == "editable_capture":
+        frontmatter["entry_mode"] = "editable_capture"
+        frontmatter["title_source"] = capture_intent.get("title_source") or "ai"
+    return frontmatter
 
 
 def _first_markdown_h1(text: str) -> str:

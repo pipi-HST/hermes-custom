@@ -1,3 +1,10 @@
+---
+status: current
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+---
+
 # Hermes Knowledge Architecture
 
 > 状态：current  
@@ -52,8 +59,8 @@ Life Assistant 是第三个、可选的能力项目；本仓库不读写 Life �
 | Topic / Folder | frontmatter `folder_path` + `<vault>/.hermes/knowledge_folders.json` | `capture_metadata.folder_path` | 三处各写各的 |
 | Knowledge Card | `garden_cards`（SQLite） | 可选 Markdown export | 把 `garden/*.md` 当主存储 |
 | Theme View | `theme_*` / `knowledge_edges`（SQLite） | 可选 Markdown export | 默认写 `themes/*.md` |
-| Review | `review_items` | `captures.review_*`（旧兼容） | 两套都当权威 |
-| Embedding | `capture_embeddings` / `garden_cards.embedding` | `captures.embedding`（旧兼容） | 没有写入方却继续读 |
+| Review | `review_items` | 无 | 再给 `captures` 留一套复习字段 |
+| Embedding | `capture_embeddings` / `garden_cards.embedding` | 无 | 再从 `captures` 读旧向量 |
 | Run / audit | `agent_runs`、`agent_run_events` | 无 | 用日志替代台账 |
 
 **Capture 文本的规则**：Markdown 是正文和 frontmatter 的真相；SQLite 只做路由、索引和状态。新增字段前先问：它能不能从 Markdown 重建？能，就不要在 DB 再存一份。
@@ -93,7 +100,8 @@ Life Assistant 是第三个、可选的能力项目；本仓库不读写 Life �
 - 注册表：`<vault>/.hermes/knowledge_folders.json`
 - SQL 镜像：`capture_metadata.folder_path`
 
-重命名必须走 `bridge/library_view.py:rename_topic()`（旧名 `rename_folder_everywhere`），一次更新：
+重命名必须走 `agents/folder_service.py:rename_folder()`（HTTP 端点的
+`bridge/library_view.py:rename_topic()` 和 worker 都委托到它），一次更新：
 
 1. `captures/*.md` frontmatter；
 2. `capture_metadata.folder_path`；
@@ -108,21 +116,25 @@ Life Assistant 是第三个、可选的能力项目；本仓库不读写 Life �
 已完成：
 
 - Knowledge Service 有完整 FastAPI 读写接口；
-- Runtime 有 HTTP client，主要写路由已委托；
+- Runtime 的 42 条 knowledge 路由中，40 条有 HTTP 委托；仅 `open-local`
+  和 `runtime-check` 是显式 local-only（见 `docs/INVENTORY.md`）；
+- dashboard 的草稿、卡片详情、时间线、依赖读路由已改为服务端形状并委托；
 - `synthesize_garden` 已改走统一 `call_custom_bridge`；
 - HTTP-only 模式下 `_knowledge_custom_root()` 不再直接 503；
-- Topic 重命名会同步 Markdown、SQL 镜像和卡片专题；
+- Topic 重命名统一到 `agents.folder_service.rename_folder()`，Markdown、
+  SQL 镜像、卡片专题和 registry 一次提交；
 - 提供 `repair_topics.py`。
 
 仍未完成：
 
 - `open-local` 仍然只能是 local-only：它的语义是打开用户本机文件；
 - `web_server.py` 仍保留 local 模式的直接 SQL / vault 回退（仅 dev-only）；
-- 部分 Runtime 读路径仍直接读 Knowledge SQLite；
-- `captures.embedding` 已迁移到 `capture_embeddings` 并在启动时清空旧列值；`captures.review_*` 仍作为聚合兼容字段，调度真相是 `review_items`；
-- garden v1 列仍保留给旧数据/API 兼容。
+- UI 仍混用“知识库/资料库”等旧词，术语清扫未覆盖前端全部文案。
 
-2026-11-17 已补齐：selection chat、capture revise、runtime-check、AI cancel 的 HTTP 路径。
+2026-11-17 已补齐：selection chat、capture revise、runtime-check、AI cancel 的 HTTP 路径；
+schema v4 删除了 `captures.embedding`、`captures.review_*` 和 garden v1 镜像列。
+复习调度只读 `review_items`，Capture 归档只读 `captures.archived_at`，卡片内容只读
+`garden_cards.payload_json`。
 
 HTTP 模式的 selection-chat stream 目前返回 `start` + 完整 `complete`，不转发逐阶段 progress；逐阶段 progress 仍属于本地回退路径。
 
@@ -136,7 +148,7 @@ HTTP 模式的 selection-chat stream 目前返回 `start` + 完整 `complete`，
 | Runtime 工具报 “not configured” | 是否只配了 URL 但工具仍走 local import；检查该工具是否使用 `call_custom_bridge` |
 | 专题筛选不对 | `capture_metadata.folder_path` 是否过期；跑 `repair_topics.py --apply` |
 | 卡片所属专题不对 | `garden_cards.source_theme` 是否过期；跑 `repair_topics.py --apply --fix-mismatched` |
-| 检索结果旧 | `capture_embeddings` 是否为空；`captures.embedding` 是旧回退，不是主索引 |
+| 检索结果旧 | `capture_embeddings` 是否为空；重建索引后再试，旧 `captures.embedding` 已不存在 |
 | Git 视图报 “不是仓库” | 当前会话目录不是 Git 仓库；切到具体项目目录 |
 
 ## 8. 不要做

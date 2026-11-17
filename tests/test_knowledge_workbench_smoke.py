@@ -42,7 +42,7 @@ def test_long_material_capture_smoke_creates_draft_commits_and_writes_artifacts(
         "_call_llm",
         lambda _prompt: (
             "## 目录纲要\n\n- [关键判断](#关键判断)\n\n"
-            "## 关键判断\n\n**长材料的关键判断**需要经过完整入库链路验证。"
+            "## 关键判断\n\n**长材料的关键判断**需要经过完整保存链路验证。"
         ),
     )
     monkeypatch.setattr(
@@ -55,7 +55,7 @@ def test_long_material_capture_smoke_creates_draft_commits_and_writes_artifacts(
     )
 
     draft = capture_bridge.capture_content(
-        "这是一段足够长的测试材料，用于验证 Capture 先草稿后确认入库的产品路径。" * 4,
+        "这是一段足够长的测试材料，用于验证 Capture 先草稿后确认保存的产品路径。" * 4,
         instruction="整理后存库",
     )
     committed = capture_bridge.commit_capture_draft(

@@ -56,7 +56,7 @@ def test_capture_content_success_and_extract_failure_are_observable(tmp_path):
                 raw_text=(
                     "可观察成功正文，长度足够用于创建草稿。"
                     "这段内容说明链接提取成功后应该生成待审草稿，"
-                    "并且 API meta 里必须带 draft_id，方便前端继续展开、修改和入库。"
+                    "并且 API meta 里必须带 draft_id，方便前端继续展开、修改和保存。"
                     "同时运行记录需要保留阶段耗时，后续排查慢链路时才能知道问题发生在哪一步。"
                 ),
                 source_type="link",

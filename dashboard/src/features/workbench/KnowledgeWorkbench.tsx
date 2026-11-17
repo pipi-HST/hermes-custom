@@ -86,9 +86,9 @@ function editableStatusLabel(status: EditableStatus): string {
     empty: '等待粘贴内容',
     editing: '正在编辑',
     saving_draft: '正在生成标题、摘要和标签',
-    ready_to_commit: '草稿已保存，可确认入库',
+    ready_to_commit: '草稿已保存，可确认保存',
     committing: '正在写入知识库并建立检索索引',
-    committed: '已入库，可被知识库问答检索',
+    committed: '已保存，可被知识库问答检索',
     error: '需要处理错误后重试',
   }
   return labels[status]
@@ -376,7 +376,7 @@ export default function KnowledgeWorkbench({
       setSelectedCapture(null)
       await loadCaptureDrafts()
       await onCaptureCommitted?.()
-      setCaptureNotice('捕获草稿已提交入库。')
+      setCaptureNotice('捕获草稿已提交保存。')
     } catch (err) {
       setCaptureError(err instanceof Error ? err.message : '提交失败')
     } finally {
@@ -477,7 +477,7 @@ export default function KnowledgeWorkbench({
         }
         sections.push({
           label: '检索链路',
-          value: '确认入库后会复用现有 Library Agent 和 RAG 索引。',
+          value: '确认保存后会复用现有 Library Agent 和 RAG 索引。',
         })
       }
       return {
@@ -785,7 +785,7 @@ export default function KnowledgeWorkbench({
                     className="px-4 py-2 text-sm rounded-md bg-neutral-900 dark:bg-neutral-100
                       text-white dark:text-neutral-900 disabled:opacity-40 transition-opacity"
                   >
-                    {editableStatus === 'committing' ? '入库中...' : '确认入库'}
+                    {editableStatus === 'committing' ? '保存中...' : '确认保存'}
                   </button>
                 </div>
               </div>

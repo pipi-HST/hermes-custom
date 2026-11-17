@@ -109,7 +109,7 @@ def test_capture_content_records_stage_timings(monkeypatch, tmp_path):
         },
     )
 
-    result = capture_bridge.capture_content(SOURCE_TEXT, instruction="整理入库")
+    result = capture_bridge.capture_content(SOURCE_TEXT, instruction="整理保存")
 
     assert result["status"] == "success"
     repo = AgentRunRepo(agent.conn)

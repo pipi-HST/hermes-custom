@@ -32,9 +32,24 @@ def _default_db_path() -> Path:
     return DEFAULT_REPO_ROOT / "data" / "captures.db"
 
 
+def _default_vault_path() -> Path:
+    """Read the configured Knowledge vault path (the reset target)."""
+    config_path = DEFAULT_REPO_ROOT / "config.yaml"
+    try:
+        import yaml
+
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        configured = (data.get("vault") or {}).get("path")
+        if configured:
+            return Path(str(configured)).expanduser()
+    except (OSError, ValueError, ImportError):
+        pass
+    return Path.home() / "Hermes" / "knowledge"
+
+
 DEFAULT_DB_PATH = _default_db_path()
 DEFAULT_LEGACY_STORE = Path.home() / "Obsidian" / "hermes-vault"
-DEFAULT_NEW_STORAGE_ROOT = Path.home() / "Hermes" / "knowledge"
+DEFAULT_NEW_STORAGE_ROOT = _default_vault_path()
 DEFAULT_CRON_JOBS_PATH = Path.home() / ".hermes" / "cron" / "jobs.json"
 DEFAULT_LIFE_DB_PATH = Path.home() / "hermes-life" / "data" / "life.db"
 WATCHER_LABEL = "com.pipi.hermes-vault-watcher"
@@ -224,12 +239,10 @@ def verify_empty_reset(
     preserved_paths = {
         "config_yaml": str(repo / "config.yaml"),
         "rag_log": str(repo / "data" / "rag.log"),
-        "life_db": str(life_db),
+        "life_db": str(life_db) if life_db.exists() else "not present (Life is optional)",
     }
     if not (repo / "config.yaml").exists():
         failures.append(f"config.yaml missing: {repo / 'config.yaml'}")
-    if not life_db.exists():
-        failures.append(f"independent Life DB missing: {life_db}")
 
     return {
         "ok": not failures,

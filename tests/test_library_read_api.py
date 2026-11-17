@@ -107,7 +107,7 @@ def _add_capture(
             )
         if archived:
             conn.execute(
-                "UPDATE captures SET review_state = 'archived' WHERE id = ?",
+                "UPDATE captures SET archived_at = '2026-01-01T00:00:00+00:00' WHERE id = ?",
                 (capture["id"],),
             )
         conn.commit()
@@ -164,23 +164,53 @@ def _add_card(
     my_view: str = "",
 ) -> None:
     conn = _conn(config)
+    card_payload = dict(payload or {})
+    card_payload.setdefault("schema_version", "garden_card.v2")
+    card_payload.setdefault("title", title)
+    card_payload.setdefault("claim", one_liner)
+    card_payload.setdefault("card_kind", card_kind)
+    if core_arguments and not card_payload.get("core_judgments"):
+        card_payload["core_judgments"] = [
+            {
+                "id": f"j{index}",
+                "statement": str(item.get("claim") or item.get("statement") or ""),
+                "reasoning": "",
+                "support": [],
+            }
+            for index, item in enumerate(core_arguments, 1)
+            if isinstance(item, dict)
+        ]
+    card_payload.setdefault("related_card_ids", knowledge_links or [])
+    card_payload.setdefault("source_ids", capture_ids or [])
+    if my_view:
+        card_payload.setdefault(
+            "action_items",
+            [
+                line.lstrip("- ").strip()
+                for line in my_view.splitlines()
+                if line.strip()
+            ],
+        )
+    if key_materials and card_payload.get("core_judgments"):
+        card_payload["core_judgments"][0]["support"] = [
+            {
+                "summary": str(item.get("content") or item.get("summary") or ""),
+                "source_ids": [str(item.get("capture_id") or "")],
+            }
+            for item in key_materials
+            if isinstance(item, dict)
+        ]
     try:
         conn.execute(
             """INSERT INTO garden_cards
-               (id, title, one_liner, card_kind, payload_json, core_arguments,
-                knowledge_links, key_materials, my_view, status, capture_ids,
+               (id, title, card_kind, payload_json, status, capture_ids,
                 created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 card_id,
                 title,
-                one_liner,
                 card_kind,
-                json.dumps(payload or {}, ensure_ascii=False),
-                json.dumps(core_arguments or [], ensure_ascii=False),
-                json.dumps(knowledge_links or [], ensure_ascii=False),
-                json.dumps(key_materials or [], ensure_ascii=False),
-                my_view,
+                json.dumps(card_payload, ensure_ascii=False),
                 status,
                 json.dumps(capture_ids or [], ensure_ascii=False),
                 updated_at,
@@ -505,7 +535,7 @@ def test_garden_cards_list_and_delete_only_unlinks(env):
         },
         core_arguments=[{"claim": "论点", "source_ids": [capture_id]}],
         key_materials=[{"type": "quote", "content": "引用"}],
-        knowledge_links=[{"card_id": "other"}],
+        knowledge_links=["other"],
         my_view="我的看法",
         updated_at="2026-01-05T00:00:00+00:00",
     )
@@ -531,10 +561,10 @@ def test_garden_cards_list_and_delete_only_unlinks(env):
         assert card["kind"] == "method"
         assert card["summary"] == "核心观点"
         assert card["status"] == "seed"
-        assert card["my_view"] == "我的看法"
-        assert card["core_arguments"] == [{"claim": "论点", "source_ids": [capture_id]}]
-        assert card["key_materials"] == [{"type": "quote", "content": "引用"}]
-        assert card["knowledge_links"] == [{"card_id": "other"}]
+        assert card["my_view"] == "- 我的看法"
+        assert card["core_arguments"] == [{"claim": "论点", "consensus": True, "source_ids": []}]
+        assert card["key_materials"] == [{"content": "引用", "capture_id": ""}]
+        assert card["knowledge_links"] == ["other"]
         assert card["source_count"] == 1
         assert card["sources"] == [
             {
@@ -580,13 +610,13 @@ def test_garden_cards_list_and_delete_only_unlinks(env):
             "SELECT status FROM garden_cards WHERE id = 'card-v2'"
         ).fetchone()
         capture_row = conn.execute(
-            "SELECT id, review_state FROM captures WHERE id = ?", (capture_id,)
+            "SELECT id, archived_at FROM captures WHERE id = ?", (capture_id,)
         ).fetchone()
     finally:
         conn.close()
     assert row is not None and row["status"] == "archived"
     assert capture_row is not None  # archiving a card never deletes its captures
-    assert capture_row["review_state"] != "archived"
+    assert capture_row["archived_at"] is None
     assert (vault / "captures" / "source.md").is_file()
 
 

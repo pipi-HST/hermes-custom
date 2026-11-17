@@ -141,17 +141,22 @@ def test_synthesize_garden_blocks_clear_duplicate_card(repo, tmp_path):
     )
     repo.conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, card_kind, core_arguments, knowledge_links,
-            key_materials, status, capture_ids)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'seed', ?)""",
+           (id, title, card_kind, payload_json, status, capture_ids)
+           VALUES (?, ?, ?, ?, 'seed', ?)""",
         (
             "card1",
             "AI Agent 工程化",
-            "AI Agent 工程化的关键是用流程和护栏管理不可靠模型。",
             "method",
-            "[]",
-            "[]",
-            "[]",
+            json.dumps(
+                {
+                    "schema_version": "garden_card.v2",
+                    "title": "AI Agent 工程化",
+                    "claim": "AI Agent 工程化的关键是用流程和护栏管理不可靠模型。",
+                    "card_kind": "method",
+                    "source_ids": ["cap1"],
+                },
+                ensure_ascii=False,
+            ),
             json.dumps(["cap1"], ensure_ascii=False),
         ),
     )
@@ -202,17 +207,22 @@ def test_synthesize_garden_warns_possible_duplicate_but_creates_draft(repo, tmp_
         )
     repo.conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, card_kind, core_arguments, knowledge_links,
-            key_materials, status, capture_ids)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'seed', ?)""",
+           (id, title, card_kind, payload_json, status, capture_ids)
+           VALUES (?, ?, ?, ?, 'seed', ?)""",
         (
             "card1",
             "AI 工作流落地",
-            "AI 落地需要嵌入业务流程，而不是只依赖模型能力。",
             "method",
-            "[]",
-            "[]",
-            "[]",
+            json.dumps(
+                {
+                    "schema_version": "garden_card.v2",
+                    "title": "AI 工作流落地",
+                    "claim": "AI 落地需要嵌入业务流程，而不是只依赖模型能力。",
+                    "card_kind": "method",
+                    "source_ids": ["cap1", "cap2", "cap3"],
+                },
+                ensure_ascii=False,
+            ),
             json.dumps(["cap1", "cap2", "cap3"], ensure_ascii=False),
         ),
     )
@@ -341,7 +351,7 @@ def test_synthesize_garden_canonicalizes_short_payload_source_ids(repo, tmp_path
 
     assert result["status"] == "success"
     draft = repo.conn.execute(
-        "SELECT capture_ids, payload_json, core_arguments FROM garden_drafts WHERE id = ?",
+        "SELECT capture_ids, payload_json FROM garden_drafts WHERE id = ?",
         (result["meta"]["draft_id"],),
     ).fetchone()
     payload = json.loads(draft["payload_json"])
@@ -349,17 +359,16 @@ def test_synthesize_garden_canonicalizes_short_payload_source_ids(repo, tmp_path
     assert json.loads(draft["capture_ids"]) == ["2bafca34bdd7"]
     assert payload["source_ids"] == ["2bafca34bdd7"]
     assert payload["core_judgments"][0]["support"][0]["source_ids"] == ["2bafca34bdd7"]
-    assert json.loads(draft["core_arguments"])[0]["source_ids"] == ["2bafca34bdd7"]
 
 
 def test_synthesize_garden_resolves_committed_capture_draft_id(repo, tmp_path):
-    """刚入库后误传 draft id 时，应解析到 committed capture id。"""
+    """刚保存后误传 draft id 时，应解析到 committed capture id。"""
     from bridge.garden_bridge import synthesize_garden
 
     captures_dir = tmp_path / "captures"
     captures_dir.mkdir()
     (captures_dir / "cap.md").write_text(
-        "---\ntitle: 已入库素材\nstory: 摘要\n---\n\n正文内容\n",
+        "---\ntitle: 已保存素材\nstory: 摘要\n---\n\n正文内容\n",
         encoding="utf-8",
     )
     repo.conn.execute(
@@ -369,17 +378,17 @@ def test_synthesize_garden_resolves_committed_capture_draft_id(repo, tmp_path):
     repo.conn.execute(
         """INSERT INTO capture_drafts
            (id, status, committed_capture_id, title, draft_text, raw_text)
-           VALUES (?, 'committed', ?, '已入库素材', '正文内容', '原文')""",
+           VALUES (?, 'committed', ?, '已保存素材', '正文内容', '原文')""",
         ("draft-committed", "cap-committed"),
     )
     repo.conn.commit()
     agent_result = {
-        "title": "已入库观点",
+        "title": "已保存观点",
         "one_liner": "误传 draft id 也应合成成功。",
         "core_arguments": [{"claim": "使用 committed capture。"}],
         "key_materials": [],
         "knowledge_links": [],
-        "markdown": "# 已入库观点\n",
+        "markdown": "# 已保存观点\n",
     }
     db_path = str(Path(repo.conn.execute("PRAGMA database_list").fetchone()[2]))
 
@@ -499,7 +508,7 @@ def test_commit_garden_draft_creates_structured_card_and_marks_draft(repo, tmp_p
     draft_id = create_garden_draft(repo, {
         "title": "确认后的观点",
         "one_liner": "确认才进入 garden。",
-        "core_arguments": [{"claim": "先草稿后入库"}],
+        "core_arguments": [{"claim": "先草稿后保存"}],
         "key_materials": [],
         "knowledge_links": [],
         "markdown": "# 确认后的观点\n\n正文",
@@ -577,7 +586,7 @@ def test_archive_garden_card_records_write_job(repo, tmp_path):
 
 
 def test_commit_theme_origin_garden_card_marks_question_without_theme_markdown(repo, tmp_path):
-    """从 Theme View 候选生成的 Knowledge Card 入库后，不再回写 Theme Markdown。"""
+    """从 Theme View 候选生成的 Knowledge Card 保存后，不再回写 Theme Markdown。"""
     from agents.garden_agent import create_garden_draft
     from agents.theme_agent import create_pending_question
     from bridge.garden_bridge import commit_garden_draft
@@ -592,7 +601,7 @@ def test_commit_theme_origin_garden_card_marks_question_without_theme_markdown(r
     draft_id = create_garden_draft(repo, {
         "title": "AI Agent 工程化",
         "one_liner": "Agent 工程化需要流程、工具和评估约束。",
-        "core_arguments": [{"claim": "先草稿后入库"}],
+        "core_arguments": [{"claim": "先草稿后保存"}],
         "key_materials": [],
         "knowledge_links": [],
         "markdown": "# AI Agent 工程化\n\n正文",
@@ -624,7 +633,7 @@ def test_commit_theme_origin_garden_card_marks_question_without_theme_markdown(r
     assert question_row["matched_response"] == "synthesized"
 
 def test_commit_garden_draft_persists_card_payload_without_markdown(repo, tmp_path):
-    """Knowledge Card 入库以 SQLite 结构化对象为准。"""
+    """Knowledge Card 保存以 SQLite 结构化对象为准。"""
     from agents.garden_agent import create_garden_draft
     from bridge.garden_bridge import commit_garden_draft
 
@@ -640,10 +649,23 @@ def test_commit_garden_draft_persists_card_payload_without_markdown(repo, tmp_pa
     )
     repo.conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, card_kind, core_arguments, knowledge_links,
-            key_materials, status, capture_ids)
-           VALUES (?, ?, ?, ?, '[]', '[]', '[]', 'seed', '[]')""",
-        ("card1", "相关卡片", "相关卡片摘要", "method"),
+           (id, title, card_kind, payload_json, status, capture_ids)
+           VALUES (?, ?, ?, ?, 'seed', '[]')""",
+        (
+            "card1",
+            "相关卡片",
+            "method",
+            json.dumps(
+                {
+                    "schema_version": "garden_card.v2",
+                    "title": "相关卡片",
+                    "claim": "相关卡片摘要",
+                    "card_kind": "method",
+                    "source_ids": [],
+                },
+                ensure_ascii=False,
+            ),
+        ),
     )
     repo.conn.commit()
     draft_id = create_garden_draft(repo, {
@@ -676,18 +698,19 @@ def test_commit_garden_draft_persists_card_payload_without_markdown(repo, tmp_pa
     ).fetchone()
     assert card["title"] == "方法卡"
     assert card["card_kind"] == "method"
-    assert json.loads(card["knowledge_links"]) == ["card1"]
+    card_payload = json.loads(card["payload_json"])
+    assert card_payload["related_card_ids"] == ["card1"]
     assert json.loads(card["capture_ids"]) == ["cap1"]
 
 
 def test_commit_garden_draft_rejects_internal_prompt_markdown(repo, tmp_path):
-    """包含内部 prompt 痕迹的 Garden Draft 不能入库。"""
+    """包含内部 prompt 痕迹的 Garden Draft 不能保存。"""
     from agents.garden_agent import create_garden_draft
     from bridge.garden_bridge import commit_garden_draft
 
     draft_id = create_garden_draft(repo, {
         "title": "坏草稿",
-        "one_liner": "内部模板不应入库。",
+        "one_liner": "内部模板不应保存。",
         "core_arguments": [{"claim": "坏内容"}],
         "key_materials": [],
         "knowledge_links": [],
@@ -724,7 +747,7 @@ def test_commit_garden_draft_requires_explicit_confirmation(repo, tmp_path):
 
     draft_id = create_garden_draft(repo, {
         "title": "待确认卡片",
-        "one_liner": "不能由模型直接入库。",
+        "one_liner": "不能由模型直接保存。",
         "core_arguments": [],
         "key_materials": [],
         "knowledge_links": [],

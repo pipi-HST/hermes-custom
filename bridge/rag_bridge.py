@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.capture_agent import load_config
+from agents.garden_card_payload import payload_from_row, render_garden_card_body
 from agents.managed_sections import is_managed_section_title
 from agents.rag_agent import (
     SELECTED_BODY_KEY,
@@ -37,7 +38,6 @@ from db.fts_tokenizer import (
     build_fts_or_query,
     keyword_bigram_hits,
 )
-from db.vector_search import search as vector_search
 from db.schema import init_db
 from db.repo import CaptureRepo
 from bridge.config_paths import load_bridge_config
@@ -233,24 +233,7 @@ def _retrieve_knowledge_bundle(query: str, config, repo: CaptureRepo) -> dict:
         logger.warning("[RAG] index_search failed: %s", e)
         results = []
 
-    if not results:
-        try:
-            results = vector_search(
-                query, repo, embedder, top_k=5, query_embedding=query_embedding
-            )
-            used_vector_fallback = bool(results)
-            _log(f"VECTOR: {len(results)} hits")
-            logger.info("[RAG] vector_search returned %d results", len(results))
-        except Exception as e:
-            _log(f"VECTOR_FAIL: {e}")
-            logger.warning("[RAG] vector_search failed: %s", e)
-            results = []
-
-    # The legacy fallback scores ``captures.embedding`` (summary), while the
-    # indexed path scores ``capture_embeddings`` (identity/section index_text).
-    # Do not mix the two score spaces by expanding summary seeds against
-    # index_text rows; the expanded rows would outrank their own seeds.
-    if results and not used_vector_fallback:
+    if results:
         if query_embedding is None:
             query_embedding = embedder.embed(query)
         graph = build_graph_retrieval(
@@ -764,14 +747,12 @@ def _card_body_text(card: dict) -> str:
             if content:
                 return content
             try:
-                from agents.garden_card_payload import render_garden_card_body
-
                 rendered = render_garden_card_body(data).strip()
                 if rendered:
                     return rendered
             except Exception as exc:  # never fail retrieval over card rendering
                 logger.debug("[RAG] card body render failed: %s", exc)
-    return str(card.get("one_liner") or "")
+    return str(payload_from_row(card)["claim"] or "")
 
 
 CARD_MIN_VECTOR_SCORE = 0.42
@@ -809,8 +790,8 @@ def _search_garden_cards(
         offset = 0
         while offset < CARD_CANDIDATE_MAX_SCAN:
             page = conn.execute(
-                """SELECT id, title, one_liner, content_markdown, card_kind, source_theme,
-                          core_arguments, payload_json, capture_ids,
+                """SELECT id, title, content_markdown, card_kind, source_theme,
+                          payload_json, capture_ids,
                           embedding, citation_count, updated_at
                    FROM garden_cards
                    WHERE COALESCE(status, 'accepted') != 'archived'
@@ -832,15 +813,18 @@ def _search_garden_cards(
     scored: list[tuple[float, dict]] = []
     for row in rows:
         card = dict(row)
+        payload = payload_from_row(card)
         title = str(card.get("title") or "")
         raw_literal = _garden_card_match_score(
             keywords,
             needle,
             title=title.lower(),
             theme=str(card.get("source_theme") or "").lower(),
-            one_liner=str(card.get("one_liner") or "").lower(),
+            one_liner=str(payload["claim"] or "").lower(),
             content=str(card.get("content_markdown") or "").lower(),
-            arguments=str(card.get("core_arguments") or "").lower(),
+            arguments=" ".join(
+                item["statement"] for item in payload["core_judgments"]
+            ).lower(),
         )
         literal_score = round(min(1.0, raw_literal / 9.0), 6) if raw_literal > 0 else 0.0
         vec_score = 0.0
@@ -852,12 +836,7 @@ def _search_garden_cards(
                 vec_score = 0.0
         if vec_score < gate and literal_score <= 0:
             continue
-        try:
-            capture_ids = json.loads(card.get("capture_ids") or "[]")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            capture_ids = []
-        if not isinstance(capture_ids, list):
-            capture_ids = []
+        capture_ids = payload["source_ids"]
         candidate = {
             **card,
             "vec_score": vec_score,
@@ -873,7 +852,7 @@ def _search_garden_cards(
 
     cards: list[dict] = []
     for _final_score, row in scored[:limit]:
-        one_liner = str(row.get("one_liner") or "")
+        one_liner = str(payload_from_row(row)["claim"] or "")
         cards.append(
             {
                 "id": row.get("id", ""),
@@ -1027,7 +1006,7 @@ def _run_fts_query(conn, match: str, *, limit: int):
                 AND ce.kind       = capture_search_fts.kind
                 AND ce.section_id = capture_search_fts.section_id
                WHERE capture_search_fts MATCH ?
-                 AND COALESCE(c.review_state, '') != 'archived'
+                 AND c.archived_at IS NULL
                ORDER BY rank
                LIMIT ?""",
             (match, int(limit)),
@@ -1062,7 +1041,7 @@ def _legacy_keyword_match_captures(
             """SELECT c.*, m.metadata_json AS _capture_metadata_json
                FROM captures c
                LEFT JOIN capture_metadata m ON m.capture_id = c.id
-               WHERE COALESCE(c.review_state, '') != 'archived'
+               WHERE c.archived_at IS NULL
                ORDER BY c.created_at DESC
                LIMIT 500"""
         ).fetchall()
@@ -1070,7 +1049,7 @@ def _legacy_keyword_match_captures(
         try:
             rows = repo.conn.execute(
                 """SELECT * FROM captures
-                   WHERE COALESCE(review_state, '') != 'archived'
+                   WHERE archived_at IS NULL
                    ORDER BY created_at DESC
                    LIMIT 500"""
             ).fetchall()

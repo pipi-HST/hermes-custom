@@ -1,3 +1,10 @@
+---
+status: historical
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: snapshot; kept for context, not a current runbook
+---
+
 > ⚠️ **本文件是 G0 dispatcher 修复前的离线 hash 冒烟记录，数字已过期，不要对外引用。**
 > 当前离线口径请看 `docs/BENCHMARK-RAG-V3-offline-postfix.md` / `docs/benchmark-rag-v3-offline-postfix.json`。
 > DashScope 真实重跑已于 2026-11-16 完成，语义结果看 `docs/BENCHMARK-RAG-V3-dashscope.md`（G0 0.389、G1/G2 0.833、G3 1.0）；本文件的 0.5/0.667 仍是历史记录，不要引用。

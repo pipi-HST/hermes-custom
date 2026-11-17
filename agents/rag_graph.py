@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.embedder import cosine_similarity
+from agents.garden_card_payload import payload_from_row
 from agents.managed_sections import is_managed_section_title
 from agents.markdown_writer import read_note
 from db.embedding_repo import CaptureEmbeddingRepo
@@ -96,7 +97,7 @@ def _garden_cards_for_captures(
     if not wanted or not _table_columns(conn, "garden_cards"):
         return []
     rows = conn.execute(
-        """SELECT id, title, one_liner, core_arguments, knowledge_links, capture_ids
+        """SELECT id, title, payload_json, capture_ids
            FROM garden_cards
            WHERE status != 'archived'
            ORDER BY updated_at DESC"""
@@ -116,7 +117,7 @@ def _garden_cards_by_ids(conn, card_ids: list[str], *, limit: int) -> list[dict[
         return []
     placeholders = ",".join("?" for _ in card_ids)
     rows = conn.execute(
-        f"""SELECT id, title, one_liner, core_arguments, knowledge_links, capture_ids
+        f"""SELECT id, title, payload_json, capture_ids
             FROM garden_cards
             WHERE id IN ({placeholders}) AND status != 'archived'
             ORDER BY updated_at DESC""",
@@ -327,12 +328,15 @@ def _expanded_capture_ids(
 
 
 def _garden_card_dict(row, capture_ids: list[str]) -> dict[str, Any]:
+    payload = payload_from_row(row)
     return {
         "id": row["id"],
         "title": row["title"],
-        "one_liner": row["one_liner"],
-        "core_arguments": _json_list(row["core_arguments"]),
-        "knowledge_links": _json_list(row["knowledge_links"]),
+        "one_liner": payload["claim"],
+        "core_arguments": [
+            {"claim": item["statement"]} for item in payload["core_judgments"]
+        ],
+        "knowledge_links": payload["related_card_ids"],
         "capture_ids": capture_ids,
     }
 

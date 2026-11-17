@@ -8,6 +8,7 @@ import re
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
@@ -484,6 +485,11 @@ async def _emit_research_event_async(
 
 
 def _ensure_main_repo_on_path() -> None:
-    main_root = os.environ.get("HERMES_AGENT_MAIN_ROOT", "/Users/pipi/Downloads/hermes-agent-main")
-    if main_root and main_root not in sys.path:
-        sys.path.insert(0, main_root)
+    configured = os.environ.get("HERMES_AGENT_MAIN_ROOT", "").strip()
+    if configured:
+        main_root = Path(configured).expanduser()
+    else:
+        # Sibling checkout by default; no per-machine absolute path.
+        main_root = Path(__file__).resolve().parents[3] / "hermes-agent-main"
+    if main_root.is_dir() and str(main_root) not in sys.path:
+        sys.path.insert(0, str(main_root))

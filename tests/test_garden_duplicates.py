@@ -6,23 +6,59 @@ from agents.garden_duplicates import find_garden_duplicate
 from db.schema import init_db
 
 
-def test_find_garden_duplicate_blocks_same_one_liner_and_sources(tmp_path):
-    conn = init_db(str(tmp_path / "test.db"))
+def _payload(title: str, claim: str, card_kind: str, source_ids: list[str]) -> str:
+    return json.dumps(
+        {
+            "schema_version": "garden_card.v2",
+            "title": title,
+            "claim": claim,
+            "card_kind": card_kind,
+            "source_ids": source_ids,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _insert_card(conn, card_id, title, claim, card_kind, source_ids):
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, card_kind, core_arguments, knowledge_links,
-            key_materials, status, capture_ids)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'seed', ?)""",
+           (id, title, card_kind, payload_json, status, capture_ids)
+           VALUES (?, ?, ?, ?, 'seed', ?)""",
         (
-            "card1",
-            "AI Agent 工程化",
-            "AI Agent 工程化的关键是用流程和护栏管理不可靠模型。",
-            "method",
-            "[]",
-            "[]",
-            "[]",
-            json.dumps(["cap1", "cap2"], ensure_ascii=False),
+            card_id,
+            title,
+            card_kind,
+            _payload(title, claim, card_kind, source_ids),
+            json.dumps(source_ids, ensure_ascii=False),
         ),
+    )
+
+
+def _insert_draft(conn, draft_id, title, claim, card_kind, source_ids):
+    conn.execute(
+        """INSERT INTO garden_drafts
+           (id, title, card_kind, payload_json, markdown, capture_ids, status)
+           VALUES (?, ?, ?, ?, ?, ?, 'draft_ready')""",
+        (
+            draft_id,
+            title,
+            card_kind,
+            _payload(title, claim, card_kind, source_ids),
+            f"# {title}\n",
+            json.dumps(source_ids, ensure_ascii=False),
+        ),
+    )
+
+
+def test_find_garden_duplicate_blocks_same_one_liner_and_sources(tmp_path):
+    conn = init_db(str(tmp_path / "test.db"))
+    _insert_card(
+        conn,
+        "card1",
+        "AI Agent 工程化",
+        "AI Agent 工程化的关键是用流程和护栏管理不可靠模型。",
+        "method",
+        ["cap1", "cap2"],
     )
 
     result = find_garden_duplicate(
@@ -44,21 +80,13 @@ def test_find_garden_duplicate_blocks_same_one_liner_and_sources(tmp_path):
 
 def test_find_garden_duplicate_warns_when_sources_overlap(tmp_path):
     conn = init_db(str(tmp_path / "test.db"))
-    conn.execute(
-        """INSERT INTO garden_cards
-           (id, title, one_liner, card_kind, core_arguments, knowledge_links,
-            key_materials, status, capture_ids)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'seed', ?)""",
-        (
-            "card1",
-            "AI 工作流落地",
-            "AI 落地需要嵌入业务流程，而不是只依赖模型能力。",
-            "method",
-            "[]",
-            "[]",
-            "[]",
-            json.dumps(["cap1", "cap2", "cap3"], ensure_ascii=False),
-        ),
+    _insert_card(
+        conn,
+        "card1",
+        "AI 工作流落地",
+        "AI 落地需要嵌入业务流程，而不是只依赖模型能力。",
+        "method",
+        ["cap1", "cap2", "cap3"],
     )
 
     result = find_garden_duplicate(
@@ -79,22 +107,13 @@ def test_find_garden_duplicate_warns_when_sources_overlap(tmp_path):
 
 def test_find_garden_duplicate_checks_open_drafts(tmp_path):
     conn = init_db(str(tmp_path / "test.db"))
-    conn.execute(
-        """INSERT INTO garden_drafts
-           (id, title, one_liner, card_kind, core_arguments, knowledge_links,
-            key_materials, markdown, capture_ids, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_ready')""",
-        (
-            "draft1",
-            "待确认观点",
-            "同一个开放草稿不应该重复生成。",
-            "viewpoint",
-            "[]",
-            "[]",
-            "[]",
-            "# 待确认观点\n",
-            json.dumps(["cap1"], ensure_ascii=False),
-        ),
+    _insert_draft(
+        conn,
+        "draft1",
+        "待确认观点",
+        "同一个开放草稿不应该重复生成。",
+        "viewpoint",
+        ["cap1"],
     )
 
     result = find_garden_duplicate(
@@ -115,21 +134,13 @@ def test_find_garden_duplicate_checks_open_drafts(tmp_path):
 
 def test_find_garden_duplicate_ignores_unrelated_cards(tmp_path):
     conn = init_db(str(tmp_path / "test.db"))
-    conn.execute(
-        """INSERT INTO garden_cards
-           (id, title, one_liner, card_kind, core_arguments, knowledge_links,
-            key_materials, status, capture_ids)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'seed', ?)""",
-        (
-            "card1",
-            "无关事实",
-            "这是一张完全不同的事实卡。",
-            "fact",
-            "[]",
-            "[]",
-            "[]",
-            json.dumps(["cap9"], ensure_ascii=False),
-        ),
+    _insert_card(
+        conn,
+        "card1",
+        "无关事实",
+        "这是一张完全不同的事实卡。",
+        "fact",
+        ["cap9"],
     )
 
     result = find_garden_duplicate(

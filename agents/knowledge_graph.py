@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from agents.garden_card_payload import payload_from_row
 from agents.markdown_writer import read_note
 from agents.theme_graph import (
     ThemeNode,
@@ -205,7 +206,7 @@ class KnowledgeGraphService:
     def _garden_edges(self, now: str) -> list[dict[str, Any]]:
         valid_capture_ids = self._valid_capture_ids()
         rows = self.conn.execute(
-            """SELECT id, title, capture_ids, knowledge_links
+            """SELECT id, title, capture_ids, payload_json
                FROM garden_cards
                WHERE COALESCE(status, '') != 'archived'
                ORDER BY updated_at DESC"""
@@ -215,7 +216,8 @@ class KnowledgeGraphService:
         for row in rows:
             card_id = str(row["id"])
             title = str(row["title"] or "")
-            for capture_id in _json_list(row["capture_ids"]):
+            payload = payload_from_row(row)
+            for capture_id in payload["source_ids"]:
                 if str(capture_id) not in valid_capture_ids:
                     continue
                 edges.append(
@@ -230,7 +232,7 @@ class KnowledgeGraphService:
                         now=now,
                     )
                 )
-            for linked_id in _json_list(row["knowledge_links"]):
+            for linked_id in payload["related_card_ids"]:
                 linked_id = str(linked_id)
                 if linked_id not in known_cards:
                     continue
@@ -304,7 +306,7 @@ class KnowledgeGraphService:
         rows = self.conn.execute(
             """SELECT id, file_path, raw_path FROM captures
                WHERE file_path IS NOT NULL AND file_path != ''
-                 AND COALESCE(review_state, '') != 'archived'
+                 AND archived_at IS NULL
                ORDER BY created_at DESC
                LIMIT 20"""
         ).fetchall()
@@ -325,7 +327,7 @@ class KnowledgeGraphService:
         rows = self._rows_by_ids("captures", ids)
         nodes = []
         for row in rows:
-            if str(row["review_state"] or "") == "archived":
+            if row["archived_at"]:
                 continue
             file_path = str(row["file_path"] or row["raw_path"] or "")
             note = self._read_note(file_path)
@@ -355,7 +357,7 @@ class KnowledgeGraphService:
                 "id": row["id"],
                 "kind": "garden_card",
                 "title": row["title"] or row["id"],
-                "summary": row["one_liner"] or "",
+                "summary": payload_from_row(row)["claim"],
                 "file_path": "",
                 "open_url": f"/cards-board/{quote(str(row['id']))}",
                 "file_url": "",
@@ -392,11 +394,11 @@ class KnowledgeGraphService:
 
     def _valid_capture_rows(self):
         return self.conn.execute(
-            """SELECT c.id, c.file_path, c.raw_path, c.created_at, c.review_state
+            """SELECT c.id, c.file_path, c.raw_path, c.created_at, c.archived_at
                FROM captures c
                WHERE c.file_path IS NOT NULL
                  AND c.file_path != ''
-                 AND COALESCE(c.review_state, '') != 'archived'"""
+                 AND c.archived_at IS NULL"""
         ).fetchall()
 
     def _valid_capture_ids(self) -> set[str]:
@@ -414,7 +416,7 @@ class KnowledgeGraphService:
                    WHERE id = ?
                      AND file_path IS NOT NULL
                      AND file_path != ''
-                     AND COALESCE(review_state, '') != 'archived'""",
+                     AND archived_at IS NULL""",
                 (node_id,),
             ).fetchone()
             if row is None:

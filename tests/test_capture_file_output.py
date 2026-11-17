@@ -101,7 +101,7 @@ def test_commit_capture_draft_blocks_same_turn_agent_commit(monkeypatch):
                 "draft_text": "正文",
                 "raw_text": "正文",
                 "status": "draft_ready",
-                "instruction": "提取后入库",
+                "instruction": "提取后保存",
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
 
@@ -133,7 +133,7 @@ def test_commit_capture_draft_allows_verified_http_confirmation(monkeypatch):
                 "draft_text": "正文",
                 "raw_text": "正文",
                 "status": "draft_ready",
-                "instruction": "提取后入库",
+                "instruction": "提取后保存",
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
 

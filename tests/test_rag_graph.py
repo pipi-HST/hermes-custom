@@ -24,16 +24,12 @@ def test_graph_retrieval_expands_capture_seed_to_garden_captures(tmp_path):
         )
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, core_arguments, knowledge_links, key_materials,
-            my_view, status, capture_ids, created_at, updated_at, review_interval)
-           VALUES (?, ?, ?, ?, ?, ?, '', 'seed', ?, ?, ?, '1d')""",
+           (id, title, payload_json, status, capture_ids, created_at, updated_at, review_interval)
+           VALUES (?, ?, ?, 'seed', ?, ?, ?, '1d')""",
         (
             "g1",
             "AI Agent 工程化",
-            "工程化来自工具、流程和护栏。",
-            "[]",
-            "[]",
-            "[]",
+            '{"schema_version":"garden_card.v2","claim":"工程化来自工具、流程和护栏。","card_kind":"viewpoint","source_ids":["cap1","cap2"]}',
             json.dumps(["cap1", "cap2"], ensure_ascii=False),
             "2026-05-31T00:00:00+00:00",
             "2026-05-31T00:00:00+00:00",

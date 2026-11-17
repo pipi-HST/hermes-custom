@@ -57,9 +57,7 @@ class CaptureRepo:
 
     def update(self, capture_id: str, **kwargs) -> Optional[dict]:
         allowed = {
-            "file_path", "raw_path", "embedding",
-            "review_state", "review_interval",
-            "review_count", "last_reviewed", "next_review", "theme_scanned_at",
+            "file_path", "raw_path", "archived_at", "theme_scanned_at",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:

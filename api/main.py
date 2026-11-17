@@ -20,6 +20,7 @@ from api.routes.capture_drafts import create_capture_draft_router
 from api.routes.health import create_health_router
 from api.routes.library import create_library_router
 from api.routes.garden import create_garden_router
+from api.routes.dashboard_read import create_dashboard_read_router
 from api.routes.tools import create_tools_router
 from agents.capture_agent import load_config
 
@@ -124,6 +125,10 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
     )
     app.include_router(
         create_knowledge_router(reading_repo, repo, config.vault_path),
+        prefix="/api",
+    )
+    app.include_router(
+        create_dashboard_read_router(repo, reading_repo, config.vault_path),
         prefix="/api",
     )
     app.include_router(create_health_router(conn, config.vault_path), prefix="/api")

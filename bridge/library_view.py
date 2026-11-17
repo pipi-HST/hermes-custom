@@ -15,11 +15,8 @@ from typing import Any
 
 import yaml
 
-from bridge.atomic_io import resolve_inside
 from bridge.capture_view import build_capture_view, read_capture_note
 from bridge.folder_store import normalize_folder, visible_folders
-from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest
-from db.concurrency import transaction
 
 PREVIEW_LIMIT = 360
 OPEN_DRAFT_STATUSES = frozenset(
@@ -30,7 +27,7 @@ _ACTIVE_GARDEN_DRAFT_STATUSES = frozenset({"draft_ready", "revision_requested", 
 _DEPENDENCY_POLICY = {
     "action": "archive_capture_only",
     "knowledge_file": "retained",
-    "database_row": "retained_with_review_state_archived",
+    "database_row": "retained_with_archived_at",
     "garden_cards": "retained",
     "garden_drafts": "retained",
     "committed_drafts": "retained",
@@ -46,6 +43,7 @@ def clip_text(text: object, limit: int = PREVIEW_LIMIT) -> str:
 
 
 def now_iso() -> str:
+    """UTC timestamp helper used by tests and library views."""
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -81,7 +79,11 @@ def capture_library_item(
         "tags": list(data.get("tags") or []),
         "source": str(data.get("source") or ""),
         "source_type": str(data.get("source_type") or ""),
-        "status": str(data.get("status") or data.get("review_state") or "captured"),
+        "status": str(
+            data.get("status")
+            or ("archived" if data.get("archived_at") else "")
+            or "captured"
+        ),
         "file_path": file_path,
         "raw_path": str(data.get("raw_path") or ""),
         "word_count": int(data.get("word_count") or len(body)),
@@ -180,7 +182,7 @@ def folder_response(conn, vault_path: str | Path) -> dict:
     capture_ai_title = 0
     capture_indexed = 0
     rows = conn.execute(
-        "SELECT * FROM captures WHERE COALESCE(review_state, '') != 'archived'"
+        "SELECT * FROM captures WHERE archived_at IS NULL"
     ).fetchall()
     for row in rows:
         data = dict(row)
@@ -207,7 +209,7 @@ def folder_response(conn, vault_path: str | Path) -> dict:
         folders.append({"path": folder, "name": folder, "count": counts[folder]})
 
     smart_views = [
-        {"key": "recent", "label": "最近入库", "count": capture_total + len(drafts)},
+        {"key": "recent", "label": "最近保存", "count": capture_total + len(drafts)},
         {
             "key": "review",
             "label": "待审阅",
@@ -235,105 +237,19 @@ def rename_topic(
     old_folder: str,
     new_folder: str,
 ) -> int:
-    """Move Capture notes and their derived topic copies to ``new_folder``.
+    """Rename a folder through the single domain service.
 
-    Frontmatter is the source of truth; this function also updates the SQL
-    mirror (``capture_metadata.folder_path``) and card labels
-    (``garden_cards.source_theme``) in the same DB transaction.
+    Kept as the HTTP endpoint's entry point (and the historical name used by
+    scripts/tests).  ``agents.folder_service.rename_folder`` owns the writes:
+    drafts, Markdown frontmatter, capture_metadata, garden_cards and the folder
+    registry, in one DB transaction.
     """
-    vault = Path(vault_path).expanduser()
-    write_service = KnowledgeWriteService(vault)
-    draft_updates: list[tuple[str, str]] = []
-    file_updates: list[dict] = []
+    from agents.folder_service import rename_folder
 
-    # Phase 1: collect plan without holding a write transaction across file I/O.
-    draft_rows = conn.execute(
-        """SELECT * FROM capture_drafts
-           WHERE COALESCE(committed_capture_id, '') = ''
-             AND COALESCE(status, '') NOT IN ('abandoned', 'discarded')"""
-    ).fetchall()
-    for row in draft_rows:
-        data = dict(row)
-        intent = _json_dict(data.get("capture_intent"))
-        if normalize_folder(intent.get("folder_path")) != old_folder:
-            continue
-        intent["folder_path"] = new_folder
-        draft_updates.append(
-            (json.dumps(intent, ensure_ascii=False), str(data.get("id") or ""))
-        )
-
-    capture_rows = conn.execute(
-        "SELECT * FROM captures WHERE COALESCE(review_state, '') != 'archived'"
-    ).fetchall()
-    for row in capture_rows:
-        data = dict(row)
-        file_path = str(data.get("file_path") or "")
-        if not file_path:
-            continue
-        try:
-            target = resolve_inside(vault, file_path)
-        except ValueError:
-            continue
-        if not target.is_file():
-            continue
-        frontmatter, body = read_capture_note(vault, data)
-        if normalize_folder(frontmatter.get("folder_path") or frontmatter.get("folder")) != old_folder:
-            continue
-        frontmatter["folder_path"] = new_folder
-        file_updates.append({
-            "capture_id": str(data.get("id") or ""),
-            "file_path": file_path,
-            "frontmatter": frontmatter,
-            "body": body,
-        })
-
-    # Phase 2: write files outside the DB transaction.  A slow disk no longer
-    # blocks every other writer behind BEGIN IMMEDIATE.
-    for item in file_updates:
-        write_service.write_markdown_artifact(
-            MarkdownWriteRequest(
-                kind="capture_note",
-                relative_path=item["file_path"],
-                content=render_markdown(item["frontmatter"], item["body"]),
-                db_object_id=item["capture_id"],
-                db_table="captures",
-                requires_backup=True,
-            )
-        )
-
-    # Phase 3: commit the index changes in one short transaction.  The SQL
-    # mirror and card topic are derived from the frontmatter, so a rename must
-    # update them in the same transaction; otherwise filters keep the old name
-    # until the next full Library scan.
-    timestamp = now_iso()
-    with transaction(conn):
-        for intent_json, draft_id in draft_updates:
-            conn.execute(
-                "UPDATE capture_drafts SET capture_intent = ?, updated_at = ? WHERE id = ?",
-                (intent_json, timestamp, draft_id),
-            )
-        for item in file_updates:
-            capture_id = item["capture_id"]
-            conn.execute(
-                "UPDATE captures SET updated_at = ? WHERE id = ?",
-                (timestamp, capture_id),
-            )
-            conn.execute(
-                """INSERT INTO capture_metadata
-                       (capture_id, folder_path, created_at, updated_at)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(capture_id) DO UPDATE SET
-                       folder_path=excluded.folder_path,
-                       updated_at=excluded.updated_at""",
-                (capture_id, new_folder, timestamp, timestamp),
-            )
-        conn.execute(
-            """UPDATE garden_cards
-               SET source_theme = ?, updated_at = ?
-               WHERE source_theme = ?""",
-            (new_folder, timestamp, old_folder),
-        )
-    return len(draft_updates) + len(file_updates)
+    result = rename_folder(old_folder, new_folder, vault_path, conn)
+    if result.errors:
+        raise RuntimeError("; ".join(result.errors))
+    return result.updated_drafts + result.updated_captures
 
 
 # Compatibility alias for older callers/tests; new code should use rename_topic.
@@ -363,7 +279,7 @@ def list_library_items(
     """List the dashboard's library items (contract v1.1 ``GET /library/items``).
 
     Mirrors the runtime's local library listing: captures come from
-    ``review_state != archived`` rows, drafts from non-committed/non-discarded
+    ``archived_at IS NULL`` rows, drafts from non-committed/non-discarded
     rows; the merged list is sorted by ``updated_at`` desc then ``id`` desc.
     ``counts`` comes from the same filtered pass (before the ``kind`` filter), so
     tab counts always match the pageable set without extra queries.
@@ -420,7 +336,7 @@ def _capture_folder_mirror_complete(conn) -> bool:
         row = conn.execute(
             """SELECT COUNT(*) FROM captures c
                LEFT JOIN capture_metadata m ON m.capture_id = c.id
-               WHERE COALESCE(c.review_state, '') != 'archived'
+               WHERE c.archived_at IS NULL
                  AND m.capture_id IS NULL"""
         ).fetchone()
     except Exception:
@@ -432,7 +348,7 @@ def _capture_search_index_complete(conn) -> bool:
     try:
         row = conn.execute(
             """SELECT COUNT(*) FROM captures c
-               WHERE COALESCE(c.review_state, '') != 'archived'
+               WHERE c.archived_at IS NULL
                  AND NOT EXISTS (
                      SELECT 1 FROM capture_embeddings e WHERE e.capture_id = c.id
                  )"""
@@ -476,13 +392,13 @@ def _list_filtered(
     * folder on captures needs the ``capture_metadata.folder_path`` mirror;
     * search on captures needs the embedding index to cover every active row;
     * capture status stays a post-hydration check because frontmatter can
-      override ``review_state``;
+      override the archived flag;
     * anything that cannot be pushed down falls back to reading candidates and
       verifying with the exact same predicates as before.
     """
     start = max(0, int(offset))
     end = start + max(0, int(limit))
-    capture_where = "COALESCE(c.review_state, '') != 'archived'"
+    capture_where = "c.archived_at IS NULL"
     draft_where = (
         "COALESCE(d.committed_capture_id, '') = '' "
         "AND COALESCE(d.status, '') NOT IN ('abandoned', 'discarded')"
@@ -687,7 +603,7 @@ def _list_unfiltered(
     """
     start = max(0, int(offset))
     end = start + max(0, int(limit))
-    capture_where = "COALESCE(review_state, '') != 'archived'"
+    capture_where = "archived_at IS NULL"
     draft_where = (
         "COALESCE(committed_capture_id, '') = '' "
         "AND COALESCE(status, '') NOT IN ('abandoned', 'discarded')"

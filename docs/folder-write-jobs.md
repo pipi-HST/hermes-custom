@@ -2,7 +2,7 @@
 status: current
 owner: knowledge-service
 last_verified: 2026-11-17
-verified_against: local check in .tmp/worker-e2e
+verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
 ---
 
 # Folder write jobs
@@ -15,8 +15,9 @@ path to the HTTP API.
 
 - Supported intent: `rename_folder`.
 - The HTTP endpoint `PATCH /api/library/folders/{path}` still renames
-  synchronously (`rename_topic` + `rename_stored_folder`). The queue is not
-  wired into that endpoint.
+  synchronously (`rename_topic` + `rename_stored_folder`); that is the only
+  production writer today. The queue is not wired into the endpoint, and
+  `folder_service` is the job-path writer, not a second production path.
 - If you enqueue a rename, do not also call the endpoint for the same folder
   while the job is pending.
 - Delete, merge and archive intents are **not** implemented. Do not add a
@@ -29,7 +30,7 @@ path to the HTTP API.
 | Job table | `db/schema.py` → `knowledge_write_jobs` |
 | Job repository | `db/write_job_repo.py` |
 | Submission / status helpers | `bridge/knowledge_job_submit.py` |
-| Domain service (single writer) | `agents/folder_service.py` |
+| Domain service (job path) | `agents/folder_service.py` |
 | Worker | `workers/knowledge_write_worker.py` |
 | Launcher | `start_worker.py` |
 
@@ -97,8 +98,13 @@ status = wait_for_job(job_id, conn, timeout_seconds=30)
 5. `garden_cards.source_theme` where it matches the old folder.
 6. `<vault>/.hermes/knowledge_folders.json` (the Library folder list).
 
-Missing capture files and unreadable drafts become warnings, not failures. A
-write error rolls the whole job back.
+Missing capture files and unreadable drafts become warnings, not failures. The
+SQLite updates (drafts, `captures.updated_at`, `capture_metadata`,
+`garden_cards`) and the folder registry run after the Markdown writes; the DB
+part is one transaction. A crash between the file writes and the DB commit can
+leave the note on the new folder and the mirror on the old one. Rerun
+`scripts/repair_topics.py` after a crash; that is the recovery path, not a
+claim of all-or-nothing rollback.
 
 ## Job states
 

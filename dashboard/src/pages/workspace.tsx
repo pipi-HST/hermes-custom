@@ -210,7 +210,7 @@ export default function WorkspacePage() {
 
     const commitResult = await commitCaptureDraft(draftId)
     if (commitResult.status === 'error') {
-      throw new Error(String(commitResult.chat_preview || '确认入库失败'))
+      throw new Error(String(commitResult.chat_preview || '确认保存失败'))
     }
 
     const commitMeta = (commitResult.meta || {}) as Record<string, unknown>
@@ -533,7 +533,7 @@ function LibraryView({
           body,
           folder_path: folderPath || activeFolder || 'Inbox',
         })
-        setSaveNotice('已保存并入库，检索链路会复用现有 LibraryAgent / RAG。')
+        setSaveNotice('已保存并保存，检索链路会复用现有 LibraryAgent / RAG。')
       } else if (selectedCapture) {
         await onSaveCapture(selectedCapture.id, {
           title,
@@ -622,7 +622,7 @@ function LibraryView({
                 <h3 className="text-xl font-semibold">{isCreating ? '新建文件' : '文件详情'}</h3>
                 <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
                   {isCreating
-                    ? `${folderPath || activeFolder} / 手动 / 待入库`
+                    ? `${folderPath || activeFolder} / 手动 / 待保存`
                     : `${folderPath || activeFolder} / ${sourceLabel(selectedCapture?.source_type || '')} / ${statusLabel(selectedCapture?.status || '')}`}
                 </p>
               </div>
@@ -693,7 +693,7 @@ function LibraryView({
               <div className="min-w-0 text-xs text-neutral-500">
                 <p>
                   {isCreating
-                    ? '保存会先生成 Capture 草稿，再确认入库并复用 LibraryAgent / RAG 链路。'
+                    ? '保存会先生成 Capture 草稿，再确认保存并复用 LibraryAgent / RAG 链路。'
                     : '保存会写回 Markdown frontmatter/body，并复用 LibraryAgent 更新检索链路。'}
                 </p>
                 {!isCreating && selectedCapture?.file_path && (
@@ -707,7 +707,7 @@ function LibraryView({
                 disabled={!body.trim() || !hasChanges || saving}
                 className="rounded-lg bg-[#2f6f55] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#285f49] active:translate-y-px disabled:opacity-40"
               >
-                {saving ? '保存中...' : isCreating ? '保存并入库' : '保存'}
+                {saving ? '保存中...' : isCreating ? '保存并保存' : '保存'}
               </button>
             </div>
           </>
@@ -968,7 +968,7 @@ function statusLabel(status: string) {
     draft: '草稿',
     reviewing: '待审阅',
     indexed: '已索引',
-    committed: '已入库',
+    committed: '已保存',
   }
   return labels[status] || status || '未知状态'
 }

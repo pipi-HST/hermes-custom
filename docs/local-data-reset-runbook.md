@@ -1,3 +1,10 @@
+---
+status: current
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+---
+
 # Hermes Knowledge local data reset runbook
 
 This runbook is for the intentional destructive reset that clears local Hermes Knowledge personal data and keeps operational configuration.
@@ -15,7 +22,7 @@ Reset preserves:
 
 - `<repos>/hermes-custom/config.yaml`.
 - API keys, model settings, LaunchAgent plist files, and normal logs.
-- `<repos>/hermes-life/data/life.db`.
+- `<repos>/hermes-life/data/life.db`????? Life?Life ??????????????
 
 ## Preflight
 
@@ -80,7 +87,9 @@ cd <repos>/hermes-custom
 .venv/bin/python scripts/reset_hermes_local_data.py --verify-empty
 ```
 
-It exits `0` only when the legacy store and content backups are gone, target DB tables are empty, schema is queryable, the new storage skeleton exists, the new storage has no files, and preserved paths such as `config.yaml` and `<repos>/hermes-life/data/life.db` still exist.
+It exits `0` only when the legacy store and content backups are gone, target DB tables are empty, schema is queryable, the new storage skeleton exists, the new storage has no files, and preserved paths such as `config.yaml` still exist. The Life DB is checked only when present.
+
+`--new-storage-root` defaults to `config.yaml`'s `vault.path`; confirm the dry-run's `new_storage_root` matches before applying. `launchctl` steps below are macOS-only; on Windows stop the `watch_vault.py` process instead.
 
 Check empty RAG behavior:
 

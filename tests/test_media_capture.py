@@ -208,7 +208,7 @@ def test_full_text_draft_from_markdown_file_uses_h1_title_and_exact_body(
         lambda prompt, *args, **kwargs: pytest.fail("full text save should not call LLM"),
     )
 
-    result = agent.create_draft(str(doc), instruction="全文入库，一字不改全文原文入库")
+    result = agent.create_draft(str(doc), instruction="全文保存，一字不改全文原文保存")
 
     assert result["status"] == "raw_extracted"
     assert result["title"] == "智能问数项目的成功关键"

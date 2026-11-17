@@ -1,3 +1,10 @@
+---
+status: current
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+---
+
 # Hermes Knowledge
 
 Hermes Knowledge 是 Hermes 的**知识库能力层**：把微信、飞书、网页、文件里的材料，变成可确认的草稿、可检索的资料笔记、可复用的知识卡片，以及可追溯的来源。
@@ -51,20 +58,31 @@ copy config.example.yaml config.yaml   # 仅首次；已有 config.yaml 不要�
 
 ### 2. Hermes Runtime
 
+首次运行先装依赖（Runtime 不在本仓库，需要单独 checkout）：
+
 ```powershell
 cd <repos>\hermes-agent-main
+uv sync                      # 或：py -3.12 -m venv .venv; .venv\Scripts\python.exe -m pip install -e .
 .venv\Scripts\python.exe -m hermes_cli.main dashboard --no-open
 # 打开 http://127.0.0.1:9119
 ```
 
-如果要用 HTTP 模式，在 Runtime 的环境里设置：
+HTTP 模式是推荐部署方式，要在**启动 Dashboard 之前**设置：
 
 ```text
 HERMES_KNOWLEDGE_URL=http://127.0.0.1:8000
 HERMES_KNOWLEDGE_TOKEN=<与服务的 HERMES_API_TOKEN 相同的高强度随机值>
 ```
 
-服务侧设置 `HERMES_API_TOKEN=<同一个值>`。两边值必须一致。
+服务侧设置 `HERMES_API_TOKEN=<同一个值>`；改完 token 要重启服务。两边值必须一致。
+
+还需要告诉 Runtime 服务端的 vault / DB 位置（HTTP 模式下这两个变量不是可选的，
+Dashboard 的草稿、卡片详情、时间线读路由仍会用到）：
+
+```text
+HERMES_KNOWLEDGE_VAULT=<repos>\hermes-custom\data\vault
+HERMES_KNOWLEDGE_DB=<repos>\hermes-custom\data\captures.db
+```
 
 ### 3. 本地开发模式（可选）
 
@@ -76,6 +94,35 @@ HERMES_KNOWLEDGE_LOCAL_ROOT=<repos>\hermes-custom
 ```
 
 这是开发回退路径，不是生产推荐路径。
+
+## 第一条 capture → card → RAG
+
+服务起来后（HTTP 模式需带 `Authorization: Bearer <token>`）：
+
+```bash
+# 1. 建 capture 草稿（content 换成你的材料）
+curl -X POST http://127.0.0.1:8000/api/capture-drafts \
+  -H "Authorization: Bearer $HERMES_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"content":"MCP 把工具发现与调用契约标准化。","source_type":"text"}'
+
+# 2. 生成确认 token，再用它提交
+curl -X POST http://127.0.0.1:8000/api/capture-drafts/<draft_id>/confirmation \
+  -H "Authorization: Bearer $HERMES_API_TOKEN"
+curl -X POST http://127.0.0.1:8000/api/capture-drafts/<draft_id>/commit \
+  -H "Authorization: Bearer $HERMES_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"confirmation_token":"<token>"}'
+
+# 3. 从资料生成卡片（auto_commit=true，直接落库）
+curl -X POST http://127.0.0.1:8000/api/garden/drafts \
+  -H "Authorization: Bearer $HERMES_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"capture_ids":["<capture_id>"]}'
+
+# 4. RAG 检索（应能命中刚才的资料）
+curl "http://127.0.0.1:8000/api/knowledge/search?q=MCP" \
+  -H "Authorization: Bearer $HERMES_API_TOKEN"
+```
+
+不想用 curl 就在 Dashboard 里操作：资料伴读 → 新建/提交 → 知识卡片 → 专题输出。
 
 ## 测试
 

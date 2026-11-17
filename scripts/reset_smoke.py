@@ -199,23 +199,29 @@ def _create_smoke_card(conn: sqlite3.Connection, capture_id: str) -> dict[str, A
     now = datetime.now(timezone.utc).isoformat()
     capture_ids = json.dumps([capture_id], ensure_ascii=False)
     payload = {
+        "schema_version": "garden_card.v2",
         "title": "reset_smoke Knowledge Card",
-        "summary": "验证 Knowledge Card 是结构化对象。",
+        "claim": "空库 reset 后仍能创建结构化 Knowledge Card。",
+        "card_kind": "method",
+        "core_judgments": [
+            {
+                "id": "j1",
+                "statement": "Knowledge Card 以 SQLite 结构化对象为主。",
+                "reasoning": "",
+                "support": [],
+            }
+        ],
+        "source_ids": [capture_id],
     }
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, card_kind, payload_json, core_arguments,
-            knowledge_links, key_materials, status, capture_ids, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (id, title, card_kind, payload_json, status, capture_ids, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             card_id,
             "reset_smoke Knowledge Card",
-            "空库 reset 后仍能创建结构化 Knowledge Card。",
             "method",
             json.dumps(payload, ensure_ascii=False),
-            json.dumps([{"claim": "Knowledge Card 以 SQLite 结构化对象为主。"}], ensure_ascii=False),
-            "[]",
-            "[]",
             "seed",
             capture_ids,
             now,

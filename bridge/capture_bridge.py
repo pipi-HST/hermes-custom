@@ -386,9 +386,9 @@ def _create_editable_capture_draft(
     capture_intent = result.get("capture_intent", {}) if isinstance(result.get("capture_intent"), dict) else {}
     suggestions_status = str(capture_intent.get("ai_suggestions_status") or "")
     if suggestions_status == "generated":
-        preview_suffix = "标题、摘要、标签、文件夹和卡片建议已自动生成；确认后可入库检索。"
+        preview_suffix = "标题、摘要、标签、文件夹和卡片建议已自动生成；确认后待保存检索。"
     elif suggestions_status == "failed":
-        preview_suffix = "AI 建议生成失败，正文已保留；可重试生成建议或手动填写后入库。"
+        preview_suffix = "AI 建议生成失败，正文已保留；可重试生成建议或手动填写后保存。"
     else:
         preview_suffix = "正文已保存为草稿；尚未生成 AI 建议。"
     return success_envelope(
@@ -582,7 +582,7 @@ def _capture_content(
             agent="capture",
             intent="create_capture_draft",
             chat_preview=(
-                f"这份材料已经入库过：《{title}》。\n\n"
+                f"这份材料已经保存过：《{title}》。\n\n"
                 "我没有重复创建草稿。你可以查看已有笔记，或者明确说“基于已有文章创建修订草稿”。"
             ),
             durable_artifacts=[
@@ -638,7 +638,7 @@ def _capture_content(
         if instruction:
             guidance = (
                 "原文已保存为待确认初稿。你可以先展开原文抽查；"
-                "确认后我再按当前要求生成最终整理稿并入库。"
+                "确认后我再按当前要求生成最终整理稿并保存。"
             )
         else:
             guidance = "想怎么整理？比如「提炼重点」「翻译成英文」「压缩到 500 字」"
@@ -666,7 +666,7 @@ def _capture_content(
         if instruction:
             actions.append(
                 next_action(
-                    label="全文入库" if is_full_text else "按当前方向整理入库",
+                    label="全文保存" if is_full_text else "按当前方向整理保存",
                     intent="commit_capture_draft",
                     payload={"draft_id": result.get("id", "")},
                     requires_confirmation=True,
@@ -707,7 +707,7 @@ def show_capture_draft(
     as_file: bool = False,
     context: KnowledgeContext | None = None,
 ) -> dict:
-    """显示最近或指定的待确认草稿正文；只读草稿，不入库。"""
+    """显示最近或指定的待确认草稿正文；只读草稿，不保存。"""
     _, agent = _agent_from_context(context)
     return _run_capture_with_ledger(
         agent,
@@ -1028,7 +1028,7 @@ def _discard_capture_draft(agent, draft_id: str = "") -> dict:
         return error_envelope(
             agent="capture",
             intent="discard_capture_draft",
-            error="草稿已入库，不能删除。",
+            error="草稿已保存，不能删除。",
         )
     if draft.get("status") == "abandoned":
         return error_envelope(
@@ -1071,7 +1071,7 @@ def _commit_capture_draft(
         return error_envelope(
             agent="capture",
             intent="commit_capture_draft",
-            error="没有可入库的草稿。",
+            error="没有待保存的草稿。",
         )
     draft = agent.draft_repo.get_by_id(draft_id)
     if not draft:
@@ -1184,7 +1184,7 @@ def refine_capture(
     instruction: str = "",
     context: KnowledgeContext | None = None,
 ) -> dict:
-    """兼容旧工具名：现在只修改草稿，不直接入库。"""
+    """兼容旧工具名：现在只修改草稿，不直接保存。"""
     _, agent = _agent_from_context(context)
     return _run_capture_with_ledger(
         agent,

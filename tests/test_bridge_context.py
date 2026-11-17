@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,17 +70,21 @@ def test_garden_bridge_accepts_explicit_context(monkeypatch, tmp_path):
     now = datetime.now(timezone.utc).isoformat()
     context.conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, core_arguments, knowledge_links, key_materials,
-            my_view, status, capture_ids, created_at, updated_at, review_interval)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (id, title, payload_json, status, capture_ids, created_at, updated_at, review_interval)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             "card1",
             "上下文卡片",
-            "一句话",
-            "[]",
-            "[]",
-            "[]",
-            "",
+            json.dumps(
+                {
+                    "schema_version": "garden_card.v2",
+                    "title": "上下文卡片",
+                    "claim": "一句话",
+                    "card_kind": "viewpoint",
+                    "source_ids": [],
+                },
+                ensure_ascii=False,
+            ),
             "seed",
             "[]",
             now,

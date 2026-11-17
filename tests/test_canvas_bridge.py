@@ -35,14 +35,22 @@ def _insert_garden_card(
 ) -> None:
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, card_kind, core_arguments, knowledge_links,
-            key_materials, status, capture_ids)
-           VALUES (?, ?, ?, ?, '[]', '[]', '[]', 'seed', ?)""",
+           (id, title, card_kind, payload_json, status, capture_ids)
+           VALUES (?, ?, ?, ?, 'seed', ?)""",
         (
             card_id,
             title,
-            "一句话",
             kind,
+            json.dumps(
+                {
+                    "schema_version": "garden_card.v2",
+                    "title": title,
+                    "claim": "一句话",
+                    "card_kind": kind,
+                    "source_ids": capture_ids,
+                },
+                ensure_ascii=False,
+            ),
             json.dumps(capture_ids, ensure_ascii=False),
         ),
     )
@@ -167,16 +175,29 @@ def test_generate_canvas_uses_core_arguments_when_garden_one_liner_repeats_title
     _insert_capture(conn, "cap2", "captures/risk.md")
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, card_kind, core_arguments, knowledge_links,
-            key_materials, status, capture_ids)
-           VALUES (?, ?, ?, 'viewpoint', ?, '[]', '[]', 'seed', ?)""",
+           (id, title, card_kind, payload_json, status, capture_ids)
+           VALUES (?, ?, 'viewpoint', ?, 'seed', ?)""",
         (
             "card1",
             "AI价值取决于工程底座",
-            "AI价值取决于工程底座",
-            json.dumps([
-                {"claim": "模型能力只有嵌入真实流程、工具边界和质量闭环，才能转化为稳定生产力。"}
-            ], ensure_ascii=False),
+            json.dumps(
+                {
+                    "schema_version": "garden_card.v2",
+                    "title": "AI价值取决于工程底座",
+                    "claim": "AI价值取决于工程底座",
+                    "card_kind": "viewpoint",
+                    "core_judgments": [
+                        {
+                            "id": "j1",
+                            "statement": "模型能力只有嵌入真实流程、工具边界和质量闭环，才能转化为稳定生产力。",
+                            "reasoning": "",
+                            "support": [],
+                        }
+                    ],
+                    "source_ids": ["cap1"],
+                },
+                ensure_ascii=False,
+            ),
             json.dumps(["cap1"], ensure_ascii=False),
         ),
     )

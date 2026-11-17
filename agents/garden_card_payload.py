@@ -85,6 +85,28 @@ def parse_payload_json(text: str | None) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def payload_from_row(row: Any) -> dict[str, Any]:
+    """Return the normalized v2 payload for a ``garden_cards`` row.
+
+    Only ``payload_json`` and ``capture_ids`` are read; the removed v1 mirror
+    columns are never consulted.
+    """
+    payload = parse_payload_json(_row_value(row, "payload_json", ""))
+    if not payload:
+        embedded = _row_value(row, "payload", None)
+        if isinstance(embedded, dict):
+            payload = embedded
+    legacy = {"capture_ids": _row_value(row, "capture_ids", "[]")}
+    return normalize_garden_payload(payload, legacy=legacy)
+
+
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
 def payload_to_json(payload: dict[str, Any]) -> str:
     return json.dumps(normalize_garden_payload(payload), ensure_ascii=False, sort_keys=True)
 

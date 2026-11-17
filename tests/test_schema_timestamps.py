@@ -105,11 +105,10 @@ def test_unparseable_timestamps_are_kept_instead_of_nulled(tmp_path):
     conn = init_db(db_path)
     conn.execute(
         "INSERT INTO captures "
-        "(id, created_at, updated_at, last_reviewed, next_review) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "(id, created_at, updated_at, archived_at) "
+        "VALUES (?, ?, ?, ?)",
         (
             "bad",
-            "0000-00-00 00:00:00",
             "0000-00-00 00:00:00",
             "0000-00-00 00:00:00",
             "0000-00-00 00:00:00",
@@ -121,12 +120,11 @@ def test_unparseable_timestamps_are_kept_instead_of_nulled(tmp_path):
     # Must not raise on the NOT NULL created_at/updated_at columns.
     conn = init_db(db_path)
     row = conn.execute(
-        "SELECT created_at, updated_at, last_reviewed, next_review FROM captures "
+        "SELECT created_at, updated_at, archived_at FROM captures "
         "WHERE id='bad'"
     ).fetchone()
     assert row["created_at"] == "0000-00-00 00:00:00"
     assert row["updated_at"] == "0000-00-00 00:00:00"
     # Nullable columns keep their original value instead of silently turning NULL.
-    assert row["last_reviewed"] == "0000-00-00 00:00:00"
-    assert row["next_review"] == "0000-00-00 00:00:00"
+    assert row["archived_at"] == "0000-00-00 00:00:00"
     conn.close()

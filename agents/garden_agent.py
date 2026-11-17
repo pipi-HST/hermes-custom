@@ -9,11 +9,15 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
+from contextlib import nullcontext
+
+from db.concurrency import transaction
 
 from bridge.ai_cancel import raise_if_cancelled
 from agents.garden_card_payload import (
     GARDEN_CARD_SCHEMA_VERSION,
     normalize_garden_payload,
+    payload_from_row,
     payload_to_json,
     parse_payload_json,
     project_legacy_fields,
@@ -164,6 +168,9 @@ class GardenAgent:
         """两步合成——返回 v2 payload 和旧字段兼容投影。"""
         if not captures:
             return {"error": "no captures provided"}
+        existing_garden_cards = [
+            _garden_row_view(card) for card in existing_garden_cards
+        ]
 
         # Step 1: 结构化提取
         content_text = "\n\n---\n\n".join(
@@ -476,7 +483,7 @@ def _card_use_hint(card_kind: str) -> str:
     }.get(_normalize_card_kind(card_kind), "以后遇到相似问题时，可以把它作为可复用知识调用。")
 
 
-def create_garden_card(repo, garden_data: dict) -> str:
+def create_garden_card(repo, garden_data: dict, *, in_transaction: bool = False) -> str:
     """写入 garden_cards 表，返回 card ID。"""
     card_id = uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc).isoformat()
@@ -491,49 +498,60 @@ def create_garden_card(repo, garden_data: dict) -> str:
     if not content_markdown:
         content_markdown = render_garden_card_body(payload).strip()
     payload["content_markdown"] = content_markdown
-    legacy = project_legacy_fields(payload)
-    repo.conn.execute(
-        """INSERT INTO garden_cards (id, title, one_liner, content_markdown, card_kind, schema_version,
-           payload_json, core_arguments, knowledge_links, key_materials, my_view, status, capture_ids,
-           created_at, updated_at, review_interval)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'seed', ?, ?, ?, '1d')""",
-        (
-            card_id,
-            legacy["title"],
-            legacy["one_liner"],
-            content_markdown,
-            _normalize_card_kind(legacy["card_kind"]),
-            GARDEN_CARD_SCHEMA_VERSION,
-            payload_to_json(payload),
-            json.dumps(legacy["core_arguments"], ensure_ascii=False),
-            json.dumps(legacy["knowledge_links"], ensure_ascii=False),
-            json.dumps(legacy["key_materials"], ensure_ascii=False),
-            legacy["my_view"],
-            json.dumps(legacy["capture_ids"], ensure_ascii=False),
-            now, now,
-        ),
-    )
-    source_theme = str(garden_data.get("source_theme") or payload.get("source_theme") or "").strip()
-    if not source_theme:
-        for capture_id in _json_list(legacy.get("capture_ids")):
-            row = repo.conn.execute(
-                "SELECT folder_path FROM capture_metadata WHERE capture_id = ?",
-                (str(capture_id),),
-            ).fetchone()
-            if row and str(row["folder_path"] or "").strip():
-                source_theme = str(row["folder_path"]).strip()
-                break
-    if source_theme:
+    with (nullcontext() if in_transaction else transaction(repo.conn)):
         repo.conn.execute(
-            "UPDATE garden_cards SET source_theme = ? WHERE id = ?",
-            (source_theme, card_id),
+            """INSERT INTO garden_cards (id, title, content_markdown, card_kind, schema_version,
+               payload_json, status, capture_ids, created_at, updated_at, review_interval)
+               VALUES (?, ?, ?, ?, ?, ?, 'seed', ?, ?, ?, '1d')""",
+            (
+                card_id,
+                payload["title"],
+                content_markdown,
+                _normalize_card_kind(payload["card_kind"]),
+                GARDEN_CARD_SCHEMA_VERSION,
+                payload_to_json(payload),
+                json.dumps(payload["source_ids"], ensure_ascii=False),
+                now, now,
+            ),
         )
-    repo.conn.commit()
+        source_theme = str(garden_data.get("source_theme") or payload.get("source_theme") or "").strip()
+        if not source_theme:
+            for capture_id in payload["source_ids"]:
+                row = repo.conn.execute(
+                    "SELECT folder_path FROM capture_metadata WHERE capture_id = ?",
+                    (str(capture_id),),
+                ).fetchone()
+                if row and str(row["folder_path"] or "").strip():
+                    source_theme = str(row["folder_path"]).strip()
+                    break
+        if source_theme:
+            repo.conn.execute(
+                "UPDATE garden_cards SET source_theme = ? WHERE id = ?",
+                (source_theme, card_id),
+            )
     return card_id
 
 
 def _json_text(value) -> str:
     return json.dumps(value or [], ensure_ascii=False)
+
+
+def _garden_row_view(row) -> dict:
+    """Return a DB row plus the legacy API projection for that payload.
+
+    The v1 mirror columns are gone from SQLite; callers that still read
+    ``one_liner``/``core_arguments`` get them from ``payload_json`` here.
+    """
+    data = dict(row)
+    payload = payload_from_row(data)
+    legacy = project_legacy_fields(payload)
+    data["payload"] = payload
+    data["one_liner"] = legacy["one_liner"]
+    data["core_arguments"] = legacy["core_arguments"]
+    data["knowledge_links"] = legacy["knowledge_links"]
+    data["key_materials"] = legacy["key_materials"]
+    data["my_view"] = legacy["my_view"]
+    return data
 
 
 def _json_list(text) -> list:
@@ -632,24 +650,19 @@ def create_garden_draft(repo, garden_data: dict) -> str:
         ),
         legacy=garden_data,
     )
-    legacy = project_legacy_fields(payload)
     repo.conn.execute(
-        """INSERT INTO garden_drafts (id, title, one_liner, card_kind, schema_version,
-           payload_json, core_arguments, knowledge_links, key_materials, markdown, capture_ids, question_id,
+        """INSERT INTO garden_drafts (id, title, card_kind, schema_version,
+           payload_json, markdown, capture_ids, question_id,
            instruction, status, committed_card_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_ready', '', ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_ready', '', ?, ?)""",
         (
             draft_id,
-            legacy["title"],
-            legacy["one_liner"],
-            _normalize_card_kind(legacy["card_kind"]),
+            payload["title"],
+            _normalize_card_kind(payload["card_kind"]),
             GARDEN_CARD_SCHEMA_VERSION,
             payload_to_json(payload),
-            _json_text(legacy["core_arguments"]),
-            _json_text(legacy["knowledge_links"]),
-            _json_text(legacy["key_materials"]),
             garden_data.get("markdown", ""),
-            _json_text(legacy["capture_ids"]),
+            _json_text(payload["source_ids"]),
             garden_data.get("question_id", ""),
             garden_data.get("instruction", ""),
             now,
@@ -665,7 +678,7 @@ def get_garden_draft(repo, draft_id: str) -> Optional[dict]:
         "SELECT * FROM garden_drafts WHERE id = ?",
         (draft_id,),
     ).fetchone()
-    return dict(row) if row else None
+    return _garden_row_view(row) if row else None
 
 
 def get_latest_open_garden_draft(repo) -> Optional[dict]:
@@ -675,7 +688,7 @@ def get_latest_open_garden_draft(repo) -> Optional[dict]:
            ORDER BY updated_at DESC, created_at DESC
            LIMIT 1"""
     ).fetchone()
-    return dict(row) if row else None
+    return _garden_row_view(row) if row else None
 
 
 def update_garden_draft(
@@ -696,24 +709,19 @@ def update_garden_draft(
         ),
         legacy={**existing, **garden_data},
     )
-    legacy = project_legacy_fields(payload)
     repo.conn.execute(
         """UPDATE garden_drafts
-           SET title=?, one_liner=?, card_kind=?, schema_version=?, payload_json=?,
-               core_arguments=?, knowledge_links=?, key_materials=?, markdown=?, capture_ids=?,
+           SET title=?, card_kind=?, schema_version=?, payload_json=?,
+               markdown=?, capture_ids=?,
                instruction=?, status=?, updated_at=?
            WHERE id=?""",
         (
-            legacy["title"],
-            legacy["one_liner"],
-            _normalize_card_kind(legacy["card_kind"]),
+            payload["title"],
+            _normalize_card_kind(payload["card_kind"]),
             GARDEN_CARD_SCHEMA_VERSION,
             payload_to_json(payload),
-            _json_text(legacy["core_arguments"]),
-            _json_text(legacy["knowledge_links"]),
-            _json_text(legacy["key_materials"]),
             garden_data.get("markdown", existing["markdown"]),
-            _json_text(legacy["capture_ids"]),
+            _json_text(payload["source_ids"]),
             garden_data.get("instruction", existing["instruction"]),
             status,
             now,
@@ -729,24 +737,24 @@ def commit_garden_draft_to_card(repo, draft_id: str) -> Optional[str]:
     if not draft or draft["status"] == "committed":
         return None
 
-    card_id = create_garden_card(repo, {
-        "title": draft["title"],
-        "one_liner": draft["one_liner"],
-        "card_kind": _normalize_card_kind(draft["card_kind"]),
-        "payload": parse_payload_json(draft.get("payload_json")),
-        "core_arguments": _json_list(draft["core_arguments"]),
-        "knowledge_links": _json_list(draft["knowledge_links"]),
-        "key_materials": _json_list(draft["key_materials"]),
-        "capture_ids": _json_list(draft["capture_ids"]),
-    })
     now = datetime.now(timezone.utc).isoformat()
-    repo.conn.execute(
-        """UPDATE garden_drafts
-           SET status='committed', committed_card_id=?, updated_at=?
-           WHERE id=?""",
-        (card_id, now, draft_id),
-    )
-    repo.conn.commit()
+    with transaction(repo.conn):
+        card_id = create_garden_card(repo, {
+            "title": draft["title"],
+            "one_liner": draft["one_liner"],
+            "card_kind": _normalize_card_kind(draft["card_kind"]),
+            "payload": parse_payload_json(draft.get("payload_json")),
+            "core_arguments": _json_list(draft["core_arguments"]),
+            "knowledge_links": _json_list(draft["knowledge_links"]),
+            "key_materials": _json_list(draft["key_materials"]),
+            "capture_ids": _json_list(draft["capture_ids"]),
+        }, in_transaction=True)
+        repo.conn.execute(
+            """UPDATE garden_drafts
+               SET status='committed', committed_card_id=?, updated_at=?
+               WHERE id=?""",
+            (card_id, now, draft_id),
+        )
     try:
         from agents.capture_agent import load_config
         from agents.knowledge_graph import refresh_graph_after_write
@@ -777,28 +785,24 @@ def update_garden_card(repo, card_id: str, garden_data: dict) -> Optional[dict]:
     if not content_markdown:
         content_markdown = render_garden_card_body(payload).strip()
     payload["content_markdown"] = content_markdown
-    legacy = project_legacy_fields(payload)
     # 合并参数（追加新论点, 去重）
     # 简化实现：覆盖更新
     repo.conn.execute(
-        """UPDATE garden_cards SET title=?, one_liner=?, content_markdown=?, card_kind=?, schema_version=?,
-           payload_json=?, core_arguments=?, knowledge_links=?, key_materials=?,
-           my_view=?, capture_ids=?, updated_at=?, status='seed'
+        """UPDATE garden_cards SET title=?, content_markdown=?, card_kind=?, schema_version=?,
+           payload_json=?, capture_ids=?, updated_at=?, status='seed'
            WHERE id=?""",
         (
-            legacy["title"],
-            legacy["one_liner"],
+            payload["title"],
             content_markdown,
-            _normalize_card_kind(legacy["card_kind"]),
+            _normalize_card_kind(payload["card_kind"]),
             GARDEN_CARD_SCHEMA_VERSION,
             payload_to_json(payload),
-            json.dumps(legacy["core_arguments"], ensure_ascii=False),
-            json.dumps(legacy["knowledge_links"], ensure_ascii=False),
-            json.dumps(legacy["key_materials"], ensure_ascii=False),
-            legacy["my_view"],
-            json.dumps(legacy["capture_ids"], ensure_ascii=False),
+            json.dumps(payload["source_ids"], ensure_ascii=False),
             now, card_id,
         ),
     )
     repo.conn.commit()
-    return dict(existing)
+    row = repo.conn.execute(
+        "SELECT * FROM garden_cards WHERE id = ?", (card_id,)
+    ).fetchone()
+    return _garden_row_view(row) if row else None

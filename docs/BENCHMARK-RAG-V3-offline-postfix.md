@@ -1,3 +1,10 @@
+---
+status: historical
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: snapshot; kept for context, not a current runbook
+---
+
 # RAG 检索消融评测（V3.0，离线 hash post-fix）
 
 > 这是 G0 dispatcher 修复后的离线回归口径，数据源为 `docs/benchmark-rag-v3-offline-postfix.json`。它只衡量字面重合，**不代表语义能力**；本轮负样本 10 条（10/10 拦截），正样本 18 条。真实语义结果见 `docs/BENCHMARK-RAG-V3-dashscope.md`。

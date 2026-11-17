@@ -58,6 +58,8 @@ def _hydrate_capture(vault_path: Path, row: dict) -> dict:
 
 
 def _json_list(text: str) -> list:
+    if isinstance(text, list):
+        return text
     try:
         value = json.loads(text or "[]")
     except (json.JSONDecodeError, TypeError):
@@ -100,7 +102,7 @@ def _resolve_capture_or_committed_draft(conn, raw_id: str) -> tuple[dict | None,
     row = _resolve_capture_row(conn, committed_id)
     if not row:
         return None, ""
-    return dict(row), f"已将草稿 {raw_id} 转为已入库内容 {committed_id}"
+    return dict(row), f"已将草稿 {raw_id} 转为已保存内容 {committed_id}"
 
 
 def _draft_preview(
@@ -166,7 +168,7 @@ def _duplicate_garden_response(duplicate: dict) -> dict:
     if artifact_type == "garden_draft":
         actions.append(
             next_action(
-                label="确认已有卡片草稿入库",
+                label="确认已有卡片草稿保存",
                 intent="commit_garden_draft",
                 payload={"draft_id": item_id},
                 requires_confirmation=True,
@@ -393,7 +395,7 @@ def _synthesize_garden(
         durable_artifacts=artifacts,
         next_actions=[
             next_action(
-                label="确认卡片入库",
+                label="确认卡片保存",
                 intent="commit_garden_draft",
                 payload={"draft_id": draft_id},
                 requires_confirmation=True,
@@ -560,7 +562,7 @@ def _revise_garden_draft(
         ],
         next_actions=[
             next_action(
-                label="确认卡片入库",
+                label="确认卡片保存",
                 intent="commit_garden_draft",
                 payload={"draft_id": draft_id},
                 requires_confirmation=True,
@@ -668,13 +670,13 @@ def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
         return error_envelope(
             agent="garden",
             intent="commit_garden_draft",
-            error="没有找到可确认入库的知识卡片草稿。",
+            error="没有找到可确认保存的知识卡片草稿。",
         )
     if _has_internal_prompt_markers(draft["markdown"]):
         return error_envelope(
             agent="garden",
             intent="commit_garden_draft",
-            error="这个知识卡片草稿包含内部模板痕迹，已阻止入库。请先重新生成或修改草稿。",
+            error="这个知识卡片草稿包含内部模板痕迹，已阻止保存。请先重新生成或修改草稿。",
         )
 
     raise_if_cancelled("garden.commit.before_create_card")
@@ -683,7 +685,7 @@ def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
         return error_envelope(
             agent="garden",
             intent="commit_garden_draft",
-            error="这个知识卡片草稿已经入库或无法入库。",
+            error="这个知识卡片草稿已经保存或无法保存。",
         )
 
     if draft["question_id"]:

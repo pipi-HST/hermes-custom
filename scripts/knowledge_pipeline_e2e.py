@@ -231,7 +231,7 @@ def _capture_pipeline(client: httpx.Client, api_base: str, paths: dict[str, Path
     )
     create_response = client.post(
         f"{api_base}/api/capture-drafts",
-        json={"content": source, "instruction": "全文入库"},
+        json={"content": source, "instruction": "全文保存"},
     )
     created = _json_response(create_response)
     draft_id = str((created.get("meta") or {}).get("draft_id") or "")
@@ -448,7 +448,7 @@ def _reading_pipeline(
                 f"{E2E_SIGNAL}。这篇材料验证 Capture 从 HTTP 入口生成草稿，"
                 "确认后写入原始证据和正式正文。正式正文需要目录、章节、自然分段和重点加粗，"
                 "并能够被下游检索；验收还必须检查 SQLite、identity/section embedding、"
-                "Runtime 已入库可见性和 RAG 索引检索，不能只检查 status=success。"
+                "Runtime 已保存可见性和 RAG 索引检索，不能只检查 status=success。"
                 f"测试副本标识：{E2E_SIGNAL}-READING"
             ),
             "instruction": "存成学习笔记",

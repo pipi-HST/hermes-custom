@@ -44,7 +44,7 @@ SAMPLE_LONG = "\n\n".join(
         f"第 {index} 节（{marker}）：这一节记录一个独立验收事实。"
         f"事实 {index} 的重点是：Hermes Knowledge 的整理只能改善分段、标题和错别字，"
         f"不能删除这一节里的编号、例子、判断或操作步骤。示例场景 {index} 是用户从不同入口"
-        "提交材料，系统先生成可审草稿，再由用户确认入库。"
+        "提交材料，系统先生成可审草稿，再由用户确认保存。"
     )
     for index, marker in enumerate(SAMPLE_MARKERS, start=1)
 )
@@ -163,11 +163,11 @@ def _run_pipeline(
         )
 
     if pipeline == "capture-link":
-        result = capture_bridge.capture_content("https://acceptance.test/live-link", instruction="整理入库")
+        result = capture_bridge.capture_content("https://acceptance.test/live-link", instruction="整理保存")
         return _report_from_envelope(pipeline, started, conn, result, vault_path=ctx.vault_path)
 
     if pipeline == "full-text-commit":
-        result = capture_bridge.capture_content("https://acceptance.test/live-full", instruction="全文保存整理入库")
+        result = capture_bridge.capture_content("https://acceptance.test/live-full", instruction="全文保存整理保存")
         draft_id = result.get("meta", {}).get("draft_id", "")
         committed = capture_bridge.commit_capture_draft(draft_id, confirmation_source="api", token_verified=True)
         return _report_from_envelope(pipeline, started, conn, committed, vault_path=ctx.vault_path)

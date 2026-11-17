@@ -1,3 +1,10 @@
+---
+status: current
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+---
+
 # Hermes Knowledge Context
 
 > **当前术语表：** [GLOSSARY.md](GLOSSARY.md)。
@@ -69,7 +76,7 @@ _Avoid_: arbitrary paragraph, chunk, full capture note.
 The committed source-preservation note stored in `raw/` or an archive raw area; it exists for traceability and is not the daily reading surface.
 _Avoid_: capture note, cache, daily note.
 
-**Theme**:
+**Theme** (legacy alias; the current user word is 专题 — see GLOSSARY):
 A topic concept that groups related **Capture Notes** around a recurring subject, question, or mechanism.
 _Avoid_: MOC, tag, garden card.
 

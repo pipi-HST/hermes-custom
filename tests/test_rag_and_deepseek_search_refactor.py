@@ -14,7 +14,6 @@ from agents.rag_graph import _theme_groups_for_captures
 from db.embedding_repo import CaptureEmbeddingRepo
 from db.repo import CaptureRepo
 from db.schema import init_db
-from db.vector_search import search as vector_search
 
 
 def _vec(first: float, second: float = 0.0) -> bytes:
@@ -54,12 +53,12 @@ tags:
 def test_capture_embedding_search_excludes_archived_captures(tmp_path):
     conn = init_db(str(tmp_path / "captures.db"))
     conn.execute(
-        "INSERT INTO captures (id, file_path, review_state) VALUES (?, ?, ?)",
-        ("cap-live", "captures/live.md", "new"),
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap-live", "captures/live.md"),
     )
     conn.execute(
-        "INSERT INTO captures (id, file_path, review_state) VALUES (?, ?, ?)",
-        ("cap-archived", "captures/archived.md", "archived"),
+        "INSERT INTO captures (id, file_path, archived_at) VALUES (?, ?, ?)",
+        ("cap-archived", "captures/archived.md", "2026-01-01T00:00:00+00:00"),
     )
     repo = CaptureEmbeddingRepo(conn)
     for capture_id in ("cap-live", "cap-archived"):
@@ -75,26 +74,6 @@ def test_capture_embedding_search_excludes_archived_captures(tmp_path):
     rows = repo.search(_vec(1.0), kinds=("identity",), limit=5)
 
     assert [row["capture_id"] for row in rows] == ["cap-live"]
-
-
-def test_vector_search_excludes_archived_captures(tmp_path):
-    conn = init_db(str(tmp_path / "captures.db"))
-    conn.execute(
-        "INSERT INTO captures (id, file_path, embedding, review_state) VALUES (?, ?, ?, ?)",
-        ("cap-live", "captures/live.md", _vec(1.0), "new"),
-    )
-    conn.execute(
-        "INSERT INTO captures (id, file_path, embedding, review_state) VALUES (?, ?, ?, ?)",
-        ("cap-archived", "captures/archived.md", _vec(1.0), "archived"),
-    )
-
-    class FakeEmbedder:
-        def embed(self, _text: str) -> bytes:
-            return _vec(1.0)
-
-    results = vector_search("MCP 是什么", CaptureRepo(conn), FakeEmbedder(), top_k=5)
-
-    assert [item["id"] for item in results] == ["cap-live"]
 
 
 # ---------------------------------------------------------------------------
@@ -163,28 +142,26 @@ def test_search_garden_cards_recalls_accepted_cards_by_keyword(tmp_path):
     conn = init_db(str(tmp_path / "captures.db"))
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, card_kind, status, capture_ids)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+           (id, title, payload_json, status, capture_ids)
+           VALUES (?, ?, ?, ?, '[]')""",
         (
             "g1",
             "MCP 协议",
-            "模型上下文协议让工具接入标准化。",
-            "viewpoint",
+            '{"schema_version":"garden_card.v2","claim":"模型上下文协议让工具接入标准化。","card_kind":"viewpoint","source_ids":[]}',
             "accepted",
-            "[]",
         ),
     )
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, card_kind, status, capture_ids)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        ("g2", "无关卡片", "与查询没有交集。", "viewpoint", "accepted", "[]"),
+           (id, title, payload_json, status, capture_ids)
+           VALUES (?, ?, ?, ?, '[]')""",
+        ("g2", "无关卡片", '{"schema_version":"garden_card.v2","claim":"与查询没有交集。","card_kind":"viewpoint","source_ids":[]}', "accepted"),
     )
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, card_kind, status, capture_ids)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        ("g3", "MCP 协议归档", "已归档，不应被召回。", "viewpoint", "archived", "[]"),
+           (id, title, payload_json, status, capture_ids)
+           VALUES (?, ?, ?, ?, '[]')""",
+        ("g3", "MCP 协议归档", '{"schema_version":"garden_card.v2","claim":"已归档，不应被召回。","card_kind":"viewpoint","source_ids":[]}', "archived"),
     )
 
     cards = _search_garden_cards("什么是 MCP 协议？", conn, limit=3)
@@ -222,13 +199,12 @@ def test_rag_bridge_source_map_marks_garden_card_as_viewpoint(monkeypatch, tmp_p
     )
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, card_kind, status, capture_ids)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+           (id, title, payload_json, status, capture_ids)
+           VALUES (?, ?, ?, ?, ?)""",
         (
             "g1",
             "MCP 协议知识卡片",
-            "MCP 让模型能安全接入外部工具。",
-            "viewpoint",
+            '{"schema_version":"garden_card.v2","claim":"MCP 让模型能安全接入外部工具。","card_kind":"viewpoint","source_ids":["cap1"]}',
             "accepted",
             json.dumps(["cap1"]),
         ),

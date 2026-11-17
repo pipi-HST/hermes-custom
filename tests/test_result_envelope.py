@@ -40,13 +40,13 @@ def test_error_envelope_has_stable_fields() -> None:
     envelope = error_envelope(
         agent="capture",
         intent="commit_capture_draft",
-        error="没有可入库的草稿。",
+        error="没有待保存的草稿。",
     )
 
     assert list(envelope.keys()) == list(ENVELOPE_FIELDS)
     assert envelope["status"] == "error"
-    assert envelope["chat_preview"] == "没有可入库的草稿。"
-    assert envelope["errors"] == ["没有可入库的草稿。"]
+    assert envelope["chat_preview"] == "没有待保存的草稿。"
+    assert envelope["errors"] == ["没有待保存的草稿。"]
 
 
 def test_require_envelope_rejects_plain_string() -> None:

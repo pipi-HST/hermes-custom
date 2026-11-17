@@ -120,12 +120,14 @@ class KnowledgeWriteWorker:
         if not self.conn or not self.repo:
             return 0
 
-        # Retried jobs go back to 'retrying'; pick them up again until the
-        # retry budget is exhausted.
+        # Retried jobs go back to 'retrying'. Only this intent belongs to this
+        # worker; other bridges use the table as an audit trail and complete
+        # their rows inline.
         rows = self.conn.execute(
             """SELECT id, intent, object_type, object_id, payload_json, retry_count
                FROM knowledge_write_jobs
                WHERE status IN ('pending', 'retrying')
+                 AND intent = 'rename_folder'
                ORDER BY created_at ASC
                LIMIT ?""",
             (self.batch_size,)
@@ -159,9 +161,10 @@ class KnowledgeWriteWorker:
                 processed += 1
                 continue
             
-            # Mark job as running
-            self.repo.mark_step(job_id, status="running", step="started")
-            
+            # Atomic claim: a second worker must not run the same rename.
+            if not self.repo.claim(job_id):
+                continue
+
             # Execute the job
             try:
                 self._execute_job(job_id, intent, object_type, object_id, payload)

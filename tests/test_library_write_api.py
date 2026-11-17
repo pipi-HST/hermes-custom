@@ -298,11 +298,11 @@ def test_patch_capture_writes_markdown_and_archive_keeps_file(env):
     conn = _db_conn(config)
     try:
         row = conn.execute(
-            "SELECT review_state FROM captures WHERE id = ?", (capture_id,)
+            "SELECT archived_at FROM captures WHERE id = ?", (capture_id,)
         ).fetchone()
     finally:
         conn.close()
-    assert row["review_state"] == "archived"
+    assert row["archived_at"] is not None
     assert note_path.is_file()  # archiving keeps the source file
 
 
@@ -367,12 +367,12 @@ def test_library_folder_lifecycle(env):
             "SELECT capture_intent FROM capture_drafts WHERE id = ?", (draft_id,)
         ).fetchone()
         capture_row = conn.execute(
-            "SELECT review_state FROM captures WHERE id = ?", (capture_id,)
+            "SELECT archived_at FROM captures WHERE id = ?", (capture_id,)
         ).fetchone()
     finally:
         conn.close()
     assert json.loads(draft_row["capture_intent"])["folder_path"] == "深度研究"
-    assert capture_row["review_state"] != "archived"
+    assert capture_row["archived_at"] is None
 
     store_after = json.loads((vault / STORE_RELATIVE_PATH).read_text(encoding="utf-8"))
     assert "深度研究" in store_after["folders"]

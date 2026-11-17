@@ -1,3 +1,10 @@
+---
+status: current
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+---
+
 # Hermes Knowledge Runbook
 
 > 状态：current  
@@ -65,9 +72,14 @@ Runtime 侧：
 ```text
 HERMES_KNOWLEDGE_URL=http://127.0.0.1:8000
 HERMES_KNOWLEDGE_TOKEN=<same random value as HERMES_API_TOKEN>
-HERMES_KNOWLEDGE_DB=<repos>/hermes-custom/data/captures.db   # 仅 Dashboard 直读兜底需要
-HERMES_KNOWLEDGE_VAULT=<vault path>                          # 可选；否则读本地 config.yaml
+HERMES_KNOWLEDGE_DB=<repos>/hermes-custom/data/captures.db
+HERMES_KNOWLEDGE_VAULT=<repos>/hermes-custom/data/vault
 ```
+
+`HERMES_KNOWLEDGE_DB` / `HERMES_KNOWLEDGE_VAULT` 目前仍是 Dashboard 少数读路由
+（草稿列表、卡片详情、时间线）的直读兜底；纯远程部署前必须让这两个路径与服务端
+一致，否则这些页面会 404。正在把它们改成 HTTP 调用，见
+`docs/AUDIT-2026-11-17-doc-code-consistency.md` 的 P0 清单。
 
 Knowledge 侧：
 
@@ -167,9 +179,18 @@ cd <repos>/hermes-custom
 先读 `docs/local-data-reset-runbook.md`。原则：
 
 - 保留 `config.yaml`、API key、模型配置；
-- 保留独立 Life 数据库；
+- 保留独立 Life 数据库（如果存在；Life 是可选项目）；
 - 删除 Knowledge 内容前先 dry-run；
 - 先停 watcher / cron，再 apply。
+
+`scripts/reset_hermes_local_data.py` 的 `--new-storage-root` 默认从
+`config.yaml` 的 `vault.path` 读取；换过 vault 路径的机器不需要再手传参数。
+dry-run 输出的 `new_storage_root` 必须和 `vault.path` 一致再 apply。
+
+## 8.1 批量文件夹重命名（opt-in）
+
+`docs/folder-write-jobs.md` 的 worker 只处理 `rename_folder`；HTTP
+`PATCH /api/library/folders` 仍走同步路径。两者不要同时对同一个文件夹操作。
 
 ## 9. 常见问题
 
@@ -202,8 +223,8 @@ cd <repos>/hermes-custom
 
 ### 9.5 RAG 结果使用了旧向量
 
-- 主索引是 `capture_embeddings`；
-- `captures.embedding` 是旧兼容列；
+- 唯一索引是 `capture_embeddings`；
+- `captures.embedding` 已在 schema v4 删除；
 - 重建索引：
 
 ```bash
@@ -216,7 +237,8 @@ cd <repos>/hermes-custom
 至少备份：
 
 - `data/captures.db`（结构化卡片、主题、复习、运行记录）；
-- `data/vault/`（Capture Note / Raw Evidence）；
+- `config.yaml` 里 `vault.path` 指向的目录（Capture Note / Raw Evidence；默认
+  `data/vault/`，换过路径的机器以配置为准）；
 - `config.yaml`（本地敏感配置，单独保管）。
 
 Markdown 能重建部分索引，但不能重建卡片和运行记录；数据库必须单独备份。

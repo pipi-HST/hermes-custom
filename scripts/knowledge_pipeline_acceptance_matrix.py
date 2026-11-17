@@ -43,7 +43,7 @@ LONG_BODY = (
     "正文说明整理只能改善可读性，不能改变原文观点。\n\n"
     "### 经验二：写入前确认元信息\n\n"
     "**经验二：写入前确认元信息**\n\n"
-    "正文说明标题、摘要、标签和分类建议都要在入库前可见。\n\n"
+    "正文说明标题、摘要、标签和分类建议都要在保存前可见。\n\n"
 ) + ("补充段落用于触发长文 postprocess 与大纲维护。\n\n" * 90)
 
 
@@ -62,9 +62,9 @@ class FakeUrlExtractor(BaseExtractor):
             )
         return ExtractionResult(
             raw_text=(
-                "这是一篇用于验收链接入库的文章。第一部分说明链接提取后应该先生成"
-                "可审草稿，而不是直接污染正式知识库。第二部分说明整理入库和全文保存"
-                "整理入库都需要保留正文、生成摘要标签并记录阶段耗时。第三部分强调慢"
+                "这是一篇用于验收链接保存的文章。第一部分说明链接提取后应该先生成"
+                "可审草稿，而不是直接污染正式知识库。第二部分说明整理保存和全文保存"
+                "整理保存都需要保留正文、生成摘要标签并记录阶段耗时。第三部分强调慢"
                 "链路必须先有 extract、planner、revision、metadata、write 的耗时证据。"
             ),
             source_type="link",
@@ -190,7 +190,7 @@ def _run_matrix_in(root: Path) -> dict[str, Any]:
             ("editable_update_and_commit", lambda: _scenario_editable_update_and_commit(ctx)),
             ("capture_plain_text", lambda: _scenario_capture_plain_text(ctx)),
             ("capture_link_default", lambda: _scenario_capture_link(ctx, "https://acceptance.test/default", "")),
-            ("capture_link_organize", lambda: _scenario_capture_link(ctx, "https://acceptance.test/organize", "整理入库")),
+            ("capture_link_organize", lambda: _scenario_capture_link(ctx, "https://acceptance.test/organize", "整理保存")),
             ("capture_link_full_text_commit", lambda: _scenario_capture_link_full_text_commit(ctx)),
             ("capture_link_extract_failure", lambda: _scenario_capture_link_extract_failure(ctx)),
             ("capture_revise_and_discard", lambda: _scenario_capture_revise_and_discard(ctx)),
@@ -230,7 +230,7 @@ def _install_capture_fakes(agent: CaptureAgent) -> None:
         "- 正文\n\n"
         "## 正文\n\n"
         "**保留原文信息**，只改善可读性。\n\n"
-        "这是一篇用于验收链接入库的文章。"
+        "这是一篇用于验收链接保存的文章。"
     )
     agent.summarizer.summarize = lambda *_a, **_k: {
         "title": "Pipeline 验收",
@@ -379,7 +379,7 @@ def _scenario_editable_update_and_commit(ctx: KnowledgeContext) -> dict[str, Any
 
 def _scenario_capture_plain_text(ctx: KnowledgeContext) -> dict[str, Any]:
     result = capture_bridge.capture_content(
-        "普通文本入库样本，先生成草稿。这段内容用于验证普通文本入口也会生成可审草稿，"
+        "普通文本保存样本，先生成草稿。这段内容用于验证普通文本入口也会生成可审草稿，"
         "而不是直接写入正式知识库。测试需要覆盖标题、摘要、标签、阶段耗时和运行记录，"
         "这样以后修改 Capture pipeline 时不会只验证网页端粘贴整理这一条路径。"
     )
@@ -409,7 +409,7 @@ def _scenario_capture_link(ctx: KnowledgeContext, url: str, instruction: str) ->
 def _scenario_capture_link_full_text_commit(ctx: KnowledgeContext) -> dict[str, Any]:
     result = capture_bridge.capture_content(
         "https://acceptance.test/full-text",
-        instruction="全文保存整理入库",
+        instruction="全文保存整理保存",
     )
     draft_id = result["meta"]["draft_id"]
     committed = capture_bridge.commit_capture_draft(draft_id, confirmation_source="api", token_verified=True)
@@ -423,7 +423,7 @@ def _scenario_capture_link_full_text_commit(ctx: KnowledgeContext) -> dict[str, 
             committed.get("status") == "success",
             bool(frontmatter.get("story")),
             bool(frontmatter.get("tags")),
-            note is not None and "用于验收链接入库的文章" in note[1],
+            note is not None and "用于验收链接保存的文章" in note[1],
         ],
         meta,
     )
@@ -455,7 +455,7 @@ def _scenario_capture_revise_and_discard(ctx: KnowledgeContext) -> dict[str, Any
     created = capture_bridge.capture_content(
         "需要修改后废弃的草稿正文。这段内容用于验证草稿流转的 revise 和 discard 路径，"
         "必须先创建一个可审草稿，再按用户指令修订，最后标记为 abandoned。"
-        "验收不能只看入库成功，还要覆盖用户放弃草稿时数据库状态是否正确更新。"
+        "验收不能只看保存成功，还要覆盖用户放弃草稿时数据库状态是否正确更新。"
     )
     draft_id = created["meta"]["draft_id"]
     revised = capture_bridge.revise_capture_draft(draft_id=draft_id, instruction="只改善排版")
@@ -468,7 +468,7 @@ def _scenario_capture_revise_and_discard(ctx: KnowledgeContext) -> dict[str, Any
     )
 
 
-def _create_committed_capture(ctx: KnowledgeContext, title: str = "已入库样本") -> dict[str, Any]:
+def _create_committed_capture(ctx: KnowledgeContext, title: str = "已保存样本") -> dict[str, Any]:
     created = capture_bridge.create_editable_capture_draft(
         f"# {title}\n\n原始正文。",
         title=title,
@@ -482,7 +482,7 @@ def _create_committed_capture(ctx: KnowledgeContext, title: str = "已入库样�
 
 
 def _scenario_committed_capture_revise_preview_and_apply(ctx: KnowledgeContext) -> dict[str, Any]:
-    meta = _create_committed_capture(ctx, "已入库修订样本")
+    meta = _create_committed_capture(ctx, "已保存修订样本")
     capture_id = meta["capture_id"]
     note_before = read_note(ctx.vault_path, meta["file_path"])
     preview = capture_bridge.revise_capture_draft(

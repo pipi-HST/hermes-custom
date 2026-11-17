@@ -60,9 +60,9 @@ def test_db(tmp_path):
     # Insert test capture
     conn.execute(
         """INSERT INTO captures
-           (id, file_path, review_state)
-           VALUES (?, ?, ?)""",
-        ("test-capture-1", "captures/test-capture.md", "new"),
+           (id, file_path)
+           VALUES (?, ?)""",
+        ("test-capture-1", "captures/test-capture.md"),
     )
     
     # Insert test garden card
@@ -233,9 +233,9 @@ def test_rename_folder_skips_archived_captures(test_vault, test_db):
     # Add archived capture to DB
     test_db.execute(
         """INSERT INTO captures
-           (id, file_path, review_state)
+           (id, file_path, archived_at)
            VALUES (?, ?, ?)""",
-        ("archived-1", "captures/archived.md", "archived"),
+        ("archived-1", "captures/archived.md", "2026-01-01T00:00:00+00:00"),
     )
     test_db.commit()
     

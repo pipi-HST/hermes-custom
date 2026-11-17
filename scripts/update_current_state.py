@@ -63,6 +63,16 @@ def _table_count() -> int | None:
     return len([name for name in names if name not in shadow])
 
 
+ROUTE_RE = re.compile(r'@(?:router|app)\.(get|post|patch|delete|put)\("')
+
+
+def _service_route_count() -> int:
+    return sum(
+        len(ROUTE_RE.findall(path.read_text(encoding="utf-8")))
+        for path in (PROJECT_ROOT / "api" / "routes").glob("*.py")
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -82,6 +92,8 @@ def main(argv: list[str] | None = None) -> int:
         "- Commit: see `git log -1` (this file is generated before its own commit)",
         f"- Tests collected: {tests if tests is not None else 'unknown'}",
         f"- SQLite business tables: {tables if tables is not None else 'data/captures.db not found'}",
+        f"- Service HTTP routes: {_service_route_count()}",
+        "- Runtime knowledge routes: see `docs/INVENTORY.md` (generated with the sibling checkout)",
     ]
     content = "\n".join(lines) + "\n"
     if collect_problems:

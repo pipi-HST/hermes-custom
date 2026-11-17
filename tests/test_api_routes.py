@@ -229,9 +229,23 @@ def test_knowledge_graph_refresh_and_focus(client, db, tmp_path):
     )
     db.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, capture_ids, knowledge_links, status)
-           VALUES (?, ?, ?, ?, '[]', 'seed')""",
-        ("card1", "知识卡片", "卡片摘要", '["cap1"]'),
+           (id, title, payload_json, capture_ids, status)
+           VALUES (?, ?, ?, ?, 'seed')""",
+        (
+            "card1",
+            "知识卡片",
+            json.dumps(
+                {
+                    "schema_version": "garden_card.v2",
+                    "title": "知识卡片",
+                    "claim": "卡片摘要",
+                    "card_kind": "viewpoint",
+                    "source_ids": ["cap1"],
+                },
+                ensure_ascii=False,
+            ),
+            '["cap1"]',
+        ),
     )
     db.commit()
 
@@ -915,7 +929,7 @@ def test_commit_error_envelope_still_maps_to_409(client, draft_repo):
         status="committed",
     )
     token = client.post(f"/api/capture-drafts/{draft['id']}/confirmation").json()["token"]
-    error = "草稿已入库，不能重复确认"
+    error = "草稿已保存，不能重复确认"
     result = {
         "status": "error",
         "chat_preview": error,

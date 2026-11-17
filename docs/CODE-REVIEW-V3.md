@@ -1,3 +1,10 @@
+---
+status: historical
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: snapshot; kept for context, not a current runbook
+---
+
 # Hermes Knowledge V3.0 代码评审（红队视角）
 
 评审对象：`repos/hermes-custom`（26 个改动文件 + 24 个新增文件）、`repos/hermes-agent-main`（12 个改动文件 + 1 个新增测试）

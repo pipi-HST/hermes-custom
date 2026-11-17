@@ -288,3 +288,73 @@ def test_search_validates_query_parameters(tmp_path, monkeypatch):
     assert empty.status_code == 422
     assert too_long.status_code == 422
     assert bad_limit.status_code == 422
+
+def test_dashboard_read_routes_return_dashboard_shapes(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from db.schema import init_db
+
+    app = _make_app(tmp_path)
+    conn = init_db(str(tmp_path / "captures.db"))
+    conn.execute(
+        "INSERT INTO capture_drafts (id, raw_text, draft_text, title, status, "
+        "capture_intent, tags, word_count, created_at, updated_at) "
+        "VALUES ('d1', 'raw', 'draft body', 'Draft', 'draft_ready', "
+        "'{\"folder_path\":\"Topic\"}', '[\"tag\"]', 2, '2026-11-17T00:00:00Z', "
+        "'2026-11-17T00:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO reading_drafts (id, session_id, status, title, created_at, updated_at) "
+        "VALUES ('r1', 's1', 'open', 'Reading', '2026-11-17T00:00:00Z', "
+        "'2026-11-17T00:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO garden_cards (id, title, source_theme, status, "
+        "payload_json) VALUES ('c1', 'Card', 'Topic', 'seed', "
+        "'{\"schema_version\":\"garden_card.v2\",\"claim\":\"claim\",\"card_kind\":\"method\"}')"
+    )
+    conn.execute(
+        "INSERT INTO agent_runs (id, agent, intent, status, updated_at) "
+        "VALUES ('run1', 'capture', 'capture', 'completed', '2026-11-17T00:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO agent_run_objects (run_id, object_type, object_id) "
+        "VALUES ('run1', 'capture', 'cap1')"
+    )
+    conn.execute(
+        "INSERT INTO captures (id, file_path) "
+        "VALUES ('cap1', 'captures/cap1.md')"
+    )
+    conn.commit()
+    conn.close()
+
+    from db.repo import CaptureRepo
+
+    client = TestClient(app, client=("127.0.0.1", 50000))
+
+    drafts = client.get("/api/knowledge/capture-drafts").json()
+    assert drafts["drafts"][0]["id"] == "d1"
+    assert drafts["open_count"] == 1
+    assert client.get("/api/knowledge/capture-drafts/d1").json()["draft"]["id"] == "d1"
+
+    reading = client.get("/api/knowledge/reading-drafts").json()
+    assert reading["drafts"][0]["id"] == "r1"
+    assert client.get("/api/knowledge/reading-drafts/r1").json()["draft"]["id"] == "r1"
+
+    card = client.get("/api/knowledge/cards/c1").json()["card"]
+    assert card["id"] == "c1"
+    assert card["source_theme"] == "Topic"
+
+    events = client.get(
+        "/api/knowledge/object-events",
+        params={"object_type": "capture", "object_id": "cap1"},
+    ).json()
+    assert events["related_ids"] == ["cap1"]
+    assert events["events"][0]["id"] == "run1"
+
+    deps = client.get(
+        "/api/knowledge/library/items/capture/cap1/dependencies"
+    ).json()
+    assert deps["ok"] is True
+    assert "garden_cards" in deps["dependencies"]
+    assert "policy" in deps["dependencies"]

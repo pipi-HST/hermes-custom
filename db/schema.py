@@ -6,6 +6,7 @@ frontmatter.  SQLite only keeps routing fields and review state.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -16,12 +17,7 @@ CREATE TABLE IF NOT EXISTS captures (
     id TEXT PRIMARY KEY,
     file_path TEXT NOT NULL DEFAULT '',
     raw_path TEXT NOT NULL DEFAULT '',
-    embedding BLOB,
-    review_state TEXT NOT NULL DEFAULT 'new',
-    review_interval INTEGER NOT NULL DEFAULT 0,
-    review_count INTEGER NOT NULL DEFAULT 0,
-    last_reviewed TEXT,
-    next_review TEXT,
+    archived_at TEXT,
     theme_scanned_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -71,12 +67,7 @@ CAPTURE_COLUMNS = [
     "id",
     "file_path",
     "raw_path",
-    "embedding",
-    "review_state",
-    "review_interval",
-    "review_count",
-    "last_reviewed",
-    "next_review",
+    "archived_at",
     "theme_scanned_at",
     "created_at",
     "updated_at",
@@ -87,32 +78,22 @@ CAPTURE_COLUMNS = [
 CAPTURE_COLUMN_ALTER_DDL = {
     "file_path": "TEXT NOT NULL DEFAULT ''",
     "raw_path": "TEXT NOT NULL DEFAULT ''",
-    "embedding": "BLOB",
-    "review_state": "TEXT NOT NULL DEFAULT 'new'",
-    "review_interval": "INTEGER NOT NULL DEFAULT 0",
-    "review_count": "INTEGER NOT NULL DEFAULT 0",
-    "last_reviewed": "TEXT",
-    "next_review": "TEXT",
+    "archived_at": "TEXT",
     "theme_scanned_at": "TEXT",
     "created_at": "TEXT",
     "updated_at": "TEXT",
 }
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 CREATE_GARDEN_CARDS_TABLE = """
 CREATE TABLE IF NOT EXISTS garden_cards (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '',
-    one_liner TEXT NOT NULL DEFAULT '',
     content_markdown TEXT NOT NULL DEFAULT '',
     card_kind TEXT NOT NULL DEFAULT 'viewpoint',
     schema_version TEXT NOT NULL DEFAULT 'garden_card.v2',
     payload_json TEXT NOT NULL DEFAULT '{}',
-    core_arguments TEXT NOT NULL DEFAULT '[]',
-    knowledge_links TEXT NOT NULL DEFAULT '[]',
-    key_materials TEXT NOT NULL DEFAULT '[]',
-    my_view TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'seed',
     capture_ids TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -127,13 +108,9 @@ CREATE_GARDEN_DRAFTS_TABLE = """
 CREATE TABLE IF NOT EXISTS garden_drafts (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '',
-    one_liner TEXT NOT NULL DEFAULT '',
     card_kind TEXT NOT NULL DEFAULT 'viewpoint',
     schema_version TEXT NOT NULL DEFAULT 'garden_card.v2',
     payload_json TEXT NOT NULL DEFAULT '{}',
-    core_arguments TEXT NOT NULL DEFAULT '[]',
-    knowledge_links TEXT NOT NULL DEFAULT '[]',
-    key_materials TEXT NOT NULL DEFAULT '[]',
     markdown TEXT NOT NULL DEFAULT '',
     capture_ids TEXT NOT NULL DEFAULT '[]',
     question_id TEXT NOT NULL DEFAULT '',
@@ -519,6 +496,8 @@ def init_db(db_path: str) -> sqlite3.Connection:
         # even after the schema version was stamped.
         _recover_interrupted_captures_swap(conn)
         _backfill_garden_content(conn)
+        _migrate_garden_v1_columns(conn)
+        _drop_capture_review_columns(conn)
         for ddl in (
             CREATE_CAPTURES_CREATED_AT_INDEX,
             CREATE_CAPTURES_UPDATED_AT_INDEX,
@@ -560,6 +539,7 @@ def init_db(db_path: str) -> sqlite3.Connection:
         conn.execute(CREATE_GARDEN_DRAFTS_TABLE)
         _migrate_garden_tables(conn)
         _normalize_garden_schema_version(conn)
+        _migrate_garden_v1_columns(conn)
         conn.execute(CREATE_GARDEN_CARDS_RECALL_INDEX)
         conn.execute(CREATE_PENDING_QUESTIONS_TABLE)
         conn.execute(CREATE_CAPTURE_DRAFTS_TABLE)
@@ -568,6 +548,8 @@ def init_db(db_path: str) -> sqlite3.Connection:
         conn.execute(CREATE_CAPTURE_EMBEDDINGS_TABLE)
         conn.execute(CREATE_CAPTURE_EMBEDDINGS_SEARCH_INDEX)
         _migrate_legacy_embeddings(conn)
+        _drop_legacy_embedding_column(conn)
+        _drop_capture_review_columns(conn)
         conn.execute(CREATE_CAPTURE_METADATA_TABLE)
         _migrate_capture_metadata_table(conn)
         _create_capture_search_fts(conn)
@@ -894,6 +876,62 @@ def _migrate_legacy_embeddings(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE captures SET embedding = NULL")
 
 
+def _drop_legacy_embedding_column(conn: sqlite3.Connection) -> None:
+    """Drop ``captures.embedding`` once the identity index owns the vectors.
+
+    SQLite < 3.35 cannot drop a column; those installs keep an unused column
+    (all values are NULL after the backfill) instead of failing to open.
+    """
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(captures)").fetchall()
+    }
+    if "embedding" not in columns:
+        return
+    try:
+        conn.execute("ALTER TABLE captures DROP COLUMN embedding")
+    except sqlite3.OperationalError:
+        pass
+
+
+CAPTURE_REVIEW_COLUMNS = (
+    "review_state",
+    "review_interval",
+    "review_count",
+    "last_reviewed",
+    "next_review",
+)
+
+
+def _drop_capture_review_columns(conn: sqlite3.Connection) -> None:
+    """Move the archived flag to ``archived_at`` and drop capture review state.
+
+    Review scheduling lives in ``review_items``.  ``review_state`` was also the
+    only archive marker, so preserve it before dropping the scheduler columns.
+    """
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(captures)").fetchall()
+    }
+    if "archived_at" not in columns:
+        conn.execute("ALTER TABLE captures ADD COLUMN archived_at TEXT")
+    if "review_state" in columns:
+        conn.execute(
+            "UPDATE captures SET archived_at = COALESCE(archived_at, datetime('now')) "
+            "WHERE COALESCE(review_state, '') = 'archived'"
+        )
+    for column in CAPTURE_REVIEW_COLUMNS:
+        for suffix in ("insert", "update"):
+            conn.execute(
+                f'DROP TRIGGER IF EXISTS "trg_norm_captures_{column}_{suffix}"'
+            )
+    for column in CAPTURE_REVIEW_COLUMNS:
+        if column not in columns:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE captures DROP COLUMN {column}")
+        except sqlite3.OperationalError:
+            pass
+
+
 def _normalize_garden_schema_version(conn: sqlite3.Connection) -> None:
     """Normalize persisted garden cards and drafts to the v2 payload schema."""
     for table in ("garden_cards", "garden_drafts"):
@@ -919,6 +957,51 @@ def _backfill_garden_content(conn: sqlite3.Connection) -> None:
         )
     except sqlite3.OperationalError:
         pass
+
+
+GARDEN_V1_COLUMNS = (
+    "one_liner",
+    "core_arguments",
+    "knowledge_links",
+    "key_materials",
+    "my_view",
+)
+
+
+def _migrate_garden_v1_columns(conn: sqlite3.Connection) -> None:
+    """Fold the v1 payload mirrors into ``payload_json`` and drop them.
+
+    ``one_liner``/``core_arguments``/... duplicated the v2 payload.  Read them
+    one last time for rows that only ever had the v1 columns, then remove the
+    duplicate columns.  SQLite < 3.35 keeps them (unused) instead of failing.
+    """
+    from agents.garden_card_payload import normalize_garden_payload, parse_payload_json
+
+    for table in ("garden_cards", "garden_drafts"):
+        columns = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        present = [column for column in GARDEN_V1_COLUMNS if column in columns]
+        if not present:
+            continue
+        rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+        for row in rows:
+            legacy = dict(row)
+            payload = parse_payload_json(legacy.get("payload_json"))
+            normalized = normalize_garden_payload(payload, legacy=legacy)
+            conn.execute(
+                f"UPDATE {table} SET payload_json = ? WHERE id = ?",
+                (
+                    json.dumps(normalized, ensure_ascii=False, sort_keys=True),
+                    legacy["id"],
+                ),
+            )
+        for column in present:
+            try:
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+            except sqlite3.OperationalError:
+                pass
 
 
 def _migrate_capture_metadata_table(conn: sqlite3.Connection) -> None:

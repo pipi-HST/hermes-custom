@@ -249,8 +249,8 @@ def test_graph_refresh_builds_card_to_capture_edge(tmp_path):
             "INSERT INTO captures (id, file_path) VALUES ('cap_x', 'captures/x.md')"
         )
         conn.execute(
-            "INSERT INTO garden_cards (id, title, one_liner, capture_ids, status) "
-            "VALUES ('card_x', '卡片', '一句话', '[\"cap_x\"]', 'accepted')"
+            "INSERT INTO garden_cards (id, title, payload_json, capture_ids, status) "
+            "VALUES ('card_x', '卡片', '{\"schema_version\":\"garden_card.v2\",\"claim\":\"一句话\",\"card_kind\":\"viewpoint\"}', '[\"cap_x\"]', 'accepted')"
         )
         conn.commit()
 

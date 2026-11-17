@@ -41,10 +41,24 @@ def _write_note(vault, path: str, title: str, story: str = "") -> None:
     )
 
 
-def _insert_capture(conn, capture_id: str, file_path: str, review_state: str = "new") -> None:
+def _insert_capture(conn, capture_id: str, file_path: str, archived_at: str | None = None) -> None:
     conn.execute(
-        "INSERT INTO captures (id, file_path, review_state, created_at) VALUES (?, ?, ?, ?)",
-        (capture_id, file_path, review_state, "2026-06-01T00:00:00+00:00"),
+        "INSERT INTO captures (id, file_path, archived_at, created_at) VALUES (?, ?, ?, ?)",
+        (capture_id, file_path, archived_at, "2026-06-01T00:00:00+00:00"),
+    )
+
+
+def _card_payload(title: str, claim: str, source_ids: list[str], related: list[str] | None = None) -> str:
+    return json.dumps(
+        {
+            "schema_version": "garden_card.v2",
+            "title": title,
+            "claim": claim,
+            "card_kind": "viewpoint",
+            "source_ids": source_ids,
+            "related_card_ids": related or [],
+        },
+        ensure_ascii=False,
     )
 
 
@@ -95,15 +109,15 @@ def test_refresh_builds_deterministic_knowledge_edges(tmp_path):
     )
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, knowledge_links, capture_ids, status)
-           VALUES (?, ?, ?, ?, ?, 'seed')""",
-        ("card-a", "Agent 方法卡", "方法卡", json.dumps(["card-b"]), json.dumps(["cap-a"])),
+           (id, title, payload_json, capture_ids, status)
+           VALUES (?, ?, ?, ?, 'seed')""",
+        ("card-a", "Agent 方法卡", _card_payload("Agent 方法卡", "方法卡", ["cap-a"], ["card-b"]), json.dumps(["cap-a"])),
     )
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, knowledge_links, capture_ids, status)
-           VALUES (?, ?, ?, ?, ?, 'seed')""",
-        ("card-b", "Agent 风险卡", "风险卡", "[]", json.dumps(["cap-b"])),
+           (id, title, payload_json, capture_ids, status)
+           VALUES (?, ?, ?, ?, 'seed')""",
+        ("card-b", "Agent 风险卡", _card_payload("Agent 风险卡", "风险卡", ["cap-b"]), json.dumps(["cap-b"])),
     )
     conn.execute(
         """INSERT INTO pending_questions
@@ -153,7 +167,7 @@ def test_refresh_only_uses_confirmed_readable_graph_materials(tmp_path):
     _write_note(vault, "captures/live.md", "有效笔记")
     _write_note(vault, "captures/archived.md", "归档笔记")
     _insert_capture(conn, "cap-live", "captures/live.md")
-    _insert_capture(conn, "cap-archived", "captures/archived.md", review_state="archived")
+    _insert_capture(conn, "cap-archived", "captures/archived.md", archived_at="2026-06-02T00:00:00+00:00")
     _insert_capture(conn, "cap-missing", "captures/missing.md")
 
     repo = CaptureEmbeddingRepo(conn)
@@ -178,9 +192,9 @@ def test_refresh_only_uses_confirmed_readable_graph_materials(tmp_path):
     )
     conn.execute(
         """INSERT INTO garden_drafts
-           (id, title, one_liner, capture_ids, status)
-           VALUES ('garden-draft-1', '卡片草稿', '草稿摘要', ?, 'draft_ready')""",
-        (json.dumps(["cap-live"]),),
+           (id, title, payload_json, capture_ids, status)
+           VALUES ('garden-draft-1', '卡片草稿', ?, ?, 'draft_ready')""",
+        (_card_payload("卡片草稿", "草稿摘要", ["cap-live"]), json.dumps(["cap-live"])),
     )
     conn.execute(
         """INSERT INTO reading_drafts
@@ -189,21 +203,30 @@ def test_refresh_only_uses_confirmed_readable_graph_materials(tmp_path):
     )
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, knowledge_links, capture_ids, status)
-           VALUES (?, ?, ?, ?, ?, 'seed')""",
+           (id, title, payload_json, capture_ids, status)
+           VALUES (?, ?, ?, ?, 'seed')""",
         (
             "card-live",
             "有效卡片",
-            "卡片摘要",
-            json.dumps(["card-archived"]),
+            _card_payload(
+                "有效卡片",
+                "卡片摘要",
+                ["cap-live", "cap-archived", "cap-missing"],
+                ["card-archived"],
+            ),
             json.dumps(["cap-live", "cap-archived", "cap-missing"]),
         ),
     )
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, knowledge_links, capture_ids, status)
-           VALUES (?, ?, ?, '[]', ?, 'archived')""",
-        ("card-archived", "归档卡片", "归档摘要", json.dumps(["cap-live"])),
+           (id, title, payload_json, capture_ids, status)
+           VALUES (?, ?, ?, ?, 'archived')""",
+        (
+            "card-archived",
+            "归档卡片",
+            _card_payload("归档卡片", "归档摘要", ["cap-live"]),
+            json.dumps(["cap-live"]),
+        ),
     )
     conn.execute(
         """INSERT INTO pending_questions

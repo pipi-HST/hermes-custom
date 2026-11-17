@@ -19,9 +19,9 @@ def test_explicit_confirmation_phrases_are_accepted(intent, confirmation):
 @pytest.mark.parametrize(
     ("intent", "confirmation"),
     [
-        ("commit_capture_draft", "请把这篇文章整理后直接入库"),
+        ("commit_capture_draft", "请把这篇文章整理后直接保存"),
         ("commit_capture_draft", "可以"),
-        ("commit_capture_draft", "不要入库"),
+        ("commit_capture_draft", "不要保存"),
         ("commit_garden_draft", "继续修改卡片"),
         ("apply_librarian_repair", "先不要修复"),
     ],

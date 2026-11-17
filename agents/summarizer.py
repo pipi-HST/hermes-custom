@@ -38,7 +38,7 @@ summary: <一句话中文摘要>
 tags: ["tag1", "tag2", "tag3"]
 ---"""
 
-EDITABLE_DRAFT_PROMPT = """你是 Hermes Knowledge 的知识整理助手。你的任务是把用户提供的内容整理成可编辑、可入库的知识草稿。
+EDITABLE_DRAFT_PROMPT = """你是 Hermes Knowledge 的知识整理助手。你的任务是把用户提供的内容整理成可编辑、待保存的知识草稿。
 
 严格要求：
 1. 生成标题、摘要、标签、结构化 Markdown 正文、文件夹建议和 Garden Card 建议。

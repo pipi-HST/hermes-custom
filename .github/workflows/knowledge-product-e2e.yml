@@ -27,6 +27,8 @@ on:
       - '.github/workflows/knowledge-product-e2e.yml'
   schedule:
     - cron: '0 20 * * 1'
+  repository_dispatch:
+    types: [runtime-knowledge-change]
   workflow_dispatch:
 
 permissions:
@@ -98,6 +100,18 @@ jobs:
           uv venv .venv --python 3.11
           uv pip install --python .venv/bin/python -e ".[web]"
           uv pip install --python .venv/bin/python numpy==2.4.6
+
+      - name: Check docs and architecture inventory
+        env:
+          HERMES_RUNTIME_ROOT: ${{ github.workspace }}/runtime
+        run: |
+          .venv/bin/python scripts/check_docs.py
+          .venv/bin/python scripts/architecture_inventory.py --check --strict
+
+      - name: HTTP-only smoke (no local Knowledge checkout)
+        env:
+          HERMES_RUNTIME_ROOT: ${{ github.workspace }}/runtime
+        run: .venv/bin/python scripts/http_only_smoke.py --work-dir .tmp/http-only
 
       - name: Run deterministic real-browser product Pipeline
         run: .venv/bin/python scripts/knowledge_product_e2e.py

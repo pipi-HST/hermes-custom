@@ -44,6 +44,7 @@ jobs:
           python scripts/check_docs.py
           python -c "from db.schema import init_db; init_db('data/captures.db')"
           python scripts/update_current_state.py --check
+          python scripts/architecture_inventory.py --check --strict
 
       - name: Run unit tests
         env:

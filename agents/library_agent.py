@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 
 from agents.capture_indexer import build_identity_index, build_section_indexes
+from agents.garden_card_payload import payload_from_row
 from agents.managed_sections import is_managed_section_title
 from db.embedding_repo import CaptureEmbeddingRepo
 from db.metadata_repo import CaptureMetadataRepo
@@ -59,8 +60,11 @@ def _card_embedding_text(row) -> str:
     """Compact text that represents one knowledge card in vector space."""
     parts = []
     title = str(row["title"] or "").strip()
-    one_liner = str(row["one_liner"] or "").strip()
-    arguments = str(row["core_arguments"] or "").strip()
+    payload = payload_from_row(row)
+    one_liner = str(payload["claim"] or "").strip()
+    arguments = "\n".join(
+        item["statement"] for item in payload["core_judgments"] if item["statement"]
+    ).strip()
     if title:
         parts.append(f"标题：{title}")
     if one_liner:
@@ -396,7 +400,7 @@ class LibraryAgent:
         edited card is re-embedded, and use DashScope's batch endpoint.
         """
         rows = conn.execute(
-            "SELECT id, title, one_liner, core_arguments, embedding, "
+            "SELECT id, title, payload_json, capture_ids, embedding, "
             "embedding_source_hash FROM garden_cards"
         ).fetchall()
         pending: list[tuple[Any, str, str]] = []

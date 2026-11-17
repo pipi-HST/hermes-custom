@@ -354,7 +354,7 @@ class CaptureEmbeddingRepo:
                 JOIN captures c ON c.id = ce.capture_id
                 WHERE ce.embedding IS NOT NULL
                   AND ce.kind IN ({placeholders})
-                  AND COALESCE(c.review_state, '') != 'archived'""",
+                  AND c.archived_at IS NULL""",
             kinds,
         ).fetchall()
         if not rows:

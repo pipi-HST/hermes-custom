@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 
 
 _NOT_FOUND_MARKERS = ("not found", "不存在", "未找到", "没有找到")
-_CONFLICT_MARKERS = ("不能重复", "不能继续", "已保存", "已入库", "已删除", "已是")
+_CONFLICT_MARKERS = ("不能重复", "不能继续", "已保存", "已保存", "已删除", "已是")
 
 
 def bridge_result_response(result: Any) -> Any:

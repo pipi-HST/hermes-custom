@@ -1,3 +1,10 @@
+---
+status: historical
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: snapshot; kept for context, not a current runbook
+---
+
 # Hermes 本地项目地图
 
 Hermes 现在拆成了一个 runtime 项目和两个能力项目。

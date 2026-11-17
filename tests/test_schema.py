@@ -16,11 +16,12 @@ def test_captures_schema_has_slim_columns():
         assert "id" in cols
         assert "file_path" in cols
         assert "raw_path" in cols
-        assert "embedding" in cols
-        assert "review_state" in cols
-        assert "review_interval" in cols
-        assert "last_reviewed" in cols
-        assert "next_review" in cols
+        assert "embedding" not in cols
+        assert "archived_at" in cols
+        assert "review_state" not in cols
+        assert "review_interval" not in cols
+        assert "last_reviewed" not in cols
+        assert "next_review" not in cols
         assert "theme_scanned_at" in cols
         assert "created_at" in cols
         assert "updated_at" in cols
@@ -230,13 +231,9 @@ def test_garden_drafts_table_exists(tmp_path):
     assert cols == [
         "id",
         "title",
-        "one_liner",
         "card_kind",
         "schema_version",
         "payload_json",
-        "core_arguments",
-        "knowledge_links",
-        "key_materials",
         "markdown",
         "capture_ids",
         "question_id",
@@ -374,12 +371,14 @@ def test_schema_migrates_legacy_capture_embedding_to_identity_index(tmp_path):
 
     db_path = str(tmp_path / "test.db")
     conn = init_db(db_path)
+    # Simulate a v2 database: the legacy column existed then.
+    conn.execute("ALTER TABLE captures ADD COLUMN embedding BLOB")
     embedding = struct.pack(f"{DIM}f", *([1.0] + [0.0] * (DIM - 1)))
     conn.execute(
         "INSERT INTO captures (id, file_path, embedding) VALUES (?, ?, ?)",
         ("legacy-cap", "captures/legacy.md", embedding),
     )
-    conn.execute("PRAGMA user_version = 1")
+    conn.execute("PRAGMA user_version = 2")
     conn.commit()
     conn.close()
 
@@ -388,16 +387,17 @@ def test_schema_migrates_legacy_capture_embedding_to_identity_index(tmp_path):
         row = conn.execute(
             "SELECT kind, embedding FROM capture_embeddings WHERE capture_id = 'legacy-cap'"
         ).fetchone()
-        legacy = conn.execute(
-            "SELECT embedding FROM captures WHERE id = 'legacy-cap'"
-        ).fetchone()
+        columns = {
+            item["name"]
+            for item in conn.execute("PRAGMA table_info(captures)").fetchall()
+        }
     finally:
         conn.close()
 
     assert row is not None
     assert row["kind"] == "identity"
     assert row["embedding"] == embedding
-    assert legacy["embedding"] is None
+    assert "embedding" not in columns
 
 
 def test_schema_normalizes_garden_v1_rows_to_v2(tmp_path):
@@ -430,3 +430,99 @@ def test_schema_normalizes_garden_v1_rows_to_v2(tmp_path):
 
     assert card == "garden_card.v2"
     assert draft == "garden_card.v2"
+
+
+def test_schema_v4_moves_archive_and_garden_v1_fields_then_drops_them(tmp_path):
+    import sqlite3
+
+    from db.schema import init_db
+
+    db_path = str(tmp_path / "legacy.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE captures (
+               id TEXT PRIMARY KEY,
+               file_path TEXT NOT NULL DEFAULT '',
+               review_state TEXT NOT NULL DEFAULT 'new',
+               review_interval INTEGER NOT NULL DEFAULT 0,
+               review_count INTEGER NOT NULL DEFAULT 0,
+               last_reviewed TEXT,
+               next_review TEXT
+           )"""
+    )
+    conn.execute(
+        "INSERT INTO captures (id, file_path, review_state) VALUES ('old', 'captures/old.md', 'archived')"
+    )
+    for column in ("last_reviewed", "next_review"):
+        for suffix in ("insert", "update"):
+            trigger = (
+                f"AFTER INSERT ON captures"
+                if suffix == "insert"
+                else f'AFTER UPDATE OF "{column}" ON captures'
+            )
+            conn.execute(
+                f'''CREATE TRIGGER "trg_norm_captures_{column}_{suffix}"
+                    {trigger}
+                    WHEN NEW."{column}" GLOB '????-??-?? ??:??:??*'
+                    BEGIN
+                        UPDATE captures SET "{column}" = NEW."{column}" WHERE rowid = NEW.rowid;
+                    END'''
+            )
+    conn.execute(
+        """CREATE TABLE garden_cards (
+               id TEXT PRIMARY KEY,
+               title TEXT NOT NULL DEFAULT '',
+               one_liner TEXT NOT NULL DEFAULT '',
+               card_kind TEXT NOT NULL DEFAULT 'viewpoint',
+               schema_version TEXT NOT NULL DEFAULT 'garden_card.v1',
+               payload_json TEXT NOT NULL DEFAULT '{}',
+               core_arguments TEXT NOT NULL DEFAULT '[]',
+               knowledge_links TEXT NOT NULL DEFAULT '[]',
+               key_materials TEXT NOT NULL DEFAULT '[]',
+               my_view TEXT NOT NULL DEFAULT '',
+               status TEXT NOT NULL DEFAULT 'seed',
+               capture_ids TEXT NOT NULL DEFAULT '[]',
+               updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+           )"""
+    )
+    conn.execute(
+        "INSERT INTO garden_cards (id, title, one_liner, card_kind) VALUES ('card', '旧卡', '旧一句话', 'method')"
+    )
+    conn.commit()
+    conn.close()
+
+    conn = init_db(db_path)
+    try:
+        capture = conn.execute(
+            "SELECT archived_at FROM captures WHERE id = 'old'"
+        ).fetchone()
+        card = conn.execute(
+            "SELECT payload_json FROM garden_cards WHERE id = 'card'"
+        ).fetchone()
+        capture_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(captures)")
+        }
+        card_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(garden_cards)")
+        }
+    finally:
+        conn.close()
+
+    import json
+
+    assert capture["archived_at"]
+    assert json.loads(card["payload_json"])["claim"] == "旧一句话"
+    assert not capture_columns & {
+        "review_state",
+        "review_interval",
+        "review_count",
+        "last_reviewed",
+        "next_review",
+    }
+    assert not card_columns & {
+        "one_liner",
+        "core_arguments",
+        "knowledge_links",
+        "key_materials",
+        "my_view",
+    }

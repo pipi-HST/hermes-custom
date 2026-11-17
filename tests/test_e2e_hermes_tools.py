@@ -134,7 +134,7 @@ def test_hermes_capture_schema_preserves_full_text_save_instruction():
 
     assert "全文保存" in description
     assert "全文存进数据库" in description
-    assert "全文入库表示覆盖全文，不等于一字不改原样保存" in description
+    assert "全文保存表示覆盖全文，不等于一字不改原样保存" in description
     assert "正式 Capture 始终需要可读性整理" in description
     assert "精炼整理稿" in description
     assert "重点定向整理" in description
@@ -569,7 +569,7 @@ def test_hermes_synthesize_garden_handler_preserves_confirmation(monkeypatch):
         ],
         next_actions=[
             next_action(
-                label="确认观点入库",
+                label="确认观点保存",
                 intent="commit_garden_draft",
                 payload={"draft_id": "d1"},
                 requires_confirmation=True,
@@ -694,7 +694,7 @@ def test_bridge_capture_text_with_instruction_returns_draft(mock_summarize, mock
     assert _artifact(r)["status"] == "raw_extracted"
     assert "原文已提取，已生成待确认初稿" in r["chat_preview"]
     assert "标题：" in r["chat_preview"]
-    assert "按当前要求生成最终整理稿并入库" in r["chat_preview"]
+    assert "按当前要求生成最终整理稿并保存" in r["chat_preview"]
     assert "重点回应：" not in r["chat_preview"]
     assert "总结：" not in r["chat_preview"]
     assert "草稿预览" not in r["chat_preview"]
@@ -732,7 +732,7 @@ def test_bridge_capture_full_text_save_does_not_summarize_body(mock_llm, mock_su
     assert r["status"] == "success"
     assert _artifact(r)["status"] == "raw_extracted"
     assert "原文已提取，已生成待确认初稿" in r["chat_preview"]
-    assert "全文入库" in json.dumps(r["next_actions"], ensure_ascii=False)
+    assert "全文保存" in json.dumps(r["next_actions"], ensure_ascii=False)
     assert "正文已按原文保存" not in r["chat_preview"]
     assert "预览摘要（仅用于列表预览/检索，不替代正文）" not in r["chat_preview"]
     assert "摘要：" not in r["chat_preview"]
@@ -986,14 +986,18 @@ def test_bridge_show_capture_draft_keeps_footer_with_long_title(monkeypatch):
 
 
 @patch("bridge.rag_bridge._indexed_search")
-@patch("bridge.rag_bridge.vector_search")
 @patch("agents.rag_agent.RagAgent.query")
 @patch("agents.embedder.Embedder.embed")
-def test_bridge_rag(mock_embed, mock_query, mock_vector_search, mock_indexed_search):
+def test_bridge_rag(mock_embed, mock_query, mock_indexed_search):
     from bridge.rag_bridge import search_knowledge_base
     mock_embed.return_value = b"\x00" * 4096
-    mock_indexed_search.return_value = []
-    mock_vector_search.return_value = [{"id": "1", "file_path": "", "raw_path": ""}]
+    mock_indexed_search.return_value = [{
+        "id": "1",
+        "file_path": "",
+        "raw_path": "",
+        "matched_kind": "identity",
+        "score": 0.9,
+    }]
     mock_query.return_value = {
         "answer": "四个模块", "sources": [{"title": "T", "summary": "S", "feishu_doc_url": ""}],
     }

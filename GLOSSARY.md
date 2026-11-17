@@ -1,3 +1,10 @@
+---
+status: current
+owner: knowledge-service
+last_verified: 2026-11-17
+verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+---
+
 # Hermes Knowledge Glossary
 
 > 状态：current  
@@ -8,7 +15,8 @@
 | 用户词 | 英文 | 代码 / 存储 | 含义 | 不要叫 |
 |---|---|---|---|---|
 | 收集 | Capture | `capture_*`、`captures` | 用户把材料交进来的动作 | 抓取（作名词）、入库 |
-| 待确认草稿 | Capture Draft | `capture_drafts` | 入库前可修改的草稿 | 笔记、原文 |
+| 保存 | Commit | `capture_drafts.status=committed`、`captures` | 用户确认草稿并写入资料库的动作 | 入库、提交（作产品词时） |
+| 待确认草稿 | Capture Draft | `capture_drafts` | 保存前可修改的草稿 | 笔记、原文 |
 | 资料笔记 | Capture Note | `captures/*.md` | 已确认的加工后资料 | capture（指文件时） |
 | 原始证据 | Raw Evidence | `_archive/raw/*.md` | 为追溯保留的来源原文 | raw、缓存 |
 | 资料库 | Library | `library_*`、`capture_metadata` | 浏览、筛选、编辑资料的界面/能力 | 知识库（泛称） |
@@ -41,6 +49,7 @@
 | 用户看到 | 代码里可能看到 |
 |---|---|
 | 收集 | `capture_content`、`create_capture_draft` |
+| 保存 | `commit_capture_draft`、`committed_capture_id` |
 | 待确认草稿 | `capture_drafts`、`draft_ready`、`raw_extracted` |
 | 资料笔记 | `captures.file_path`、`Capture Note` |
 | 资料库 | `library_items`、`library_view` |

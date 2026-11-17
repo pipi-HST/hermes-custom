@@ -58,10 +58,15 @@ def test_review_agent_daily(repo):
     import json
     # Insert a Garden Card that's due
     repo.conn.execute(
-        """INSERT INTO garden_cards (id, title, one_liner, core_arguments,
-           knowledge_links, key_materials, status, capture_ids, review_interval)
-           VALUES (?, ?, ?, '[]', '[]', '[]', ?, '[]', ?)""",
-        ("gc01", "测试卡片", "核心结论", "growing", "1d"),
+        """INSERT INTO garden_cards (id, title, payload_json, status, capture_ids, review_interval)
+           VALUES (?, ?, ?, ?, '[]', ?)""",
+        (
+            "gc01",
+            "测试卡片",
+            '{"schema_version":"garden_card.v2","claim":"核心结论","card_kind":"viewpoint","source_ids":[]}',
+            "growing",
+            "1d",
+        ),
     )
     repo.conn.commit()
 
@@ -119,8 +124,11 @@ def test_daily_review_creates_one_item_for_short_capture(repo, tmp_path):
     ).fetchone()
     assert updated_item["view_count"] == 1
     assert updated_item["last_viewed"]
-    updated_capture = repo.get_by_id("cap-short")
-    assert updated_capture["review_count"] == 1
+    updated_capture = repo.conn.execute(
+        "SELECT COALESCE(SUM(view_count), 0) AS n FROM review_items WHERE capture_id = ?",
+        ("cap-short",),
+    ).fetchone()
+    assert updated_capture["n"] == 1
 
 
 def test_daily_review_creates_section_items_for_long_capture(repo, tmp_path):
@@ -277,10 +285,10 @@ def test_due_review_prefers_capture_not_reviewed_today(repo):
     now = datetime(2026, 5, 30, 12, 0, tzinfo=timezone.utc)
     due_at = (now - timedelta(hours=1)).isoformat()
     repo.conn.executemany(
-        "INSERT INTO captures (id, file_path, last_reviewed) VALUES (?, ?, ?)",
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
         [
-            ("cap-seen", "captures/seen.md", now.isoformat()),
-            ("cap-fresh", "captures/fresh.md", None),
+            ("cap-seen", "captures/seen.md"),
+            ("cap-fresh", "captures/fresh.md"),
         ],
     )
     repo.conn.executemany(
@@ -323,6 +331,10 @@ def test_due_review_prefers_capture_not_reviewed_today(repo):
                 "2026-05-29T10:02:00+00:00",
             ),
         ],
+    )
+    repo.conn.execute(
+        "UPDATE review_items SET last_reviewed = ? WHERE capture_id = 'cap-seen'",
+        (now.isoformat(),),
     )
     repo.conn.commit()
 
@@ -526,10 +538,9 @@ def test_review_followup_uses_latest_viewed_item_only(monkeypatch, tmp_path):
 
 def test_handle_reply_confirmed(repo):
     repo.conn.execute(
-        """INSERT INTO garden_cards (id, title, one_liner, core_arguments,
-           knowledge_links, key_materials, status, capture_ids, review_interval)
-           VALUES (?, ?, ?, '[]', '[]', '[]', 'growing', '[]', '1d')""",
-        ("gc01", "测试", "结论"),
+        """INSERT INTO garden_cards (id, title, payload_json, status, capture_ids, review_interval)
+           VALUES (?, ?, ?, 'growing', '[]', '1d')""",
+        ("gc01", "测试", '{"schema_version":"garden_card.v2","claim":"结论","card_kind":"viewpoint","source_ids":[]}'),
     )
     repo.conn.commit()
 
@@ -545,10 +556,9 @@ def test_handle_reply_confirmed(repo):
 
 def test_handle_reply_forgot_resets(repo):
     repo.conn.execute(
-        """INSERT INTO garden_cards (id, title, one_liner, core_arguments,
-           knowledge_links, key_materials, status, capture_ids, review_interval)
-           VALUES (?, ?, ?, '[]', '[]', '[]', 'growing', '[]', '3d')""",
-        ("gc01", "测试", "结论"),
+        """INSERT INTO garden_cards (id, title, payload_json, status, capture_ids, review_interval)
+           VALUES (?, ?, ?, 'growing', '[]', '3d')""",
+        ("gc01", "测试", '{"schema_version":"garden_card.v2","claim":"结论","card_kind":"viewpoint","source_ids":[]}'),
     )
     repo.conn.commit()
 
@@ -563,10 +573,9 @@ def test_handle_reply_forgot_resets(repo):
 
 def test_handle_reply_skip_three_times_archives(repo):
     repo.conn.execute(
-        """INSERT INTO garden_cards (id, title, one_liner, core_arguments,
-           knowledge_links, key_materials, status, capture_ids, review_interval)
-           VALUES (?, ?, ?, '[]', '[]', '[]', 'growing', '[]', '1d')""",
-        ("gc01", "测试", "结论"),
+        """INSERT INTO garden_cards (id, title, payload_json, status, capture_ids, review_interval)
+           VALUES (?, ?, ?, 'growing', '[]', '1d')""",
+        ("gc01", "测试", '{"schema_version":"garden_card.v2","claim":"结论","card_kind":"viewpoint","source_ids":[]}'),
     )
     repo.conn.commit()
 
@@ -578,14 +587,6 @@ def test_handle_reply_skip_three_times_archives(repo):
         "SELECT * FROM garden_cards WHERE id='gc01'"
     ).fetchone()
     assert row["status"] == "archived"
-
-
-def test_mark_capture_reviewed(repo):
-    result = repo.insert(file_path="captures/test.md")
-    agent = ReviewAgent(repo)
-    agent.mark_capture_reviewed(result["id"])
-    updated = repo.get_by_id(result["id"])
-    assert updated["review_count"] >= 1
 
 
 def test_hydrate_reads_title_from_frontmatter(repo, tmp_path):
@@ -622,3 +623,36 @@ def test_hydrate_returns_row_unchanged_when_file_missing(repo, tmp_path):
     row = {"id": "test123", "file_path": "captures/does-not-exist.md"}
     result = agent._hydrate(row)
     assert result == row
+
+
+def test_archived_capture_items_are_not_due(repo):
+    now = datetime.now(timezone.utc).isoformat()
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path, archived_at) VALUES ('cap-arch', 'captures/a.md', '2026-01-01T00:00:00+00:00')"
+    )
+    repo.conn.execute(
+        """INSERT INTO review_items (id, object_type, object_id, capture_id, title, question, review_state)
+           VALUES ('ri-arch', 'capture', 'cap-arch', 'cap-arch', 'Archived', 'Q?', 'new')"""
+    )
+    repo.conn.commit()
+
+    agent = ReviewAgent(repo)
+    assert agent._get_due_review_items(limit=10, now=now) == []
+
+    assert agent.sync_review_items(now=now) == 0
+
+
+def test_live_capture_items_are_still_due(repo):
+    now = datetime.now(timezone.utc).isoformat()
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES ('cap-live', 'captures/b.md')"
+    )
+    repo.conn.execute(
+        """INSERT INTO review_items (id, object_type, object_id, capture_id, title, question, review_state)
+           VALUES ('ri-live', 'capture', 'cap-live', 'cap-live', 'Live', 'Q?', 'new')"""
+    )
+    repo.conn.commit()
+
+    agent = ReviewAgent(repo)
+    due = agent._get_due_review_items(limit=10, now=now)
+    assert [item["id"] for item in due] == ["ri-live"]

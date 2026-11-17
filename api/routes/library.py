@@ -22,7 +22,6 @@ from pydantic import BaseModel
 from api.routes.captures import apply_capture_update
 from bridge.folder_store import (
     normalize_folder,
-    rename_stored_folder,
     save_folder,
     validate_folder_name,
 )
@@ -172,7 +171,7 @@ def create_library_router(
             content=content or title,
             source=body.source,
             source_type=body.source_type or "manual",
-            instruction="自由编辑后入库到知识库",
+            instruction="自由编辑后保存到资料库",
             title=title,
             folder_path=normalize_folder(body.folder_path) if body.folder_path else "",
             organize=body.organize,
@@ -228,9 +227,9 @@ def create_library_router(
             with transaction(capture_repo.conn):
                 dependencies = capture_dependencies(capture_repo.conn, item_id)
                 capture_repo.conn.execute(
-                    "UPDATE captures SET review_state = 'archived', updated_at = ? "
+                    "UPDATE captures SET archived_at = ?, updated_at = ? "
                     "WHERE id = ?",
-                    (now_iso(), item_id),
+                    (now_iso(), now_iso(), item_id),
                 )
             return {
                 "ok": True,
@@ -263,8 +262,9 @@ def create_library_router(
         if old_folder == "Inbox":
             raise HTTPException(status_code=400, detail="Inbox cannot be renamed")
         if old_folder != new_folder:
+            # rename_topic delegates to agents.folder_service, which also
+            # updates the folder registry.
             rename_topic(capture_repo.conn, vault, old_folder, new_folder)
-            rename_stored_folder(vault, old_folder, new_folder)
         return {
             "ok": True,
             "folders": folder_response(capture_repo.conn, vault)["folders"],

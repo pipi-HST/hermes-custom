@@ -50,3 +50,6 @@ pytest-of-*/
 
 # local review artifacts
 data/*.bak-*
+
+# local scratch dirs created by ad-hoc scripts/tests
+/tmp*/

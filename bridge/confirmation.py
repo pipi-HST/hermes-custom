@@ -21,15 +21,15 @@ import re
 _CONFIRMATION_PHRASES = {
     "commit_capture_draft": frozenset(
         {
-            "可以入库",
+            "可以保存",
             "可以存库",
-            "入库",
+            "保存",
             "存库",
             "就这样",
             "就按这个",
             "保存到知识库",
             "确认保存",
-            "确认入库",
+            "确认保存",
             "确认存库",
         }
     ),
@@ -40,21 +40,21 @@ _CONFIRMATION_PHRASES = {
             "保存吧",
             "确认整理",
             "确认保存",
-            "整理入库",
-            "入库",
+            "整理保存",
+            "保存",
             "存库",
         }
     ),
     "commit_garden_draft": frozenset(
         {
-            "可以入库",
-            "卡片入库",
+            "可以保存",
+            "卡片保存",
             "就这样",
             "就按这个",
             "存入知识卡片",
-            "确认入库",
+            "确认保存",
             "确认卡片",
-            "确认卡片入库",
+            "确认卡片保存",
         }
     ),
     "apply_librarian_repair": frozenset(
@@ -69,7 +69,7 @@ _CONFIRMATION_PHRASES = {
 }
 
 _ERRORS = {
-    "commit_capture_draft": "需要用户在独立消息中明确回复「确认存库」后才能入库。",
+    "commit_capture_draft": "需要用户在独立消息中明确回复「确认存库」后才能保存。",
     "commit_reading_artifact": "需要用户明确回复「确认整理」后才能保存阅读整理结果。",
     "commit_garden_draft": "需要用户明确回复「确认卡片」后才能写入知识卡片库。",
     "apply_librarian_repair": "需要用户明确回复「确认修复」后才能执行知识库修复。",

@@ -12,16 +12,12 @@ def test_context_pack_adds_garden_cards_related_to_capture_hits(tmp_path):
     )
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, core_arguments, knowledge_links, key_materials,
-            my_view, status, capture_ids, created_at, updated_at, review_interval)
-           VALUES (?, ?, ?, ?, ?, ?, '', 'seed', ?, ?, ?, '1d')""",
+           (id, title, payload_json, status, capture_ids, created_at, updated_at, review_interval)
+           VALUES (?, ?, ?, 'seed', ?, ?, ?, '1d')""",
         (
             "g1",
             "AI 工程化",
-            "AI 的价值来自工程流程。",
-            json.dumps([{"claim": "规则、工具和检查共同提升可靠性。"}], ensure_ascii=False),
-            "[]",
-            "[]",
+            '{"schema_version":"garden_card.v2","claim":"AI 的价值来自工程流程。","card_kind":"viewpoint","core_judgments":[{"id":"j1","statement":"规则、工具和检查共同提升可靠性。","reasoning":"","support":[]}],"source_ids":["cap1"]}',
             json.dumps(["cap1"], ensure_ascii=False),
             "2026-05-31T00:00:00+00:00",
             "2026-05-31T00:00:00+00:00",
@@ -49,16 +45,12 @@ def test_context_pack_deduplicates_garden_cards(tmp_path):
         )
     conn.execute(
         """INSERT INTO garden_cards
-           (id, title, one_liner, core_arguments, knowledge_links, key_materials,
-            my_view, status, capture_ids, created_at, updated_at, review_interval)
-           VALUES (?, ?, ?, ?, ?, ?, '', 'seed', ?, ?, ?, '1d')""",
+           (id, title, payload_json, status, capture_ids, created_at, updated_at, review_interval)
+           VALUES (?, ?, ?, 'seed', ?, ?, ?, '1d')""",
         (
             "g1",
             "同一张卡",
-            "同一张卡只出现一次。",
-            "[]",
-            "[]",
-            "[]",
+            '{"schema_version":"garden_card.v2","claim":"同一张卡只出现一次。","card_kind":"viewpoint","source_ids":["cap1","cap2"]}',
             json.dumps(["cap1", "cap2"], ensure_ascii=False),
             "2026-05-31T00:00:00+00:00",
             "2026-05-31T00:00:00+00:00",

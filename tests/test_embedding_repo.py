@@ -144,7 +144,7 @@ def test_search_scores_lightweight_candidates_before_loading_full_rows(tmp_path)
     assert "ce.id" in normalized and "ce.embedding" in normalized
     assert "ce.capture_id" in normalized and "ce.kind" in normalized
     assert "JOIN captures" in normalized
-    assert "review_state" in normalized and "archived" in normalized
+    assert "archived_at IS NULL" in normalized
     assert "SELECT *" not in candidate_selects[0]
     assert [row["capture_id"] for row in rows] == ["cap1"]
     assert rows[0]["index_text"] == "positive full row"

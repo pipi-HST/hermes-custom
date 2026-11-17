@@ -603,7 +603,7 @@ def test_create_and_get_garden_draft(repo):
     assert row["title"] == "测试观点草稿"
     assert row["status"] == "draft_ready"
     assert json.loads(row["capture_ids"]) == ["cap1"]
-    assert json.loads(row["core_arguments"])[0]["claim"] == "观点一"
+    assert row["core_arguments"][0]["claim"] == "观点一"
 
 
 def test_create_garden_draft_canonicalizes_short_payload_source_ids(repo):
@@ -635,7 +635,7 @@ def test_create_garden_draft_canonicalizes_short_payload_source_ids(repo):
     assert json.loads(row["capture_ids"]) == ["fdd275b0c9f6"]
     assert payload["source_ids"] == ["fdd275b0c9f6"]
     assert payload["core_judgments"][0]["support"][0]["source_ids"] == ["fdd275b0c9f6"]
-    assert json.loads(row["core_arguments"])[0]["source_ids"] == ["fdd275b0c9f6"]
+    assert row["core_arguments"][0]["source_ids"] == ["fdd275b0c9f6"]
 
 
 def test_create_garden_draft_persists_card_kind(repo):
@@ -710,7 +710,7 @@ def test_update_garden_draft_changes_content_and_instruction(repo):
     row = get_garden_draft(repo, draft_id)
     assert row["title"] == "修改后草稿"
     assert row["instruction"] == "更强调边界"
-    assert json.loads(row["core_arguments"])[0]["claim"] == "新观点"
+    assert row["core_arguments"][0]["claim"] == "新观点"
 
 
 def test_update_garden_draft_rewrites_canonical_capture_ids(repo):
@@ -750,12 +750,12 @@ def test_update_garden_draft_rewrites_canonical_capture_ids(repo):
 
 def test_commit_garden_draft_to_card_creates_card_and_marks_draft(repo):
     draft_id = create_garden_draft(repo, {
-        "title": "可入库观点",
+        "title": "待保存观点",
         "one_liner": "确认后才能进入 garden。",
         "core_arguments": [{"claim": "草稿先审阅"}],
         "knowledge_links": [],
         "key_materials": [],
-        "markdown": "# 可入库观点\n\n确认后内容。",
+        "markdown": "# 待保存观点\n\n确认后内容。",
         "capture_ids": ["cap1"],
     })
 
@@ -767,7 +767,7 @@ def test_commit_garden_draft_to_card_creates_card_and_marks_draft(repo):
         (card_id,),
     ).fetchone()
     draft = get_garden_draft(repo, draft_id)
-    assert card["title"] == "可入库观点"
+    assert card["title"] == "待保存观点"
     assert card["status"] == "seed"
     assert draft["status"] == "committed"
     assert draft["committed_card_id"] == card_id

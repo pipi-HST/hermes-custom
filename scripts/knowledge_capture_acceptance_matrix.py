@@ -50,12 +50,12 @@ class FakeUrlExtractor(BaseExtractor):
     def extract(self, source: str, **_kwargs) -> ExtractionResult:
         return ExtractionResult(
             raw_text=(
-                "这是一篇用于验收链接入库的文章。文章开头先说明测试背景：用户把一篇"
+                "这是一篇用于验收链接保存的文章。文章开头先说明测试背景：用户把一篇"
                 "长文链接交给 Hermes，希望系统提取正文后生成可审草稿，而不是直接写入"
                 "知识库。这个流程必须保留原文主线，也要把标题、摘要、标签和分类建议"
-                "补齐，方便用户在入库前判断是否可靠。\n\n"
+                "补齐，方便用户在保存前判断是否可靠。\n\n"
                 "正文第一部分讨论 AI 产品评测。作者认为评测不能只看一次漂亮演示，"
-                "还要记录失败样本、边界条件和人工判断。每一次提取、整理、确认入库"
+                "还要记录失败样本、边界条件和人工判断。每一次提取、整理、确认保存"
                 "都应该留下可追踪记录，否则后续很难解释为什么某篇文章被归到某个文件夹，"
                 "也很难判断摘要和标签是否来自全文。\n\n"
                 "正文第二部分讨论样本沉淀。团队应该把真实文章、复制文本和移动端分享链接"
@@ -69,7 +69,7 @@ class FakeUrlExtractor(BaseExtractor):
             ),
             source_type="link",
             source_url=source,
-            title="链接入库验收文章",
+            title="链接保存验收文章",
         )
 
 
@@ -211,8 +211,8 @@ def _scenario_parse_failure_defaults() -> dict[str, Any]:
 
 def _scenario_commit_metadata(agent: CaptureAgent, vault_path: Path) -> dict[str, Any]:
     agent.summarizer.organize_editable_draft = lambda *_args, **_kwargs: {
-        "title": "入库元信息验收",
-        "summary": "入库应复用整理草稿阶段的摘要。",
+        "title": "保存元信息验收",
+        "summary": "保存应复用整理草稿阶段的摘要。",
         "tags": ["metadata-contract", "knowledge-workflow"],
         "body_markdown": "正文内容。",
         "folder_suggestion": {
@@ -235,9 +235,9 @@ def _scenario_commit_metadata(agent: CaptureAgent, vault_path: Path) -> dict[str
     note = read_note(vault_path, committed["file_path"])
     frontmatter, body = note if note else ({}, "")
     checks = [
-        committed["summary"] == "入库应复用整理草稿阶段的摘要。",
+        committed["summary"] == "保存应复用整理草稿阶段的摘要。",
         committed["tags"] == ["metadata-contract", "knowledge-workflow"],
-        frontmatter.get("story") == "入库应复用整理草稿阶段的摘要。",
+        frontmatter.get("story") == "保存应复用整理草稿阶段的摘要。",
         frontmatter.get("tags") == ["metadata-contract", "knowledge-workflow"],
         frontmatter.get("word_count") == len("正文内容。"),
         body == "正文内容。",
@@ -248,7 +248,7 @@ def _scenario_commit_metadata(agent: CaptureAgent, vault_path: Path) -> dict[str
 def _scenario_long_outline(agent: CaptureAgent, vault_path: Path) -> dict[str, Any]:
     agent.summarizer.organize_editable_draft = lambda *_args, **_kwargs: {
         "title": "vibecoding 长文验收",
-        "summary": "长文入库后应生成提纲并修复重复标题。",
+        "summary": "长文保存后应生成提纲并修复重复标题。",
         "tags": ["vibecoding"],
         "body_markdown": LONG_BODY,
         "folder_suggestion": {
@@ -289,11 +289,11 @@ def _scenario_long_outline(agent: CaptureAgent, vault_path: Path) -> dict[str, A
 def _scenario_link_stage_timings(agent: CaptureAgent) -> dict[str, Any]:
     agent._call_llm = lambda *_args, **_kwargs: "链接文章整理稿，保留原文主线。"
     agent.summarizer.summarize = lambda *_args, **_kwargs: {
-        "title": "链接入库验收文章",
-        "summary": "链接入库应记录阶段耗时。",
+        "title": "链接保存验收文章",
+        "summary": "链接保存应记录阶段耗时。",
         "tags": ["link-capture"],
     }
-    result = capture_bridge.capture_content("https://example.test/article", instruction="整理入库")
+    result = capture_bridge.capture_content("https://example.test/article", instruction="整理保存")
     latest = AgentRunRepo(agent.conn).latest(limit=1)[0]
     evidence = json.loads(latest["evidence_json"])
     timings = evidence.get("stage_timings_ms") or {}

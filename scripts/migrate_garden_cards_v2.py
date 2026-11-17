@@ -19,7 +19,6 @@ if str(ROOT) not in sys.path:
 from agents.garden_card_payload import (
     GARDEN_CARD_SCHEMA_VERSION,
     payload_to_json,
-    project_legacy_fields,
     render_garden_card_markdown,
 )
 from agents.markdown_writer import read_note
@@ -217,7 +216,6 @@ def main(argv: list[str] | None = None) -> None:
             card_path = _card_path(vault_path, card_id)
             if card_path.exists():
                 shutil.copy2(card_path, backup_dir / card_path.name)
-            legacy = project_legacy_fields(payload)
             markdown = render_garden_card_markdown(
                 payload,
                 status=status or "seed",
@@ -232,28 +230,18 @@ def main(argv: list[str] | None = None) -> None:
             conn.execute(
                 """UPDATE garden_cards
                    SET title = ?,
-                       one_liner = ?,
                        card_kind = ?,
                        schema_version = ?,
                        payload_json = ?,
-                       core_arguments = ?,
-                       key_materials = ?,
-                       knowledge_links = ?,
-                       my_view = ?,
                        capture_ids = ?,
                        updated_at = ?
                    WHERE id = ?""",
                 (
-                    legacy["title"],
-                    legacy["one_liner"],
-                    legacy["card_kind"],
+                    payload["title"],
+                    payload["card_kind"],
                     GARDEN_CARD_SCHEMA_VERSION,
                     payload_to_json(payload),
-                    json.dumps(legacy["core_arguments"], ensure_ascii=False),
-                    json.dumps(legacy["key_materials"], ensure_ascii=False),
-                    json.dumps(legacy["knowledge_links"], ensure_ascii=False),
-                    legacy["my_view"],
-                    json.dumps(legacy["capture_ids"], ensure_ascii=False),
+                    json.dumps(payload["source_ids"], ensure_ascii=False),
                     datetime.now(timezone.utc).isoformat(),
                     card_id,
                 ),

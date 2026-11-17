@@ -4,7 +4,7 @@
 
 ## 项目一句话
 
-Hermes Knowledge 是一个基于 Hermes Agent Framework、SQLite 和自研 Web 前端的 AI-native 个人知识工作台。它把微信、网页、文件、小红书图文等材料变成可审阅草稿，用户确认后入库，再通过资料 → 卡片 → 专题的结构，以及 evidence-first RAG、自研卡片板和知识图谱，完成知识维护、问答、卡片沉淀和关系浏览。
+Hermes Knowledge 是一个基于 Hermes Agent Framework、SQLite 和自研 Web 前端的 AI-native 个人知识工作台。它把微信、网页、文件、小红书图文等材料变成可审阅草稿，用户确认后保存，再通过资料 → 卡片 → 专题的结构，以及 evidence-first RAG、自研卡片板和知识图谱，完成知识维护、问答、卡片沉淀和关系浏览。
 
 ## 我解决的问题
 
@@ -22,7 +22,7 @@ Hermes Knowledge 是一个基于 Hermes Agent Framework、SQLite 和自研 Web �
 ```text
 输入材料
   -> Capture 生成草稿
-  -> 用户确认入库
+  -> 用户确认保存
   -> Library 维护结构和索引
   -> RAG evidence-first 回答
   -> Topic/Cards 组织专题并沉淀知识卡片
@@ -32,7 +32,7 @@ Hermes Knowledge 是一个基于 Hermes Agent Framework、SQLite 和自研 Web �
 
 ## 关键设计
 
-### 1. 用户确认入库
+### 1. 用户确认保存
 
 AI 先生成草稿，用户可以展开、修改、确认。只有回复“存库”后才写入知识库，避免错误内容污染长期知识库。
 
@@ -93,5 +93,5 @@ Cards 不是摘要库，也不是纯观点库。卡片固定四类：洞察/金�
 
 ## 30 秒口播
 
-我做了一个 AI-native 个人知识工作台 Hermes Knowledge。它把微信里的文章、文件或图文材料接进 Web 工作台：Hermes 先生成可审阅草稿，我确认后入库。入库后 Library 会补目录、章节、属性和 embedding；之后我可以基于知识库问问题，RAG 会先找证据、再按来源和引用给卡片加权，回答带来源；多篇材料形成关系时，Cards 会沉淀成知识卡片，并用自研卡片板和知识图谱展示关系。这个项目的重点不是单篇总结，而是把材料进入、确认、结构维护、可追溯问答、知识卡片和回顾串成一个完整闭环。
+我做了一个 AI-native 个人知识工作台 Hermes Knowledge。它把微信里的文章、文件或图文材料接进 Web 工作台：Hermes 先生成可审阅草稿，我确认后保存。保存后 Library 会补目录、章节、属性和 embedding；之后我可以基于知识库问问题，RAG 会先找证据、再按来源和引用给卡片加权，回答带来源；多篇材料形成关系时，Cards 会沉淀成知识卡片，并用自研卡片板和知识图谱展示关系。这个项目的重点不是单篇总结，而是把材料进入、确认、结构维护、可追溯问答、知识卡片和回顾串成一个完整闭环。
 

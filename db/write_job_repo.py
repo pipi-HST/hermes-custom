@@ -57,6 +57,17 @@ class KnowledgeWriteJobRepo:
         )
         self.conn.commit()
 
+    def claim(self, job_id: str) -> bool:
+        """Atomically take a pending/retrying job; False if another worker won."""
+        cursor = self.conn.execute(
+            """UPDATE knowledge_write_jobs
+               SET status = 'running', step = 'started', updated_at = ?
+               WHERE id = ? AND status IN ('pending', 'retrying')""",
+            (_now(), job_id),
+        )
+        self.conn.commit()
+        return cursor.rowcount == 1
+
     def mark_retrying(self, job_id: str, *, step: str, error: str = "") -> None:
         self.conn.execute(
             """UPDATE knowledge_write_jobs

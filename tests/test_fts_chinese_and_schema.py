@@ -115,7 +115,7 @@ def test_cjk_substring_and_two_char_words_match(conn):
 # 断言 2：schema 迁移后的列与表
 # --------------------------------------------------------------------------
 def test_schema_records_user_version(conn):
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_reinit_backfills_garden_content_from_payload(tmp_path):
@@ -312,7 +312,7 @@ def test_keyword_match_uses_fts_and_skips_archived(workdir):
 
         assert _keyword_match_captures("提拉米苏怎么做", repo, str(vault), limit=3) == []
 
-        repo.update(capture["id"], review_state="archived")
+        repo.update(capture["id"], archived_at="2026-01-01T00:00:00+00:00")
         assert _keyword_match_captures("工具调用收敛策略", repo, str(vault), limit=3) == []
     finally:
         conn.close()

@@ -19,6 +19,7 @@ from agents.canvas_agent import (
     safe_canvas_filename,
 )
 from agents.capture_agent import load_config
+from agents.garden_card_payload import payload_from_row
 from agents.garden_structure_agent import GardenStructureAgent
 from agents.markdown_writer import read_note
 from bridge.result_envelope import artifact_ref, error_envelope, success_envelope
@@ -356,7 +357,7 @@ def _resolve_garden_cards(
     capture_set = set(capture_ids)
     return [
         row for row in rows
-        if capture_set & set(_json_list(row.get("capture_ids")))
+        if capture_set & set(_json_list(row.get("capture_ids") or payload_from_row(row)["source_ids"]))
     ]
 
 
@@ -365,6 +366,7 @@ def _garden_items(rows: list[dict[str, Any]]) -> list[CanvasItem]:
     for row in rows:
         card_id = str(row.get("id") or "")
         title = str(row.get("title") or card_id or "未命名")
+        payload = payload_from_row(row)
         items.append(
             CanvasItem(
                 id=card_id,
@@ -372,7 +374,7 @@ def _garden_items(rows: list[dict[str, Any]]) -> list[CanvasItem]:
                 file_path=f"garden/{_safe_note_stem(title, card_id)}.md",
                 kind=str(row.get("card_kind") or ""),
                 summary=_garden_card_summary(row),
-                source_ids=_json_list(row.get("capture_ids")),
+                source_ids=payload["source_ids"],
             )
         )
     return items
@@ -380,15 +382,16 @@ def _garden_items(rows: list[dict[str, Any]]) -> list[CanvasItem]:
 
 def _garden_card_summary(row: dict[str, Any]) -> str:
     title = str(row.get("title") or "").strip()
-    one_liner = str(row.get("one_liner") or "").strip()
+    payload = payload_from_row(row)
+    one_liner = str(payload["claim"] or "").strip()
     if one_liner and _norm(one_liner) != _norm(title):
         return one_liner
 
-    claims = []
-    for argument in _json_list_of_dicts(row.get("core_arguments")):
-        claim = str(argument.get("claim") or "").strip()
-        if claim:
-            claims.append(claim)
+    claims = [
+        item["statement"]
+        for item in payload["core_judgments"]
+        if item["statement"]
+    ]
     if claims:
         return "；".join(claims[:2])
     return one_liner
@@ -476,16 +479,6 @@ def _json_list(value: Any) -> list[str]:
     if not isinstance(parsed, list):
         return []
     return [str(item) for item in parsed if str(item)]
-
-
-def _json_list_of_dicts(value: Any) -> list[dict[str, Any]]:
-    try:
-        parsed = json.loads(value or "[]") if isinstance(value, str) else value
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return [item for item in parsed if isinstance(item, dict)]
 
 
 def _safe_note_stem(title: str, card_id: str) -> str:

@@ -19,7 +19,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from agents.garden_card_payload import normalize_garden_payload, parse_payload_json
+from agents.garden_card_payload import (
+    normalize_garden_payload,
+    parse_payload_json,
+    payload_from_row,
+    project_legacy_fields,
+)
 from bridge.capture_view import read_capture_note
 from db.concurrency import transaction
 from db.repo import CaptureRepo
@@ -104,9 +109,7 @@ def create_garden_router(
         status_filter = (status or "").strip()
         if status_filter:
             rows = capture_repo.conn.execute(
-                """SELECT id, title, one_liner, card_kind, status, markdown,
-                          capture_ids, created_at, updated_at
-                   FROM garden_drafts
+                """SELECT * FROM garden_drafts
                    WHERE status = ?
                    ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
                             id DESC
@@ -115,15 +118,17 @@ def create_garden_router(
             ).fetchall()
         else:
             rows = capture_repo.conn.execute(
-                """SELECT id, title, one_liner, card_kind, status, markdown,
-                          capture_ids, created_at, updated_at
-                   FROM garden_drafts
+                """SELECT * FROM garden_drafts
                    ORDER BY datetime(replace(substr(updated_at, 1, 19), 'T', ' ')) DESC,
                             id DESC
                    LIMIT ?""",
                 (limit,),
             ).fetchall()
-        items = [dict(row) for row in rows]
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["one_liner"] = payload_from_row(item)["claim"]
+            items.append(item)
         return {"items": items, "total": len(items)}
 
     @router.post("/garden/drafts/{draft_id}/commit")
@@ -190,9 +195,10 @@ def _card_view(conn, vault_path: Path, row) -> dict:
     data = dict(row)
     raw_payload = parse_payload_json(str(data.get("payload_json") or "{}"))
     payload = normalize_garden_payload(raw_payload, legacy=data)
+    legacy = project_legacy_fields(payload)
     capture_ids = payload.get("source_ids") or _json_list(data.get("capture_ids"))
     capture_ids = [str(item).strip() for item in capture_ids if str(item).strip()]
-    summary = str(payload.get("claim") or data.get("one_liner") or "").strip()
+    summary = str(payload.get("claim") or "").strip()
     kind = str(payload.get("card_kind") or data.get("card_kind") or "viewpoint").strip()
     if kind not in CARD_KINDS:
         kind = "viewpoint"
@@ -210,10 +216,10 @@ def _card_view(conn, vault_path: Path, row) -> dict:
             data.get("source_theme") or raw_payload.get("source_theme") or ""
         ),
         "content_markdown": str(raw_payload.get("content_markdown") or ""),
-        "core_arguments": _json_list(data.get("core_arguments")),
-        "knowledge_links": _json_list(data.get("knowledge_links")),
-        "key_materials": _json_list(data.get("key_materials")),
-        "my_view": str(data.get("my_view") or ""),
+        "core_arguments": legacy["core_arguments"],
+        "knowledge_links": legacy["knowledge_links"],
+        "key_materials": legacy["key_materials"],
+        "my_view": legacy["my_view"],
         "sources": [
             _source_for_capture(conn, vault_path, capture_id)
             for capture_id in capture_ids
