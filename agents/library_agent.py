@@ -1362,8 +1362,17 @@ def _is_capture_processing_note_line(stripped: str) -> bool:
     )
 
 
-def _has_capture_processing_note(body: str) -> bool:
+def has_capture_processing_note(body: str) -> bool:
+    """Public contract used by Capture commit validation.
+
+    Kept stable for ``agents.directory_contract``; rename the private helper,
+    not this function.
+    """
     return any(_is_capture_processing_note_line(line.strip()) for line in (body or "").splitlines())
+
+
+# Backwards-compatible aliases for existing internal callers and tests.
+_has_capture_processing_note = has_capture_processing_note
 
 
 def _strip_inline_noise_fragments(text: str) -> tuple[str, int]:
@@ -1674,7 +1683,8 @@ def _directory_block_is_title_only_links(body: str) -> bool:
     return item_count > 0
 
 
-def _directory_absolute_url_free(body: str) -> bool:
+def directory_absolute_url_free(body: str) -> bool:
+    """Public contract used by Capture commit validation."""
     start, end = _directory_block_offsets(body)
     if start < 0:
         return True
@@ -1713,7 +1723,8 @@ def _ensure_directory_covers_markdown_headings(
     )
 
 
-def _directory_links_match_content_headings(body: str) -> bool:
+def directory_links_match_content_headings(body: str) -> bool:
+    """Public contract used by Capture commit validation."""
     expected = [
         (
             _single_line(str(item.get("title") or "")),
@@ -1746,7 +1757,8 @@ def _directory_link_items(body: str) -> list[tuple[str, str]]:
     return items
 
 
-def _has_directory_content_heading_coverage_gap(body: str) -> bool:
+def has_directory_content_heading_coverage_gap(body: str) -> bool:
+    """Public contract used by Capture commit validation."""
     if not _has_directory(body):
         return False
     expected_titles = [
@@ -2444,3 +2456,9 @@ def _markdown_count(root: Path) -> int:
     if not root.exists():
         return 0
     return sum(1 for _path in root.glob("*.md"))
+
+
+# Backwards-compatible aliases for existing internal callers and tests.
+_directory_absolute_url_free = directory_absolute_url_free
+_directory_links_match_content_headings = directory_links_match_content_headings
+_has_directory_content_heading_coverage_gap = has_directory_content_heading_coverage_gap
