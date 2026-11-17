@@ -1103,12 +1103,11 @@ def _insert_capture(conn, capture: dict[str, Any]) -> None:
         for title, summary in capture["sections"]
     ]
     metadata = {
+        # Query index only.  Title/summary/tags live in Capture Markdown
+        # frontmatter and must not be mirrored here (AGENTS.md rule 3).
         "folder_path": capture["folder"],
-        "summary": capture["summary"],
         "outline": outline,
         "section_count": len(capture["sections"]),
-        "tags": capture["tags"],
-        "source_theme": capture["folder"],
         "seeded_by": "seed_interview_demo",
     }
     conn.execute(
