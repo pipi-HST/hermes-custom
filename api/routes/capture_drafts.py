@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from agents.extractors.input_policy import looks_like_local_path as _is_local_file_input
 from api.routes._bridge_response import bridge_result_response
 from api.routes._confirmation import issue_confirmation_token, require_confirmation_token
 from db.confirmation_repo import ConfirmationRepo
@@ -39,6 +40,7 @@ class CreateEditableCaptureDraftRequest(BaseModel):
 class UpdateEditableCaptureDraftRequest(BaseModel):
     content: str = Field(max_length=5_000_000)
     title: str = Field(default="", max_length=500)
+    title_source: Optional[str] = None
     summary: Optional[str] = None
     tags: Optional[list[str]] = None
     folder_path: Optional[str] = None
@@ -126,6 +128,7 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
             draft_id=draft_id,
             content=body.content,
             title=body.title,
+            title_source=body.title_source,
             summary=body.summary,
             tags=body.tags,
             folder_path=body.folder_path,
@@ -178,26 +181,3 @@ def create_capture_draft_router(draft_repo: CaptureDraftRepo) -> APIRouter:
         return bridge_result_response(result)
 
     return router
-
-
-def _is_local_file_input(content: str) -> bool:
-    """Reject local-file inputs without touching the filesystem.
-
-    The old implementation called ``Path(value).is_file()`` which turned this
-    check into a file-existence oracle for any API client.  Local paths are
-    never valid capture content over HTTP, so reject them by shape only.
-    """
-    value = (content or "").strip()
-    if not value:
-        return False
-    lowered = value.lower()
-    if lowered.startswith("file://"):
-        return True
-    if "\x00" in value:
-        return True
-    # Absolute Windows (C:\ or C:/) and POSIX paths, plus drive-relative forms.
-    if value.startswith(("/", "\\", "~")):
-        return True
-    if len(value) >= 3 and value[1] == ":" and value[2] in ("\\", "/") and value[0].isalpha():
-        return True
-    return False

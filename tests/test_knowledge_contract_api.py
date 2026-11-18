@@ -74,7 +74,7 @@ def _add_capture(
 # GET /api/health
 # ---------------------------------------------------------------------------
 
-def test_health_reports_contract_v1(tmp_path, monkeypatch):
+def test_health_reports_current_contract(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_API_TOKEN", raising=False)
     (tmp_path / "vault").mkdir()
     app = _make_app(tmp_path)
@@ -85,7 +85,7 @@ def test_health_reports_contract_v1(tmp_path, monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["service"] == KNOWLEDGE_SERVICE_NAME == "hermes-knowledge"
-    assert payload["contract_version"] == KNOWLEDGE_CONTRACT_VERSION == 1
+    assert payload["contract_version"] == KNOWLEDGE_CONTRACT_VERSION
     assert payload["status"] == "ok"
     assert payload["checks"] == {"database": "ok", "vault": "ok"}
     assert isinstance(payload["version"], str) and payload["version"]
@@ -108,7 +108,7 @@ def test_health_degrades_when_database_is_unavailable(tmp_path):
     payload = response.json()
     assert payload["status"] == "degraded"
     assert payload["checks"] == {"database": "unavailable", "vault": "ok"}
-    assert payload["contract_version"] == 1
+    assert payload["contract_version"] == KNOWLEDGE_CONTRACT_VERSION
 
 
 def test_health_degrades_when_vault_is_missing(tmp_path):
@@ -178,6 +178,42 @@ def test_ai_operation_cancel_service_route(tmp_path):
     assert response.status_code == 200
     assert response.json()["status"] == "cancel_requested"
     assert response.json()["operation_id"] == "op-test"
+
+
+def test_ai_operation_context_reaches_a_service_worker(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from bridge import garden_bridge
+    from bridge.ai_cancel import current_operation_id, raise_if_cancelled
+
+    started = Event()
+    resume = Event()
+
+    def synthesize(**_kwargs):
+        assert current_operation_id() == "garden-example"
+        started.set()
+        assert resume.wait(5)
+        raise_if_cancelled("test.before_write")
+
+    monkeypatch.setattr(garden_bridge, "synthesize_garden", synthesize)
+    with TestClient(_make_app(tmp_path), client=LOOPBACK) as client, ThreadPoolExecutor(1) as executor:
+        pending = executor.submit(
+            client.post,
+            "/api/garden/drafts/preview",
+            headers={"X-Hermes-AI-Operation-Id": "garden-example"},
+            json={"capture_ids": ["example"]},
+        )
+        try:
+            assert started.wait(5)
+            acknowledgement = client.post("/api/knowledge/ai-operations/garden-example/cancel")
+            assert acknowledgement.json()["status"] == "cancel_requested"
+            assert not pending.done()
+        finally:
+            resume.set()
+        response = pending.result(timeout=5)
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    assert response.json()["cancelled_stage"] == "test.before_write"
 
 
 # ---------------------------------------------------------------------------

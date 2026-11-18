@@ -6,6 +6,7 @@ import sqlite3
 import hashlib
 import unicodedata
 import shutil
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,8 @@ import yaml
 from agents.capture_indexer import build_identity_index, build_section_indexes
 from agents.garden_card_payload import payload_from_row
 from agents.managed_sections import is_managed_section_title
+from bridge.knowledge_write_service import markdown_write_lock
+from db.concurrency import transaction
 from db.embedding_repo import CaptureEmbeddingRepo
 from db.metadata_repo import CaptureMetadataRepo
 from db.schema import init_db
@@ -263,9 +266,10 @@ class LibraryAgent:
         ]
         applied_count = 0
         if apply:
-            for action in actions:
-                if _apply_property_backfill(self.vault_path, action):
-                    applied_count += 1
+            with transaction(conn):
+                for action in actions:
+                    if _apply_property_backfill(self.vault_path, action):
+                        applied_count += 1
         report["property_gaps"] = {
             "planned_action_count": len(actions),
             "applied_action_count": applied_count,
@@ -796,7 +800,8 @@ class LibraryAgent:
         render_outline: bool = True,
         force_directory: bool = False,
     ) -> None:
-        parsed = _read_markdown_parts(note_path)
+        snapshot = note_path.read_bytes()
+        parsed = _parse_markdown_parts(_decode_markdown(snapshot))
         if parsed is None:
             report["errors"] += 1
             report["items"].append(
@@ -805,9 +810,8 @@ class LibraryAgent:
             return
 
         frontmatter, body = parsed
-        # Maintenance is queued as a background task and calls an LLM, so the
-        # note may be edited again before we write.  Remember which body this
-        # pass is based on and refuse to overwrite a newer one (lost update).
+        # The body hash is for the outline index. Writes must match the entire
+        # Markdown snapshot, including frontmatter, after the model returns.
         body_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
         legacy_outline = frontmatter.get("outline") or []
         is_short = len(body) < self.min_outline_chars
@@ -902,33 +906,38 @@ class LibraryAgent:
             render_result = _ensure_directory_covers_markdown_headings(render_result)
         metadata_outline = render_result.outline_metadata if render_result else outline
 
-        if self._body_changed_since_read(note_path, body_hash):
-            report["items"].append(
-                {
-                    "file_path": rel_path,
-                    "action": "skipped_body_changed",
-                    "body_chars": len(body),
-                }
-            )
-            return
-
-        if metadata_repo and capture_id:
-            metadata_repo.upsert_outline(
-                capture_id,
-                metadata_outline,
-                source_hash=body_hash,
-                directory_rendered_at=(
-                    datetime.now(timezone.utc).isoformat()
-                    if render_result and _has_directory(render_result.capture_body)
-                    else None
-                ),
-            )
-        if not render_outline:
-            if legacy_outline:
+        # The API edit uses the same DB write lock, even on another connection.
+        # Don't hold it across outliner or embedding calls.
+        conn = self._index_db_conn()
+        with markdown_write_lock, (transaction(conn) if conn is not None else nullcontext()):
+            changed = _check_note_snapshot(note_path, snapshot, body)
+            if changed:
+                report["items"].append(
+                    {"file_path": rel_path, "action": changed, "body_chars": len(body)}
+                )
+                return
+            if render_result is not None or legacy_outline:
                 frontmatter.pop("outline", None)
-                if note_path.exists():
-                    _backup_markdown_file(note_path, "outline-metadata")
-                _write_markdown_parts(note_path, frontmatter, body)
+                _backup_markdown_file(
+                    note_path, "outline" if render_result is not None else "outline-metadata",
+                )
+                _write_markdown_parts(
+                    note_path, frontmatter,
+                    render_result.capture_body if render_result is not None else body,
+                )
+            if metadata_repo and capture_id:
+                metadata_repo.upsert_outline(
+                    capture_id,
+                    metadata_outline,
+                    source_hash=body_hash,
+                    directory_rendered_at=(
+                        datetime.now(timezone.utc).isoformat()
+                        if render_result and _has_directory(render_result.capture_body)
+                        else None
+                    ),
+                )
+
+        if render_result is None:
             report["updated"] += 1
             report["items"].append(
                 {
@@ -938,14 +947,6 @@ class LibraryAgent:
                 }
             )
             return
-        frontmatter.pop("outline", None)
-        if render_result is None:
-            render_result = render_capture_body(body, outline, render_directory=not is_short)
-            render_result = _ensure_directory_covers_markdown_headings(render_result)
-        updated_body = render_result.capture_body
-        if note_path.exists():
-            _backup_markdown_file(note_path, "outline")
-        _write_markdown_parts(note_path, frontmatter, updated_body)
         report["updated"] += 1
         item = {
             "file_path": rel_path,
@@ -955,23 +956,6 @@ class LibraryAgent:
         if render_result.warnings:
             item["warnings"] = render_result.warnings
         report["items"].append(item)
-
-    def _body_changed_since_read(self, note_path: Path, expected_hash: str) -> bool:
-        """Return True when the note body no longer matches what this pass read.
-
-        Maintenance runs asynchronously: the body captured before the LLM call
-        must not overwrite an edit that arrived meanwhile.  Any unreadable or
-        unparsable file is treated as "changed" so we skip instead of clobbering.
-        """
-        try:
-            parsed = _read_markdown_parts(note_path)
-        except (OSError, UnicodeDecodeError):
-            return True
-        if parsed is None:
-            return True
-        _, current_body = parsed
-        return hashlib.sha256(current_body.encode("utf-8")).hexdigest() != expected_hash
-
 
 def render_capture_body(
     body: str,
@@ -1090,7 +1074,29 @@ def _join_rendered_lines(lines: list[str], original: str) -> str:
 
 
 def _read_markdown_parts(path: Path) -> tuple[dict[str, Any], str] | None:
-    text = path.read_text(encoding="utf-8")
+    return _parse_markdown_parts(path.read_text(encoding="utf-8"))
+
+
+def _decode_markdown(content: bytes) -> str:
+    # Match Path.read_text's universal newlines without losing the byte snapshot.
+    return content.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _check_note_snapshot(path: Path, expected: bytes, body: str) -> str:
+    """Return a skip action if the note changed or is no longer readable."""
+    try:
+        current = path.read_bytes()
+        if current == expected:
+            return ""
+        parsed = _parse_markdown_parts(_decode_markdown(current))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return "skipped_body_changed"
+    if parsed is None or parsed[1] != body:
+        return "skipped_body_changed"
+    return "skipped_note_changed"
+
+
+def _parse_markdown_parts(text: str) -> tuple[dict[str, Any], str] | None:
     if not text.startswith("---"):
         return {}, text
 

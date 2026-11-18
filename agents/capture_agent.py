@@ -36,6 +36,7 @@ from agents.library_agent import LibraryAgent
 from agents.outliner import Outliner
 from bridge.ai_cancel import raise_if_cancelled
 from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest
+from db.concurrency import transaction
 from db.repo import CaptureDraftRepo, CaptureRepo
 from db.embedding_repo import CaptureEmbeddingRepo
 from db.schema import init_db
@@ -50,6 +51,7 @@ CAPTURE_LONG_CHUNK_CHAR_LIMIT = 8000
 CAPTURE_SECTION_NOTE_CHAR_LIMIT = 1500
 CAPTURE_INTERNAL_PLAN_BUDGET_RATIO = 0.45
 CAPTURE_DIRECTORY_RENDER_CHAR_THRESHOLD = 2000
+_DRAFT_CHANGED = "草稿已变更或正在保存，请刷新后重试"
 CAPTURE_OVERCOMPRESSED_RATIO = 0.65
 # Editable drafts must never let the LLM shrink the user's own body.  A body is
 # treated as lossy when the rewrite keeps less than this share of the original
@@ -482,6 +484,8 @@ class CaptureAgent:
             return None
         if draft.get("status") in ("committed", "abandoned"):
             return {"error": f"草稿已{'保存' if draft['status'] == 'committed' else '废弃'}，无法修改"}
+        if draft.get("status") not in self.draft_repo.EDITABLE_STATUSES:
+            return {"error": _DRAFT_CHANGED}
 
         capture_intent = draft.get("capture_intent") or {}
         if capture_intent.get("entry_mode") != "editable_capture":
@@ -559,7 +563,7 @@ class CaptureAgent:
                 capture_intent.pop("diagnostics", None)
         updates["capture_intent"] = capture_intent
         raise_if_cancelled("capture.editable.update.before_write")
-        return self.draft_repo.update(draft_id, **updates)
+        return self._update_draft_snapshot(draft, **updates)
 
     def revise_draft(
         self,
@@ -574,9 +578,20 @@ class CaptureAgent:
             draft = self._create_revision_draft_from_capture(draft_id)
             if not draft:
                 return None
-            draft_id = draft["id"]
         if draft.get("status") in ("committed", "abandoned"):
             return {"error": f"草稿已{'保存' if draft['status'] == 'committed' else '废弃'}，无法修改"}
+        if draft.get("status") not in self.draft_repo.EDITABLE_STATUSES:
+            return {"error": _DRAFT_CHANGED}
+        return self._revise_draft_snapshot(draft, instruction, reuse_saved_intent=reuse_saved_intent)
+
+    def _update_draft_snapshot(self, draft: dict, **updates) -> dict:
+        return self.draft_repo.update(draft["id"], expected=draft, **updates) or {
+            "error": _DRAFT_CHANGED,
+        }
+
+    def _revise_draft_snapshot(
+        self, draft: dict, instruction: str, *, reuse_saved_intent: bool,
+    ) -> dict:
         current_text = draft.get("draft_text") or draft.get("raw_text", "")
         timings = getattr(self, "_active_capture_stage_timings", None)
         saved_intent = draft.get("capture_intent") if isinstance(draft.get("capture_intent"), dict) else {}
@@ -603,8 +618,8 @@ class CaptureAgent:
             tag_result = self.summarizer.summarize(summary_source, existing_tags)
             _add_capture_stage_timing(timings, "metadata_summary", stage_started)
             stage_started = time.perf_counter()
-            updated = self.draft_repo.update(
-                draft_id,
+            updated = self._update_draft_snapshot(
+                draft,
                 draft_text=draft_body,
                 instruction=instruction,
                 capture_intent=capture_intent,
@@ -632,15 +647,15 @@ class CaptureAgent:
 
         if incomplete:
             stage_started = time.perf_counter()
-            updated = self.draft_repo.update(
-                draft_id,
+            updated = self._update_draft_snapshot(
+                draft,
                 draft_text=new_text,
                 instruction=instruction,
                 capture_intent=capture_intent,
                 status="draft_incomplete",
             )
             _add_capture_stage_timing(timings, "repo_update", stage_started)
-            if updated is not None:
+            if "error" not in updated:
                 updated["revision_error"] = "llm_output_incomplete"
             return updated
 
@@ -649,8 +664,8 @@ class CaptureAgent:
         tag_result = self.summarizer.summarize(new_text, existing_tags)
         _add_capture_stage_timing(timings, "metadata_summary", stage_started)
         stage_started = time.perf_counter()
-        updated = self.draft_repo.update(
-            draft_id,
+        updated = self._update_draft_snapshot(
+            draft,
             draft_text=new_text,
             instruction=instruction,
             capture_intent=capture_intent,
@@ -1648,8 +1663,8 @@ class CaptureAgent:
 
         presentation_error = self._capture_presentation_error(draft)
         if presentation_error:
-            self.draft_repo.update(draft_id, status="draft_incomplete")
-            return {"error": f"整理稿可读性合同未通过：{presentation_error}"}
+            updated = self._update_draft_snapshot(draft, status="draft_incomplete")
+            return {"error": updated.get("error") or f"整理稿可读性合同未通过：{presentation_error}"}
 
         previous_status = str(draft.get("status") or "draft_ready")
         if previous_status == "committing":
@@ -1659,7 +1674,7 @@ class CaptureAgent:
                 previous_status = "revision_requested"
             else:
                 previous_status = "raw_extracted"
-        claimed_draft = self.draft_repo.claim_for_commit(draft_id)
+        claimed_draft = self.draft_repo.claim_for_commit(draft_id, expected=draft)
         if claimed_draft is None:
             current = self.draft_repo.get_by_id(draft_id)
             if current is None:
@@ -1672,17 +1687,17 @@ class CaptureAgent:
                 return {"error": "草稿已废弃，无法保存"}
             if current.get("status") == "draft_incomplete":
                 return {"error": "草稿还没生成完整，请先继续整理后再存库"}
-            return {"error": "草稿当前状态无法保存"}
+            return {"error": _DRAFT_CHANGED}
 
         try:
             return self._commit_claimed_draft(
                 draft_id,
-                draft,
+                claimed_draft,
                 timings,
                 total_started,
             )
         finally:
-            self.draft_repo.restore_commit_status(draft_id, previous_status)
+            self.draft_repo.restore_commit_status(claimed_draft, previous_status)
 
     def _commit_claimed_draft(
         self,
@@ -1708,7 +1723,10 @@ class CaptureAgent:
             tags = tag_result.get("tags", [])
 
         raise_if_cancelled("capture.commit.before_write")
-        capture_id = self.draft_repo.reserve_capture_for_commit(draft_id)
+        with transaction(self.draft_repo.conn):
+            if self.draft_repo.update(draft_id, expected=draft) is None:
+                return {"error": _DRAFT_CHANGED}
+            capture_id = self.draft_repo.reserve_capture_for_commit(draft_id)
         capture = self.repo.get_by_id(capture_id)
         if capture is None:
             raise RuntimeError("reserved capture was not created")
@@ -1794,32 +1812,8 @@ class CaptureAgent:
             library_postprocess=library_postprocess,
             capture_intent=capture_intent,
         )
-        if pipeline_error:
-            self.draft_repo.update(
-                draft_id,
-                draft_text=draft_body_after_commit,
-                word_count=len(draft_body_after_commit),
-                status="committed",
-                committed_capture_id=capture["id"],
-                pending_capture_id="",
-                summary=summary,
-                tags=tags,
-            )
-            if summary:
-                return _attach_capture_stage_timings({
-                "status": "committed",
-                "draft_id": draft_id,
-                "capture_id": capture["id"],
-                "title": meta.title,
-                "summary": summary,
-                "tags": tags,
-                "raw_path": raw_path,
-                "file_path": file_path,
-                "library_postprocess": library_postprocess,
-                "warnings": [f"保存后验收警告：{pipeline_error}"],
-            }, timings, total_started)
-        self.draft_repo.update(
-            draft_id,
+        updated = self._update_draft_snapshot(
+            draft,
             draft_text=draft_body_after_commit,
             word_count=len(draft_body_after_commit),
             status="committed",
@@ -1828,7 +1822,9 @@ class CaptureAgent:
             summary=summary,
             tags=tags,
         )
-        return _attach_capture_stage_timings({
+        if "error" in updated:
+            return updated
+        result = {
             "status": "committed",
             "draft_id": draft_id,
             "capture_id": capture["id"],
@@ -1838,7 +1834,10 @@ class CaptureAgent:
             "raw_path": raw_path,
             "file_path": file_path,
             "library_postprocess": library_postprocess,
-        }, timings, total_started)
+        }
+        if pipeline_error and summary:
+            result["warnings"] = [f"保存后验收警告：{pipeline_error}"]
+        return _attach_capture_stage_timings(result, timings, total_started)
 
     def _long_capture_commit_pipeline_error(
         self,
@@ -1911,20 +1910,20 @@ class CaptureAgent:
             return self._finalize_verbatim_full_text_draft(draft, capture_intent, instruction)
         overcompressed_error = self._overcompressed_commit_error(draft)
         if overcompressed_error:
-            self.draft_repo.update(draft["id"], status="draft_incomplete")
-            return {"error": overcompressed_error}
+            updated = self._update_draft_snapshot(draft, status="draft_incomplete")
+            return {"error": updated.get("error") or overcompressed_error}
         if draft.get("draft_text"):
             return draft
-        revised = self.revise_draft(
-            draft["id"],
+        revised = self._revise_draft_snapshot(
+            draft,
             instruction or "整理成可读的知识文件",
             reuse_saved_intent=True,
         )
-        if isinstance(revised, dict):
+        if "error" not in revised:
             overcompressed_error = self._overcompressed_commit_error(revised)
             if overcompressed_error:
-                self.draft_repo.update(draft["id"], status="draft_incomplete")
-                return {"error": overcompressed_error}
+                updated = self._update_draft_snapshot(revised, status="draft_incomplete")
+                return {"error": updated.get("error") or overcompressed_error}
         return revised
 
     def _capture_presentation_error(self, draft: dict) -> str:
@@ -1960,8 +1959,8 @@ class CaptureAgent:
                 stage_started,
             )
         stage_started = time.perf_counter()
-        updated = self.draft_repo.update(
-            draft["id"],
+        updated = self._update_draft_snapshot(
+            draft,
             draft_text=draft_body,
             instruction=instruction,
             capture_intent=capture_intent,
@@ -1974,7 +1973,7 @@ class CaptureAgent:
             "repo_update",
             stage_started,
         )
-        return updated or draft
+        return updated
 
     def _overcompressed_commit_error(self, draft: dict) -> str:
         raw_text = str(draft.get("raw_text") or "")

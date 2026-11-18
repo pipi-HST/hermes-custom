@@ -149,6 +149,29 @@ def test_dispatch_forwards_args_and_injects_context(env, monkeypatch):
     assert seen["context"].conn is not None
 
 
+def test_http_capture_policy_does_not_disable_local_cli_extractors(env, monkeypatch, tmp_path):
+    _, app, _ = env
+    from agents.extractors.document_extractor import DocumentExtractor
+    from agents.extractors.image_extractor import ImageExtractor
+    from bridge import capture_bridge
+
+    example = tmp_path / "example.md"
+    example.write_text("normal document", encoding="utf-8")
+    assert DocumentExtractor().can_handle(str(example))
+
+    def check_policy(content, context=None):
+        assert content == "ordinary capture"
+        assert not DocumentExtractor().can_handle(str(example))
+        assert ImageExtractor().can_handle("https://example.test/example.png")
+        return {"status": "success"}
+
+    monkeypatch.setattr(capture_bridge, "capture_content", check_policy)
+    with _client(app) as client:
+        response = _dispatch(client, "capture_bridge", "capture_content", args=["ordinary capture"])
+    assert response.status_code == 200
+    assert DocumentExtractor().can_handle(str(example))
+
+
 def test_caller_context_and_token_verified_are_dropped(env, monkeypatch):
     _, app, vault = env
     from bridge import capture_bridge

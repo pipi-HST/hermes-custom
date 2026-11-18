@@ -1,4 +1,6 @@
 from __future__ import annotations
+import json
+
 from tests.conftest import requires_runtime, requires_symlink  # noqa: E402
 
 
@@ -7,7 +9,8 @@ def test_knowledge_pipeline_acceptance_matrix_covers_all_major_pipelines(tmp_pat
 
     result = run_pipeline_acceptance_matrix(work_dir=tmp_path)
 
-    assert result["ok"] is True, result
+    failed = [scenario for scenario in result["scenarios"] if not scenario["ok"]]
+    assert result["ok"] is True, json.dumps(failed, ensure_ascii=False, indent=2, default=str)
     scenarios = {item["name"]: item for item in result["scenarios"]}
     assert {
         "editable_long_paste",

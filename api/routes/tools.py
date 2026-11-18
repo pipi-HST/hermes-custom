@@ -34,8 +34,11 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+
+from agents.extractors.input_policy import looks_like_local_path
+from bridge.ai_cancel import AIOperationCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +129,16 @@ _BRIDGE_TOOL_WHITELIST: dict[str, tuple[str, frozenset[str]]] = {
 }
 
 _MODULE_CACHE: dict[str, Any] = {}
-_DROPPED_KWARGS = ("context", "token_verified")
+_DROPPED_KWARGS = ("context", "token_verified", "before_commit", "expected_version")
+# These tool calls carry the existing chat confirmation phrase, not authority
+# to enter a token-verified service path. Bridge signatures may change without
+# exposing additional parameters over this API.
+_CONFIRMING_TOOL_ARGUMENTS = {
+    ("capture_bridge", "commit_capture_draft"): ("draft_id", "confirmation"),
+    ("garden_bridge", "commit_garden_draft"): ("draft_id", "confirmation"),
+    ("reading_bridge", "commit_reading_artifact"): ("draft_id", "confirmation"),
+    ("librarian_bridge", "run_librarian_audit"): ("apply", "export_file", "confirmation"),
+}
 
 
 class ToolCallRequest(BaseModel):
@@ -154,7 +166,6 @@ def create_tools_router(
         module_name: str,
         function_name: str,
         body: ToolCallRequest,
-        request: Request,
     ):
         """Run one whitelisted bridge function synchronously.
 
@@ -177,39 +188,33 @@ def create_tools_router(
         kwargs = dict(body.kwargs)
         for dropped in _DROPPED_KWARGS:
             kwargs.pop(dropped, None)
-        if _accepts_context(function):
+        public = _CONFIRMING_TOOL_ARGUMENTS.get((module_key, function_key))
+        if public is not None and (
+            len(body.args) > (0 if module_key == "librarian_bridge" else len(public))
+            or not kwargs.keys() <= set(public)
+        ):
+            raise HTTPException(status_code=422, detail="unexpected confirmation tool argument")
+        bound = _bind_public_tool_arguments(function, body.args, kwargs)
+        if (
+            module_key == "capture_bridge"
+            and function_key in {"capture_content", "create_editable_capture_draft"}
+        ):
+            content = bound.arguments.get("content")
+            if isinstance(content, str) and looks_like_local_path(content):
+                raise HTTPException(status_code=400, detail="local file capture is not allowed through the API")
+        parameters = bound.signature.parameters
+        if "context" in parameters or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+        ):
             kwargs["context"] = _context()
 
-        operation_id = (request.headers.get("X-Hermes-AI-Operation-Id") or "").strip()
         try:
-            if operation_id:
-                from bridge.ai_cancel import operation_context
-
-                with operation_context(operation_id):
-                    result = function(*list(body.args), **kwargs)
-                    if inspect.isawaitable(result):
-                        # research_bridge exposes async entrypoints; this
-                        # handler runs in FastAPI's threadpool, so driving the
-                        # coroutine here is safe.
-                        result = asyncio.run(result)
-            else:
-                result = function(*list(body.args), **kwargs)
-                if inspect.isawaitable(result):
-                    result = asyncio.run(result)
-        except HTTPException:
+            result = function(*body.args, **kwargs)
+            if inspect.isawaitable(result):
+                result = asyncio.run(result)
+        except (HTTPException, AIOperationCancelled):
             raise
         except Exception as exc:  # noqa: BLE001 - tool failures become structured 500s
-            from bridge.ai_cancel import AIOperationCancelled
-
-            if isinstance(exc, AIOperationCancelled):
-                return {
-                    "ok": False,
-                    "status": "cancelled",
-                    "cancelled": True,
-                    "operation_id": exc.operation_id,
-                    "cancelled_stage": exc.stage,
-                    "chat_preview": "已停止。",
-                }
             logger.exception(
                 "bridge tool %s.%s failed", module_key, function_key
             )
@@ -252,14 +257,13 @@ def _load_whitelisted_module(module_key: str):
     return module
 
 
-def _accepts_context(function) -> bool:
+def _bind_public_tool_arguments(function, args, kwargs) -> inspect.BoundArguments:
+    """Validate the effective binding, not just the wire keyword names."""
     try:
-        parameters = inspect.signature(function).parameters
+        signature = inspect.signature(function)
+        bound = signature.bind_partial(*args, **kwargs)
     except (TypeError, ValueError):
-        return False
-    if "context" in parameters:
-        return True
-    return any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
-    )
+        raise HTTPException(status_code=422, detail="invalid tool arguments") from None
+    if any(name in bound.arguments for name in _DROPPED_KWARGS):
+        raise HTTPException(status_code=422, detail="reserved tool argument")
+    return bound

@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -93,7 +94,7 @@ def run_pipeline_e2e(
         env = _subprocess_env(paths, embedding_base_url)
         api_process, api_log = _start_process(
             [
-                str(_venv_python(PROJECT_ROOT)),
+                sys.executable,
                 "-m",
                 "uvicorn",
                 "api.main:create_app",
@@ -498,8 +499,18 @@ def _garden_pipeline(
         },
     )
     payload = _json_response(response)
-    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
-    card_id = str(meta.get("card_id") or meta.get("garden_card_id") or "")
+    draft_meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    draft_id = str(draft_meta.get("draft_id") or "")
+    with sqlite3.connect(paths["db_path"]) as conn:
+        preview_saved_no_card = not conn.execute(
+            "SELECT 1 FROM garden_cards WHERE title = ?", ("Pipeline E2E Card",)
+        ).fetchone()
+    commit_response = client.post(
+        f"{runtime_base}/api/knowledge/garden-drafts/{draft_id}/commit", headers=headers,
+    ) if draft_id else None
+    committed = _json_response(commit_response) if commit_response is not None else {}
+    meta = committed.get("meta") if isinstance(committed.get("meta"), dict) else {}
+    card_id = str(meta.get("card_id") or "")
     cards_response = client.get(f"{runtime_base}/api/knowledge/cards", headers=headers)
     cards_payload = _json_response(cards_response)
     cards = cards_payload.get("cards") or cards_payload.get("items") or []
@@ -507,6 +518,8 @@ def _garden_pipeline(
         row = conn.execute("SELECT status, capture_ids FROM garden_cards WHERE id = ?", (card_id,)).fetchone() if card_id else None
     checks = [
         _check("garden_http_success", response.status_code == 200 and payload.get("status") == "success", payload.get("errors")),
+        _check("garden_preview_does_not_save_card", bool(draft_id and preview_saved_no_card), draft_meta),
+        _check("garden_commit_http_success", commit_response is not None and commit_response.status_code == 200 and committed.get("status") == "success", committed.get("errors")),
         _check("garden_card_id_returned", bool(card_id), meta),
         _check("garden_card_persisted", bool(row and row[0] in {"seed", "accepted"} and capture_id in str(row[1] or "")), row),
         _check("garden_card_visible", cards_response.status_code == 200 and any(str(item.get("id") or "") == card_id for item in cards), card_id),
@@ -529,7 +542,7 @@ def _rag_pipeline(
         "print('E2E_RESULT='+json.dumps(result, ensure_ascii=False))"
     )
     completed = subprocess.run(
-        [str(_venv_python(PROJECT_ROOT)), "-c", code],
+        [sys.executable, "-c", code],
         cwd=paths["custom_root"],
         env=env,
         capture_output=True,
@@ -676,13 +689,20 @@ def _graph_pipeline(
 
 
 def _prepare_isolated_root(root: Path, provider_settings: dict[str, str]) -> dict[str, Path]:
+    # An absolute root keeps config paths absolute: the API resolves relative
+    # database/vault paths against its own checkout, which would escape the
+    # isolated workspace on Windows.
+    root = root.resolve()
     custom_root = root / "custom-root"
     custom_root.mkdir(parents=True, exist_ok=True)
     for name in ("agents", "api", "bridge", "db", "scripts"):
         target = PROJECT_ROOT / name
         link = custom_root / name
         if not link.exists():
-            link.symlink_to(target, target_is_directory=True)
+            try:
+                link.symlink_to(target, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                shutil.copytree(target, link)
     (custom_root / "data").mkdir(exist_ok=True)
     vault = root / "knowledge"
     vault.mkdir(exist_ok=True)
@@ -743,6 +763,12 @@ def _subprocess_env(paths: dict[str, Path], embedding_base_url: str) -> dict[str
     env["HERMES_CUSTOM_ROOT"] = str(paths["custom_root"])
     env["HERMES_KNOWLEDGE_DB"] = str(paths["db_path"])
     env["HERMES_HOME"] = str(hermes_home)
+    # Reuse an existing build instead of letting `hermes dashboard` run
+    # `npm install && npm run build` on every E2E invocation (npm.cmd is not
+    # reliably spawnable from the harness on Windows).
+    built_web_dist = RUNTIME_ROOT / "hermes_cli" / "web_dist"
+    if (built_web_dist / "index.html").is_file():
+        env["HERMES_WEB_DIST"] = str(built_web_dist)
     if embedding_base_url:
         env["DASHSCOPE_BASE_URL"] = embedding_base_url
     else:
@@ -871,7 +897,7 @@ def _run_bridge_subprocess(
 ) -> tuple[subprocess.CompletedProcess, dict[str, Any]]:
     code = f"import json; {statement}; print('E2E_RESULT='+json.dumps(result, ensure_ascii=False))"
     completed = subprocess.run(
-        [str(_venv_python(PROJECT_ROOT)), "-c", code],
+        [sys.executable, "-c", code],
         cwd=paths["custom_root"],
         env=env,
         capture_output=True,

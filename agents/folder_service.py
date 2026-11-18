@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,12 +16,15 @@ from typing import Any
 
 import yaml
 
-from agents.markdown_writer import read_note
 from bridge.atomic_io import resolve_inside, atomic_write_text
 from bridge.folder_store import normalize_folder, rename_stored_folder
-from db.concurrency import transaction
+from bridge.knowledge_write_service import markdown_write_lock
+from bridge.process_lock import try_process_lock
+from db.concurrency import connection_lock, transaction
+from db.write_job_repo import KnowledgeWriteJobRepo
 
 logger = logging.getLogger(__name__)
+_NOTE_FRONTMATTER = re.compile(r"\A(?:\ufeff)?---\r?\n(.*?)^---[ \t]*(?:\r?\n|\Z)", re.DOTALL | re.MULTILINE)
 
 
 @dataclass
@@ -48,12 +52,7 @@ def rename_folder(
     vault_path: str | Path,
     conn: sqlite3.Connection,
 ) -> FolderRenameResult:
-    """Rename a folder across all data stores in one unit of work.
-
-    Order: collect -> write files -> one DB transaction -> folder registry.
-    The SQLite connection is autocommit, so the DB phase must be wrapped in
-    ``transaction()``; ``conn.commit()/rollback()`` alone are no-ops.
-    """
+    """Rename Markdown, SQLite projections and the registry, with recovery."""
     old = normalize_folder(old_folder)
     new = normalize_folder(new_folder)
 
@@ -62,97 +61,77 @@ def rename_folder(
     if old == new:
         return FolderRenameResult(old, new, 0, 0, 0, 0, [], ["old and new folder names are identical"])
 
+    vault_root = Path(vault_path).expanduser().resolve()
+    with try_process_lock(resolve_inside(vault_root, ".hermes/rename.lock")) as locked:
+        if not locked:
+            return FolderRenameResult(old, new, 0, 0, 0, 0, ["another topic rename is running"], [])
+        with markdown_write_lock:
+            return _rename_folder_locked(old, new, vault_root, conn)
+
+
+def _rename_folder_locked(old: str, new: str, vault_root: Path, conn: sqlite3.Connection) -> FolderRenameResult:
     errors: list[str] = []
     warnings: list[str] = []
-    draft_updates: list[tuple[str, str]] = []
-    file_updates: list[dict[str, Any]] = []
     updated_garden_cards = 0
-    vault_root = Path(vault_path).expanduser()
+    updated_drafts = 0
+    written: list[str] = []
 
     try:
-        # Phase 1: collect draft intents.
-        for row in conn.execute(
-            """SELECT id, capture_intent FROM capture_drafts
-               WHERE COALESCE(committed_capture_id, '') = ''
-                 AND COALESCE(status, '') NOT IN ('abandoned', 'discarded')"""
-        ).fetchall():
-            draft_id = str(row["id"])
-            try:
-                intent = json.loads(str(row["capture_intent"] or "{}"))
-            except json.JSONDecodeError:
-                warnings.append(f"draft {draft_id}: invalid capture_intent JSON")
-                continue
-            if not isinstance(intent, dict):
-                warnings.append(f"draft {draft_id}: capture_intent is not a dict")
-                continue
-            if normalize_folder(intent.get("folder_path", "")) != old:
-                continue
-            intent["folder_path"] = new
-            draft_updates.append((json.dumps(intent, ensure_ascii=False), draft_id))
-
-        # Phase 2: collect capture files whose frontmatter matches.
-        for row in conn.execute(
-            "SELECT id, file_path FROM captures WHERE archived_at IS NULL"
-        ).fetchall():
-            capture_id = str(row["id"])
-            file_path = str(row["file_path"] or "")
-            if not file_path:
-                warnings.append(f"capture {capture_id}: missing file_path")
-                continue
-            try:
-                absolute_path = resolve_inside(vault_root, file_path)
-            except ValueError:
-                warnings.append(f"capture {capture_id}: invalid path {file_path}")
-                continue
-            if not absolute_path.exists():
-                warnings.append(f"capture {capture_id}: file not found at {file_path}")
-                continue
-            try:
-                note_result = read_note(vault_root, file_path)
-            except Exception as exc:  # noqa: BLE001 - one bad note must not stop the rest
-                warnings.append(f"capture {capture_id}: read failed - {exc}")
-                continue
-            if note_result is None:
-                warnings.append(f"capture {capture_id}: could not read {file_path}")
-                continue
-            frontmatter, body = note_result
-            current_folder = normalize_folder(
-                frontmatter.get("folder_path") or frontmatter.get("folder", "")
-            )
-            if current_folder != old:
-                continue
-            frontmatter["folder_path"] = new
-            frontmatter.pop("folder", None)  # drop the legacy key
-            file_updates.append(
-                {
-                    "capture_id": capture_id,
-                    "path": absolute_path,
-                    "content": _render_markdown(frontmatter, body),
-                }
-            )
-
-        # Phase 3: write files. A failed write drops that row from the DB phase
-        # so the mirror never claims a folder the note does not have.
-        written: list[dict[str, Any]] = []
-        for item in file_updates:
-            try:
-                atomic_write_text(item["path"], item["content"])
-                written.append(item)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"capture {item['capture_id']}: write failed - {exc}")
-
-        # Phase 4: one short DB transaction for every derived index.
-        if draft_updates or written:
+        with connection_lock(conn):
+            if conn.in_transaction:
+                raise RuntimeError("topic rename requires its own durable journal transaction")
+        journal = conn.execute(
+            """SELECT id, step, payload_json FROM knowledge_write_jobs
+               WHERE intent = 'rename_folder_journal' AND status = 'pending'"""
+        ).fetchone()
+        if journal is not None:
+            plan = json.loads(journal["payload_json"])
+            if (plan["old"], plan["new"]) != (old, new):
+                raise ValueError(f"resume incomplete topic rename {plan['old']!r} → {plan['new']!r} first")
+            job_id = journal["id"]
+            apply_db = journal["step"] != "db_applied"
+            if apply_db:
+                # A capture may have been saved after the earlier attempt.
+                # Extend the manifest before making any additional file writes.
+                with transaction(conn):
+                    extra = _collect_notes(conn, vault_root, old, warnings)
+                    capture_ids = list(dict.fromkeys([*plan["capture_ids"], *extra]))
+                    if capture_ids != plan["capture_ids"]:
+                        plan["capture_ids"] = capture_ids
+                        conn.execute(
+                            "UPDATE knowledge_write_jobs SET payload_json = ? WHERE id = ?",
+                            (json.dumps(plan, ensure_ascii=False), job_id),
+                        )
+        else:
             with transaction(conn):
-                for intent_json, draft_id in draft_updates:
-                    conn.execute(
-                        "UPDATE capture_drafts SET capture_intent = ?, updated_at = datetime('now') WHERE id = ?",
-                        (intent_json, draft_id),
-                    )
-                for item in written:
+                files = _collect_notes(conn, vault_root, old, warnings)
+                plan = {"old": old, "new": new, "capture_ids": list(files)}
+                job_id = KnowledgeWriteJobRepo(conn).start(
+                    intent="rename_folder_journal", object_type="folder",
+                    object_id=old, payload=plan,
+                )
+            apply_db = True
+
+        if apply_db:
+            # Keep the journal durable while applying the file and DB phases.
+            # A rollback leaves the recorded IDs available for the next try.
+            with transaction(conn):
+                drafts = _draft_folder_updates(conn, old, new, warnings)
+                files = _collect_notes(conn, vault_root, old, warnings, set(plan["capture_ids"]), new)
+                for capture_id, (path, frontmatter, body, current_folder, original) in files.items():
+                    if current_folder == old:
+                        frontmatter["folder_path"] = new
+                        frontmatter.pop("folder", None)
+
+                        def check_snapshot() -> None:
+                            if path.read_bytes() != original:
+                                raise RuntimeError(f"capture {capture_id} changed during topic rename")
+
+                        atomic_write_text(path, _render_markdown(frontmatter, body), before_replace=check_snapshot)
+                    written.append(capture_id)
                     conn.execute(
                         "UPDATE captures SET updated_at = datetime('now') WHERE id = ?",
-                        (item["capture_id"],),
+                        (capture_id,),
                     )
                     conn.execute(
                         """INSERT INTO capture_metadata
@@ -161,8 +140,13 @@ def rename_folder(
                            ON CONFLICT(capture_id) DO UPDATE SET
                                folder_path=excluded.folder_path,
                                updated_at=excluded.updated_at""",
-                        (item["capture_id"], new),
+                        (capture_id, new),
                     )
+                conn.executemany(
+                    "UPDATE capture_drafts SET capture_intent = ?, updated_at = datetime('now') WHERE id = ?",
+                    drafts,
+                )
+                updated_drafts = len(drafts)
                 cursor = conn.execute(
                     """UPDATE garden_cards
                        SET source_theme = ?, updated_at = datetime('now')
@@ -170,14 +154,15 @@ def rename_folder(
                     (new, old),
                 )
                 updated_garden_cards = cursor.rowcount
+                KnowledgeWriteJobRepo(conn).mark_step(job_id, status="pending", step="db_applied")
 
-        # Phase 5: registry after the DB commit.
         rename_stored_folder(vault_root, old, new)
+        KnowledgeWriteJobRepo(conn).complete(job_id)
         logger.info(
             "Renamed folder %r -> %r: %d drafts, %d captures, %d garden cards",
             old,
             new,
-            len(draft_updates),
+            updated_drafts,
             len(written),
             updated_garden_cards,
         )
@@ -189,13 +174,65 @@ def rename_folder(
     return FolderRenameResult(
         old_folder=old,
         new_folder=new,
-        updated_drafts=len(draft_updates),
+        updated_drafts=updated_drafts if not errors else 0,
         updated_captures=len(written),
-        updated_garden_cards=updated_garden_cards,
-        updated_metadata=len(written),
+        updated_garden_cards=updated_garden_cards if not errors else 0,
+        updated_metadata=len(written) if not errors else 0,
         errors=errors,
         warnings=warnings,
     )
+
+
+def _collect_notes(conn, vault_root, old, warnings, planned=None, new=None):
+    result = {}
+    for row in conn.execute("SELECT id, file_path FROM captures WHERE archived_at IS NULL"):
+        capture_id = str(row["id"])
+        if planned is not None and capture_id not in planned:
+            continue
+        file_path = str(row["file_path"] or "")
+        try:
+            if not file_path:
+                raise ValueError("missing file_path")
+            path = resolve_inside(vault_root, file_path)
+            original = path.read_bytes()
+            text = original.decode("utf-8")
+            match = _NOTE_FRONTMATTER.match(text)
+            frontmatter = (yaml.safe_load(match[1]) or {}) if match else {}
+            if not isinstance(frontmatter, dict):
+                raise ValueError(f"invalid frontmatter at {file_path}")
+            body = text[match.end():] if match else text
+        except (OSError, ValueError, RuntimeError, yaml.YAMLError) as exc:
+            if planned is not None:
+                raise RuntimeError(f"cannot resume capture {capture_id}: {exc}") from exc
+            detail = f"file not found at {file_path}" if isinstance(exc, FileNotFoundError) else str(exc)
+            warnings.append(f"capture {capture_id}: {detail}")
+            continue
+        current = normalize_folder(frontmatter.get("folder_path") or frontmatter.get("folder", ""))
+        if current == old or (planned is not None and current == new):
+            result[capture_id] = (path, frontmatter, body, current, original)
+    return result
+
+
+def _draft_folder_updates(conn, old, new, warnings):
+    updates = []
+    rows = conn.execute(
+        """SELECT id, capture_intent, status FROM capture_drafts
+           WHERE COALESCE(committed_capture_id, '') = ''
+             AND COALESCE(status, '') NOT IN ('abandoned', 'discarded', 'committed')"""
+    ).fetchall()
+    for row in rows:
+        try:
+            intent = json.loads(row["capture_intent"] or "{}")
+        except (ValueError, TypeError):
+            intent = None
+        if not isinstance(intent, dict):
+            warnings.append(f"draft {row['id']}: invalid capture_intent")
+        elif normalize_folder(intent.get("folder_path", "")) == old:
+            if row["status"] == "committing":
+                raise RuntimeError(f"capture draft {row['id']} is being saved; retry the topic rename")
+            intent["folder_path"] = new
+            updates.append((json.dumps(intent, ensure_ascii=False), row["id"]))
+    return updates
 
 
 def _render_markdown(frontmatter: dict[str, Any], body: str) -> str:
@@ -206,4 +243,4 @@ def _render_markdown(frontmatter: dict[str, Any], body: str) -> str:
         allow_unicode=True,
         sort_keys=False,
     ).strip()
-    return f"---\n{yaml_text}\n---\n\n{body}"
+    return f"---\n{yaml_text}\n---\n{body}"

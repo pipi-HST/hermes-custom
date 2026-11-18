@@ -51,11 +51,25 @@ def build_graph_retrieval(
 
     theme_groups = _theme_groups_for_captures(conn, seed_capture_ids, limit=max_theme)
     theme_pages = _theme_pages_for_captures(seed_hits, vault_path, limit=max_theme)
+    # Filter archived candidates before the expansion budget is spent, so an
+    # archived sibling cannot consume a slot and starve an active one.
+    candidate_capture_ids = [
+        *seed_capture_ids,
+        *[
+            str(capture_id)
+            for card in garden_cards
+            for capture_id in card.get("capture_ids", [])
+        ],
+    ]
+    active_capture_ids = set(
+        _active_capture_ids(conn, list(dict.fromkeys(candidate_capture_ids)))
+    )
     expanded_capture_ids = _expanded_capture_ids(
         seed_capture_ids,
         garden_cards,
         theme_groups,
         max_expanded_captures,
+        allowed_capture_ids=active_capture_ids,
     )
     final_hits = _select_final_hits(
         conn,
@@ -309,6 +323,8 @@ def _expanded_capture_ids(
     garden_cards: list[dict[str, Any]],
     theme_groups: list[dict[str, Any]],
     limit: int,
+    *,
+    allowed_capture_ids: set[str] | None = None,
 ) -> list[str]:
     """Expand through cards only.
 
@@ -320,11 +336,31 @@ def _expanded_capture_ids(
     seen: set[str] = set()
     ordered: list[str] = []
     for capture_id in seed_capture_ids:
-        _append_capture_id(ordered, seen, capture_id, limit)
+        if allowed_capture_ids is None or capture_id in allowed_capture_ids:
+            _append_capture_id(ordered, seen, capture_id, limit)
     for card in garden_cards:
         for capture_id in card.get("capture_ids", []):
-            _append_capture_id(ordered, seen, str(capture_id), limit)
+            capture_id = str(capture_id)
+            if allowed_capture_ids is not None and capture_id not in allowed_capture_ids:
+                continue
+            _append_capture_id(ordered, seen, capture_id, limit)
     return ordered
+
+
+def _active_capture_ids(conn, capture_ids: list[str]) -> list[str]:
+    """Drop archived captures from graph expansion while keeping score order."""
+    if not capture_ids:
+        return []
+    if "archived_at" not in _table_columns(conn, "captures"):
+        return list(capture_ids)
+    placeholders = ",".join("?" for _ in capture_ids)
+    rows = conn.execute(
+        f"""SELECT id FROM captures
+            WHERE id IN ({placeholders}) AND archived_at IS NULL""",
+        tuple(capture_ids),
+    ).fetchall()
+    active = {str(row["id"]) for row in rows}
+    return [capture_id for capture_id in capture_ids if capture_id in active]
 
 
 def _garden_card_dict(row, capture_ids: list[str]) -> dict[str, Any]:

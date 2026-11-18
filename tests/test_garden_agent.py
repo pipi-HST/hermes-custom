@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 import pytest
 from unittest.mock import patch, MagicMock
 from db.schema import init_db
@@ -11,6 +13,7 @@ from agents.garden_agent import (
     commit_garden_draft_to_card,
     create_garden_card,
     create_garden_draft,
+    discard_garden_draft,
     get_garden_draft,
     get_latest_open_garden_draft,
     update_garden_card,
@@ -69,6 +72,56 @@ def test_synthesize_two_step(mock_call):
     assert "gc001" in result["knowledge_links"]
     assert "gc002" in result["knowledge_links"]
     assert result["markdown"]  # non-empty synthesis
+
+
+@patch("agents.garden_agent.GardenAgent._call_llm")
+def test_card_preview_commit_share_body_with_sources_and_use_hint(mock_call, repo):
+    mock_call.return_value = json.dumps({
+        "title": "共享正文卡片",
+        "one_liner": "预览、草稿和卡片必须使用同一份正文。",
+        "core_arguments": [
+            {"claim": "来源链接应当保留。", "source_ids": ["cap1"]},
+        ],
+        "key_materials": [],
+    })
+    captures = [{
+        "id": "cap1",
+        "title": "来源材料",
+        "file_path": "captures/来源材料.md",
+        "cached_text": "正文",
+    }]
+
+    result = GardenAgent(llm_api_key="test").synthesize(captures, [])
+    body = result["markdown"]
+
+    assert result["payload"]["content_markdown"] == body
+    assert "## 来源" in body
+    assert "[[captures/来源材料|来源材料]]" in body
+    assert "## 什么时候用" in body
+    assert "以后遇到相似问题时" in body
+
+    draft_id = create_garden_draft(repo, {
+        "title": result["title"],
+        "one_liner": result["one_liner"],
+        "card_kind": result["card_kind"],
+        "payload": result["payload"],
+        "markdown": result["markdown"],
+        "capture_ids": ["cap1"],
+    })
+    draft = get_garden_draft(repo, draft_id)
+    assert draft["markdown"] == body
+    assert json.loads(draft["payload_json"])["content_markdown"] == body
+
+    card_id = commit_garden_draft_to_card(repo, draft_id)
+    card = repo.conn.execute(
+        "SELECT content_markdown, payload_json FROM garden_cards WHERE id = ?",
+        (card_id,),
+    ).fetchone()
+
+    assert card["content_markdown"] == body
+    assert json.loads(card["payload_json"])["content_markdown"] == body
+    assert "[[captures/来源材料|来源材料]]" in card["content_markdown"]
+    assert "以后遇到相似问题时" in card["content_markdown"]
 
 
 def test_create_garden_card(repo):
@@ -794,6 +847,63 @@ def test_commit_garden_draft_to_card_preserves_card_kind(repo):
     assert card["card_kind"] == "risk"
 
 
+@pytest.mark.parametrize("terminal", ["committed", "discarded"])
+def test_closed_garden_draft_cannot_be_rewritten(repo, terminal):
+    draft_id = create_garden_draft(repo, {"title": "待保存"})
+    if terminal == "committed":
+        assert commit_garden_draft_to_card(repo, draft_id)
+    else:
+        assert discard_garden_draft(repo, draft_id)
+    closed = get_garden_draft(repo, draft_id)
+
+    assert update_garden_draft(repo, draft_id, {"title": "修改后的卡片"}) is None
+    assert commit_garden_draft_to_card(repo, draft_id) is None
+    assert not discard_garden_draft(repo, draft_id)
+    assert get_garden_draft(repo, draft_id) == closed
+
+
+@pytest.mark.parametrize("competing_change", ["commit", "discard"])
+def test_concurrent_garden_draft_transitions_have_one_winner(tmp_path, competing_change):
+    db_path = str(tmp_path / "drafts.db")
+    first_conn = init_db(db_path)
+    second_conn = init_db(db_path)
+    first = CaptureRepo(first_conn)
+    second = CaptureRepo(second_conn)
+    sync = Barrier(2, timeout=5)
+
+    def commit(repo, draft_id):
+        sync.wait()
+        return commit_garden_draft_to_card(repo, draft_id)
+
+    def discard(repo, draft_id):
+        sync.wait()
+        return discard_garden_draft(repo, draft_id)
+
+    try:
+        draft_id = create_garden_draft(first, {"title": "待保存"})
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            commit_future = pool.submit(commit, first, draft_id)
+            competing = commit if competing_change == "commit" else discard
+            other_future = pool.submit(competing, second, draft_id)
+            card = commit_future.result()
+            other = other_future.result()
+
+        assert bool(card) != bool(other)
+        final = get_garden_draft(first, draft_id)
+        cards = first_conn.execute("SELECT id FROM garden_cards").fetchall()
+        if card or competing_change == "commit":
+            assert final["status"] == "committed"
+            assert final["committed_card_id"] == (card or other)
+            assert [row["id"] for row in cards] == [final["committed_card_id"]]
+        else:
+            assert final["status"] == "discarded"
+            assert not final["committed_card_id"]
+            assert cards == []
+    finally:
+        second_conn.close()
+        first_conn.close()
+
+
 @patch("agents.garden_agent.GardenAgent._call_llm")
 def test_synthesize_without_existing_cards(mock_call):
     mock_call.return_value = json.dumps({
@@ -836,6 +946,38 @@ def test_create_and_update_card_keep_column_equal_to_payload(repo):
         (card_id,),
     ).fetchone()
     assert row["content_markdown"] == "# 正文同源（改）\n\n更新后的正文。"
+    assert json.loads(row["payload_json"])["content_markdown"] == row["content_markdown"]
+
+
+def test_update_card_keeps_payload_body_when_column_drifted(repo):
+    repo.conn.execute(
+        """INSERT INTO garden_cards
+           (id, title, content_markdown, payload_json, status, capture_ids)
+           VALUES (?, ?, '', ?, 'seed', '[]')""",
+        (
+            "card-body-drift",
+            "原名",
+            json.dumps(
+                {
+                    "schema_version": "garden_card.v2",
+                    "title": "原名",
+                    "claim": "正文不能因为列缓存漂移而丢失。",
+                    "card_kind": "viewpoint",
+                    "content_markdown": "payload 里的完整正文。",
+                    "source_ids": [],
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    )
+    repo.conn.commit()
+
+    update_garden_card(repo, "card-body-drift", {"title": "新名"})
+
+    row = repo.conn.execute(
+        "SELECT content_markdown, payload_json FROM garden_cards WHERE id = 'card-body-drift'"
+    ).fetchone()
+    assert row["content_markdown"] == "payload 里的完整正文。"
     assert json.loads(row["payload_json"])["content_markdown"] == row["content_markdown"]
 
 

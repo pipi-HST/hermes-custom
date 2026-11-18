@@ -249,7 +249,7 @@ def rename_topic(
     result = rename_folder(old_folder, new_folder, vault_path, conn)
     if result.errors:
         raise RuntimeError("; ".join(result.errors))
-    return result.updated_drafts + result.updated_captures
+    return result.total_updated()
 
 
 # Compatibility alias for older callers/tests; new code should use rename_topic.
@@ -344,20 +344,6 @@ def _capture_folder_mirror_complete(conn) -> bool:
     return int(row[0] or 0) == 0
 
 
-def _capture_search_index_complete(conn) -> bool:
-    try:
-        row = conn.execute(
-            """SELECT COUNT(*) FROM captures c
-               WHERE c.archived_at IS NULL
-                 AND NOT EXISTS (
-                     SELECT 1 FROM capture_embeddings e WHERE e.capture_id = c.id
-                 )"""
-        ).fetchone()
-    except Exception:
-        return False
-    return int(row[0] or 0) == 0
-
-
 def _passes_library_filters(
     item: dict,
     *,
@@ -390,7 +376,9 @@ def _list_filtered(
     Pushdown is best-effort and never trades correctness for speed:
 
     * folder on captures needs the ``capture_metadata.folder_path`` mirror;
-    * search on captures needs the embedding index to cover every active row;
+    * search on captures stays post-hydration: ``capture_embeddings.index_text``
+      is a clipped vector excerpt, not the note body, so a miss there cannot
+      prove the note does not match;
     * capture status stays a post-hydration check because frontmatter can
       override the archived flag;
     * anything that cannot be pushed down falls back to reading candidates and
@@ -433,14 +421,10 @@ def _list_filtered(
 
     if search_text and _search_pushdown_safe(search_text):
         like = _like_pattern(search_text)
-        if _capture_search_index_complete(conn):
-            capture_conditions.append(
-                "EXISTS (SELECT 1 FROM capture_embeddings e "
-                "WHERE e.capture_id = c.id AND e.index_text LIKE ? ESCAPE '\\')"
-            )
-            capture_params.append(like)
-        else:
-            capture_pushdown = False
+        # The vector index stores a clipped excerpt, so a LIKE miss there does
+        # not mean the full note misses.  Read capture candidates and let the
+        # post-hydration predicate search the real body.
+        capture_pushdown = False
         draft_conditions.append(
             "(d.title LIKE ? ESCAPE '\\' OR d.summary LIKE ? ESCAPE '\\' "
             "OR d.draft_text LIKE ? ESCAPE '\\' OR d.raw_text LIKE ? ESCAPE '\\')"

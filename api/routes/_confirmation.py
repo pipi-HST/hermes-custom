@@ -16,8 +16,9 @@ def issue_confirmation_token(
     *,
     intent: str,
     object_id: str,
+    object_version: str | None = None,
 ) -> dict:
-    token, expires_at = repo.issue(intent=intent, object_id=object_id)
+    token, expires_at = repo.issue(intent=intent, object_id=object_id, object_version=object_version)
     return {"token": token, "expires_at": expires_at, "intent": intent}
 
 
@@ -27,8 +28,9 @@ def require_confirmation_token(
     intent: str,
     object_id: str,
     token: str,
+    object_version: str | None = None,
 ) -> None:
-    error = repo.consume(intent=intent, object_id=object_id, token=token)
+    error = repo.consume(intent=intent, object_id=object_id, token=token, object_version=object_version)
     if error:
         raise HTTPException(
             status_code=403,

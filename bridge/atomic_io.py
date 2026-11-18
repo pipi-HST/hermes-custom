@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -27,13 +28,16 @@ def resolve_inside(root: Path, relative_path: str | Path) -> Path:
     return target
 
 
-def atomic_write_text(target: Path, content: str) -> None:
+def atomic_write_text(
+    target: Path, content: str, *, before_replace: Callable[[], None] | None = None,
+) -> None:
     """Atomically replace ``target`` with ``content`` (UTF-8)."""
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=target.parent,
-        prefix=f".{target.name}.",
+        # Keep the sibling name short for nested vaults on Windows.
+        prefix=".hw-",
         suffix=".tmp",
     )
     temporary_path = Path(temporary_name)
@@ -42,6 +46,8 @@ def atomic_write_text(target: Path, content: str) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
+        if before_replace is not None:
+            before_replace()
         os.replace(temporary_path, target)
     finally:
         temporary_path.unlink(missing_ok=True)

@@ -19,9 +19,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Require private Runtime checkout token
+        env:
+          HERMES_CI_REPO_TOKEN: ${{ secrets.HERMES_CI_REPO_TOKEN }}
+        run: |
+          if [ -z "$HERMES_CI_REPO_TOKEN" ]; then
+            echo "::error::HERMES_CI_REPO_TOKEN is required to checkout pipi-HST/hermes-agent-main"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
+          persist-credentials: false
+
+      - name: Checkout Runtime repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          repository: pipi-HST/hermes-agent-main
+          token: ${{ secrets.HERMES_CI_REPO_TOKEN }}
+          path: runtime
           persist-credentials: false
 
       - name: Set up Python
@@ -40,6 +57,8 @@ jobs:
         run: cp config.example.yaml config.yaml
 
       - name: Check docs and generated state
+        env:
+          HERMES_RUNTIME_ROOT: ${{ github.workspace }}/runtime
         run: |
           python scripts/check_docs.py
           python -c "from db.schema import init_db; init_db('data/captures.db')"

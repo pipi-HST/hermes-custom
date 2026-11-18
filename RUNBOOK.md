@@ -89,6 +89,10 @@ HERMES_API_TOKEN=<same random value>
 
 **两边 token 必须相同。** 一个常见的 503 原因是只设置了 `HERMES_KNOWLEDGE_URL`，没有设置 `HERMES_KNOWLEDGE_TOKEN`，或者服务端没有设置 `HERMES_API_TOKEN`。
 
+如果预览知识卡片草稿正常、保存提示契约不兼容，检查 Service `/api/health` 的 `contract_version`。Dashboard 保存要求 v2 或以上；未升级的旧服务仍可用于预览。
+
+如果专题改名中途失败，修复报错后用相同的旧名和新名重试。不要手工清理 `rename_folder_journal` 记录：它记录了待补齐索引的资料，以及数据库是否已经提交。启用队列时，重启 worker 会自动接手上一进程未完成的作业。
+
 ## 5. 本地开发模式
 
 ```text
@@ -125,7 +129,10 @@ cd <repos>/hermes-custom
 .venv\Scripts\python.exe scripts\http_only_smoke.py --work-dir .tmp\hermes-http-only
 .venv\Scripts\python.exe scripts\check_docs.py
 .venv\Scripts\python.exe scripts\update_current_state.py --check
+.venv\Scripts\python.exe scripts\architecture_inventory.py --check --strict
 ```
+
+`--strict` 需要同级 `hermes-agent-main`（或 `HERMES_RUNTIME_ROOT`）；缺失时直接失败，不跳过。
 
 跨进程 pipeline（需要同级 `hermes-agent-main`；否则设置 `HERMES_RUNTIME_ROOT`）：
 

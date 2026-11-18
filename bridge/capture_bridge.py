@@ -1036,7 +1036,13 @@ def _discard_capture_draft(agent, draft_id: str = "") -> dict:
             intent="discard_capture_draft",
             error="草稿已删除，不能重复删除。",
         )
-    updated = agent.draft_repo.update(draft_id, status="abandoned") or draft
+    updated = agent.draft_repo.update_editable(draft, status="abandoned")
+    if updated is None:
+        return error_envelope(
+            agent="capture",
+            intent="discard_capture_draft",
+            error="草稿已变更或正在保存，请刷新后重试。",
+        )
     title = updated.get("title") or draft.get("title") or "未命名草稿"
     return success_envelope(
         agent="capture",

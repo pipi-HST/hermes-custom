@@ -68,7 +68,7 @@ copy config.example.yaml config.yaml   # 仅首次；已有 config.yaml 不要�
 
 ```powershell
 cd <repos>\hermes-agent-main
-uv sync                      # 或：py -3.12 -m venv .venv; .venv\Scripts\python.exe -m pip install -e .
+uv sync --extra web          # 或：py -3.12 -m venv .venv; .venv\Scripts\python.exe -m pip install -e ".[web]"
 .venv\Scripts\python.exe -m hermes_cli.main dashboard --no-open
 # 打开 http://127.0.0.1:9119
 ```
@@ -81,6 +81,8 @@ HERMES_KNOWLEDGE_TOKEN=<与服务的 HERMES_API_TOKEN 相同的高强度随机�
 ```
 
 服务侧设置 `HERMES_API_TOKEN=<同一个值>`；改完 token 要重启服务。两边值必须一致。
+
+分批升级时，新 Runtime 可从旧服务预览知识卡片草稿，但通过 Dashboard 保存卡片要求 Service 契约 v2。请先升级 Service，再升级 Runtime。
 
 还需要告诉 Runtime 服务端的 vault / DB 位置（HTTP 模式下这两个变量不是可选的，
 Dashboard 的草稿、卡片详情、时间线读路由仍会用到）：
@@ -151,6 +153,9 @@ cd <repos>\hermes-custom
 # 需要同级 hermes-agent-main checkout；不在同级时设置 HERMES_RUNTIME_ROOT
 $env:HERMES_RUNTIME_ROOT = "<repos>\hermes-agent-main"
 .venv\Scripts\python.exe scripts\knowledge_pipeline_e2e.py --work-dir .tmp\hermes-pipeline-e2e
+
+# 架构清单（--strict 需要 Runtime checkout；缺失会失败而不是跳过）
+.venv\Scripts\python.exe scripts\architecture_inventory.py --check --strict
 
 # Runtime 侧 Knowledge 相关
 cd <repos>\hermes-agent-main

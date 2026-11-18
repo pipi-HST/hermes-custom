@@ -479,6 +479,9 @@ def test_save_answer_draft_calls_bridge(client):
         assistant_answer="Recursion is when a function calls itself.",
         instruction="Save as learning note.",
         output_type="local_learning_note",
+        assistant_message_id="",
+        answer_source="auto",
+        source_run_id="",
         sources=[],
         target_capture_id="",
         folder_path="",
@@ -699,6 +702,7 @@ def test_update_editable_capture_draft_calls_bridge(client, draft_repo):
         draft_id=draft["id"],
         content="用户编辑后的正文",
         title="用户标题",
+        title_source=None,
         summary=None,
         tags=None,
         folder_path=None,
@@ -1366,10 +1370,11 @@ def test_garden_commit_requires_single_use_confirmation_token(
 
     draft_id = _create_garden_draft_row(capture_repo)
     calls: list[dict] = []
+    save = garden_bridge.commit_garden_draft
 
     def fake_commit(**kwargs):
         calls.append(kwargs)
-        return {"status": "success", "intent": "commit_garden_draft"}
+        return save(**kwargs)
 
     monkeypatch.setattr(garden_bridge, "commit_garden_draft", fake_commit)
 
@@ -1382,6 +1387,7 @@ def test_garden_commit_requires_single_use_confirmation_token(
         json={"confirmation_token": "not-a-token"},
     )
     assert invalid.status_code == 403
+    calls.clear()
 
     issued = client.post(f"/api/garden/drafts/{draft_id}/confirmation")
     assert issued.status_code == 200
@@ -1396,14 +1402,11 @@ def test_garden_commit_requires_single_use_confirmation_token(
     )
     assert committed.status_code == 200
     assert committed.json()["intent"] == "commit_garden_draft"
-    assert calls == [
-        {
-            "draft_id": draft_id,
-            "confirmation_source": "api",
-            "token_verified": True,
-            "context": None,
-        }
-    ]
+    assert len(calls) == 1
+    assert calls[0]["draft_id"] == draft_id
+    assert calls[0]["confirmation_source"] == "api"
+    assert calls[0]["token_verified"] is True
+    assert calls[0]["context"].conn is capture_repo.conn
 
     reused = client.post(
         f"/api/garden/drafts/{draft_id}/commit",
@@ -1412,18 +1415,67 @@ def test_garden_commit_requires_single_use_confirmation_token(
     assert reused.status_code == 403
 
 
-def test_garden_commit_rejects_token_for_another_draft(
-    client, capture_repo, monkeypatch
-):
+def test_garden_confirmation_covers_one_revision(client, capture_repo):
+    from agents.garden_agent import update_garden_draft
+
+    draft_id = _create_garden_draft_row(capture_repo)
+    draft_url = f"/api/garden/drafts/{draft_id}"
+    token = client.post(f"{draft_url}/confirmation").json()["token"]
+
+    assert update_garden_draft(capture_repo, draft_id, {"title": "修订后的卡片"})
+    stale = client.post(f"{draft_url}/commit", json={"confirmation_token": token})
+    assert stale.status_code == 403
+    assert capture_repo.conn.execute("SELECT COUNT(*) FROM garden_cards").fetchone()[0] == 0
+
+    token = client.post(f"{draft_url}/confirmation").json()["token"]
+    saved = client.post(f"{draft_url}/commit", json={"confirmation_token": token})
+    assert saved.status_code == 200
+    assert saved.json()["status"] == "success"
+    assert client.get("/api/garden/cards").json()["items"][0]["title"] == "修订后的卡片"
+    assert client.post(f"{draft_url}/commit", json={"confirmation_token": token}).status_code == 403
+    assert client.post(f"{draft_url}/confirmation").status_code == 409
+    assert client.delete(draft_url).status_code == 409
+    assert capture_repo.conn.execute(
+        "SELECT status, committed_card_id FROM garden_drafts WHERE id=?", (draft_id,),
+    ).fetchone()[:] == ("committed", saved.json()["meta"]["card_id"])
+
+
+def test_discarded_garden_draft_cannot_be_confirmed_or_discarded_again(client, capture_repo):
+    draft_id = _create_garden_draft_row(capture_repo)
+    draft_url = f"/api/garden/drafts/{draft_id}"
+    token = client.post(f"{draft_url}/confirmation").json()["token"]
+
+    assert client.delete(draft_url).status_code == 200
+    assert client.delete(draft_url).status_code == 409
+    assert client.post(f"{draft_url}/confirmation").status_code == 409
+    assert client.post(f"{draft_url}/commit", json={"confirmation_token": token}).status_code == 403
+    assert capture_repo.conn.execute("SELECT COUNT(*) FROM garden_cards").fetchone()[0] == 0
+
+
+def test_garden_commit_checks_version_after_token_verification(client, capture_repo, monkeypatch):
+    from agents.garden_agent import update_garden_draft
     from bridge import garden_bridge
 
+    draft_id = _create_garden_draft_row(capture_repo)
+    draft_url = f"/api/garden/drafts/{draft_id}"
+    token = client.post(f"{draft_url}/confirmation").json()["token"]
+    commit = garden_bridge.commit_garden_draft
+
+    def commit_after_revision(**kwargs):
+        assert update_garden_draft(capture_repo, draft_id, {"title": "修改后的卡片"})
+        return commit(**kwargs)
+
+    monkeypatch.setattr(garden_bridge, "commit_garden_draft", commit_after_revision)
+    response = client.post(f"{draft_url}/commit", json={"confirmation_token": token})
+    assert response.status_code == 409
+    assert capture_repo.conn.execute("SELECT COUNT(*) FROM garden_cards").fetchone()[0] == 0
+
+
+def test_garden_commit_rejects_token_for_another_draft(
+    client, capture_repo
+):
     first = _create_garden_draft_row(capture_repo, "卡片一")
     second = _create_garden_draft_row(capture_repo, "卡片二")
-    monkeypatch.setattr(
-        garden_bridge,
-        "commit_garden_draft",
-        lambda **kwargs: {"status": "success", "intent": "commit_garden_draft"},
-    )
     token = client.post(f"/api/garden/drafts/{first}/confirmation").json()["token"]
 
     resp = client.post(
@@ -1432,6 +1484,25 @@ def test_garden_commit_rejects_token_for_another_draft(
     )
 
     assert resp.status_code == 403
+
+
+def test_garden_confirmation_can_retry_after_failed_card_write(client, capture_repo, monkeypatch):
+    import agents.garden_agent as agent
+
+    draft_id = _create_garden_draft_row(capture_repo)
+    url = f"/api/garden/drafts/{draft_id}"
+    token = client.post(f"{url}/confirmation").json()["token"]
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("temporary card write failure")
+
+    with monkeypatch.context() as scoped, pytest.raises(RuntimeError, match="temporary card write failure"):
+        scoped.setattr(agent, "create_garden_card", unavailable)
+        client.post(f"{url}/commit", json={"confirmation_token": token})
+    assert capture_repo.conn.execute("SELECT COUNT(*) FROM garden_cards").fetchone()[0] == 0
+    response = client.post(f"{url}/commit", json={"confirmation_token": token})
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
 
 
 def test_garden_draft_creation_never_commits_even_with_legacy_auto_commit(

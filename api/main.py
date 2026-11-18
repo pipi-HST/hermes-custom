@@ -23,6 +23,8 @@ from api.routes.garden import create_garden_router
 from api.routes.dashboard_read import create_dashboard_read_router
 from api.routes.tools import create_tools_router
 from agents.capture_agent import load_config
+from agents.extractors.input_policy import allow_local_files
+from bridge.ai_cancel import AIOperationCancelled, operation_context, raise_if_cancelled
 
 DB_PATH = str(Path(__file__).parent.parent / "data" / "captures.db")
 MAX_API_REQUEST_BYTES = 10 * 1024 * 1024
@@ -54,6 +56,17 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
     api_token = os.environ.get("HERMES_API_TOKEN", "").strip()
     trusted_proxies = _trusted_proxies()
     allowed_hosts = _allowed_hosts()
+
+    @app.exception_handler(AIOperationCancelled)
+    async def ai_operation_cancelled(_request, exc):
+        return JSONResponse({
+            "ok": False,
+            "status": "cancelled",
+            "cancelled": True,
+            "operation_id": exc.operation_id,
+            "cancelled_stage": exc.stage,
+            "chat_preview": "已停止。",
+        })
 
     @app.middleware("http")
     async def auth_and_body_guard(request, call_next):
@@ -97,7 +110,21 @@ def create_app(config_path: str | None = None, config: object | None = None) -> 
                     {"detail": "request body too large"},
                     status_code=413,
                 )
-        return await call_next(request)
+        local_file_policy = allow_local_files.set(False)
+        try:
+            operation_id = request.headers.get("X-Hermes-AI-Operation-Id")
+            # The cancellation request itself must not close the operation's
+            # context or remove its cancellation marker.
+            if operation_id and not request.url.path.endswith("/cancel"):
+                with operation_context(operation_id):
+                    try:
+                        raise_if_cancelled("http.start")
+                    except AIOperationCancelled as exc:
+                        return await ai_operation_cancelled(request, exc)
+                    return await call_next(request)
+            return await call_next(request)
+        finally:
+            allow_local_files.reset(local_file_policy)
 
     app.add_middleware(
         CORSMiddleware,

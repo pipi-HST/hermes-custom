@@ -27,6 +27,8 @@ from bridge.context import KnowledgeContext
 from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest, KnowledgeWriteResult
 from agents.outliner import Outliner
 from bridge.ai_cancel import AIOperationCancelled, raise_if_cancelled
+from bridge.atomic_io import resolve_inside
+from bridge.knowledge_write_service import MarkdownVersionConflict
 from bridge.result_envelope import (
     artifact_ref,
     error_envelope,
@@ -35,6 +37,7 @@ from bridge.result_envelope import (
     success_envelope,
 )
 from bridge.run_ledger import run_with_ledger
+from db.concurrency import connection_lock
 from db.reading_repo import ReadingRepo
 from db.repo import CaptureRepo
 from db.schema import init_db
@@ -59,6 +62,8 @@ OUTPUT_TYPES = {
     "local_learning_note": "资料笔记",
     "knowledge_card": "知识卡片",
 }
+
+ENHANCEMENT_SOURCE_HASH = "source_file_hash"
 
 
 def _init(context: KnowledgeContext | None = None):
@@ -418,15 +423,22 @@ def _summarize_reading_session(
         if normalized_type == "enhance_capture" and session.get("source_type") == "capture"
         else ""
     )
+    source_body, source_meta = "", {}
+    if normalized_type == "enhance_capture":
+        try:
+            source_body, source_meta = _enhancement_draft_base(
+                Path(config.vault_path).expanduser(), capture_repo, target_capture_id,
+            )
+        except ValueError as exc:
+            return error_envelope(agent="reading", intent="summarize_reading_session", error=str(exc))
     title = _draft_title(session, normalized_type)
     draft_text = _build_draft_text(
-        vault_path=Path(config.vault_path).expanduser(),
-        capture_repo=capture_repo,
         session=session,
         turns=turns,
         evidence=evidence,
         output_type=normalized_type,
         instruction=instruction,
+        source_body=source_body,
     )
     metadata = _generate_full_text_metadata(config, draft_text)
     draft = repo.create_draft(
@@ -436,7 +448,7 @@ def _summarize_reading_session(
         title=title,
         summary=metadata.get("summary") or _draft_summary(turns),
         draft_text=draft_text,
-        meta={"instruction": instruction, "metadata": metadata},
+        meta={"instruction": instruction, "metadata": metadata, **source_meta},
     )
     return success_envelope(
         agent="reading",
@@ -1097,47 +1109,66 @@ def _commit_enhanced_capture(
     draft: dict,
 ) -> dict:
     capture_id = draft.get("target_capture_id", "")
-    capture = capture_repo.get_by_id(capture_id)
-    if not capture or not capture.get("file_path"):
+    meta = draft.get("meta_json")
+    expected_hash = meta.get(ENHANCEMENT_SOURCE_HASH) if isinstance(meta, dict) else None
+    if not expected_hash:
         return error_envelope(
             agent="reading",
             intent="commit_reading_artifact",
-            error="增强版需要绑定已有 Capture，但没有找到目标主笔记。",
+            error="这份草稿未绑定资料笔记的版本，请根据当前资料笔记重新生成草稿。",
         )
-    full_path = vault_path / capture["file_path"]
-    if not full_path.exists():
-        return error_envelope(
-            agent="reading",
-            intent="commit_reading_artifact",
-            error=f"目标 Capture 文件不存在：{capture['file_path']}",
-        )
-    old_text = full_path.read_text(encoding="utf-8")
+    try:
+        file_path, old_text = _read_enhancement_source(vault_path, capture_repo, capture_id)
+    except ValueError as exc:
+        return error_envelope(agent="reading", intent="commit_reading_artifact", error=str(exc))
+
+    conflict_error = "资料笔记在草稿生成后已修改，请根据当前资料笔记重新生成草稿。"
     previous_hash = _sha256(old_text)
-    new_text = _merge_frontmatter(old_text, draft.get("draft_text", ""))
-    raise_if_cancelled("reading.enhance_capture.before_write")
-    write_result = KnowledgeWriteService(vault_path).write_markdown_artifact(
-        MarkdownWriteRequest(
-            kind="capture_note",
-            relative_path=capture["file_path"],
-            content=new_text,
-            db_object_id=capture_id,
-            db_table="captures",
-            requires_backup=True,
+    if previous_hash != expected_hash:
+        return error_envelope(
+            agent="reading", intent="commit_reading_artifact", error=conflict_error,
         )
-    )
+    new_text = _merge_frontmatter(old_text, draft.get("draft_text", ""))
     new_hash = _sha256(new_text)
-    backup = repo.record_capture_backup(
-        capture_id=capture_id,
-        reading_draft_id=draft["id"],
-        backup_file_path=write_result.backup_path,
-        previous_file_hash=previous_hash,
-        new_file_hash=new_hash,
-    )
+    backup = {}
+
+    def register_backup(backup_path: str) -> None:
+        nonlocal backup
+        with connection_lock(repo.conn):
+            # A nested SQLite commit could leave the backup row uncommitted.
+            if repo.conn.in_transaction:
+                raise RuntimeError("cannot replace a note before its backup registration is committed")
+            backup = repo.record_capture_backup(
+                capture_id=capture_id,
+                reading_draft_id=draft["id"],
+                backup_file_path=backup_path,
+                previous_file_hash=previous_hash,
+                new_file_hash=new_hash,
+            )
+
+    raise_if_cancelled("reading.enhance_capture.before_write")
+    try:
+        write_result = KnowledgeWriteService(vault_path).write_markdown_artifact(
+            MarkdownWriteRequest(
+                kind="capture_note",
+                relative_path=file_path,
+                content=new_text,
+                db_object_id=capture_id,
+                db_table="captures",
+                requires_backup=True,
+            ),
+            expected_previous=old_text,
+            register_backup=register_backup,
+        )
+    except MarkdownVersionConflict:
+        return error_envelope(
+            agent="reading", intent="commit_reading_artifact", error=conflict_error,
+        )
     repo.update_draft(draft["id"], status="committed")
     repo.update_session(
         draft["session_id"],
         status="committed",
-        committed_artifact_id=capture["file_path"],
+        committed_artifact_id=file_path,
     )
     return success_envelope(
         agent="reading",
@@ -1148,7 +1179,7 @@ def _commit_enhanced_capture(
                 type="capture_note",
                 id=capture_id,
                 title=draft.get("title") or capture_id,
-                path=capture["file_path"],
+                path=file_path,
                 status="updated",
             ),
             artifact_ref(
@@ -1354,17 +1385,16 @@ def _clip_to_sentence(text: str, limit: int) -> str:
 
 def _build_draft_text(
     *,
-    vault_path: Path,
-    capture_repo: CaptureRepo,
     session: dict,
     turns: list[dict],
     evidence: list[dict],
     output_type: str,
     instruction: str,
+    source_body: str = "",
 ) -> str:
     discussion = _discussion_section(turns, evidence)
     if output_type == "enhance_capture":
-        base_body = _source_capture_body(vault_path, capture_repo, session.get("source_id", ""))
+        base_body = source_body or "# 阅读整理"
         return (
             f"{base_body.rstrip()}\n\n"
             "## 阅读讨论补充\n\n"
@@ -1411,15 +1441,25 @@ def _discussion_section(turns: list[dict], evidence: list[dict]) -> str:
     return "\n".join(lines).strip()
 
 
-def _source_capture_body(vault_path: Path, capture_repo: CaptureRepo, capture_id: str) -> str:
+def _read_enhancement_source(
+    vault_path: Path, capture_repo: CaptureRepo, capture_id: str,
+) -> tuple[str, str]:
     capture = capture_repo.get_by_id(capture_id)
-    if not capture:
-        return "# 阅读整理\n"
-    note = read_note(vault_path, capture.get("file_path", ""))
-    if not note:
-        return "# 阅读整理\n"
-    _, body = note
-    return body.strip() or "# 阅读整理\n"
+    if not capture or not capture.get("file_path"):
+        raise ValueError("没有找到要增强的资料笔记。")
+    file_path = capture["file_path"]
+    try:
+        # Preserve the exact saved UTF-8 bytes (including line endings).
+        return file_path, resolve_inside(vault_path, file_path).read_bytes().decode("utf-8")
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"无法读取要增强的资料笔记：{file_path}") from exc
+
+
+def _enhancement_draft_base(
+    vault_path: Path, capture_repo: CaptureRepo, capture_id: str,
+) -> tuple[str, dict]:
+    _, text = _read_enhancement_source(vault_path, capture_repo, capture_id)
+    return _strip_frontmatter(text).strip(), {ENHANCEMENT_SOURCE_HASH: _sha256(text)}
 
 
 def _source_label(source_kind: str) -> str:

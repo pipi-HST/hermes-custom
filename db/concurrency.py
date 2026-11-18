@@ -160,8 +160,19 @@ def transaction(
                 _leave(conn)
             raise
         else:
-            conn.execute("COMMIT")
-            _leave(conn)
+            try:
+                conn.execute("COMMIT")
+            except BaseException:
+                # A failed COMMIT (e.g. deferred constraints) can leave the
+                # transaction open. A later retry must use a fresh transaction.
+                if conn.in_transaction:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except sqlite3.Error:
+                        pass
+                raise
+            finally:
+                _leave(conn)
 
 
 def _enter(conn: sqlite3.Connection) -> None:

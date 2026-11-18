@@ -431,32 +431,24 @@ def test_library_folder_filter_falls_back_without_metadata(env):
     assert body["items"][0]["id"] == capture_id
 
 
-def test_library_search_filter_reads_only_indexed_match(env, monkeypatch):
+def test_library_search_matches_body_beyond_vector_excerpt(env):
     config, app, vault = env
+    body_text = "开头没有目标词。" + ("无关正文。" * 300) + "正文后段才出现 needle。"
     needle_id = _add_capture(
-        config, vault, name="needle", title="Needle note", body="a needle here"
+        config, vault, name="deep", title="Deep note", body=body_text
     )
     other_id = _add_capture(
         config, vault, name="other", title="Other note", body="unrelated body"
     )
-    _index_capture(config, needle_id, "Needle note a needle here", "captures/needle.md")
+    # The vector row stores a clipped excerpt; its miss must not hide the note.
+    _index_capture(config, needle_id, "Deep note 开头没有目标词", "captures/deep.md")
     _index_capture(config, other_id, "Other note unrelated body", "captures/other.md")
-
-    reads: list[str] = []
-    original = library_view.read_capture_note
-
-    def counting(vault_path, row):
-        reads.append(str(row.get("file_path")))
-        return original(vault_path, row)
-
-    monkeypatch.setattr(library_view, "read_capture_note", counting)
 
     with _client(app) as client:
         body = client.get("/api/library/items", params={"search": "needle"}).json()
 
     assert body["total"] == 1
     assert body["items"][0]["id"] == needle_id
-    assert reads == ["captures/needle.md"]
 
 
 def test_library_search_falls_back_without_embeddings(env):

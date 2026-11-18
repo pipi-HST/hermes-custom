@@ -1,11 +1,12 @@
 """Knowledge Card Agent — 两步合成 + 知识关联 + 生命周期管理."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path, PurePosixPath
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -100,6 +101,7 @@ LINK_PROMPT = """为以下新 Knowledge Card 寻找知识关联。
 INVALID_FILENAME_CHARS = '/:*?"<>|'
 
 CARD_KINDS = {"viewpoint", "fact", "method", "risk"}
+OPEN_GARDEN_DRAFT_STATUSES = ("draft_ready", "revision_requested")
 CARD_KIND_LABELS = {
     "viewpoint": "洞察 / 金句",
     "fact": "新知 / 概念",
@@ -204,12 +206,20 @@ class GardenAgent:
         title = title or self._generate_title(extracted, captures)
         extracted["title"] = title
         extracted["related_card_ids"] = links
+        if not extracted.get("when_to_use"):
+            extracted["when_to_use"] = [_card_use_hint(resolved_card_kind)]
         payload = normalize_garden_payload(extracted)
         legacy = project_legacy_fields(payload)
         markdown = self._build_synthesis_markdown(
             title, extracted, links, captures, existing_garden_cards,
             resolved_card_kind,
         )
+        # The draft preview, the committed card and any later migration must
+        # all carry this exact body.  Store it on the payload now instead of
+        # re-rendering a narrower body at commit time (which lost the source
+        # links and the when-to-use hint).
+        payload = with_canonical_content_markdown(payload, fallback=markdown)
+        markdown = payload["content_markdown"]
 
         return {
             "title": legacy["title"],
@@ -499,7 +509,8 @@ def create_garden_card(repo, garden_data: dict, *, in_transaction: bool = False)
                 _json_list(garden_data.get("capture_ids")),
             ),
             legacy=garden_data,
-        )
+        ),
+        fallback=str(garden_data.get("markdown") or ""),
     )
     content_markdown = payload["content_markdown"]
     with (nullcontext() if in_transaction else transaction(repo.conn)):
@@ -647,12 +658,15 @@ def create_garden_draft(repo, garden_data: dict) -> str:
     """写入 garden_drafts 表，返回 draft ID。"""
     draft_id = uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc).isoformat()
-    payload = normalize_garden_payload(
-        _canonicalize_payload_sources(
-            garden_data.get("payload"),
-            _json_list(garden_data.get("capture_ids")),
+    payload = with_canonical_content_markdown(
+        normalize_garden_payload(
+            _canonicalize_payload_sources(
+                garden_data.get("payload"),
+                _json_list(garden_data.get("capture_ids")),
+            ),
+            legacy=garden_data,
         ),
-        legacy=garden_data,
+        fallback=str(garden_data.get("markdown") or ""),
     )
     repo.conn.execute(
         """INSERT INTO garden_drafts (id, title, card_kind, schema_version,
@@ -665,7 +679,7 @@ def create_garden_draft(repo, garden_data: dict) -> str:
             _normalize_card_kind(payload["card_kind"]),
             GARDEN_CARD_SCHEMA_VERSION,
             payload_to_json(payload),
-            garden_data.get("markdown", ""),
+            payload["content_markdown"],
             _json_text(payload["source_ids"]),
             garden_data.get("question_id", ""),
             garden_data.get("instruction", ""),
@@ -677,22 +691,51 @@ def create_garden_draft(repo, garden_data: dict) -> str:
     return draft_id
 
 
+def is_open_garden_draft(draft: dict) -> bool:
+    return (
+        draft["status"] in OPEN_GARDEN_DRAFT_STATUSES
+        and not draft["committed_card_id"]
+    )
+
+
+def _garden_draft_view(row) -> dict:
+    data = dict(row)
+    serialized = json.dumps(data, sort_keys=True, separators=(",", ":"))
+    return {
+        **_garden_row_view(data),
+        "draft_version": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+    }
+
+
 def get_garden_draft(repo, draft_id: str) -> Optional[dict]:
     row = repo.conn.execute(
         "SELECT * FROM garden_drafts WHERE id = ?",
         (draft_id,),
     ).fetchone()
-    return _garden_row_view(row) if row else None
+    return _garden_draft_view(row) if row else None
 
 
 def get_latest_open_garden_draft(repo) -> Optional[dict]:
     row = repo.conn.execute(
         """SELECT * FROM garden_drafts
-           WHERE status IN ('draft_ready', 'revision_requested')
+           WHERE status IN (?, ?) AND COALESCE(committed_card_id, '') = ''
            ORDER BY updated_at DESC, created_at DESC
-           LIMIT 1"""
+           LIMIT 1""",
+        OPEN_GARDEN_DRAFT_STATUSES,
     ).fetchone()
-    return _garden_row_view(row) if row else None
+    return _garden_draft_view(row) if row else None
+
+
+def _next_draft_updated_at(previous: str) -> str:
+    now = datetime.now(timezone.utc)
+    try:
+        last_update = datetime.fromisoformat(previous)
+    except ValueError:
+        return now.isoformat()
+    if last_update.tzinfo is None:
+        last_update = last_update.replace(tzinfo=timezone.utc)
+    # Even an identical rewrite must create a new version.
+    return max(now, last_update + timedelta(microseconds=1)).isoformat()
 
 
 def update_garden_draft(
@@ -700,54 +743,84 @@ def update_garden_draft(
     draft_id: str,
     garden_data: dict,
     status: str = "draft_ready",
+    *,
+    expected_version: str | None = None,
 ) -> Optional[dict]:
-    existing = get_garden_draft(repo, draft_id)
-    if not existing:
+    if status not in OPEN_GARDEN_DRAFT_STATUSES:
         return None
 
-    now = datetime.now(timezone.utc).isoformat()
-    payload = normalize_garden_payload(
-        _canonicalize_payload_sources(
-            garden_data.get("payload"),
-            _json_list(garden_data.get("capture_ids") or existing["capture_ids"]),
-        ),
-        legacy={**existing, **garden_data},
-    )
-    repo.conn.execute(
-        """UPDATE garden_drafts
-           SET title=?, card_kind=?, schema_version=?, payload_json=?,
-               markdown=?, capture_ids=?,
-               instruction=?, status=?, updated_at=?
-           WHERE id=?""",
-        (
-            payload["title"],
-            _normalize_card_kind(payload["card_kind"]),
-            GARDEN_CARD_SCHEMA_VERSION,
-            payload_to_json(payload),
-            garden_data.get("markdown", existing["markdown"]),
-            _json_text(payload["source_ids"]),
-            garden_data.get("instruction", existing["instruction"]),
-            status,
-            now,
-            draft_id,
-        ),
-    )
-    repo.conn.commit()
-    return get_garden_draft(repo, draft_id)
-
-
-def commit_garden_draft_to_card(repo, draft_id: str) -> Optional[str]:
-    draft = get_garden_draft(repo, draft_id)
-    if not draft or draft["status"] == "committed":
-        return None
-
-    now = datetime.now(timezone.utc).isoformat()
     with transaction(repo.conn):
+        existing = get_garden_draft(repo, draft_id)
+        if not existing or not is_open_garden_draft(existing):
+            return None
+        if expected_version is not None and existing["draft_version"] != expected_version:
+            return None
+
+        payload = with_canonical_content_markdown(
+            normalize_garden_payload(
+                _canonicalize_payload_sources(
+                    garden_data.get("payload"),
+                    _json_list(garden_data.get("capture_ids") or existing["capture_ids"]),
+                ),
+                legacy={**existing, **garden_data},
+            ),
+            fallback=str(garden_data.get("markdown", existing["markdown"]) or ""),
+        )
+        repo.conn.execute(
+            """UPDATE garden_drafts
+               SET title=?, card_kind=?, schema_version=?, payload_json=?,
+                   markdown=?, capture_ids=?,
+                   instruction=?, status=?, updated_at=?
+               WHERE id=?""",
+            (
+                payload["title"],
+                _normalize_card_kind(payload["card_kind"]),
+                GARDEN_CARD_SCHEMA_VERSION,
+                payload_to_json(payload),
+                payload["content_markdown"],
+                _json_text(payload["source_ids"]),
+                garden_data.get("instruction", existing["instruction"]),
+                status,
+                _next_draft_updated_at(existing["updated_at"]),
+                draft_id,
+            ),
+        )
+        return get_garden_draft(repo, draft_id)
+
+
+def discard_garden_draft(repo, draft_id: str) -> bool | None:
+    """Return True if discarded, False if closed, or None if not found."""
+    with transaction(repo.conn):
+        draft = get_garden_draft(repo, draft_id)
+        if draft is None:
+            return None
+        if not is_open_garden_draft(draft):
+            return False
+        repo.conn.execute(
+            "UPDATE garden_drafts SET status = 'discarded', updated_at = ? WHERE id = ?",
+            (_next_draft_updated_at(draft["updated_at"]), draft_id),
+        )
+        return True
+
+
+def commit_garden_draft_to_card(
+    repo, draft_id: str, *, expected_version: str | None = None, before_commit=None,
+) -> Optional[str]:
+    with transaction(repo.conn):
+        draft = get_garden_draft(repo, draft_id)
+        if not draft or not is_open_garden_draft(draft):
+            return None
+        if expected_version is not None and draft["draft_version"] != expected_version:
+            return None
+        if before_commit is not None:
+            before_commit()
+
         card_id = create_garden_card(repo, {
             "title": draft["title"],
             "one_liner": draft["one_liner"],
             "card_kind": _normalize_card_kind(draft["card_kind"]),
             "payload": parse_payload_json(draft.get("payload_json")),
+            "markdown": draft.get("markdown", ""),
             "core_arguments": _json_list(draft["core_arguments"]),
             "knowledge_links": _json_list(draft["knowledge_links"]),
             "key_materials": _json_list(draft["key_materials"]),
@@ -757,15 +830,13 @@ def commit_garden_draft_to_card(repo, draft_id: str) -> Optional[str]:
             """UPDATE garden_drafts
                SET status='committed', committed_card_id=?, updated_at=?
                WHERE id=?""",
-            (card_id, now, draft_id),
+            (card_id, _next_draft_updated_at(draft["updated_at"]), draft_id),
         )
-    try:
-        from agents.capture_agent import load_config
-        from agents.knowledge_graph import refresh_graph_after_write
-
-        refresh_graph_after_write(repo.conn, load_config().vault_path)
-    except Exception:
-        pass
+        if draft["question_id"]:
+            repo.conn.execute(
+                "UPDATE pending_questions SET status='answered', matched_response='synthesized' WHERE id=?",
+                (draft["question_id"],),
+            )
     return card_id
 
 
@@ -778,6 +849,10 @@ def update_garden_card(repo, card_id: str, garden_data: dict) -> Optional[dict]:
         return None
 
     now = datetime.now(timezone.utc).isoformat()
+    existing_body = (
+        str(parse_payload_json(existing["payload_json"]).get("content_markdown") or "")
+        or str(existing["content_markdown"] or "")
+    )
     payload = with_canonical_content_markdown(
         normalize_garden_payload(
             _canonicalize_payload_sources(
@@ -785,7 +860,8 @@ def update_garden_card(repo, card_id: str, garden_data: dict) -> Optional[dict]:
                 _json_list(garden_data.get("capture_ids") or existing["capture_ids"]),
             ),
             legacy={**dict(existing), **garden_data},
-        )
+        ),
+        fallback=str(garden_data.get("markdown") or existing_body),
     )
     content_markdown = payload["content_markdown"]
     # 合并参数（追加新论点, 去重）

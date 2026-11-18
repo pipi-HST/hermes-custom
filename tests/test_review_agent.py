@@ -18,6 +18,12 @@ def repo(tmp_path):
     return CaptureRepo(conn)
 
 
+def _write_capture(vault: Path, rel_path: str, frontmatter: str, body: str) -> None:
+    path = vault / rel_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\n{frontmatter}---\n\n{body}", encoding="utf-8")
+
+
 def test_next_interval_progression():
     assert next_interval("1d") == "3d"
     assert next_interval("3d") == "1w"
@@ -159,13 +165,13 @@ def test_daily_review_creates_section_items_for_long_capture(repo, tmp_path):
     ReviewAgent(repo, vault_path=str(tmp_path), long_note_chars=20).run_daily()
 
     rows = repo.conn.execute(
-        "SELECT section_id, title, question FROM review_items ORDER BY section_id"
+        "SELECT section_id, title, question FROM review_items"
     ).fetchall()
-    assert [(r["section_id"], r["title"]) for r in rows] == [
-        ("section-1", "方法论"),
-        ("section-2", "案例"),
-    ]
-    assert rows[0]["question"] == "方法论"
+    by_title = {row["title"]: row for row in rows}
+    assert set(by_title) == {"方法论", "案例"}
+    assert all(row["section_id"].startswith("section-h") for row in rows)
+    assert by_title["方法论"]["section_id"] != by_title["案例"]["section_id"]
+    assert by_title["方法论"]["question"] == "方法论"
 
 
 def test_record_item_feedback_updates_schedule(repo):
@@ -656,3 +662,333 @@ def test_live_capture_items_are_still_due(repo):
     agent = ReviewAgent(repo)
     due = agent._get_due_review_items(limit=10, now=now)
     assert [item["id"] for item in due] == ["ri-live"]
+
+
+def test_disabled_review_retires_existing_items(repo, tmp_path):
+    rel_path = "captures/toggle.md"
+    frontmatter = "id: cap-toggle\ntitle: 可关闭复习\nstory: 保留正文。\n"
+    body = "# 可关闭复习\n\n正文内容。"
+    _write_capture(tmp_path, rel_path, frontmatter, body)
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap-toggle", rel_path),
+    )
+    repo.conn.commit()
+    now = datetime.now(timezone.utc).isoformat()
+    agent = ReviewAgent(repo, vault_path=str(tmp_path), long_note_chars=500)
+
+    assert agent.sync_review_items(now=now) == 1
+    assert repo.conn.execute("SELECT COUNT(*) FROM review_items").fetchone()[0] == 1
+
+    _write_capture(tmp_path, rel_path, frontmatter + "reviewable: false\n", body)
+
+    assert agent.sync_review_items(now=now) == 0
+    assert repo.conn.execute("SELECT COUNT(*) FROM review_items").fetchone()[0] == 0
+    assert agent._get_due_review_items(limit=10, now=now) == []
+
+
+def test_removed_section_is_retired(repo, tmp_path):
+    rel_path = "captures/sections.md"
+    frontmatter = "id: cap-sections\ntitle: 企业 AI 长文\nstory: 方法。\n"
+    body = (
+        "# 长文\n\n"
+        "## 方法论\n\n方法论内容足够长。\n\n"
+        "## 案例\n\n案例内容足够长。\n"
+    )
+    _write_capture(tmp_path, rel_path, frontmatter, body)
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap-sections", rel_path),
+    )
+    repo.conn.commit()
+    now = datetime.now(timezone.utc).isoformat()
+    agent = ReviewAgent(repo, vault_path=str(tmp_path), long_note_chars=20)
+
+    assert agent.sync_review_items(now=now) == 2
+    repo.conn.execute(
+        "UPDATE review_items SET review_state='seen', next_review=? WHERE title='案例'",
+        (now,),
+    )
+    repo.conn.commit()
+
+    _write_capture(
+        tmp_path,
+        rel_path,
+        frontmatter,
+        "# 长文\n\n## 方法论\n\n方法论内容足够长。\n",
+    )
+
+    assert agent.sync_review_items(now=now) == 1
+    titles = {
+        row["title"]
+        for row in repo.conn.execute("SELECT title FROM review_items").fetchall()
+    }
+    assert titles == {"方法论"}
+    assert [
+        item["title"]
+        for item in agent._get_due_review_items(limit=10, now=now)
+    ] == ["方法论"]
+
+    daily = agent.run_daily()
+    assert not any(
+        "案例" in json.dumps(message, ensure_ascii=False) for message in daily
+    )
+    assert [
+        message["title"]
+        for message in daily
+        if message["type"] == "review_explanation"
+    ] == ["方法论"]
+
+
+def test_reordered_sections_keep_their_progress(repo, tmp_path):
+    rel_path = "captures/reorder.md"
+    frontmatter = "id: cap-reorder\ntitle: 企业 AI 长文\nstory: 方法。\n"
+    first_body = (
+        "# 长文\n\n"
+        "## 方法论\n\n方法论内容足够长。\n\n"
+        "## 案例\n\n案例内容足够长。\n"
+    )
+    _write_capture(tmp_path, rel_path, frontmatter, first_body)
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap-reorder", rel_path),
+    )
+    repo.conn.commit()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    future = (now_dt + timedelta(days=30)).isoformat()
+    agent = ReviewAgent(repo, vault_path=str(tmp_path), long_note_chars=20)
+
+    assert agent.sync_review_items(now=now) == 2
+    original_ids = {
+        row["title"]: row["section_id"]
+        for row in repo.conn.execute(
+            "SELECT title, section_id FROM review_items"
+        ).fetchall()
+    }
+    repo.conn.execute(
+        """UPDATE review_items
+           SET review_interval=14, view_count=4, next_review=?, review_state='seen'
+           WHERE title='方法论'""",
+        (future,),
+    )
+    repo.conn.commit()
+
+    reordered_body = (
+        "# 长文\n\n"
+        "## 案例\n\n案例内容足够长。\n\n"
+        "## 方法论\n\n方法论内容足够长。\n"
+    )
+    _write_capture(tmp_path, rel_path, frontmatter, reordered_body)
+    assert agent.sync_review_items(now=now) == 2
+
+    rows = {
+        row["title"]: row
+        for row in repo.conn.execute("SELECT * FROM review_items").fetchall()
+    }
+    assert rows["方法论"]["section_id"] == original_ids["方法论"]
+    assert rows["案例"]["section_id"] == original_ids["案例"]
+    assert rows["方法论"]["review_interval"] == 14
+    assert rows["方法论"]["view_count"] == 4
+    assert rows["方法论"]["next_review"] == future
+    assert rows["案例"]["review_interval"] == 7
+    assert rows["案例"]["view_count"] == 0
+    assert rows["案例"]["next_review"] != future
+
+
+def test_legacy_positional_section_items_are_adopted_by_title(repo, tmp_path):
+    rel_path = "captures/legacy.md"
+    frontmatter = "id: cap-legacy\ntitle: 企业 AI 长文\nstory: 方法。\n"
+    body = (
+        "# 长文\n\n"
+        "## 方法论\n\n方法论内容足够长。\n\n"
+        "## 案例\n\n案例内容足够长。\n"
+    )
+    _write_capture(tmp_path, rel_path, frontmatter, body)
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap-legacy", rel_path),
+    )
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    future = (now_dt + timedelta(days=30)).isoformat()
+    repo.conn.executemany(
+        """INSERT INTO review_items
+           (id, object_type, object_id, capture_id, section_id, title, question,
+            review_interval, view_count, next_review)
+           VALUES (?, 'capture_section', ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            ("legacy-1", "cap-legacy", "cap-legacy", "section-1", "方法论", "方法论", 14, 4, future),
+            ("legacy-2", "cap-legacy", "cap-legacy", "section-2", "案例", "案例", 3, 1, future),
+            ("legacy-3", "cap-legacy", "cap-legacy", "section-3", "已删除", "已删除", 7, 2, future),
+        ],
+    )
+    repo.conn.commit()
+    agent = ReviewAgent(repo, vault_path=str(tmp_path), long_note_chars=20)
+
+    assert agent.sync_review_items(now=now) == 2
+
+    rows = {
+        row["title"]: row
+        for row in repo.conn.execute("SELECT * FROM review_items").fetchall()
+    }
+    assert set(rows) == {"方法论", "案例"}
+    assert all(row["section_id"].startswith("section-h") for row in rows.values())
+    assert rows["方法论"]["review_interval"] == 14
+    assert rows["方法论"]["view_count"] == 4
+    assert rows["方法论"]["next_review"] == future
+    assert rows["案例"]["review_interval"] == 3
+    assert rows["案例"]["view_count"] == 1
+
+
+def test_interrupted_sync_rolls_back_note_changes(repo, tmp_path, monkeypatch):
+    rel_path = "captures/interrupted.md"
+    frontmatter = "id: cap-interrupted\ntitle: 企业 AI 长文\nstory: 方法。\n"
+    body = "# 长文\n\n## 方法论\n\n方法论内容足够长。\n"
+    _write_capture(tmp_path, rel_path, frontmatter, body)
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap-interrupted", rel_path),
+    )
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    future = (now_dt + timedelta(days=30)).isoformat()
+    repo.conn.execute(
+        """INSERT INTO review_items
+           (id, object_type, object_id, capture_id, section_id, title, question,
+            review_interval, view_count, next_review)
+           VALUES ('legacy-sync', 'capture_section', 'cap-interrupted',
+                   'cap-interrupted', 'section-1', '方法论', '方法论', 14, 4, ?)""",
+        (future,),
+    )
+    repo.conn.commit()
+    agent = ReviewAgent(repo, vault_path=str(tmp_path), long_note_chars=20)
+
+    def interrupted(**_kwargs):
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(agent, "_upsert_review_item", interrupted)
+    with pytest.raises(RuntimeError):
+        agent.sync_review_items(now=now)
+
+    rows = repo.conn.execute("SELECT * FROM review_items").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["section_id"] == "section-1"
+    assert rows[0]["review_interval"] == 14
+    assert rows[0]["view_count"] == 4
+    assert rows[0]["next_review"] == future
+
+
+def test_duplicate_titles_with_different_bodies_keep_progress_by_content(repo, tmp_path):
+    rel_path = "captures/duplicates.md"
+    frontmatter = "id: cap-duplicates\ntitle: 重复章节长文\nstory: 重复。\n"
+    first_body = (
+        "# 长文\n\n"
+        "## 重复\n\n甲段内容足够长。\n\n"
+        "## 重复\n\n乙段内容足够长。\n"
+    )
+    _write_capture(tmp_path, rel_path, frontmatter, first_body)
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap-duplicates", rel_path),
+    )
+    repo.conn.commit()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    future = (now_dt + timedelta(days=30)).isoformat()
+    agent = ReviewAgent(repo, vault_path=str(tmp_path), long_note_chars=20)
+
+    assert agent.sync_review_items(now=now) == 2
+    rows = repo.conn.execute("SELECT * FROM review_items").fetchall()
+    assert len({row["section_id"] for row in rows}) == 2
+    first = next(row for row in rows if "甲段" in row["answer_hint"])
+    second = next(row for row in rows if "乙段" in row["answer_hint"])
+    repo.conn.execute(
+        """UPDATE review_items
+           SET review_interval=14, view_count=4, next_review=?, review_state='seen'
+           WHERE id=?""",
+        (future, first["id"]),
+    )
+    repo.conn.commit()
+
+    reordered_body = (
+        "# 长文\n\n"
+        "## 重复\n\n乙段内容足够长。\n\n"
+        "## 重复\n\n甲段内容足够长。\n"
+    )
+    _write_capture(tmp_path, rel_path, frontmatter, reordered_body)
+    assert agent.sync_review_items(now=now) == 2
+
+    rows = {
+        row["answer_hint"]: row
+        for row in repo.conn.execute("SELECT * FROM review_items").fetchall()
+    }
+    assert rows[first["answer_hint"]]["section_id"] == first["section_id"]
+    assert rows[second["answer_hint"]]["section_id"] == second["section_id"]
+    assert rows[first["answer_hint"]]["review_interval"] == 14
+    assert rows[first["answer_hint"]]["view_count"] == 4
+    assert rows[first["answer_hint"]]["next_review"] == future
+    assert rows[second["answer_hint"]]["review_interval"] == 7
+    assert rows[second["answer_hint"]]["view_count"] == 0
+    assert rows[second["answer_hint"]]["next_review"] != future
+
+
+def test_identical_duplicate_sections_merge_into_one_item(repo, tmp_path):
+    rel_path = "captures/identical.md"
+    frontmatter = "id: cap-identical\ntitle: 重复章节长文\nstory: 重复。\n"
+    body = (
+        "# 长文\n\n"
+        "## 重复\n\n相同内容足够长。\n\n"
+        "## 重复\n\n相同内容足够长。\n"
+    )
+    _write_capture(tmp_path, rel_path, frontmatter, body)
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap-identical", rel_path),
+    )
+    repo.conn.commit()
+    now = datetime.now(timezone.utc).isoformat()
+    agent = ReviewAgent(repo, vault_path=str(tmp_path), long_note_chars=20)
+
+    assert agent.sync_review_items(now=now) == 1
+    rows = repo.conn.execute("SELECT * FROM review_items").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["title"] == "重复"
+    assert rows[0]["review_interval"] == 7
+
+
+def test_legacy_progress_not_migrated_to_ambiguous_duplicate_titles(repo, tmp_path):
+    rel_path = "captures/ambiguous.md"
+    frontmatter = "id: cap-ambiguous\ntitle: 重复章节长文\nstory: 重复。\n"
+    body = (
+        "# 长文\n\n"
+        "## 重复\n\n甲段内容足够长。\n\n"
+        "## 重复\n\n乙段内容足够长。\n"
+    )
+    _write_capture(tmp_path, rel_path, frontmatter, body)
+    repo.conn.execute(
+        "INSERT INTO captures (id, file_path) VALUES (?, ?)",
+        ("cap-ambiguous", rel_path),
+    )
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    future = (now_dt + timedelta(days=30)).isoformat()
+    repo.conn.execute(
+        """INSERT INTO review_items
+           (id, object_type, object_id, capture_id, section_id, title, question,
+            review_interval, view_count, next_review)
+           VALUES ('legacy-dup', 'capture_section', 'cap-ambiguous',
+                   'cap-ambiguous', 'section-1', '重复', '重复', 14, 4, ?)""",
+        (future,),
+    )
+    repo.conn.commit()
+    agent = ReviewAgent(repo, vault_path=str(tmp_path), long_note_chars=20)
+
+    assert agent.sync_review_items(now=now) == 2
+
+    rows = repo.conn.execute("SELECT * FROM review_items").fetchall()
+    assert len(rows) == 2
+    assert all(row["section_id"].startswith("section-h") for row in rows)
+    assert all(row["review_interval"] == 7 for row in rows)
+    assert all(row["view_count"] == 0 for row in rows)
+    assert all(row["next_review"] != future for row in rows)

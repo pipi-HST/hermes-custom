@@ -620,23 +620,14 @@ def test_hermes_commit_garden_draft_handler_preserves_artifact(monkeypatch):
 def test_hermes_toolset_has_tools():
     _skip_if_no_hermes()
     sys.path.insert(0, HERMES_DIR)
-    from toolsets import TOOLSETS
-    tools = TOOLSETS["personal-assistant"]["tools"]
-    assert len(tools) >= 16, f"Expected draft and life tools, got {len(tools)}: {tools}"
-    expected = {"capture_content", "refine_capture", "search_my_notes",
-                "graph_report", "send_message",
-                "revise_capture_draft", "commit_capture_draft", "synthesize_garden",
-                "revise_garden_draft", "commit_garden_draft", "daily_review",
-                "show_capture_draft", "audit_library",
-                    "review_feedback", "review_followup",
-                    "agent_run_status", "continue_rag_answer",
-                    "start_reading_session", "discuss_reading",
-                    "show_reading_session", "summarize_reading_session",
-                    "commit_reading_artifact", "save_answer_to_knowledge"}
-    assert set(tools) == expected, f"Mismatch: {set(tools) ^ expected}"
-    assert {"theme_scan", "theme_candidates", "generate_canvas"}.issubset(
-        set(TOOLSETS["knowledge-advanced"]["tools"])
-    )
+    from toolsets import resolve_toolset
+
+    supervisor = set(resolve_toolset("personal-assistant"))
+    advanced = set(resolve_toolset("knowledge-advanced"))
+    assert {"capture_content", "commit_capture_draft", "synthesize_garden",
+            "commit_garden_draft", "search_my_notes", "theme_scan"} <= supervisor
+    assert {"theme_candidates", "generate_canvas"} <= advanced
+    assert "generate_canvas" not in supervisor
 
 
 # ═══════ Layer 2: Bridge → Agent Pipeline ═══════

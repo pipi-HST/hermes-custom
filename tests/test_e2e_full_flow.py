@@ -5,6 +5,7 @@
 """
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -12,8 +13,12 @@ from pathlib import Path
 import pytest
 from tests.conftest import requires_runtime, requires_symlink  # noqa: E402
 
-sys.path.insert(0, "/Users/pipi/hermes-custom")
-sys.path.insert(0, "/Users/pipi/Downloads/hermes-agent-main")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_ROOT = Path(os.environ.get(
+    "HERMES_RUNTIME_ROOT", str(PROJECT_ROOT.parent / "hermes-agent-main")
+)).expanduser()
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(RUNTIME_ROOT))
 
 
 def _tool_envelope(result: str) -> dict:

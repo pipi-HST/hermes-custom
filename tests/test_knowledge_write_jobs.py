@@ -176,6 +176,28 @@ def test_worker_picks_up_retrying_jobs(integration_setup):
     assert get_job_status(job_id, conn)["status"] == "completed"
 
 
+def test_worker_recovers_running_job_only_when_owner_releases_lock(integration_setup):
+    from bridge.process_lock import try_process_lock
+    from db.write_job_repo import KnowledgeWriteJobRepo
+
+    conn = integration_setup["conn"]
+    db_path = integration_setup["db_path"]
+    job_id = submit_folder_rename_job("OldFolder", "NewFolder", conn)
+    worker = KnowledgeWriteWorker({
+        "vault_path": str(integration_setup["vault"]),
+        "db_path": db_path, "poll_interval": 1.0, "max_retry": 3, "batch_size": 10,
+    })
+    worker.conn = conn
+    worker.repo = KnowledgeWriteJobRepo(conn)
+    assert worker.repo.claim(job_id)
+    with try_process_lock(Path(db_path).with_suffix(".rename-worker.lock")) as acquired:
+        assert acquired
+        assert worker._process_batch() == 0
+        assert get_job_status(job_id, conn)["status"] == "running"
+    assert worker._process_batch() == 1
+    assert get_job_status(job_id, conn)["status"] == "completed"
+
+
 def test_job_submission_validation(integration_setup):
     """Test job submission validation."""
     conn = integration_setup["conn"]

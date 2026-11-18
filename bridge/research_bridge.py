@@ -456,24 +456,30 @@ _search_infra_module._fetch_url_summary = _fetch_url_summary
 def _record_web_answer_ledger(result: dict[str, Any], query: str) -> dict[str, Any]:
     """Record the final web answer and its card citations exactly once.
 
-    The retrieval-only split means there is no ``RagAgent`` ledger row anymore.
-    Without this, "存为笔记" cannot find the latest full answer and card
-    ``citation_count`` never reflects web usage.  Keep it best-effort: a
-    bookkeeping failure must never fail an answer.
+    Retrieval alone has no final answer. Expose the full synthesis alongside
+    its source map even if ledger or citation bookkeeping is unavailable.
     """
     import os
 
-    if not isinstance(result, dict) or os.environ.get("PYTEST_CURRENT_TEST"):
+    if not isinstance(result, dict) or result.get("status") != "success" or not query.strip():
+        return result
+    meta = dict(result.get("meta") or {})
+    answer = str(meta.get("answer") or result.get("chat_preview") or "")
+    if not answer.strip():
+        return result
+    meta["answer"] = answer
+    result = {**result, "meta": meta}
+    if os.environ.get("PYTEST_CURRENT_TEST"):
         # Tests frequently use fake adapters and a throwaway config; do not
         # write a real agent_runs row from the test process.
         return result
     try:
-        from bridge.rag_bridge import _init, record_card_citations
+        from bridge.rag_bridge import _init
         from bridge.run_ledger import run_with_ledger
 
-        _config, repo = _init()
+        _, repo = _init()
         run_id_box: dict[str, str] = {}
-        recorded = run_with_ledger(
+        run_with_ledger(
             repo.conn,
             agent="rag",
             intent="web_context_answer",
@@ -482,21 +488,24 @@ def _record_web_answer_ledger(result: dict[str, Any], query: str) -> dict[str, A
             operation=lambda: result,
             run_id_out=run_id_box,
         )
-        meta = recorded.get("meta") if isinstance(recorded, dict) else {}
-        meta = meta if isinstance(meta, dict) else {}
-        answer = str(meta.get("answer") or recorded.get("chat_preview") or "").strip()
-        source_map = recorded.get("source_map") if isinstance(recorded, dict) else []
-        if answer and isinstance(source_map, list):
+        meta["source_run_id"] = run_id_box["run_id"]
+    except Exception:
+        return result
+    try:
+        from bridge.rag_bridge import record_card_citations
+
+        source_map = result.get("source_map")
+        if isinstance(source_map, list):
             record_card_citations(
                 repo.conn,
                 answer,
                 source_map,
                 query=query,
-                run_id=run_id_box.get("run_id", ""),
+                run_id=meta["source_run_id"],
             )
-        return dict(recorded)
     except Exception:
-        return result
+        pass
+    return result
 
 
 def web_assist_answer(

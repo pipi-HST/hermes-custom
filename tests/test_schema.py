@@ -526,3 +526,142 @@ def test_schema_v4_moves_archive_and_garden_v1_fields_then_drops_them(tmp_path):
         "key_materials",
         "my_view",
     }
+
+
+def test_schema_backfills_body_for_legacy_garden_card(tmp_path):
+    import json
+    import sqlite3
+
+    from db.schema import init_db
+
+    db_path = str(tmp_path / "legacy-card-body.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE garden_cards (
+               id TEXT PRIMARY KEY,
+               title TEXT NOT NULL DEFAULT '',
+               one_liner TEXT NOT NULL DEFAULT '',
+               card_kind TEXT NOT NULL DEFAULT 'viewpoint',
+               schema_version TEXT NOT NULL DEFAULT 'garden_card.v1',
+               payload_json TEXT NOT NULL DEFAULT '{}',
+               core_arguments TEXT NOT NULL DEFAULT '[]',
+               knowledge_links TEXT NOT NULL DEFAULT '[]',
+               key_materials TEXT NOT NULL DEFAULT '[]',
+               my_view TEXT NOT NULL DEFAULT '',
+               status TEXT NOT NULL DEFAULT 'seed',
+               capture_ids TEXT NOT NULL DEFAULT '[]',
+               updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+           )"""
+    )
+    conn.execute(
+        "INSERT INTO garden_cards (id, title, one_liner, card_kind) "
+        "VALUES ('card', '旧卡', '旧一句话', 'method')"
+    )
+    conn.commit()
+    conn.close()
+
+    conn = init_db(db_path)
+    try:
+        card = conn.execute(
+            "SELECT content_markdown, payload_json FROM garden_cards WHERE id = 'card'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    body = card["content_markdown"]
+    assert body
+    assert "# 旧卡" in body
+    assert "旧一句话" in body
+    assert json.loads(card["payload_json"])["content_markdown"] == body
+
+
+def test_reinit_promotes_column_only_card_body_into_payload(tmp_path):
+    import json
+
+    from db.schema import init_db
+
+    db_path = str(tmp_path / "column-card-body.db")
+    conn = init_db(db_path)
+    conn.execute(
+        """INSERT INTO garden_cards (id, title, content_markdown, payload_json)
+           VALUES (?, ?, ?, ?)""",
+        (
+            "card-column-only",
+            "列正文卡",
+            "只有列里有完整正文。",
+            json.dumps(
+                {
+                    "schema_version": "garden_card.v2",
+                    "title": "列正文卡",
+                    "claim": "列里的正文不能被迁移丢掉。",
+                    "card_kind": "viewpoint",
+                    "source_ids": [],
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    reopened = init_db(db_path)
+    try:
+        card = reopened.execute(
+            "SELECT content_markdown, payload_json FROM garden_cards "
+            "WHERE id = 'card-column-only'"
+        ).fetchone()
+    finally:
+        reopened.close()
+
+    body = card["content_markdown"]
+    assert body == "只有列里有完整正文。"
+    assert json.loads(card["payload_json"])["content_markdown"] == body
+
+
+def test_reinit_renders_missing_card_body_from_structured_payload(tmp_path):
+    import json
+
+    from db.schema import init_db
+
+    db_path = str(tmp_path / "structured-card-body.db")
+    conn = init_db(db_path)
+    conn.execute(
+        "INSERT INTO garden_cards (id, title, payload_json) VALUES (?, ?, ?)",
+        (
+            "card-structured",
+            "结构化卡",
+            json.dumps(
+                {
+                    "schema_version": "garden_card.v2",
+                    "title": "结构化卡",
+                    "claim": "结构化正文不应变成空卡。",
+                    "card_kind": "method",
+                    "core_judgments": [
+                        {
+                            "statement": "旧数据只有结构化字段时也要渲染正文。",
+                            "reasoning": "卡片正文是唯一读取入口。",
+                        }
+                    ],
+                    "source_ids": [],
+                },
+                ensure_ascii=False,
+            ),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    reopened = init_db(db_path)
+    try:
+        card = reopened.execute(
+            "SELECT content_markdown, payload_json FROM garden_cards "
+            "WHERE id = 'card-structured'"
+        ).fetchone()
+    finally:
+        reopened.close()
+
+    body = card["content_markdown"]
+    assert body
+    assert "# 结构化卡" in body
+    assert "结构化正文不应变成空卡。" in body
+    assert json.loads(card["payload_json"])["content_markdown"] == body

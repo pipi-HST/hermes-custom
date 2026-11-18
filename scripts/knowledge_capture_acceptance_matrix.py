@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_ROOT = Path(os.environ.get("HERMES_RUNTIME_ROOT", str(PROJECT_ROOT.parent / "hermes-agent-main"))).expanduser()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -185,7 +187,7 @@ def _scenario_editable_contract(agent: CaptureAgent) -> dict[str, Any]:
         draft["title"] == "Agent Harness 验收",
         draft["summary"] == "整理草稿应生成元信息和建议。",
         draft["tags"] == ["ai-agent", "knowledge-workflow"],
-        draft["draft_text"].startswith("## 核心观点"),
+        draft["draft_text"].startswith("Agent Harness 原文内容"),
         intent["folder_suggestion"]["folder_path"] == "AI 产品",
         intent["card_suggestion"]["should_generate"] is True,
         bool(intent["card_suggestion"]["reason"]),
@@ -316,23 +318,20 @@ def _scenario_link_stage_timings(agent: CaptureAgent) -> dict[str, Any]:
 
 
 def _scenario_frontend_fallbacks() -> dict[str, Any]:
-    page = (
-        PROJECT_ROOT.parent
-        / "Downloads"
-        / "hermes-agent-main"
-        / "web"
-        / "src"
-        / "pages"
-        / "KnowledgeLibraryPage.tsx"
-    )
+    page = _runtime_web_root() / "src" / "pages" / "KnowledgeLibraryPage.tsx"
     text = page.read_text(encoding="utf-8")
     checks = [
-        "AI 未返回明确文件夹建议，先放入 Inbox 等待人工确认。" in text,
-        "AI 未返回有效卡片建议，默认暂不生成 Garden Card。" in text,
-        '|| "Inbox"' in text,
-        "suggestion.should_generate === true && Boolean(reason)" in text,
+        "editableFolderSuggestion(draft.capture_intent)" in text,
+        "editableCardSuggestion(draft.capture_intent)" in text,
+        'options.fallbackFolder || "Inbox"' in text,
+        "setEditableGenerateCard(Boolean(cardSuggestion.should_generate))" in text,
     ]
     return _scenario_result("frontend_legacy_empty_suggestion_fallbacks", checks, {"path": str(page)})
+
+
+def _runtime_web_root() -> Path:
+    nested = RUNTIME_ROOT / "hermes-agent-main" / "web"
+    return nested if nested.is_dir() else RUNTIME_ROOT / "web"
 
 
 def _scenario_result(name: str, checks: list[bool], details: dict[str, Any]) -> dict[str, Any]:

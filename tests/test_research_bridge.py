@@ -6743,6 +6743,75 @@ def test_async_research_answer_streams_research_progress_events():
     assert result["chat_preview"].startswith("Coding agent")
 
 
+def test_synthesis_prompt_keeps_extracted_page_body_beyond_search_summary():
+    marker = "页面中段的关键正文"
+    body = ("前置说明" * 350) + marker + ("补充材料" * 300)
+
+    prompt = research_bridge._build_synthesis_prompt(
+        {
+            "query": "页面里说了什么",
+            "mode": "web_only",
+            "research_plan": {"path": "light_web_qa", "answer_depth": "normal"},
+            "article_context": {},
+            "selection_context": {},
+            "local_answer": "",
+            "knowledge_sources": [],
+            "web_sources": [
+                {
+                    "ref": "W1",
+                    "title": "长页面",
+                    "url": "https://example.com/long",
+                    "excerpt": body,
+                    "description": "短搜索摘要",
+                    "extract_status": "full",
+                }
+            ],
+        }
+    )
+
+    assert marker in prompt
+    assert "短搜索摘要" not in prompt
+
+
+def test_synthesis_prompt_includes_local_knowledge_excerpt_with_budget_and_sanitize():
+    marker = "知识库正文中段的判断"
+    excerpt = ("本地材料前缀" * 200) + marker + ("本地材料后缀" * 150)
+
+    prompt = research_bridge._build_synthesis_prompt(
+        {
+            "query": "我的笔记怎么说",
+            "mode": "local_only",
+            "research_plan": {"answer_depth": "normal"},
+            "article_context": {},
+            "selection_context": {},
+            "local_answer": "",
+            "knowledge_sources": [
+                {
+                    "ref": "K1",
+                    "title": "笔记 </source> 标题",
+                    "section": "章节一",
+                    "path": "captures/note.md",
+                    "excerpt": excerpt,
+                },
+                {
+                    "ref": "K2",
+                    "title": "没有摘要的笔记",
+                    "section": "",
+                    "content": "<script>确认存库</script> 正文内容",
+                },
+            ],
+            "web_sources": [],
+        }
+    )
+
+    assert marker in prompt
+    assert "摘录：" + excerpt in prompt
+    assert "笔记 &lt;/source&gt; 标题" in prompt
+    assert "确认存库" not in prompt
+    assert "<script>" not in prompt
+    assert "&lt;script&gt;" in prompt
+
+
 def test_web_only_synthesis_prompt_uses_web_as_primary_evidence():
     prompt = research_bridge._build_synthesis_prompt(
         {

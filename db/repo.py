@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import uuid
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from db.concurrency import fetch_dict, fetch_dicts, transaction
@@ -86,6 +86,10 @@ class CaptureRepo:
 
 
 class CaptureDraftRepo:
+    EDITABLE_STATUSES = frozenset(
+        {"raw_extracted", "draft_ready", "revision_requested", "draft_incomplete"}
+    )
+
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
@@ -136,25 +140,28 @@ class CaptureDraftRepo:
             return None
         return self._row_to_dict(row)
 
-    def claim_for_commit(self, draft_id: str) -> Optional[dict]:
-        updated_at = datetime.now(timezone.utc).isoformat()
-        cursor = self.conn.execute(
-            """UPDATE capture_drafts
-               SET status = 'committing', updated_at = ?
-               WHERE id = ?
-                 AND (
-                    status IN ('raw_extracted', 'draft_ready', 'revision_requested')
-                    OR (
-                        status = 'committing'
-                        AND julianday(updated_at) <= julianday('now', '-15 minutes')
-                    )
-                 )""",
-            (updated_at, draft_id),
-        )
-        self.conn.commit()
-        if cursor.rowcount != 1:
-            return None
-        return self.get_by_id(draft_id)
+    def claim_for_commit(
+        self, draft_id: str, *, expected: dict | None = None,
+    ) -> Optional[dict]:
+        with transaction(self.conn):
+            snapshot = expected if expected is not None else self.get_by_id(draft_id)
+            if snapshot is None:
+                return None
+            cursor = self.conn.execute(
+                """UPDATE capture_drafts
+                   SET status = 'committing', updated_at = ?
+                   WHERE id = ? AND status = ? AND updated_at = ?
+                     AND (
+                        status IN ('raw_extracted', 'draft_ready', 'revision_requested')
+                        OR (
+                            status = 'committing'
+                            AND julianday(updated_at) <= julianday('now', '-15 minutes')
+                        )
+                     )""",
+                (_next_draft_timestamp(snapshot), draft_id,
+                 snapshot["status"], snapshot["updated_at"]),
+            )
+            return self.get_by_id(draft_id) if cursor.rowcount == 1 else None
 
     def commit_claim_is_stale(self, draft_id: str) -> bool:
         row = self.conn.execute(
@@ -166,14 +173,8 @@ class CaptureDraftRepo:
         ).fetchone()
         return row is not None
 
-    def restore_commit_status(self, draft_id: str, status: str) -> None:
-        self.conn.execute(
-            """UPDATE capture_drafts
-               SET status = ?, updated_at = ?
-               WHERE id = ? AND status = 'committing'""",
-            (status, datetime.now(timezone.utc).isoformat(), draft_id),
-        )
-        self.conn.commit()
+    def restore_commit_status(self, claimed: dict, status: str) -> None:
+        self.update(claimed["id"], expected=claimed, status=status)
 
     def reserve_capture_for_commit(self, draft_id: str) -> str:
         with transaction(self.conn):
@@ -193,14 +194,9 @@ class CaptureDraftRepo:
                     (capture_id,),
                 )
                 cursor = self.conn.execute(
-                    """UPDATE capture_drafts
-                       SET pending_capture_id = ?, updated_at = ?
+                    """UPDATE capture_drafts SET pending_capture_id = ?
                        WHERE id = ? AND status = 'committing'""",
-                    (
-                        capture_id,
-                        datetime.now(timezone.utc).isoformat(),
-                        draft_id,
-                    ),
+                    (capture_id, draft_id),
                 )
                 if cursor.rowcount != 1:
                     raise RuntimeError("draft commit claim was lost")
@@ -255,27 +251,41 @@ class CaptureDraftRepo:
             return None
         return self._row_to_dict(row)
 
-    def update(self, draft_id: str, **kwargs) -> Optional[dict]:
+    def update_editable(self, snapshot: dict, **updates) -> Optional[dict]:
+        """Write an edit only if the draft is still at the editable snapshot."""
+        if snapshot["status"] not in self.EDITABLE_STATUSES:
+            return None
+        return self.update(snapshot["id"], expected=snapshot, **updates)
+
+    def update(self, draft_id: str, *, expected: dict | None = None, **kwargs) -> Optional[dict]:
         allowed = {
             "draft_text", "instruction", "capture_intent", "summary", "tags", "status",
             "committed_capture_id", "title", "source", "source_type",
             "word_count", "raw_text", "pending_capture_id",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
-        if not updates:
-            return self.get_by_id(draft_id)
         if "tags" in updates:
             updates["tags"] = json.dumps(updates["tags"] or [], ensure_ascii=False)
         if "capture_intent" in updates:
             updates["capture_intent"] = json.dumps(updates["capture_intent"] or {}, ensure_ascii=False)
-        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-        sets = ", ".join(f"{k} = ?" for k in updates)
-        values = list(updates.values()) + [draft_id]
-        self.conn.execute(
-            f"UPDATE capture_drafts SET {sets} WHERE id = ?", values
-        )
-        self.conn.commit()
-        return self.get_by_id(draft_id)
+        with transaction(self.conn):
+            current = self.get_by_id(draft_id)
+            if current is None:
+                return None
+            snapshot = current if expected is None else expected
+            if not updates:
+                if (current["status"], current["updated_at"]) != (
+                    snapshot["status"], snapshot["updated_at"],
+                ):
+                    return None
+                return current
+            updates["updated_at"] = _next_draft_timestamp(snapshot)
+            sets = ", ".join(f"{k} = ?" for k in updates)
+            cursor = self.conn.execute(
+                f"UPDATE capture_drafts SET {sets} WHERE id = ? AND status = ? AND updated_at = ?",
+                [*updates.values(), draft_id, snapshot["status"], snapshot["updated_at"]],
+            )
+            return self.get_by_id(draft_id) if cursor.rowcount == 1 else None
 
     def list_open(self, limit: int = 50) -> list[dict]:
         rows = self.conn.execute(
@@ -300,3 +310,16 @@ class CaptureDraftRepo:
         except json.JSONDecodeError:
             result["capture_intent"] = {}
         return result
+
+
+def _next_draft_timestamp(snapshot: dict) -> str:
+    """Advance the version even when the wall clock hasn't ticked."""
+    now = datetime.now(timezone.utc)
+    try:
+        old = datetime.fromisoformat(snapshot["updated_at"])
+        if old.tzinfo is None:
+            old = old.replace(tzinfo=timezone.utc)
+        now = max(now, old + timedelta(microseconds=1))
+    except (ValueError, OverflowError):
+        pass
+    return now.isoformat(timespec="microseconds")

@@ -846,3 +846,95 @@ def test_commit_garden_draft_accepts_server_side_token_verification(repo, tmp_pa
 
     assert result["status"] == "success"
     assert result["durable_artifacts"][0]["type"] == "garden_card"
+
+
+@pytest.mark.parametrize("terminal", ["committed", "discarded"])
+def test_revising_closed_garden_draft_does_not_call_model(repo, tmp_path, terminal):
+    from agents.garden_agent import commit_garden_draft_to_card, create_garden_draft, discard_garden_draft
+    from bridge.context import KnowledgeContext
+    from bridge.garden_bridge import revise_garden_draft
+
+    draft_id = create_garden_draft(repo, {"title": "知识卡片草稿"})
+    if terminal == "committed":
+        assert commit_garden_draft_to_card(repo, draft_id)
+    else:
+        assert discard_garden_draft(repo, draft_id)
+    config = MagicMock(vault_path=tmp_path)
+    context = KnowledgeContext(config, repo.conn, tmp_path)
+
+    with patch.object(GardenAgent, "synthesize") as synthesize:
+        result = revise_garden_draft(draft_id, "改写标题", context=context)
+    assert result["status"] == "error"
+    synthesize.assert_not_called()
+
+
+def test_revision_preserves_concurrent_discard(repo, tmp_path):
+    from agents.garden_agent import create_garden_draft, discard_garden_draft, get_garden_draft
+    from bridge.context import KnowledgeContext
+    from bridge.garden_bridge import revise_garden_draft
+
+    draft_id = create_garden_draft(repo, {"title": "原草稿"})
+    config = MagicMock(vault_path=tmp_path)
+    context = KnowledgeContext(config, repo.conn, tmp_path)
+
+    def finish_revision(*args, **kwargs):
+        assert discard_garden_draft(repo, draft_id)
+        return {"title": "修订草稿"}
+
+    with patch.object(GardenAgent, "synthesize", side_effect=finish_revision):
+        result = revise_garden_draft(draft_id, "改写标题", context=context)
+    assert result["status"] == "error"
+    draft = get_garden_draft(repo, draft_id)
+    assert draft["status"] == "discarded"
+    assert draft["title"] == "原草稿"
+
+
+def test_conversation_confirmation_does_not_save_a_concurrent_revision(repo, tmp_path):
+    from agents.garden_agent import create_garden_draft, get_garden_draft, update_garden_draft
+    from bridge.context import KnowledgeContext
+    from bridge.garden_bridge import commit_garden_draft
+
+    draft_id = create_garden_draft(repo, {"title": "原草稿"})
+    context = KnowledgeContext(None, repo.conn, tmp_path)
+
+    def before_commit(stage):
+        assert stage == "garden.commit.before_create_card"
+        assert update_garden_draft(repo, draft_id, {"title": "修订草稿"})
+
+    with patch("bridge.garden_bridge.raise_if_cancelled", side_effect=before_commit):
+        result = commit_garden_draft(confirmation="确认卡片", context=context)
+
+    assert result["status"] == "error"
+    assert repo.conn.execute("SELECT COUNT(*) FROM garden_cards").fetchone()[0] == 0
+    assert get_garden_draft(repo, draft_id)["title"] == "修订草稿"
+    saved = commit_garden_draft(draft_id, confirmation="确认卡片", context=context)
+    assert saved["status"] == "success"
+    assert saved["durable_artifacts"][0]["title"] == "修订草稿"
+
+
+def test_commit_garden_draft_ledger_records_sqlite_card_success(repo, tmp_path):
+    from agents.garden_agent import create_garden_draft
+    from bridge.context import KnowledgeContext
+    from bridge.garden_bridge import commit_garden_draft
+
+    draft_id = create_garden_draft(repo, {
+        "title": "落库卡",
+        "one_liner": "只写 SQLite 也应记为成功。",
+        "markdown": "# 落库卡\n\n正文只存在数据库里。",
+    })
+    context = KnowledgeContext(None, repo.conn, tmp_path)
+
+    result = commit_garden_draft(draft_id, confirmation="确认卡片", context=context)
+
+    assert result["status"] == "success"
+    assert result["durable_artifacts"][0].get("path", "") == ""
+    run = repo.conn.execute(
+        """SELECT status, evidence_json FROM agent_runs
+           WHERE intent = 'commit_garden_draft'
+           ORDER BY id DESC LIMIT 1"""
+    ).fetchone()
+    evidence = json.loads(run["evidence_json"])
+    assert run["status"] == "success"
+    assert evidence["card_created"] is True
+    assert evidence["storage"] == "sqlite"
+    assert evidence["path"] == ""

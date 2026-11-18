@@ -7,6 +7,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 from .base import BaseExtractor, ExtractionFailure, ExtractionResult
+from .input_policy import allow_local_files
 
 
 TEXT_SUFFIXES = {
@@ -35,6 +36,8 @@ class DocumentExtractor(BaseExtractor):
     _MAX_PATH_CHARS = 1024
 
     def can_handle(self, source: str) -> bool:
+        if not allow_local_files.get():
+            return False
         candidate = (source or "").strip()
         if not candidate or len(candidate) > self._MAX_PATH_CHARS:
             return False
@@ -47,6 +50,12 @@ class DocumentExtractor(BaseExtractor):
             return False
 
     def extract(self, source: str, **kwargs) -> ExtractionResult:
+        if not allow_local_files.get():
+            return ExtractionResult.failed(
+                code="unsafe_source",
+                message="HTTP Capture does not accept server-side file paths",
+                source_type="document",
+            )
         path = Path(source).expanduser()
         suffix = path.suffix.lower()
         try:

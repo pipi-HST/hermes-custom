@@ -1,6 +1,6 @@
 import importlib
 import json
-import os
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -248,8 +248,19 @@ def test_real_browser_runner_allows_live_provider_latency(monkeypatch, tmp_path)
         env={},
     )
 
-    assert observed == {
-        "command": ["npm.cmd" if os.name == "nt" else "npm", "run", "test:knowledge:product"],
-        "timeout": 300,
-    }
+    assert observed["command"] == [
+        shutil.which("node"),
+        str(
+            knowledge_product_e2e.RUNTIME_ROOT
+            / "web"
+            / "node_modules"
+            / "playwright"
+            / "cli.js"
+        ),
+        "test",
+        "e2e/knowledge-product-real.spec.ts",
+        "--config=playwright.real.config.ts",
+        "--reporter=list",
+    ]
+    assert observed["timeout"] == 300
     assert result["ok"] is True

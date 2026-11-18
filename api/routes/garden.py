@@ -1,4 +1,4 @@
-"""Garden / Knowledge Card endpoints (contract v1.1).
+"""Garden / Knowledge Card endpoints (contract v2 confirmation).
 
 HTTP mode delegates card synthesis and card reads to this service.  Response
 shapes mirror the runtime's local handlers so the dashboard consumes the same
@@ -24,6 +24,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from agents.garden_agent import get_garden_draft, is_open_garden_draft
 from agents.garden_card_payload import (
     normalize_garden_payload,
     parse_payload_json,
@@ -32,6 +33,7 @@ from agents.garden_card_payload import (
 )
 from api.routes._confirmation import issue_confirmation_token, require_confirmation_token
 from bridge.capture_view import read_capture_note
+from bridge.context import KnowledgeContext
 from db.concurrency import transaction
 from db.confirmation_repo import ConfirmationRepo
 from db.repo import CaptureRepo
@@ -64,10 +66,11 @@ def create_garden_router(
     vault = Path(vault_path).expanduser()
 
     def _context():
-        if config is None:
-            return None
-        from bridge.context import KnowledgeContext
+        return _draft_context() if config is not None else None
 
+    def _draft_context() -> KnowledgeContext:
+        # Draft lifecycle operations must use the same database as the router,
+        # even when no model configuration is needed or was passed in.
         return KnowledgeContext(config=config, conn=capture_repo.conn, vault_path=vault)
 
     @router.post("/garden/drafts")
@@ -125,16 +128,18 @@ def create_garden_router(
 
     @router.post("/garden/drafts/{draft_id}/confirmation")
     def issue_garden_draft_confirmation(draft_id: str):
-        draft = capture_repo.conn.execute(
-            "SELECT id FROM garden_drafts WHERE id = ?", (draft_id,)
-        ).fetchone()
-        if draft is None:
-            raise HTTPException(status_code=404, detail="garden draft not found")
-        return issue_confirmation_token(
-            ConfirmationRepo(capture_repo.conn),
-            intent=COMMIT_GARDEN_DRAFT_INTENT,
-            object_id=draft_id,
-        )
+        with transaction(capture_repo.conn):
+            draft = get_garden_draft(capture_repo, draft_id)
+            if draft is None:
+                raise HTTPException(status_code=404, detail="garden draft not found")
+            if not is_open_garden_draft(draft):
+                raise HTTPException(status_code=409, detail="garden draft is no longer open")
+            return issue_confirmation_token(
+                ConfirmationRepo(capture_repo.conn),
+                intent=COMMIT_GARDEN_DRAFT_INTENT,
+                object_id=draft_id,
+                object_version=draft["draft_version"],
+            )
 
     @router.post("/garden/drafts/{draft_id}/commit")
     def commit_garden_draft(
@@ -144,30 +149,51 @@ def create_garden_router(
         from bridge import garden_bridge
 
         # The token is the only accepted proof of confirmation.  There is no
-        # server-side "the HTTP request already means yes" shortcut: missing,
-        # expired, mismatched and reused tokens all return 403.
-        require_confirmation_token(
-            ConfirmationRepo(capture_repo.conn),
-            intent=COMMIT_GARDEN_DRAFT_INTENT,
-            object_id=draft_id,
-            token=body.confirmation_token if body else "",
-        )
-        return garden_bridge.commit_garden_draft(
+        # server-side "the HTTP request already means yes" shortcut. Consume
+        # the token in the same transaction that saves the confirmed version.
+        draft = get_garden_draft(capture_repo, draft_id)
+        version = draft["draft_version"] if draft is not None else ""
+        token = body.confirmation_token if body else ""
+
+        def consume_confirmation():
+            require_confirmation_token(
+                ConfirmationRepo(capture_repo.conn),
+                intent=COMMIT_GARDEN_DRAFT_INTENT,
+                object_id=draft_id,
+                token=token,
+                object_version=version,
+            )
+
+        if not token.strip() or not draft or not is_open_garden_draft(draft):
+            # No token for a closed/missing version should have been issued.
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "confirmation_required", "message": "请确认当前待保存草稿。"},
+            )
+        result = garden_bridge.commit_garden_draft(
             draft_id=draft_id,
             confirmation_source="api",
             token_verified=True,
-            context=_context(),
+            context=_draft_context(),
+            expected_version=version,
+            before_commit=consume_confirmation,
         )
+        if (result.get("meta") or {}).get("draft_state_conflict"):
+            raise HTTPException(
+                status_code=409,
+                detail="garden draft changed or is no longer open; please confirm again",
+            )
+        return result
 
     @router.delete("/garden/drafts/{draft_id}")
     def discard_garden_draft(draft_id: str):
-        cur = capture_repo.conn.execute(
-            "UPDATE garden_drafts SET status = 'discarded', updated_at = datetime('now') WHERE id = ?",
-            (draft_id,),
-        )
-        capture_repo.conn.commit()
-        if cur.rowcount == 0:
+        from bridge import garden_bridge
+
+        discarded = garden_bridge.discard_garden_draft(draft_id, context=_draft_context())
+        if discarded is None:
             raise HTTPException(status_code=404, detail="garden draft not found")
+        if not discarded:
+            raise HTTPException(status_code=409, detail="garden draft is no longer open")
         return {"ok": True, "draft_id": draft_id, "status": "discarded"}
 
     @router.get("/garden/cards")

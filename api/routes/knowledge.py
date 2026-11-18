@@ -38,6 +38,9 @@ class AnswerDraftRequest(BaseModel):
     assistant_answer: str = ""
     instruction: str = ""
     output_type: str = "auto"
+    assistant_message_id: str = ""
+    answer_source: str = "auto"
+    source_run_id: str = ""
     sources: list[dict[str, Any]] = []
     target_capture_id: str = ""
     folder_path: str = ""
@@ -85,6 +88,9 @@ def create_knowledge_router(
             assistant_answer=body.assistant_answer,
             instruction=body.instruction,
             output_type=body.output_type,
+            assistant_message_id=body.assistant_message_id,
+            answer_source=body.answer_source,
+            source_run_id=body.source_run_id,
             sources=body.sources,
             target_capture_id=body.target_capture_id,
             folder_path=body.folder_path,

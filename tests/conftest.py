@@ -32,7 +32,7 @@ requires_symlink = pytest.mark.skipif(
 
 # Cross-repo pipelines need a hermes-agent-main checkout next to this one.
 RUNTIME_ROOT = Path(
-    os.environ.get("HERMES_RUNTIME_ROOT", "/Users/pipi/Downloads/hermes-agent-main")
+    os.environ.get("HERMES_RUNTIME_ROOT", str(Path(__file__).resolve().parents[2] / "hermes-agent-main"))
 ).expanduser()
 requires_runtime = pytest.mark.skipif(
     not RUNTIME_ROOT.is_dir(),

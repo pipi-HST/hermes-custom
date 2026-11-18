@@ -161,7 +161,8 @@ def search_knowledge_base(
     else:
         config = context.config
         repo = context.capture_repo()
-    return run_with_ledger(
+    run_id_box: dict[str, str] = {}
+    result = run_with_ledger(
         repo.conn,
         agent="rag",
         intent="search_knowledge_base",
@@ -172,8 +173,11 @@ def search_knowledge_base(
             config,
             repo,
             export_file=export_file,
+            run_id=run_id_box["run_id"],
         ),
+        run_id_out=run_id_box,
     )
+    return {**result, "meta": {**result["meta"], "source_run_id": run_id_box["run_id"]}}
 
 
 def _evidence_digest(results: list[dict], *, per_source_chars: int = 1200) -> str:
@@ -394,6 +398,7 @@ def _search_knowledge_base(
     repo: CaptureRepo,
     *,
     export_file: bool = False,
+    run_id: str = "",
 ) -> dict:
     bundle = _retrieve_knowledge_bundle(query, config, repo)
     results = bundle["results"]
@@ -432,16 +437,6 @@ def _search_knowledge_base(
         empty_answer,
     )
 
-    artifacts = []
-    if export_file:
-        artifacts.append(
-            _rag_report_artifact(
-                query=query,
-                answer=resp["answer"],
-                sources=resp["sources"],
-                results=results,
-            )
-        )
     chat_preview = format_answer(resp["answer"], resp["sources"])
     if export_file:
         chat_preview = "已生成 RAG 完整回答与引用报告文件。我会把文件发给你。"
@@ -470,9 +465,21 @@ def _search_knowledge_base(
         except Exception as exc:
             logger.warning("[RAG] citation repair failed: %s", exc)
 
+    # Export after repair so the report contains the answer the user sees.
+    artifacts = []
+    if export_file:
+        artifacts.append(
+            _rag_report_artifact(
+                query=query,
+                answer=resp["answer"],
+                sources=resp["sources"],
+                results=results,
+            )
+        )
+
     if not empty_answer:
         try:
-            record_card_citations(repo.conn, resp["answer"], source_map, query=query)
+            record_card_citations(repo.conn, resp["answer"], source_map, query=query, run_id=run_id)
         except Exception as exc:  # never fail an answer because bookkeeping failed
             logger.warning("[RAG] citation recording failed: %s", exc)
 
@@ -579,15 +586,15 @@ def _rag_report_artifact(
 _CARD_SOURCE_TYPES = {"knowledge_card", "garden_card"}
 _FENCED_CODE_RE = re.compile(r"```[\s\S]*?```")
 _INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
-# ``[1]`` inside a code block or a markdown link (``[1](url)``) is not a cite.
-_CITED_REF_RE = re.compile(r"\[(\d+)\](?!\()")
+# RAG uses [1]; web synthesis uses [K1] for local knowledge. Ignore links.
+_CITED_REF_RE = re.compile(r"\[((?:K)?\d+)\](?!\()")
 
 
-def _extract_cited_refs(answer: str) -> set[int]:
-    """Citation numbers actually used in prose, ignoring code and links."""
+def _extract_cited_refs(answer: str) -> set[str]:
+    """Citation labels actually used in prose, ignoring code and links."""
     text = _FENCED_CODE_RE.sub(" ", str(answer or ""))
     text = _INLINE_CODE_RE.sub(" ", text)
-    return {int(match.group(1)) for match in _CITED_REF_RE.finditer(text)}
+    return {match.group(1) for match in _CITED_REF_RE.finditer(text)}
 
 
 def record_card_citations(
@@ -598,7 +605,7 @@ def record_card_citations(
     query: str = "",
     run_id: str = "",
 ) -> list[str]:
-    """Record only the cards the answer actually cited with ``[n]``.
+    """Record only the cards the answer actually cited with ``[n]`` or ``[Kn]``.
 
     Retrieval hit is not usage: a card that merely matched a keyword must not
     accumulate ``citation_count``.  ``citation_events`` is append-only so the
@@ -615,14 +622,12 @@ def record_card_citations(
     # transaction here; use the shared BEGIN IMMEDIATE helper instead.
     with transaction(conn):
         for item in source_map or []:
-            if str(item.get("type") or "") not in _CARD_SOURCE_TYPES:
-                continue
-            try:
-                ref = int(str(item.get("ref") or ""))
-            except (TypeError, ValueError):
+            if not _CARD_SOURCE_TYPES.intersection(
+                (item.get("type"), item.get("source_kind")),
+            ):
                 continue
             card_id = str(item.get("id") or "")
-            if ref not in cited_refs or not card_id:
+            if str(item.get("ref") or "") not in cited_refs or not card_id or card_id in recorded:
                 continue
             try:
                 conn.execute(

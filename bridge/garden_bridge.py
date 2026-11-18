@@ -13,8 +13,10 @@ from agents.garden_agent import (
     GardenAgent,
     commit_garden_draft_to_card,
     create_garden_draft,
+    discard_garden_draft as _discard_garden_draft,
     get_garden_draft,
     get_latest_open_garden_draft,
+    is_open_garden_draft,
     update_garden_draft,
 )
 from agents.garden_duplicates import find_garden_duplicate
@@ -464,6 +466,11 @@ def revise_garden_draft(
     )
 
 
+def discard_garden_draft(draft_id: str, *, context: KnowledgeContext) -> bool | None:
+    """Discard an open Knowledge Card Draft."""
+    return _discard_garden_draft(context.capture_repo(), draft_id)
+
+
 def _revise_garden_draft(
     config,
     repo: CaptureRepo,
@@ -473,16 +480,16 @@ def _revise_garden_draft(
     conn = repo.conn
     vault_path = Path(config.vault_path).expanduser()
 
-    if not draft_id:
-        latest = get_latest_open_garden_draft(repo)
-        draft_id = latest["id"] if latest else ""
-    draft = get_garden_draft(repo, draft_id) if draft_id else None
-    if not draft:
+    draft = (
+        get_garden_draft(repo, draft_id) if draft_id else get_latest_open_garden_draft(repo)
+    )
+    if not draft or not is_open_garden_draft(draft):
         return error_envelope(
             agent="garden",
             intent="revise_garden_draft",
             error="没有找到可修改的知识卡片草稿。",
         )
+    draft_id = draft["id"]
     if not instruction.strip():
         return error_envelope(
             agent="garden",
@@ -540,7 +547,13 @@ def _revise_garden_draft(
         "payload": result.get("payload", {}),
         "markdown": result.get("markdown", draft["markdown"]),
         "instruction": instruction,
-    })
+    }, expected_version=draft["draft_version"])
+    if updated is None:
+        return error_envelope(
+            agent="garden",
+            intent="revise_garden_draft",
+            error="知识卡片草稿已更新或已关闭，请查看当前草稿。",
+        )
 
     return success_envelope(
         agent="garden",
@@ -582,12 +595,15 @@ def commit_garden_draft(
     confirmation_source: str = "agent",
     token_verified: bool = False,
     context: KnowledgeContext | None = None,
+    *,
+    expected_version: str | None = None,
+    before_commit=None,
 ) -> dict:
     """确认 Knowledge Card Draft，写入 garden_cards 结构化记录。
 
-    ``token_verified`` is the server-side confirmation used by the HTTP API and
-    the dashboard routes (they already authenticated and recorded the user's
-    action); agent/tool callers must still produce a confirmation phrase.
+    HTTP passes the version tied to its verified token. The conversation path
+    still requires a confirmation phrase, and pins the selected draft before
+    starting the write so it cannot save a concurrently revised version.
     """
     config, repo = _config_repo(context)
     confirmation_failure = confirmation_error(
@@ -602,6 +618,12 @@ def commit_garden_draft(
             intent="commit_garden_draft",
             error=confirmation_failure,
         )
+    draft = (
+        get_garden_draft(repo, draft_id) if draft_id else get_latest_open_garden_draft(repo)
+    )
+    if draft:
+        draft_id = draft["id"]
+    vault_path = context.vault_path if context is not None else config.vault_path
     write_jobs = KnowledgeWriteJobRepo(repo.conn)
     job_id = write_jobs.start(
         intent="commit_garden_draft",
@@ -613,7 +635,7 @@ def commit_garden_draft(
     def operation() -> dict:
         try:
             write_jobs.mark_step(job_id, status="writing_file", step="commit_garden_draft")
-            result = _commit_garden_draft(config, repo, draft_id=draft_id)
+            result = _commit_garden_draft(repo, vault_path, draft, expected_version, before_commit)
             if result.get("status") == "error":
                 write_jobs.fail(job_id, step="commit_garden_draft", error="; ".join(result.get("errors") or []))
             else:
@@ -661,17 +683,22 @@ def commit_garden_draft(
     )
 
 
-def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
-    if not draft_id:
-        latest = get_latest_open_garden_draft(repo)
-        draft_id = latest["id"] if latest else ""
-    draft = get_garden_draft(repo, draft_id) if draft_id else None
+def _commit_garden_draft(
+    repo: CaptureRepo, vault_path: Path | str, draft: dict | None, expected_version: str | None,
+    before_commit=None,
+) -> dict:
+    if expected_version is not None and (
+        not draft or draft["draft_version"] != expected_version
+    ):
+        return _garden_commit_conflict()
     if not draft:
         return error_envelope(
             agent="garden",
             intent="commit_garden_draft",
             error="没有找到可确认保存的知识卡片草稿。",
         )
+    if not is_open_garden_draft(draft):
+        return _garden_commit_conflict()
     if _has_internal_prompt_markers(draft["markdown"]):
         return error_envelope(
             agent="garden",
@@ -680,21 +707,20 @@ def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
         )
 
     raise_if_cancelled("garden.commit.before_create_card")
-    card_id = commit_garden_draft_to_card(repo, draft_id)
+    draft_id = draft["id"]
+    card_id = commit_garden_draft_to_card(
+        repo, draft_id, expected_version=draft["draft_version"], before_commit=before_commit,
+    )
     if not card_id:
-        return error_envelope(
-            agent="garden",
-            intent="commit_garden_draft",
-            error="这个知识卡片草稿已经保存或无法保存。",
-        )
+        return _garden_commit_conflict()
 
-    if draft["question_id"]:
-        repo.conn.execute(
-            "UPDATE pending_questions SET status='answered', matched_response='synthesized' WHERE id=?",
-            (draft["question_id"],),
-        )
-        repo.conn.commit()
+    try:
+        from agents.knowledge_graph import refresh_graph_after_write
 
+        refresh_graph_after_write(repo.conn, vault_path)
+    except Exception:
+        # The card is already committed; graph refresh is derived state.
+        pass
     return success_envelope(
         agent="garden",
         intent="commit_garden_draft",
@@ -714,6 +740,15 @@ def _commit_garden_draft(config, repo: CaptureRepo, draft_id: str = "") -> dict:
             "knowledge_link_count": len(_json_list(draft["knowledge_links"])),
             "storage": "sqlite",
         },
+    )
+
+
+def _garden_commit_conflict() -> dict:
+    return error_envelope(
+        agent="garden",
+        intent="commit_garden_draft",
+        error="知识卡片草稿已更新或已关闭，请查看当前草稿后重新确认。",
+        meta={"draft_state_conflict": True},
     )
 
 

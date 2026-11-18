@@ -118,6 +118,7 @@ def test_rename_folder_updates_markdown_frontmatter(test_vault, test_db):
     
     capture_file = test_vault / "captures" / "test-capture.md"
     content = capture_file.read_text(encoding="utf-8")
+    assert content.split("---", 2)[2] == "\n\nThis is a test capture body."
     
     # Parse frontmatter
     lines = content.split("\n")
@@ -285,3 +286,63 @@ def test_rename_folder_handles_malformed_json(test_db):
     
     # Operation should succeed, treating non-string folder_path as empty
     assert result.success()
+
+
+def test_card_only_topic_is_renamed(test_vault, test_db):
+    test_db.execute("DELETE FROM capture_drafts")
+    test_db.execute("DELETE FROM captures")
+    result = rename_folder("OldFolder", "NewFolder", test_vault, test_db)
+    assert result.success()
+    assert result.updated_garden_cards == 1
+    assert test_db.execute("SELECT source_theme FROM garden_cards").fetchone()[0] == "NewFolder"
+
+
+def test_retry_resumes_metadata_and_preserves_edits_after_db_failure(test_vault, test_db):
+    test_db.execute("""CREATE TRIGGER reject_topic_index BEFORE INSERT ON capture_metadata
+                        BEGIN SELECT RAISE(ABORT, 'index unavailable'); END""")
+    failed = rename_folder("OldFolder", "NewFolder", test_vault, test_db)
+    assert not failed.success()
+    assert test_db.execute("SELECT source_theme FROM garden_cards").fetchone()[0] == "OldFolder"
+    note = test_vault / "captures" / "test-capture.md"
+    renamed = note.read_text(encoding="utf-8")
+    assert "folder_path: NewFolder" in renamed
+    note.write_text(renamed + "\nNew user edit", encoding="utf-8")
+    test_db.execute("DROP TRIGGER reject_topic_index")
+    result = rename_folder("OldFolder", "NewFolder", test_vault, test_db)
+    assert result.success()
+    assert "New user edit" in note.read_text(encoding="utf-8")
+    assert test_db.execute("SELECT folder_path FROM capture_metadata").fetchone()[0] == "NewFolder"
+    assert test_db.execute("SELECT source_theme FROM garden_cards").fetchone()[0] == "NewFolder"
+    assert test_db.execute("SELECT status FROM knowledge_write_jobs").fetchone()[0] == "completed"
+
+
+def test_retry_after_registry_failure_does_not_reapply_database(test_vault, test_db, monkeypatch):
+    from agents import folder_service
+
+    def unavailable(*_args):
+        raise OSError("registry unavailable")
+
+    with monkeypatch.context() as m:
+        m.setattr(folder_service, "rename_stored_folder", unavailable)
+        assert not rename_folder("OldFolder", "NewFolder", test_vault, test_db).success()
+
+    assert test_db.execute("SELECT step FROM knowledge_write_jobs").fetchone()[0] == "db_applied"
+    test_db.execute("UPDATE garden_cards SET source_theme = 'HandEdited'")
+    assert rename_folder("OldFolder", "NewFolder", test_vault, test_db).success()
+    assert test_db.execute("SELECT source_theme FROM garden_cards").fetchone()[0] == "HandEdited"
+
+
+def test_failed_sqlite_commit_can_be_retried_on_the_same_connection(test_vault, test_db):
+    test_db.execute("PRAGMA foreign_keys = ON")
+    test_db.executescript("""
+        CREATE TABLE test_parent (id INTEGER PRIMARY KEY);
+        CREATE TABLE test_child (id INTEGER REFERENCES test_parent(id) DEFERRABLE INITIALLY DEFERRED);
+        CREATE TRIGGER reject_topic_commit AFTER INSERT ON capture_metadata
+        BEGIN INSERT INTO test_child VALUES (1); END;
+    """)
+    failed = rename_folder("OldFolder", "NewFolder", test_vault, test_db)
+    assert not failed.success()
+    assert not test_db.in_transaction
+    test_db.execute("DROP TRIGGER reject_topic_commit")
+    assert rename_folder("OldFolder", "NewFolder", test_vault, test_db).success()
+    assert test_db.execute("SELECT folder_path FROM capture_metadata").fetchone()[0] == "NewFolder"

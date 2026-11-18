@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -17,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_ROOT = Path(os.environ.get("HERMES_RUNTIME_ROOT", str(PROJECT_ROOT.parent / "hermes-agent-main"))).expanduser()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -514,7 +516,9 @@ def _scenario_reading_answer_draft_commit(ctx: KnowledgeContext) -> dict[str, An
         assistant_message_id="assistant-1",
         sources=[{"type": "capture_note", "id": "cap-a", "title": "材料 A"}],
     )
-    committed = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"], context=ctx)
+    committed = reading_bridge.commit_reading_artifact(
+        draft["meta"]["reading_draft_id"], confirmation="确认整理", context=ctx
+    )
     artifact = committed.get("durable_artifacts", [{}])[0]
     return _scenario_result(
         "reading_answer_draft_commit",
@@ -540,7 +544,9 @@ def _scenario_reading_answer_enhance_capture(ctx: KnowledgeContext) -> dict[str,
         target_capture_id=meta["capture_id"],
         sources=[{"type": "capture_note", "id": meta["capture_id"], "title": "阅读增强目标"}],
     )
-    committed = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"], context=ctx)
+    committed = reading_bridge.commit_reading_artifact(
+        draft["meta"]["reading_draft_id"], confirmation="确认整理", context=ctx
+    )
     after = (ctx.vault_path / meta["file_path"]).read_text(encoding="utf-8")
     return _scenario_result(
         "reading_answer_enhance_capture",
@@ -566,7 +572,7 @@ def _scenario_reading_draft_revision_guards(ctx: KnowledgeContext) -> dict[str, 
     draft_id = draft["meta"]["reading_draft_id"]
     empty = answer_bridge.revise_answer_draft(draft_id=draft_id, instruction="")
     revised = answer_bridge.revise_answer_draft(draft_id=draft_id, instruction="展开一点")
-    committed = reading_bridge.commit_reading_artifact(draft_id, context=ctx)
+    committed = reading_bridge.commit_reading_artifact(draft_id, confirmation="确认整理", context=ctx)
     after_commit = answer_bridge.revise_answer_draft(draft_id=draft_id, instruction="再改")
     return _scenario_result(
         "reading_draft_revision_guards",
@@ -628,7 +634,8 @@ def _scenario_garden_duplicate_blocks_creation(ctx: KnowledgeContext) -> dict[st
 
 
 def _scenario_frontend_contracts_present() -> dict[str, Any]:
-    web_root = PROJECT_ROOT.parent / "Downloads" / "hermes-agent-main" / "web"
+    nested_web_root = RUNTIME_ROOT / "hermes-agent-main" / "web"
+    web_root = nested_web_root if nested_web_root.is_dir() else RUNTIME_ROOT / "web"
     package_json = web_root / "package.json"
     library_page = web_root / "src" / "pages" / "KnowledgeLibraryPage.tsx"
     chat_page = web_root / "src" / "pages" / "KnowledgeChatPage.tsx"

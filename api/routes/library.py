@@ -126,8 +126,7 @@ def create_library_router(
             intent_changed = True
         if intent_changed:
             updates["capture_intent"] = capture_intent
-        with transaction(draft_repo.conn):
-            updated = draft_repo.update(item_id, **updates) or draft
+        updated = _update_draft_snapshot(draft_repo, draft, updates)
         return {
             "ok": True,
             "item": draft_library_item(updated, conn=capture_repo.conn, full=True),
@@ -316,8 +315,7 @@ def create_library_router(
                     "; ".join(issues),
                 )
             updates["capture_intent"] = merged_intent
-        with transaction(draft_repo.conn):
-            updated = draft_repo.update(draft_id, **updates) or draft
+        updated = _update_draft_snapshot(draft_repo, draft, updates)
         return {
             "ok": True,
             "item": draft_library_item(updated, conn=capture_repo.conn, full=True),
@@ -343,6 +341,15 @@ def create_library_router(
         return {"ok": True, "status": "deleted"}
 
     return router
+
+
+def _update_draft_snapshot(draft_repo: CaptureDraftRepo, draft: dict, updates: dict) -> dict:
+    updated = draft_repo.update_editable(draft, **updates)
+    if updated is None:
+        raise HTTPException(
+            status_code=409, detail="Capture draft changed or is no longer editable"
+        )
+    return updated
 
 
 def _rename_folder_via_worker(

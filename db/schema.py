@@ -948,7 +948,20 @@ def _normalize_garden_schema_version(conn: sqlite3.Connection) -> None:
 
 
 def _backfill_garden_content(conn: sqlite3.Connection) -> None:
-    """Backfill top-level card bodies from payloads, including new seed rows."""
+    """Backfill card bodies so the payload and column always carry text.
+
+    ``payload_json.content_markdown`` is the source of truth.  The column is a
+    derived cache, so a missing column body is copied from the payload.  Cards
+    that only have structured fields (legacy rows whose payload never carried a
+    body) are rendered once with the same renderer used by preview and commit;
+    without this an upgraded card reads as an empty body.
+    """
+    from agents.garden_card_payload import (
+        normalize_garden_payload,
+        parse_payload_json,
+        with_canonical_content_markdown,
+    )
+
     try:
         conn.execute(
             "UPDATE garden_cards "
@@ -956,8 +969,59 @@ def _backfill_garden_content(conn: sqlite3.Connection) -> None:
             "WHERE COALESCE(content_markdown, '') = '' "
             "  AND COALESCE(json_extract(payload_json, '$.content_markdown'), '') != ''"
         )
+        rows = conn.execute(
+            """SELECT id, content_markdown, payload_json FROM garden_cards
+               WHERE COALESCE(json_extract(payload_json, '$.content_markdown'), '') = ''"""
+        ).fetchall()
     except sqlite3.OperationalError:
-        pass
+        return
+    for row in rows:
+        payload = parse_payload_json(row["payload_json"])
+        column_body = str(row["content_markdown"] or "")
+        if not column_body and not _payload_has_card_content(payload):
+            continue
+        normalized = with_canonical_content_markdown(
+            normalize_garden_payload(
+                payload, legacy={"content_markdown": column_body}
+            ),
+            fallback=column_body,
+        )
+        body = normalized["content_markdown"]
+        if not body:
+            continue
+        conn.execute(
+            "UPDATE garden_cards SET payload_json = ?, content_markdown = ? WHERE id = ?",
+            (
+                json.dumps(normalized, ensure_ascii=False, sort_keys=True),
+                body,
+                row["id"],
+            ),
+        )
+
+
+_CARD_CONTENT_KEYS = (
+    "title",
+    "claim",
+    "one_liner",
+    "core_judgments",
+    "core_arguments",
+    "when_to_use",
+    "boundaries",
+    "action_items",
+    "key_materials",
+    "my_view",
+)
+
+
+def _payload_has_card_content(payload: dict) -> bool:
+    for key in _CARD_CONTENT_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str):
+            if value.strip():
+                return True
+        elif isinstance(value, (list, dict)) and value:
+            return True
+    return False
 
 
 GARDEN_V1_COLUMNS = (
@@ -975,8 +1039,16 @@ def _migrate_garden_v1_columns(conn: sqlite3.Connection) -> None:
     ``one_liner``/``core_arguments``/... duplicated the v2 payload.  Read them
     one last time for rows that only ever had the v1 columns, then remove the
     duplicate columns.  SQLite < 3.35 keeps them (unused) instead of failing.
+
+    Legacy rows that never had a Markdown body get one rendered here with the
+    same renderer that preview and commit use, so an upgraded card is never
+    left with an empty body.
     """
-    from agents.garden_card_payload import normalize_garden_payload, parse_payload_json
+    from agents.garden_card_payload import (
+        normalize_garden_payload,
+        parse_payload_json,
+        with_canonical_content_markdown,
+    )
 
     for table in ("garden_cards", "garden_drafts"):
         columns = {
@@ -986,17 +1058,27 @@ def _migrate_garden_v1_columns(conn: sqlite3.Connection) -> None:
         present = [column for column in GARDEN_V1_COLUMNS if column in columns]
         if not present:
             continue
+        body_column = "content_markdown" if table == "garden_cards" else "markdown"
         rows = conn.execute(f"SELECT * FROM {table}").fetchall()
         for row in rows:
             legacy = dict(row)
             payload = parse_payload_json(legacy.get("payload_json"))
-            normalized = normalize_garden_payload(payload, legacy=legacy)
+            fallback = str(legacy.get(body_column) or "")
+            normalized = with_canonical_content_markdown(
+                normalize_garden_payload(payload, legacy=legacy),
+                fallback=fallback,
+            )
+            assignments = ["payload_json = ?"]
+            values: list[object] = [
+                json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+            ]
+            if body_column in columns:
+                assignments.append(f"{body_column} = ?")
+                values.append(normalized["content_markdown"])
+            values.append(legacy["id"])
             conn.execute(
-                f"UPDATE {table} SET payload_json = ? WHERE id = ?",
-                (
-                    json.dumps(normalized, ensure_ascii=False, sort_keys=True),
-                    legacy["id"],
-                ),
+                f"UPDATE {table} SET {', '.join(assignments)} WHERE id = ?",
+                values,
             )
         for column in present:
             try:

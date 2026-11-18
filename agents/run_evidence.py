@@ -63,6 +63,13 @@ def extract_run_evidence(
             )
         output_ref["query"] = meta.get("query", "")
         output_ref["answer"] = meta.get("answer", "")
+        output_ref["preview"] = result.get("chat_preview", "")
+        output_ref["sources"] = source_refs
+    elif intent == "web_context_answer":
+        source_refs = _source_refs(sources)
+        output_ref["query"] = meta.get("query", "")
+        output_ref["answer"] = meta.get("answer") or result.get("chat_preview", "")
+        output_ref["preview"] = result.get("chat_preview", "")
         output_ref["sources"] = source_refs
     elif intent == "continue_rag_answer":
         source_run_id = str(meta.get("source_run_id") or "")
@@ -103,15 +110,23 @@ def extract_run_evidence(
         card_artifact = _first_artifact(artifacts, "garden_card")
         card_id = str(meta.get("card_id") or card_artifact.get("id") or "")
         path = str(meta.get("path") or card_artifact.get("path") or "")
+        storage = str(meta.get("storage") or "")
+        # Cards are SQLite truth.  A committed row is durable evidence even
+        # when no Markdown export was written, so the ledger must not call a
+        # successful SQLite commit incomplete just because ``path`` is empty.
         evidence.update(
             {
-                "card_created": bool(card_id and path),
+                "card_created": bool(card_id),
                 "card_id": card_id,
                 "path": path,
                 "knowledge_link_count": int(meta.get("knowledge_link_count") or 0),
             }
         )
+        if storage:
+            evidence["storage"] = storage
         output_ref.update({"card_id": card_id, "path": path})
+        if storage:
+            output_ref["storage"] = storage
     elif intent in {"audit_library", "apply_librarian_repair"}:
         evidence.update(
             {
@@ -291,6 +306,10 @@ def extract_run_evidence(
                 "path": path,
             }
         )
+        if intent == "save_answer_to_knowledge":
+            for key in ("answer_source", "source_run_id", "answer_source_fallback"):
+                if value := meta.get(key):
+                    evidence[key] = output_ref[key] = value
 
     status = _completion_status(result, intent, evidence)
     return {
@@ -447,21 +466,10 @@ def _first(value: Any) -> str:
     return ""
 
 
-def _source_refs(sources: list[Any]) -> list[dict[str, str]]:
-    refs: list[dict[str, str]] = []
-    for source in sources:
-        if not isinstance(source, Mapping):
-            continue
-        refs.append(
-            {
-                "id": str(source.get("id") or ""),
-                "title": str(source.get("title") or ""),
-                "path": str(source.get("path") or ""),
-                "section": str(source.get("section") or ""),
-                "type": str(source.get("type") or ""),
-            }
-        )
-    return refs
+def _source_refs(sources: list[Any]) -> list[dict[str, Any]]:
+    # Source Map is already the public evidence projection. Keep its refs,
+    # URLs and other identifiers together with the exact body that cited them.
+    return [dict(source) for source in sources if isinstance(source, Mapping)]
 
 
 def _object_type_for_artifact(artifact_type: str) -> str:

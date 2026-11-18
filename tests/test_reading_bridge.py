@@ -1,6 +1,8 @@
 """Tests for Reading Session bridge."""
 from __future__ import annotations
 
+import hashlib
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -384,16 +386,14 @@ def test_synthesize_reading_card_warns_on_llm_failure(reading_config):
     assert warnings == ["Reading card LLM synthesis failed: no model"]
 
 
-def test_commit_enhanced_capture_backs_up_and_rewrites_capture(reading_config):
-    from bridge import reading_bridge
-
+@pytest.fixture
+def enhancement_source(reading_config):
     vault = Path(reading_config.vault_path)
     captures_dir = vault / "captures"
     captures_dir.mkdir()
     capture_path = captures_dir / "source.md"
-    capture_path.write_text(
-        "---\nid: cap1\ntitle: 原文章\n---\n\n# 原文章\n\n原正文\n",
-        encoding="utf-8",
+    capture_path.write_bytes(
+        "---\r\nid: cap1\r\ntitle: 原文章\r\n---\r\n\r\n# 原文章\r\n\r\n原正文\r\n".encode("utf-8"),
     )
     conn = init_db(reading_config.db_path)
     conn.execute(
@@ -402,24 +402,55 @@ def test_commit_enhanced_capture_backs_up_and_rewrites_capture(reading_config):
     )
     conn.commit()
     conn.close()
+    return capture_path
 
-    with patch.object(reading_bridge, "load_config", return_value=reading_config):
-        reading_bridge._config = None
-        reading_bridge._repo = None
-        session = reading_bridge.start_reading_session(
-            message="讨论",
-            capture_id="cap1",
-        )
-        reading_bridge.discuss_reading(
-            session_id=session["meta"]["reading_session_id"],
-            message="这里为什么重要？",
-            assistant_answer="因为它改变了原文论证的理解方式。",
-        )
-        draft = reading_bridge.summarize_reading_session(
-            session_id=session["meta"]["reading_session_id"],
-            output_type="enhance_capture",
-        )
-        result = reading_bridge.commit_reading_artifact(draft["meta"]["reading_draft_id"], confirmation="确认整理")
+
+def _new_enhancement_draft(reading_config, monkeypatch):
+    from bridge import reading_bridge
+
+    monkeypatch.setattr(reading_bridge, "load_config", lambda _path: reading_config)
+    monkeypatch.setattr(reading_bridge, "_config", None)
+    monkeypatch.setattr(reading_bridge, "_repo", None)
+    session = reading_bridge.start_reading_session(message="讨论", capture_id="cap1")
+    reading_bridge.discuss_reading(
+        session_id=session["meta"]["reading_session_id"],
+        message="这里为什么重要？",
+        assistant_answer="因为它改变了原文论证的理解方式。",
+    )
+    draft = reading_bridge.summarize_reading_session(
+        session_id=session["meta"]["reading_session_id"],
+        output_type="enhance_capture",
+    )
+    assert draft["status"] == "success"
+    return draft["meta"]["reading_draft_id"]
+
+
+def test_commit_enhanced_capture_backs_up_and_rewrites_capture(reading_config, enhancement_source, monkeypatch):
+    from bridge import atomic_io, reading_bridge
+
+    capture_path = enhancement_source
+    vault = Path(reading_config.vault_path)
+    original = capture_path.read_bytes()
+    draft_id = _new_enhancement_draft(reading_config, monkeypatch)
+    real_replace = atomic_io.os.replace
+
+    def check_backup_then_replace(source, destination):
+        if Path(destination) == capture_path:
+            # An independent connection must see the row before the note changes.
+            with sqlite3.connect(reading_config.db_path) as conn:
+                backup_path, previous_hash, new_hash = conn.execute(
+                    """SELECT backup_file_path, previous_file_hash, new_file_hash
+                       FROM capture_version_backups WHERE reading_draft_id = ?""",
+                    (draft_id,),
+                ).fetchone()
+            assert capture_path.read_bytes() == original
+            assert (vault / backup_path).read_bytes() == original
+            assert previous_hash == hashlib.sha256(original).hexdigest()
+            assert new_hash == hashlib.sha256(Path(source).read_bytes()).hexdigest()
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(atomic_io.os, "replace", check_backup_then_replace)
+    result = reading_bridge.commit_reading_artifact(draft_id, confirmation="确认整理")
 
     assert result["status"] == "success"
     assert result["durable_artifacts"][0]["type"] == "capture_note"
@@ -435,3 +466,118 @@ def test_commit_enhanced_capture_backs_up_and_rewrites_capture(reading_config):
         "SELECT backup_file_path FROM capture_version_backups WHERE capture_id = 'cap1'"
     ).fetchone()
     assert backup["backup_file_path"] == backup_path
+
+
+@pytest.mark.parametrize("change", ["body", "frontmatter", "legacy"])
+def test_enhancement_rejects_unverified_snapshot(reading_config, enhancement_source, monkeypatch, change):
+    from bridge import reading_bridge
+
+    draft_id = _new_enhancement_draft(reading_config, monkeypatch)
+    repo = reading_bridge._repo
+    current = enhancement_source.read_bytes()
+    if change == "legacy":
+        repo.update_draft(draft_id, meta_json={"instruction": "legacy draft"})
+    elif change == "body":
+        current += "\r\n保存后另外编辑的正文。\r\n".encode("utf-8")
+    else:
+        current = current.replace(b"id: cap1\r\n", b"id: cap1\r\nfolder_path: New Topic\r\n")
+    enhancement_source.write_bytes(current)
+
+    result = reading_bridge.commit_reading_artifact(draft_id, confirmation="确认整理")
+
+    assert result["status"] == "error"
+    assert "重新生成" in result["errors"][0]
+    assert enhancement_source.read_bytes() == current
+    draft = repo.get_draft(draft_id)
+    assert draft["status"] == "open"
+    assert repo.get_session(draft["session_id"])["status"] == "summarized"
+    assert repo.conn.execute("SELECT count(*) FROM capture_version_backups").fetchone()[0] == 0
+
+
+def test_enhancement_leaves_note_intact_when_backup_registration_fails(
+    reading_config, enhancement_source, monkeypatch,
+):
+    from bridge import reading_bridge
+
+    draft_id = _new_enhancement_draft(reading_config, monkeypatch)
+    original = enhancement_source.read_bytes()
+    repo = reading_bridge._repo
+    repo.conn.executescript("""
+        CREATE TRIGGER reject_backup BEFORE INSERT ON capture_version_backups
+        BEGIN SELECT RAISE(ABORT, 'backup registration failed'); END;
+    """)
+
+    with pytest.raises(sqlite3.IntegrityError, match="backup registration failed"):
+        reading_bridge.commit_reading_artifact(draft_id, confirmation="确认整理")
+
+    assert enhancement_source.read_bytes() == original
+    assert repo.get_draft(draft_id)["status"] == "open"
+
+
+def test_enhancement_keeps_registered_backup_when_replace_fails(
+    reading_config, enhancement_source, monkeypatch,
+):
+    from bridge import atomic_io, reading_bridge
+
+    draft_id = _new_enhancement_draft(reading_config, monkeypatch)
+    original = enhancement_source.read_bytes()
+    real_replace = atomic_io.os.replace
+
+    def fail_note_replace(source, destination):
+        if Path(destination) == enhancement_source:
+            raise OSError("note replace failed")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(atomic_io.os, "replace", fail_note_replace)
+    with pytest.raises(OSError, match="note replace failed"):
+        reading_bridge.commit_reading_artifact(draft_id, confirmation="确认整理")
+
+    repo = reading_bridge._repo
+    backup_path = repo.conn.execute(
+        "SELECT backup_file_path FROM capture_version_backups WHERE reading_draft_id = ?", (draft_id,),
+    ).fetchone()[0]
+    assert (Path(reading_config.vault_path) / backup_path).read_bytes() == original
+    assert enhancement_source.read_bytes() == original
+    assert repo.get_draft(draft_id)["status"] == "open"
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_answer_enhancement_includes_and_checks_original_body(
+    reading_config, enhancement_source, monkeypatch, edited,
+):
+    from bridge import answer_bridge, reading_bridge
+    from bridge.context import KnowledgeContext
+
+    monkeypatch.setattr(answer_bridge, "load_config", lambda _path: reading_config)
+    monkeypatch.setattr(answer_bridge, "_config", None)
+    monkeypatch.setattr(answer_bridge, "_repo", None)
+    result = answer_bridge.save_answer_to_knowledge(
+        assistant_answer="来自回答的补充。",
+        output_type="enhance_capture",
+        target_capture_id="cap1",
+        answer_source="provided",
+    )
+
+    assert result["status"] == "success"
+    draft_id = result["meta"]["reading_draft_id"]
+    repo = answer_bridge._repo
+    draft = repo.get_draft(draft_id)
+    if edited:
+        current = enhancement_source.read_bytes() + "\r\n另外编辑的正文。\r\n".encode("utf-8")
+        enhancement_source.write_bytes(current)
+    commit = reading_bridge.commit_reading_artifact(
+        draft_id,
+        confirmation="确认整理",
+        context=KnowledgeContext(reading_config, repo.conn, Path(reading_config.vault_path)),
+    )
+
+    assert "原正文" in draft["draft_text"]
+    if edited:
+        assert commit["status"] == "error"
+        assert enhancement_source.read_bytes() == current
+        assert repo.get_draft(draft_id)["status"] == "open"
+    else:
+        assert commit["status"] == "success"
+        note = enhancement_source.read_text(encoding="utf-8")
+        assert "原正文" in note
+        assert "来自回答的补充" in note

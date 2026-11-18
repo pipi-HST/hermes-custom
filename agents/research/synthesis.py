@@ -75,6 +75,15 @@ from agents.research.synthesis_guard import (
 )
 
 
+# ``excerpt`` already holds the extracted page body (or a search summary when
+# extraction failed) with its own per-source budget.  Do not clip it shorter
+# here: a mid-page paragraph must still reach the synthesis prompt.
+WEB_SOURCE_PROMPT_CHARS = 2400
+# Local retrieval evidence is capped before it reaches the payload; keep that
+# body in the prompt instead of reducing a source to title + section.
+KNOWLEDGE_SOURCE_PROMPT_CHARS = 2400
+
+
 def _synthesize_answer(
     payload: dict[str, Any],
     warnings: list[str],
@@ -207,7 +216,21 @@ def _build_synthesis_prompt(payload: dict[str, Any]) -> str:
         for source in payload["knowledge_sources"]:
             title = sanitize_untrusted_text(source.get("title", ""))
             section = sanitize_untrusted_text(source.get("section", ""))
-            parts.append(f"[{source['ref']}] {title} {section}".strip())
+            evidence = sanitize_untrusted_text(
+                _clip_text(
+                    str(
+                        source.get("excerpt")
+                        or source.get("content")
+                        or source.get("index_text")
+                        or ""
+                    ),
+                    KNOWLEDGE_SOURCE_PROMPT_CHARS,
+                )
+            )
+            block = f"[{source['ref']}] {title} {section}".strip()
+            if evidence:
+                block += f"\n摘录：{evidence}"
+            parts.append(block)
     if payload.get("web_sources"):
         parts.append("\n联网资料：")
         for source in payload["web_sources"]:
@@ -218,7 +241,12 @@ def _build_synthesis_prompt(payload: dict[str, Any]) -> str:
             # left untouched on purpose.
             title = sanitize_untrusted_text(source.get("title", ""))
             excerpt = sanitize_untrusted_text(
-                _clip_text(source.get("excerpt", "") or source.get("description", ""), 1800)
+                _clip_text(
+                    source.get("excerpt", "")
+                    or source.get("content", "")
+                    or source.get("description", ""),
+                    WEB_SOURCE_PROMPT_CHARS,
+                )
             )
             parts.append(
                 f"[{source['ref']}] {title}\n"

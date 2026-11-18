@@ -29,6 +29,7 @@ from typing import Any
 import yaml
 
 from agents.folder_service import rename_folder
+from bridge.process_lock import try_process_lock
 from db.schema import init_db
 from db.write_job_repo import KnowledgeWriteJobRepo
 
@@ -116,10 +117,24 @@ class KnowledgeWriteWorker:
                 time.sleep(self.poll_interval)
     
     def _process_batch(self) -> int:
-        """Process one batch of pending jobs."""
+        """Only one worker owns queued renames for this database at a time."""
         if not self.conn or not self.repo:
             return 0
+        lock = Path(self.db_path).expanduser().resolve().with_suffix(".rename-worker.lock")
+        with try_process_lock(lock) as acquired:
+            if not acquired:
+                return 0
+            # A running row under the exclusive lock belongs to an earlier
+            # worker that no longer owns the lock.
+            self.conn.execute(
+                """UPDATE knowledge_write_jobs
+                   SET status = 'retrying', step = 'worker_interrupted'
+                   WHERE intent = 'rename_folder' AND status = 'running'"""
+            )
+            self.conn.commit()
+            return self._process_owned_batch()
 
+    def _process_owned_batch(self) -> int:
         # Retried jobs go back to 'retrying'. Only this intent belongs to this
         # worker; other bridges use the table as an audit trail and complete
         # their rows inline.
@@ -230,13 +245,7 @@ class KnowledgeWriteWorker:
         )
         
         if not result.success():
-            error_msg = "; ".join(result.errors)
-            self.repo.fail(
-                job_id,
-                step="rename_folder_failed",
-                error=error_msg,
-            )
-            return
+            raise RuntimeError("; ".join(result.errors))
         
         # Record warnings in job metadata if any
         if result.warnings:

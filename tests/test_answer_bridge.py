@@ -353,13 +353,14 @@ def test_saved_answer_commit_uses_reading_write_service(answer_config, monkeypat
     assert row["target_capture_id"] == committed["meta"]["capture_id"]
 
 
-def test_save_answer_prefers_latest_full_rag_answer_for_recent_answer(answer_config, monkeypatch):
+def test_save_answer_resolves_full_answer_for_exact_run_preview(answer_config, monkeypatch):
     from bridge import answer_bridge
 
     monkeypatch.setattr(answer_bridge, "load_config", lambda _path: answer_config)
     answer_bridge._config = None
     answer_bridge._repo = None
 
+    preview = "完整答案第一段。（已省略后续内容）"
     conn = sqlite3.connect(answer_config.db_path)
     conn.execute(
         """INSERT INTO agent_runs
@@ -375,6 +376,7 @@ def test_save_answer_prefers_latest_full_rag_answer_for_recent_answer(answer_con
             json.dumps(
                 {
                     "answer": "完整答案第一段。\n\n完整答案第二段，包含更详细的实施步骤。",
+                    "preview": preview,
                     "sources": [{"type": "capture_note", "id": "cap1", "title": "数据 Agent 材料"}],
                 },
                 ensure_ascii=False,
@@ -388,15 +390,17 @@ def test_save_answer_prefers_latest_full_rag_answer_for_recent_answer(answer_con
     result = answer_bridge.save_answer_to_knowledge(
         hermes_session_id="session-1",
         user_message="企业级取数 Agent 怎么做？",
-        assistant_answer="完整答案第一段。（已省略后续内容）",
+        assistant_answer=preview,
         instruction="这个回答回答得不错，可以存成笔记",
         output_type="auto",
         assistant_message_id="assistant-1",
         sources=[],
+        source_run_id="rag-run-1",
     )
 
     assert result["status"] == "success"
     assert result["meta"]["answer_source"] == "latest_rag_full_answer"
+    assert result["meta"]["source_run_id"] == "rag-run-1"
     draft_id = result["meta"]["reading_draft_id"]
 
     conn = sqlite3.connect(answer_config.db_path)

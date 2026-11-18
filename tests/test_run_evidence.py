@@ -169,15 +169,7 @@ def test_extracts_rag_source_names_paths_and_sections():
     result = extract_run_evidence("rag", "search_knowledge_base", envelope)
 
     assert result["evidence"]["source_titles"] == ["Building Effective AI Agents"]
-    assert result["output_ref"]["sources"] == [
-        {
-            "id": "cap1",
-            "title": "Building Effective AI Agents",
-            "path": "captures/Building Effective AI Agents.md",
-            "section": "构建大语言模型代理的经验与方法",
-            "type": "capture_section",
-        }
-    ]
+    assert result["output_ref"]["sources"] == envelope["source_map"]
     assert {
         "object_type": "capture",
         "object_id": "cap1",
@@ -412,3 +404,43 @@ def test_reading_session_error_status():
     result = extract_run_evidence("reading", "start_reading_session", envelope)
 
     assert result["status"] == "error"
+
+
+def test_sqlite_garden_card_without_markdown_path_is_success():
+    envelope = success_envelope(
+        agent="garden",
+        intent="commit_garden_draft",
+        chat_preview="已存入知识卡片。",
+        durable_artifacts=[
+            artifact_ref(
+                type="garden_card",
+                id="card1",
+                title="只存 SQLite 的卡片",
+                status="seed",
+            )
+        ],
+        meta={"card_id": "card1", "path": "", "storage": "sqlite"},
+    )
+
+    result = extract_run_evidence("garden", "commit_garden_draft", envelope)
+
+    assert result["status"] == "success"
+    assert result["evidence"]["card_created"] is True
+    assert result["evidence"]["card_id"] == "card1"
+    assert result["evidence"]["path"] == ""
+    assert result["evidence"]["storage"] == "sqlite"
+    assert result["output_ref"]["storage"] == "sqlite"
+
+
+def test_garden_card_commit_without_card_id_is_incomplete():
+    envelope = success_envelope(
+        agent="garden",
+        intent="commit_garden_draft",
+        chat_preview="没有保存成功。",
+        meta={"path": "garden/not-written.md", "storage": "sqlite"},
+    )
+
+    result = extract_run_evidence("garden", "commit_garden_draft", envelope)
+
+    assert result["status"] == "incomplete"
+    assert result["evidence"]["card_created"] is False

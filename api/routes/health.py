@@ -1,4 +1,4 @@
-"""Contract v1 health endpoint.
+"""Knowledge Service health and contract version.
 
 The runtime's ``KnowledgeClient`` calls ``GET /api/health`` before it uses any
 other endpoint and compares ``contract_version`` with its own
@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import APIRouter
 
 KNOWLEDGE_SERVICE_NAME = "hermes-knowledge"
-KNOWLEDGE_CONTRACT_VERSION = 1
+KNOWLEDGE_CONTRACT_VERSION = 2
 
 
 def _service_version() -> str:

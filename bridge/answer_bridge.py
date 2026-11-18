@@ -133,6 +133,7 @@ def save_answer_to_knowledge(
     sources: list[dict[str, Any]] | None = None,
     target_capture_id: str = "",
     answer_source: str = "auto",
+    source_run_id: str = "",
     folder_path: str = "",
 ) -> dict:
     sources = sources or []
@@ -146,6 +147,7 @@ def save_answer_to_knowledge(
             "output_type": output_type,
             "source_count": len(sources),
             "answer_source": answer_source,
+            "requested_source_run_id": source_run_id,
         },
         lambda: _save_answer_to_knowledge(
             hermes_session_id=hermes_session_id,
@@ -157,6 +159,7 @@ def save_answer_to_knowledge(
             sources=sources,
             target_capture_id=target_capture_id,
             answer_source=answer_source,
+            source_run_id=source_run_id,
             folder_path=folder_path,
         ),
     )
@@ -253,19 +256,24 @@ def _save_answer_to_knowledge(
     sources: list[dict[str, Any]],
     target_capture_id: str,
     answer_source: str,
+    source_run_id: str = "",
     folder_path: str = "",
 ) -> dict:
     config, repo = _init()
     resolved = _resolve_answer_source(
         repo=repo,
-        user_message=user_message,
         assistant_answer=assistant_answer,
-        instruction=instruction,
         sources=sources,
         answer_source=answer_source,
+        source_run_id=source_run_id,
     )
     assistant_answer = resolved["assistant_answer"]
     sources = resolved["sources"]
+    provenance = {
+        key: resolved[key]
+        for key in ("answer_source", "source_run_id", "answer_source_fallback")
+        if key in resolved
+    }
     source_groups = _group_answer_sources(sources)
     decision = choose_answer_output_type(
         instruction=instruction,
@@ -292,6 +300,18 @@ def _save_answer_to_knowledge(
             },
         )
 
+    source_body, source_meta = "", {}
+    if decision["output_type"] == "enhance_capture":
+        from bridge.reading_bridge import _enhancement_draft_base
+        from db.repo import CaptureRepo
+
+        try:
+            source_body, source_meta = _enhancement_draft_base(
+                Path(config.vault_path).expanduser(), CaptureRepo(repo.conn), decision["target_capture_id"],
+            )
+        except ValueError as exc:
+            return error_envelope(agent="reading", intent="save_answer_to_knowledge", error=str(exc))
+
     title = _answer_draft_title(user_message=user_message, assistant_answer=assistant_answer)
     session = repo.create_session(
         source_type="conversation",
@@ -303,7 +323,7 @@ def _save_answer_to_knowledge(
             "hermes_session_id": hermes_session_id,
             "assistant_message_id": assistant_message_id,
             "instruction": instruction,
-            "answer_source": resolved["answer_source"],
+            **provenance,
             "source_type": source_groups["source_type"],
             "research_mode": source_groups["research_mode"],
         },
@@ -315,7 +335,7 @@ def _save_answer_to_knowledge(
         focus=_clip(user_message or instruction, 120),
         meta={"assistant_message_id": assistant_message_id},
     )
-    for item in sources[:12]:
+    for item in sources:
         repo.add_evidence(
             session_id=session["id"],
             turn_id=turn["id"],
@@ -333,6 +353,7 @@ def _save_answer_to_knowledge(
         assistant_answer=assistant_answer,
         output_type=decision["output_type"],
         sources=sources,
+        source_body=source_body,
     )
     metadata = _generate_full_text_metadata(config, draft_text)
     title = _metadata_answer_draft_title(metadata, fallback=title)
@@ -344,6 +365,7 @@ def _save_answer_to_knowledge(
         assistant_answer=assistant_answer,
         output_type=decision["output_type"],
         sources=sources,
+        source_body=source_body,
     )
     draft = repo.create_draft(
         session_id=session["id"],
@@ -362,9 +384,10 @@ def _save_answer_to_knowledge(
             "web_sources": source_groups["web_sources"],
             "source_type": source_groups["source_type"],
             "research_mode": source_groups["research_mode"],
-            "answer_source": resolved["answer_source"],
+            **provenance,
             "folder_path": folder_path,
             "metadata": metadata,
+            **source_meta,
         },
     )
     label = {
@@ -402,7 +425,7 @@ def _save_answer_to_knowledge(
             "output_type": decision["output_type"],
             "target_capture_id": decision["target_capture_id"],
             "needs_target_choice": False,
-            "answer_source": resolved["answer_source"],
+            **provenance,
             "source_type": source_groups["source_type"],
             "research_mode": source_groups["research_mode"],
         },
@@ -450,96 +473,74 @@ def _group_answer_sources(sources: list[dict[str, Any]]) -> dict[str, Any]:
 def _resolve_answer_source(
     *,
     repo: ReadingRepo,
-    user_message: str,
     assistant_answer: str,
-    instruction: str,
     sources: list[dict[str, Any]],
     answer_source: str,
+    source_run_id: str = "",
 ) -> dict[str, Any]:
-    latest = _latest_rag_full_answer(repo)
-    if latest and _should_use_latest_rag_answer(
-        requested_source=answer_source,
-        instruction=instruction,
-        user_message=user_message,
-        assistant_answer=assistant_answer,
-        latest=latest,
-    ):
-        return {
-            "assistant_answer": latest["answer"],
-            "sources": sources or latest["sources"],
-            "answer_source": "latest_rag_full_answer",
-        }
-    return {
+    provided = {
         "assistant_answer": assistant_answer,
         "sources": sources,
         "answer_source": "provided",
     }
+    if answer_source == "provided":
+        return provided
+    if not source_run_id.strip():
+        if answer_source == "latest_rag_full_answer":
+            provided["answer_source_fallback"] = "missing_source_run_id"
+        return provided
+
+    source_run_id = source_run_id.strip()
+    recorded = _rag_full_answer_for_run(repo, source_run_id)
+    if recorded is None:
+        provided["answer_source_fallback"] = "source_run_unavailable"
+        return provided
+    # A run ID is not inferred from the query, citation markers or chat ID.
+    # Confirm it also produced the exact answer/preview being saved.
+    if not assistant_answer.strip() or assistant_answer.strip() not in (
+        recorded["answer"].strip(), recorded["preview"].strip(),
+    ):
+        provided["answer_source_fallback"] = "source_run_answer_mismatch"
+        return provided
+    return {
+        "assistant_answer": recorded["answer"],
+        "sources": recorded["sources"],
+        # Historical request/response value; only the explicitly bound run
+        # can now supply a full answer.
+        "answer_source": "latest_rag_full_answer",
+        "source_run_id": source_run_id,
+    }
 
 
-def _latest_rag_full_answer(repo: ReadingRepo) -> dict[str, Any] | None:
+def _rag_full_answer_for_run(repo: ReadingRepo, source_run_id: str) -> dict[str, Any] | None:
     row = repo.conn.execute(
-        """SELECT input_json, output_json
+        """SELECT output_json
            FROM agent_runs
-           WHERE agent = 'rag'
-             AND intent IN ('search_knowledge_base', 'web_context_answer', 'retrieve_knowledge_sources')
-             AND status = 'success'
-             AND output_json IS NOT NULL
-             AND output_json != ''
-           ORDER BY datetime(replace(substr(completed_at, 1, 19), 'T', ' ')) DESC,
-                    datetime(replace(substr(created_at, 1, 19), 'T', ' ')) DESC,
-                    rowid DESC
-           LIMIT 1"""
+           WHERE id = ?
+             AND agent = 'rag'
+             AND intent IN ('search_knowledge_base', 'web_context_answer')
+             AND status = 'success'""",
+        (source_run_id,),
     ).fetchone()
     if not row:
         return None
     try:
         payload = json.loads(row["output_json"] or "{}")
-        input_ref = json.loads(row["input_json"] or "{}")
     except (TypeError, json.JSONDecodeError):
         return None
-    answer = str(payload.get("answer") or "").strip()
-    if not answer:
+    if not isinstance(payload, dict):
         return None
-    sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+    answer = payload.get("answer")
+    sources = payload.get("sources")
+    if not isinstance(answer, str) or not answer.strip():
+        return None
+    if not isinstance(sources, list) or not all(isinstance(item, dict) for item in sources):
+        return None
     return {
         "answer": answer,
         "sources": sources,
-        "query": str(input_ref.get("query") or payload.get("query") or ""),
+        "preview": str(payload.get("preview") or ""),
     }
-
-
-def _should_use_latest_rag_answer(
-    *,
-    requested_source: str,
-    instruction: str,
-    user_message: str,
-    assistant_answer: str,
-    latest: dict[str, Any],
-) -> bool:
-    if requested_source == "provided":
-        return False
-    if requested_source == "latest_rag_full_answer":
-        return True
-    full_answer = str(latest.get("answer") or "")
-    if len(full_answer) <= len(assistant_answer or ""):
-        return False
-    if _looks_truncated(assistant_answer):
-        return True
-    return False
-
-
-def _looks_truncated(text: str) -> bool:
-    return bool(re.search(r"已省略|继续展开|查看更多|后续内容|\\.\\.\\.|……", text or ""))
-
-
-def _related_to_latest_query(user_message: str, query: str) -> bool:
-    if not user_message or not query:
-        return True
-    user_terms = set(re.findall(r"[A-Za-z0-9]{2,}|[\u4e00-\u9fff]{2,}", user_message))
-    query_terms = set(re.findall(r"[A-Za-z0-9]{2,}|[\u4e00-\u9fff]{2,}", query))
-    if not user_terms or not query_terms:
-        return True
-    return bool(user_terms & query_terms)
 
 
 def _answer_draft_title(*, user_message: str, assistant_answer: str) -> str:
@@ -570,9 +571,10 @@ def _build_answer_draft_text(
     assistant_answer: str,
     output_type: str,
     sources: list[dict[str, Any]],
+    source_body: str = "",
 ) -> str:
     source_lines = []
-    for item in sources[:12]:
+    for item in sources:
         label = str(
             item.get("title")
             or item.get("label")
@@ -585,7 +587,7 @@ def _build_answer_draft_text(
         if label:
             url = str(item.get("url") or "").strip()
             ref = str(item.get("ref") or item.get("label") or "").strip()
-            prefix = f"[{ref}] " if ref and re.match(r"^[KW]\d+$", ref) else ""
+            prefix = f"[{ref}] " if re.fullmatch(r"[KW]?\d+", ref) else ""
             suffix = f" — {url}" if url and url != label else ""
             source_lines.append(f"- {kind}：{prefix}{label}{suffix}")
     if not source_lines:
@@ -599,14 +601,18 @@ def _build_answer_draft_text(
             + "\n".join(source_lines)
             + "\n"
         )
+    heading, section = f"# {title}", "##"
+    if output_type == "enhance_capture":
+        heading = f"{source_body}\n\n## 阅读讨论补充".lstrip()
+        section = "###"
     topic = _topic_phrase(user_message, assistant_answer)
     return (
-        f"# {title}\n\n"
-        f"## 问题：{topic}\n\n"
+        f"{heading}\n\n"
+        f"{section} 问题：{topic}\n\n"
         f"{user_message.strip() or '这轮对话中有一段值得保存的解释。'}\n\n"
-        f"## 解释：{topic}\n\n"
+        f"{section} 解释：{topic}\n\n"
         f"{assistant_answer.strip()}\n\n"
-        "## 参考来源\n\n"
+        f"{section} 参考来源\n\n"
         + "\n".join(source_lines)
         + "\n"
     )

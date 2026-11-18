@@ -9,7 +9,8 @@ The point is a single, machine-generated view of:
 Run ``python scripts/architecture_inventory.py`` to write
 ``docs/INVENTORY.md``; ``--check`` fails when the file is stale;
 ``--strict`` also fails when a Runtime route loses its HTTP delegation
-without being on the explicit local-only allowlist.
+without being on the explicit local-only allowlist.  ``--strict`` requires a
+Runtime checkout: a missing checkout is an error, not a silent skip.
 """
 from __future__ import annotations
 
@@ -76,8 +77,12 @@ def _runtime_routes() -> list[dict]:
             continue
         has_client = any(
             isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Name)
-            and n.func.id == "get_client"
+            and (
+                isinstance(n.func, ast.Name) and n.func.id == "get_client"
+                or isinstance(n.func, ast.Attribute) and n.func.attr == "to_thread"
+                and bool(n.args) and isinstance(n.args[0], ast.Name)
+                and n.args[0].id == "get_client"
+            )
             for n in ast.walk(node)
         )
         local = any(
@@ -230,10 +235,17 @@ def main() -> int:
 
     runtime_present = (RUNTIME_ROOT / "hermes_cli" / "web_server.py").is_file()
     if not runtime_present:
-        print(
-            "runtime checkout not found; architecture inventory check skipped "
-            "(set HERMES_RUNTIME_ROOT or check out hermes-agent-main)"
+        message = (
+            f"runtime checkout not found at {RUNTIME_ROOT}; "
+            "set HERMES_RUNTIME_ROOT or check out hermes-agent-main"
         )
+        if args.strict:
+            print(
+                f"{message}; --strict cannot verify Runtime routes",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"{message}; architecture inventory check skipped")
         return 0
 
     content = build()

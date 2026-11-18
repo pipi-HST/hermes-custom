@@ -11,6 +11,7 @@ from typing import Optional
 
 from agents.garden_card_payload import payload_from_row
 from agents.markdown_writer import read_note
+from db.concurrency import transaction
 
 logger = logging.getLogger(__name__)
 
@@ -139,8 +140,10 @@ class ReviewAgent:
         for row in self.repo.list_all(limit=1000):
             if row.get("archived_at"):
                 continue
-            count += self._sync_capture_review_items(row, timestamp)
-        self.repo.conn.commit()
+            # Each note syncs in its own transaction: adoption, pruning and
+            # upserts either all land or all roll back.
+            with transaction(self.repo.conn):
+                count += self._sync_capture_review_items(row, timestamp)
         return count
 
     def record_item_feedback(self, item_id: str, outcome: str) -> bool:
@@ -344,10 +347,13 @@ class ReviewAgent:
         if parsed is None:
             return 0
         frontmatter, body = parsed
+        capture_id = row["id"]
         if not _is_reviewable(frontmatter):
+            # Turning review off retires the old schedule rows; otherwise they
+            # keep surfacing from SQLite even though the capture opted out.
+            self._delete_capture_review_items(capture_id)
             return 0
 
-        capture_id = row["id"]
         file_path = row.get("file_path", "")
         title = str(frontmatter.get("title") or "未命名").strip() or "未命名"
         if _is_placeholder_test_capture(title, frontmatter, file_path):
@@ -357,40 +363,127 @@ class ReviewAgent:
 
         if len(body) < self.long_note_chars or not sections:
             hint = _answer_hint(frontmatter.get("story") or body)
-            self._upsert_review_item(
-                object_type="capture",
-                object_id=capture_id,
-                capture_id=capture_id,
-                section_id="",
-                title=title,
-                question=title,
-                answer_hint=hint,
-                source_path=file_path,
-                importance=importance,
-                now=now,
+            self._sync_review_item_set(
+                capture_id,
+                [{
+                    "object_type": "capture",
+                    "object_id": capture_id,
+                    "capture_id": capture_id,
+                    "section_id": "",
+                    "title": title,
+                    "question": title,
+                    "answer_hint": hint,
+                    "source_path": file_path,
+                    "importance": importance,
+                }],
+                now,
             )
             return 1
 
-        count = 0
-        for idx, (section_title, section_body) in enumerate(sections, 1):
-            section_id = f"section-{idx}"
+        desired: list[dict] = []
+        sections_by_title: dict[str, dict[str, str]] = {}
+        for section_title, section_body in sections:
             clean_title = _single_line(section_title)
             if not clean_title:
                 continue
-            self._upsert_review_item(
-                object_type="capture_section",
-                object_id=capture_id,
-                capture_id=capture_id,
-                section_id=section_id,
-                title=clean_title,
-                question=clean_title,
-                answer_hint=_answer_hint(section_body),
-                source_path=file_path,
-                importance=importance,
-                now=now,
+            # Group equal titles by body: a unique title keeps a title-only id,
+            # identical sections merge, and same-title/different-body sections
+            # are told apart by their content hash.
+            sections_by_title.setdefault(clean_title, {}).setdefault(
+                section_body, section_body
             )
-            count += 1
-        return count
+        for clean_title, bodies in sections_by_title.items():
+            for section_body in bodies.values():
+                section_id = (
+                    _section_review_id(clean_title)
+                    if len(bodies) == 1
+                    else _section_review_id(clean_title, section_body)
+                )
+                desired.append({
+                    "object_type": "capture_section",
+                    "object_id": capture_id,
+                    "capture_id": capture_id,
+                    "section_id": section_id,
+                    "title": clean_title,
+                    "question": clean_title,
+                    "answer_hint": _answer_hint(section_body),
+                    "source_path": file_path,
+                    "importance": importance,
+                })
+        self._sync_review_item_set(capture_id, desired, now)
+        return len(desired)
+
+    def _sync_review_item_set(
+        self,
+        capture_id: str,
+        desired: list[dict],
+        now: str,
+    ) -> None:
+        """Reconcile one capture's review items with its current sections.
+
+        A unique title keeps a title-only section id; identical duplicates
+        merge, and repeated titles with different bodies use a content hash.
+        Reordering headings therefore keeps each schedule with its content.
+        Legacy positional ids (``section-1`` …) are adopted by title only when
+        that title maps to exactly one section.
+        """
+        desired_ids = {item["section_id"] for item in desired}
+        title_counts: dict[str, int] = {}
+        for item in desired:
+            if item["section_id"]:
+                title_counts[item["title"]] = title_counts.get(item["title"], 0) + 1
+        # Only migrate a legacy positional item when its title maps to exactly
+        # one current section.  Duplicate titles with different bodies are
+        # ambiguous, so their old progress is retired instead of guessed.
+        desired_by_title = {
+            item["title"]: item
+            for item in desired
+            if item["section_id"] and title_counts[item["title"]] == 1
+        }
+        existing = self.repo.conn.execute(
+            "SELECT id, section_id, title FROM review_items WHERE capture_id = ?",
+            (capture_id,),
+        ).fetchall()
+        occupied = {
+            row["section_id"] for row in existing
+            if row["section_id"] in desired_ids
+        }
+        for row in existing:
+            section_id = row["section_id"] or ""
+            if section_id in desired_ids:
+                continue
+            target = (
+                desired_by_title.get(_single_line(row["title"]))
+                if _is_legacy_section_id(section_id)
+                else None
+            )
+            if target and target["section_id"] not in occupied:
+                self._adopt_review_item(row, target, now)
+                occupied.add(target["section_id"])
+                continue
+            # Removed sections, duplicate legacy rows, and note-level rows that
+            # no longer match the note's shape are retired here.
+            self.repo.conn.execute(
+                "DELETE FROM review_items WHERE id = ?", (row["id"],)
+            )
+        for item in desired:
+            self._upsert_review_item(now=now, **item)
+
+    def _adopt_review_item(self, row, target: dict, now: str) -> None:
+        new_id = _review_item_id(
+            target["object_type"], target["object_id"], target["section_id"]
+        )
+        self.repo.conn.execute(
+            """UPDATE review_items
+               SET id=?, section_id=?, updated_at=?
+               WHERE id=?""",
+            (new_id, target["section_id"], now, row["id"]),
+        )
+
+    def _delete_capture_review_items(self, capture_id: str) -> None:
+        self.repo.conn.execute(
+            "DELETE FROM review_items WHERE capture_id = ?", (capture_id,)
+        )
 
     def _read_capture_note(self, row: dict) -> tuple[dict, str] | None:
         if not self.vault_path:
@@ -515,6 +608,18 @@ def _state_for_interval(interval: int) -> str:
 def _review_item_id(object_type: str, object_id: str, section_id: str) -> str:
     raw = f"{object_type}:{object_id}:{section_id}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _section_review_id(title: str, body: str | None = None) -> str:
+    digest = hashlib.sha1(title.encode("utf-8")).hexdigest()[:10]
+    if body is None:
+        return f"section-h{digest}"
+    body_digest = hashlib.sha1(body.encode("utf-8")).hexdigest()[:10]
+    return f"section-h{digest}-c{body_digest}"
+
+
+def _is_legacy_section_id(section_id: str) -> bool:
+    return re.fullmatch(r"section-\d+", section_id or "") is not None
 
 
 def _is_reviewable(frontmatter: dict) -> bool:

@@ -10,6 +10,7 @@ import httpx
 
 from .base import BaseExtractor, ExtractionResult
 from .http_safety import DownloadTooLarge, UnsafeURL, fetch_public_bytes
+from .input_policy import allow_local_files
 
 logger = logging.getLogger(__name__)
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -44,6 +45,8 @@ class ImageExtractor(BaseExtractor):
             ext in candidate.lower() for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp")
         ):
             return True
+        if not allow_local_files.get():
+            return False
         # 本地文件路径：不假设 POSIX（Windows 盘符路径也必须识别）
         if not candidate or len(candidate) > 1024 or any(c in candidate for c in ("\n", "\r", "\x00")):
             return False
@@ -145,6 +148,8 @@ class ImageExtractor(BaseExtractor):
                 return None
             b64 = base64.b64encode(content).decode()
             return f"data:{content_type or 'image/png'};base64,{b64}"
+        if not allow_local_files.get():
+            raise UnsafeURL("HTTP Capture does not accept server-side file paths")
         local_path = Path(source)
         try:
             is_local_file = local_path.is_file()
