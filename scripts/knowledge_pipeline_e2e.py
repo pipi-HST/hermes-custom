@@ -88,10 +88,14 @@ def run_pipeline_e2e(
         else:
             provider_settings = _live_provider_settings()
             embedding_base_url = ""
-        paths = _prepare_isolated_root(root, provider_settings)
+        paths = _prepare_isolated_root(root, provider_settings, fake_provider=not live_providers)
         api_port = _free_port()
         runtime_port = _free_port()
         env = _subprocess_env(paths, embedding_base_url)
+        api_base = f"http://127.0.0.1:{api_port}"
+        runtime_env = {**env, "HERMES_KNOWLEDGE_URL": api_base}
+        for key in ("HERMES_KNOWLEDGE_TOKEN", "HERMES_KNOWLEDGE_LOCAL_ROOT", "HERMES_CUSTOM_ROOT"):
+            runtime_env.pop(key, None)
         api_process, api_log = _start_process(
             [
                 sys.executable,
@@ -121,13 +125,12 @@ def run_pipeline_e2e(
                 str(runtime_port),
             ],
             cwd=RUNTIME_ROOT,
-            env=env,
+            env=runtime_env,
             log_path=root / "runtime-dashboard.log",
         )
         processes.extend([api_process, runtime_process])
         logs.extend([api_log, runtime_log])
 
-        api_base = f"http://127.0.0.1:{api_port}"
         runtime_base = f"http://127.0.0.1:{runtime_port}"
         _wait_for_http(f"{api_base}/docs", api_process, root / "knowledge-api.log")
         _wait_for_http(
@@ -342,7 +345,11 @@ def _runtime_visibility_pipeline(
         _check("runtime_library_http_success", library_response.status_code == 200, library_payload),
         _check("capture_visible_in_library", bool(capture_item), capture_id),
         _check("runtime_library_reports_indexed", capture_item.get("indexed") is True, capture_item.get("indexed")),
-        _check("runtime_detail_contains_capture_body", detail_response is not None and detail_response.status_code == 200 and E2E_SIGNAL in detail_text, None),
+        _check(
+            "runtime_detail_contains_capture_body",
+            detail_response is not None and detail_response.status_code == 200 and E2E_SIGNAL in detail_text,
+            {"status": detail_response.status_code if detail_response is not None else None, "payload": detail_payload},
+        ),
     ]
     return _pipeline("runtime_library_visibility", checks, {"draft_id": draft_id, "capture_id": capture_id})
 
@@ -688,7 +695,9 @@ def _graph_pipeline(
     )
 
 
-def _prepare_isolated_root(root: Path, provider_settings: dict[str, str]) -> dict[str, Path]:
+def _prepare_isolated_root(
+    root: Path, provider_settings: dict[str, str], *, fake_provider: bool = False,
+) -> dict[str, Path]:
     # An absolute root keeps config paths absolute: the API resolves relative
     # database/vault paths against its own checkout, which would escape the
     # isolated workspace on Windows.
@@ -736,6 +745,8 @@ def _prepare_isolated_root(root: Path, provider_settings: dict[str, str]) -> dic
                     "base_url": provider_settings["base_url"],
                     "api_key": provider_settings["api_key"],
                     "api_mode": "chat_completions",
+                    # The fake provider has no /models endpoint.
+                    **({"context_length": 256000} if fake_provider else {}),
                 }
             },
             allow_unicode=True,

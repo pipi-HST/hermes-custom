@@ -146,6 +146,7 @@ def test_pipeline_subprocesses_use_isolated_hermes_home(tmp_path):
             "api_key": "e2e-key",
             "qwen_api_key": "e2e-embedding-key",
         },
+        fake_provider=True,
     )
 
     env = knowledge_pipeline_e2e._subprocess_env(paths, "")
@@ -159,6 +160,7 @@ def test_pipeline_subprocesses_use_isolated_hermes_home(tmp_path):
         "base_url": "http://127.0.0.1:43210",
         "api_key": "e2e-key",
         "api_mode": "chat_completions",
+        "context_length": 256000,
     }
 
 

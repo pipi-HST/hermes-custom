@@ -146,6 +146,12 @@ Windows 路径示例：
 .venv\Scripts\python.exe scripts\knowledge_pipeline_e2e.py --work-dir .tmp\hermes-pipeline-e2e
 ```
 
+真实浏览器验收：默认使用本地假模型、临时 Vault/SQLite，Runtime 只通过本次启动的 HTTP Service 访问资料库。Windows 默认使用已安装的 Chrome；Linux CI 使用 Playwright 安装的 Chromium。
+
+```powershell
+.venv\Scripts\python.exe scripts\knowledge_product_e2e.py --work-dir .tmp\hermes-product-e2e
+```
+
 Runtime 侧 Knowledge 测试：
 
 ```bash
