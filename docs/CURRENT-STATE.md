@@ -5,7 +5,7 @@
 - Date: 2026-11-19
 - Branch: `main`
 - Commit: see `git log -1` (this file is generated before its own commit)
-- Tests collected: 1397
+- Tests collected: 1398
 - SQLite business tables: 24
 - Service HTTP routes: 62
 - Runtime knowledge routes: see `docs/INVENTORY.md` (generated with the sibling checkout)

@@ -89,6 +89,21 @@ def test_write_markdown_artifact_does_not_overwrite_backup_created_in_same_secon
     assert (tmp_path / second.backup_path).read_text(encoding="utf-8") == "first update"
 
 
+def test_snapshot_backup_does_not_reuse_the_full_note_title(tmp_path):
+    relative = Path("captures") / ("长文章标题" * 12 + ".md")
+    target = tmp_path / relative
+    target.parent.mkdir()
+    target.write_text("previous version", encoding="utf-8")
+    result = KnowledgeWriteService(tmp_path).write_markdown_artifact(
+        MarkdownWriteRequest("capture", relative.as_posix(), "updated", requires_backup=True),
+        expected_previous="previous version",
+    )
+    backup = tmp_path / result.backup_path
+    assert len(backup.name) <= 65
+    assert backup.read_text(encoding="utf-8") == "previous version"
+    assert target.read_text(encoding="utf-8") == "updated"
+
+
 @requires_symlink
 def test_write_markdown_artifact_rejects_symlink_escape_from_vault(tmp_path):
     vault = tmp_path / "vault"

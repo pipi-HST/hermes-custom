@@ -93,11 +93,14 @@ class KnowledgeWriteService:
         self, target: Path, relative_path: Path, *, snapshot: str | None = None,
     ) -> str:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        # A backup is nested deeper than the original. Keep a readable prefix
+        # without repeating the entire title alongside the timestamp and UUID.
+        stem = relative_path.stem[:12]
         backup_relative = (
             Path("_archive")
             / "write_backups"
             / relative_path.parent
-            / f"{relative_path.stem}-{timestamp}-{uuid4().hex}{relative_path.suffix}"
+            / f"{stem}-{timestamp}-{uuid4().hex}{relative_path.suffix}"
         )
         backup = self.vault_path / backup_relative
         _ensure_path_inside_vault(self.vault_path, backup, backup_relative.as_posix())
