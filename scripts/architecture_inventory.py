@@ -8,8 +8,8 @@ The point is a single, machine-generated view of:
 
 Run ``python scripts/architecture_inventory.py`` to write
 ``docs/INVENTORY.md``; ``--check`` fails when the file is stale;
-``--strict`` also fails when a Runtime route loses its HTTP delegation
-without being on the explicit local-only allowlist.  ``--strict`` requires a
+``--strict`` also fails when a Runtime route accesses local resources
+without HTTP delegation or an explicit exception.  ``--strict`` requires a
 Runtime checkout: a missing checkout is an error, not a silent skip.
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ RUNTIME_ROOT = Path(
     or (PROJECT_ROOT.parent / "hermes-agent-main")
 ).expanduser()
 
-# Routes that are intentionally local-only (they open local files/processes).
+# Routes that intentionally perform local checks or open local files.
 LOCAL_ONLY_ALLOWED = {
     "/api/knowledge/runtime-check",
     "/api/knowledge/library/items/{kind}/{item_id}/open-local",
@@ -64,6 +64,8 @@ def _runtime_routes() -> list[dict]:
     if not files:
         return []
     routes: list[dict] = []
+    handlers: dict[str, dict] = {}
+    aliases: list[tuple[dict, str]] = []
     for path in files:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in tree.body:
@@ -100,14 +102,25 @@ def _runtime_routes() -> list[dict]:
                 and n.func.id in {"_knowledge_conn", "_knowledge_custom_module", "_knowledge_db_path"}
                 for n in ast.walk(node)
             )
-            routes.append(
-                {
-                    "method": method,
-                    "route": route,
-                    "delegates": has_client,
-                    "local": local,
-                }
-            )
+            entry = {
+                "method": method,
+                "route": route,
+                "delegates": has_client,
+                "local": local,
+            }
+            routes.append(entry)
+            handlers[node.name] = entry
+            # A route alias can return another handler's result directly.
+            if len(node.body) == 1 and isinstance(node.body[0], ast.Return):
+                value = node.body[0].value
+                if isinstance(value, ast.Await):
+                    value = value.value
+                if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+                    aliases.append((entry, value.func.id))
+    for entry, target in aliases:
+        if target in handlers:
+            entry["delegates"] = handlers[target]["delegates"]
+            entry["local"] = handlers[target]["local"]
     return routes
 
 
@@ -202,7 +215,7 @@ def build() -> str:
         f"- Service routes: {len(service)}",
         f"- Runtime knowledge routes: {len(runtime)}",
         f"- Runtime knowledge routes without HTTP delegation: "
-        f"{sum(1 for r in runtime if r['local'] and not r['delegates'])}",
+        f"{sum(1 for r in runtime if not r['delegates'])}",
         f"- Tables: {len(tables)}",
         f"- Current docs: {current} / {total}",
         "",

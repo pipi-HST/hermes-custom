@@ -2,7 +2,7 @@
 status: current
 owner: knowledge-service
 last_verified: 2026-11-23
-verified_against: "9e44c73 (hermes-custom) + 2026-11-23 working tree"
+verified_against: "9e5c752 (hermes-custom) / 115bd27 (hermes-agent-main)"
 ---
 
 # Hermes Knowledge Architecture
@@ -72,7 +72,7 @@ Life Assistant 是第三个、可选的能力项目；本仓库不读写 Life �
 | Librarian | `bridge/librarian_bridge.py`、`agents/library_agent.py`；工具 `audit_library` | `data/repair_reports/librarian-*.json`；修复写回 Capture / 索引 |
 | Answer | `bridge/answer_bridge.py`、`bridge/web_context_answer.py`；`/api/knowledge/answer-drafts` | `reading_sessions` / `reading_turns` / `reading_evidence` / `reading_drafts`；确认后写 Capture Note 或 Knowledge Card |
 | Knowledge Graph | `agents/knowledge_graph.py`；`/api/knowledge/graph`、`/api/knowledge/graph/refresh` | `knowledge_edges` |
-| Folder write jobs | `workers/knowledge_write_worker.py`、`db/write_job_repo.py`、`bridge/knowledge_job_submit.py`、`agents/folder_service.py` | `knowledge_write_jobs`；opt-in，未接入 HTTP API |
+| Folder write jobs | `workers/knowledge_write_worker.py`、`db/write_job_repo.py`、`bridge/knowledge_job_submit.py`、`agents/folder_service.py` | `knowledge_write_jobs`。文件夹改名 API 默认同步，设置 `worker.enabled: true` 后提交队列并等待 worker |
 | Run ledger | `bridge/run_ledger.py`、`bridge/agent_run_bridge.py`、`db/agent_run_repo.py`、`agents/run_evidence.py`；读 `GET /api/knowledge/object-events` | `agent_runs`、`agent_run_events`、`agent_run_objects` |
 
 Runtime 的 envelope 工具统一通过 `bridge/result_envelope.py` 返回结果；HTTP 模式下由 `api/routes/tools.py` 的白名单执行，请求不能自选模块或函数。
@@ -186,7 +186,7 @@ Theme View 是按主题聚合的高级视图/扫描结果，不是专题本身�
 已完成：
 
 - Knowledge Service 已提供完整 FastAPI 读写与流式接口（精确路由清单见 `docs/INVENTORY.md`）。
-- Runtime 的 knowledge 路由在 HTTP 模式下均优先走服务端委托（`get_client()` / `call_custom_bridge`），仅 `open-local` 为本机文件语义的 local-only；`runtime-check` 在 HTTP 模式下返回 HTTP 健康状态，不依赖本地 checkout。
+- HTTP 模式下，Runtime 把知识业务请求委托给 Service（`get_client()` / `call_custom_bridge`）。`open-local` 在 Runtime 主机上打开本地文件，`automation-boundaries` 报告 Runtime 自动化配置。`runtime-check` 在 HTTP 模式下只报告已配置的传输方式。探测 Service 连通性和依赖状态时，直接请求 Service 的 `GET /api/health` 并检查响应中的 `status`。
 - Dashboard 的草稿列表/详情、卡片列表/详情与内联编辑（`GET/PATCH /api/garden/cards/{card_id}`、`PATCH /api/garden/drafts/{draft_id}`、`POST /api/garden/drafts/{draft_id}/revise`）、时间线（`object-events`）、依赖查询均已在 Service 实现并通过 HTTP 委托；Runtime 侧已接入进程级 `httpx.Client` 连接池与 `asyncio.to_thread` 卸载以消除主循环阻塞；纯 HTTP 模式只需 `HERMES_KNOWLEDGE_URL` + `HERMES_KNOWLEDGE_TOKEN`。
 - 联网检索已按入口分流：微信端按三档分流（日常 8s 快答 + DeepSeek 托管极速联网），Web 专题工作台走瘦身研究管线并保留 `[K]`/`[W]` 证据面板。
 - 知识卡片提炼提示词与接口已收敛为三要素易扫读格式（短标题 + 一句话结论 + 分点加粗 Markdown 正文）；Web Dashboard 三个核心页面（`资料伴读` / `知识卡片` / `专题输出`）已统一升级为去 AI 化的编辑部纸白视觉体系，支持宽幅画廊挑选、滑出阅读编辑抽屉与底部选题篮送入专题输出。

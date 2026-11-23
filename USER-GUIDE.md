@@ -5,270 +5,233 @@ last_verified: 2026-11-23
 verified_against: "9e5c752 (hermes-custom) / 115bd27 (hermes-agent-main)"
 ---
 
-# Hermes Knowledge 开源使用指引（User Guide）
+# Hermes Knowledge 使用指南
 
-欢迎使用 **Hermes Knowledge**！这是一套面向高频学习者、研究者与知识工作者的本地优先个人知识库系统，围绕 **「资料伴读 → 知识卡片 → 专题输出」** 的认知内化闭环设计，帮你把碎片化输入真正沉淀为可回看、可组合、可溯源的个人观点。
-
-> **安全提示**：本文档中所有 API Key、Token 与本地路径均为占位示例。请始终在本地私有的 `config.yaml` 与 `.env` 中填写真实密钥，**切勿将密钥提交到 Git 仓库、公开 Issue 或截图日志中**。
+欢迎使用 **Hermes Knowledge**！这是一套装在你自己电脑里的个人知识助手，帮你把平时随手收藏的好文章、零散灵感，真正变成**看得懂、找得到、用得上**的个人知识资产。
 
 ---
 
-## 一、整体架构与仓库分工
+## 它能帮你做什么？
 
-Hermes 采用「运行时 + 知识服务」双仓库解耦架构，数据完全保存在你的本地磁盘（SQLite + Markdown）：
+很多人都有同一个困扰：收藏夹里存了几百篇文章，真要写总结、准备面试或做分享时，脑子一片空白。
 
-| 仓库 | 默认端口 | 职责 |
-|---|---|---|
-| **`hermes-custom`**（本仓库） | `127.0.0.1:8000` | 知识库核心业务与存储层：资料采集、原文保真、目录管理、伴读、RAG 混合检索、知识卡片提炼与编辑、专题联网研究、知识图谱 |
-| **`hermes-agent-main`** | `127.0.0.1:9119` | 主运行时与用户界面：原生网页工作台（资料伴读 / 知识卡片 / 专题输出）、主 Agent 调度、工具注册、可选微信/飞书消息网关 |
+Hermes 把学习拆成最顺手的三步：
 
-```text
-微信 / 飞书 / 网页工作台 (127.0.0.1:9119)
-            │
-            ▼  HTTP + Bearer Token
-Hermes Knowledge Service (127.0.0.1:8000)
-            │
-            ├── SQLite (data/captures.db)：卡片、索引、向量、图谱、运行台账
-            └── Markdown Vault (captures/*.md, _archive/raw/*.md)：保真原文与整理稿
-```
+1. **资料伴读（先读懂）**：把文章贴进来或导入本地笔记，**原文 100% 完整保留，AI 不会偷偷帮你删改**。读到卡壳的地方，直接划选一段话问右侧伴读助手，它会结合这篇文章和你以前存过的笔记一起给你讲透。
+2. **知识卡片（再记牢）**：读完顺手点一下「提炼卡片」，自动生成一张 3 秒能扫完重点的小卡片（短标题 + 一句话结论 + 几条加粗要点），不写臭长八股，你随时可以自己改，或者一句话让 AI 帮你润色。
+3. **专题输出（最后用出来）**：卡片攒多了之后，在画廊里勾几张相关的卡片加入底部「选题篮」，一键送进「专题输出」，结合你的历史资料和联网搜索，帮你梳理框架、碰撞观点、直接成稿——而且每条结论都能点回出处。
+
+> 所有文章与笔记都存在你自己的电脑里（纯本地 Markdown 文件 + 本地数据库），不上传到任何第三方知识库平台。
 
 ---
 
-## 二、环境与密钥准备
+## 一、安装前需要准备什么？
 
-### 1. 基础环境
+只需要准备两样东西：**电脑基础环境** 和 **模型 API Key**。
 
-- **Python**：3.12 或以上
-- **Git**：用于拉取代码
-- **Node.js**：20+（仅在你想二次开发修改网页前端源码时需要；日常直接运行无需手动编译前端）
-- **操作系统**：支持 Windows、macOS、Linux
+### 1. 电脑环境
 
-### 2. 需要准备的 API 密钥
+- **Python 3.12 或以上**：前往 [python.org](https://www.python.org/downloads/) 下载安装（Windows 安装时请勾选 **Add Python to PATH**）。
+- **Git**：前往 [git-scm.com](https://git-scm.com/downloads) 下载安装。
+- 打开终端（Windows 用 PowerShell，macOS 用「终端」），输入下面两行都能显示版本号就说明准备好了：
+  ```bash
+  python --version
+  git --version
+  ```
 
-| 配置项 | 必填/可选 | 用途 | 填写位置 |
+### 2. 模型 API Key（按需准备，全在本地填写）
+
+| 名称 | 是否必填 | 干什么用 | 在哪获取 |
 |---|---|---|---|
-| **LLM API Key**（推荐 DeepSeek） | 必填 | 伴读问答、卡片提炼、专题输出与联网研究 | `hermes-custom/config.yaml` 及 `~/.hermes/.env` |
-| **DashScope / 通义千问 Key** | 推荐 | 语义向量化（`text-embedding-v4`）、图片 OCR、语音转写 | `hermes-custom/config.yaml` |
-| **`HERMES_API_TOKEN`** | 推荐 | 知识服务与网页端之间的本地鉴权随机口令（自己随机生成一串即可） | 环境变量 / `.env`（两端保持一致） |
-| **微信 / 飞书凭据** | 可选 | 仅当需要通过手机端聊天随时发链接、发笔记时配置 | `hermes-agent-main` 网关配置 |
+| **DeepSeek API Key** | **必填** | 负责伴读问答、提炼卡片、专题写作与联网搜索 | [DeepSeek 开放平台](https://platform.deepseek.com/) 注册后创建 |
+| **阿里云百炼（DashScope）Key** | 推荐 | 负责“意思相近也能搜出来”的语义检索，以及图片识字、语音转文字 | [阿里云百炼控制台](https://bailian.console.aliyun.com/) 创建 |
+| **本地访问口令** | 推荐 | 你自己随便编一串长一点的英文+数字（如 `my-hermes-secret-2026`），用来保护本机服务不被别的程序乱连 | 自己编即可，不花钱 |
 
-> **如何生成安全的本地随机 Token**：
-> ```bash
-> python -c "import secrets; print(secrets.token_urlsafe(32))"
-> ```
+> **安全提醒**：你填写的所有 Key 都只保存在自己电脑的私有配置文件里（已被 `.gitignore` 自动屏蔽），**请勿把真实 Key 贴到截图、公开问答或代码提交里**。
 
 ---
 
-## 三、10 分钟快速部署
+## 二、4 步安装并启动（约 10 分钟）
 
-假设你准备把两个仓库放在同一个父目录 `<workspace>` 下。
+Hermes 由两个仓库配合工作，把它们放到同一个文件夹里即可：
+- **`hermes-custom`**：负责存资料、提炼卡片和搜索的「知识大脑」；
+- **`hermes-agent-main`**：提供打开浏览器就能用的「网页工作台」（以及可选的微信/飞书消息接入）。
 
-### Step 1：克隆两个仓库
+### 第 1 步：下载代码
+
+在终端里选一个你常用的目录（下面用 `hermes-app` 举例），执行：
 
 ```bash
-mkdir -p <workspace>
-cd <workspace>
+mkdir hermes-app
+cd hermes-app
 
 git clone https://github.com/pipi-HST/hermes-custom.git
 git clone https://github.com/pipi-HST/hermes-agent-main.git
 ```
 
-### Step 2：配置并启动知识服务（`hermes-custom`，端口 `8000`）
+### 第 2 步：填好你的密钥配置
 
-1. **安装 Python 依赖**
+进入 `hermes-custom`，复制一份配置模板为 `config.yaml`：
 
-   Windows（PowerShell）：
-   ```powershell
-   cd <workspace>\hermes-custom
-   py -3.12 -m venv .venv
-   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-   ```
-
-   macOS / Linux：
-   ```bash
-   cd <workspace>/hermes-custom
-   python3.12 -m venv .venv
-   .venv/bin/python -m pip install -r requirements.txt
-   ```
-
-2. **创建私有配置文件 `config.yaml`**（该文件已在 `.gitignore` 中，不会被提交）
-
-   ```bash
-   cp config.example.yaml config.yaml
-   ```
-
-   打开 `config.yaml`，将占位符替换为你自己的密钥与本地路径：
-   ```yaml
-   llm:
-     provider: openai
-     model: deepseek-v4-pro              # 或 deepseek-chat / deepseek-reasoner 等兼容模型
-     base_url: "https://api.deepseek.com"
-     api_key: "YOUR_LLM_API_KEY"         # 替换为你的真实 Key
-
-   qwen:
-     api_key: "YOUR_DASHSCOPE_API_KEY"   # 用于向量检索与 OCR/ASR
-
-   database:
-     path: "./data/captures.db"
-
-   vault:
-     path: "./data/vault"                # 也可指向你现有的 Obsidian 目录
-   ```
-
-3. **启动 Knowledge Service**
-
-   Windows（PowerShell）：
-   ```powershell
-   $env:HERMES_API_TOKEN = "YOUR_RANDOM_LOCAL_TOKEN"
-   .\.venv\Scripts\python.exe -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
-   ```
-
-   macOS / Linux：
-   ```bash
-   export HERMES_API_TOKEN="YOUR_RANDOM_LOCAL_TOKEN"
-   .venv/bin/python -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
-   ```
-
-4. **验证服务启动成功**：
-   ```bash
-   curl -H "Authorization: Bearer YOUR_RANDOM_LOCAL_TOKEN" http://127.0.0.1:8000/api/health
-   ```
-   返回 `{"status":"ok", ...}` 即说明知识服务运行正常。
-
-### Step 3：配置并启动网页工作台（`hermes-agent-main`，端口 `9119`）
-
-新开一个终端窗口：
-
-1. **安装 Runtime 依赖**
-
-   Windows（PowerShell）：
-   ```powershell
-   cd <workspace>\hermes-agent-main
-   uv sync --extra web
-   # 若未安装 uv，可用：
-   # py -3.12 -m venv .venv
-   # .\.venv\Scripts\python.exe -m pip install -e ".[web]"
-   ```
-
-   macOS / Linux：
-   ```bash
-   cd <workspace>/hermes-agent-main
-   uv sync --extra web
-   ```
-
-2. **配置连接知识服务的环境变量**
-
-   在 `~/.hermes/.env`（或当前终端环境变量）中添加以下配置（**确保 `HERMES_KNOWLEDGE_TOKEN` 与 Step 2 的 `HERMES_API_TOKEN` 完全一致**）：
-   ```env
-   HERMES_KNOWLEDGE_URL=http://127.0.0.1:8000
-   HERMES_KNOWLEDGE_TOKEN=YOUR_RANDOM_LOCAL_TOKEN
-
-   # Runtime 主 Agent 使用的模型密钥（示例为 DeepSeek / OpenAI 兼容接口）
-   OPENAI_API_KEY=YOUR_LLM_API_KEY
-   OPENAI_BASE_URL=https://api.deepseek.com/v1
-   ```
-
-   > 若希望在网页端使用「用本地 App 打开（`open-local`）」按钮直接唤起本机编辑器，可额外补充：
-   > ```env
-   > HERMES_KNOWLEDGE_VAULT=<workspace>/hermes-custom/data/vault
-   > HERMES_KNOWLEDGE_DB=<workspace>/hermes-custom/data/captures.db
-   > ```
-
-3. **启动原生网页工作台**
-
-   Windows（PowerShell）：
-   ```powershell
-   .\.venv\Scripts\python.exe -m hermes_cli.main dashboard
-   ```
-
-   macOS / Linux：
-   ```bash
-   .venv/bin/python -m hermes_cli.main dashboard
-   ```
-
-   浏览器打开 **`http://127.0.0.1:9119`**，即可进入 Hermes 纸白工作台！
-
-### Step 4（可选）：一键体验示例数据或接入聊天网关
-
-- **导入 Golden Demo 体验数据**（包含 6 篇示例资料、9 张示例卡片与 3 个专题，无 API Key 也能体验检索）：
-  ```bash
-  cd <workspace>/hermes-custom
-  .venv/bin/python scripts/seed_interview_demo.py
+- **Windows（PowerShell）**：
+  ```powershell
+  cd hermes-custom
+  copy config.example.yaml config.yaml
   ```
-- **启动微信 / 飞书消息网关**（用于手机端随时发链接、发随手记）：
+- **macOS / Linux**：
   ```bash
-  cd <workspace>/hermes-agent-main
-  uv run hermes gateway run
+  cd hermes-custom
+  cp config.example.yaml config.yaml
   ```
 
+用记事本、VS Code 或任意编辑器打开刚生成的 `config.yaml`，只需改下面几行：
+
+```yaml
+llm:
+  provider: openai
+  model: deepseek-v4-pro              # 也可以用 deepseek-chat
+  base_url: "https://api.deepseek.com"
+  api_key: "把这里换成你的DeepSeek密钥"
+
+qwen:
+  api_key: "把这里换成你的阿里云百炼密钥（暂时没有可先留空）"
+
+database:
+  path: "./data/captures.db"          # 默认即可，不需要改
+
+vault:
+  path: "./data/vault"                # 你的笔记存放位置，也可以改成你的 Obsidian 目录
+```
+
+保存并关闭文件。
+
+### 第 3 步：启动「知识大脑」（端口 8000）
+
+在当前 `hermes-custom` 终端窗口里，依次执行安装依赖和启动命令：
+
+- **Windows（PowerShell）**：
+  ```powershell
+  py -3.12 -m venv .venv
+  .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+
+  # 设置本地口令（和第 4 步保持一致即可）
+  $env:HERMES_API_TOKEN = "换成你自己编的本地口令"
+  .\.venv\Scripts\python.exe -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
+  ```
+- **macOS / Linux**：
+  ```bash
+  python3.12 -m venv .venv
+  .venv/bin/python -m pip install -r requirements.txt
+
+  export HERMES_API_TOKEN="换成你自己编的本地口令"
+  .venv/bin/python -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
+  ```
+
+看到屏幕打印出 **`Uvicorn running on http://127.0.0.1:8000`** 就启动成功了！**保持这个窗口开着，不要关闭。**
+
+### 第 4 步：启动「网页工作台」（端口 9119）
+
+**新开一个终端窗口**，进入 `hermes-agent-main` 安装并启动界面：
+
+- **Windows（PowerShell）**：
+  ```powershell
+  cd hermes-app\hermes-agent-main
+  py -3.12 -m venv .venv
+  .\.venv\Scripts\python.exe -m pip install -e ".[web]"
+  ```
+- **macOS / Linux**：
+  ```bash
+  cd hermes-app/hermes-agent-main
+  python3.12 -m venv .venv
+  .venv/bin/python -m pip install -e ".[web]"
+  ```
+
+接着在你的用户主目录下创建或编辑 `~/.hermes/.env` 文件（Windows 路径通常是 `C:\Users\<你的用户名>\.hermes\.env`），写入以下 4 行并保存：
+
+```env
+HERMES_KNOWLEDGE_URL=http://127.0.0.1:8000
+HERMES_KNOWLEDGE_TOKEN=换成与第3步完全一致的本地口令
+OPENAI_API_KEY=把这里换成你的DeepSeek密钥
+OPENAI_BASE_URL=https://api.deepseek.com/v1
+```
+
+最后启动网页工作台：
+
+- **Windows（PowerShell）**：
+  ```powershell
+  .\.venv\Scripts\python.exe -m hermes_cli.main dashboard
+  ```
+- **macOS / Linux**：
+  ```bash
+  .venv/bin/python -m hermes_cli.main dashboard
+  ```
+
+打开浏览器访问 **`http://127.0.0.1:9119`**，就能看到干净清爽的 Hermes 工作台了！
+
+> **想先体验一下效果？**
+> 在 `hermes-custom` 目录运行一次下面这行命令，会自动导入 6 篇示例文章和 9 张示例卡片，立刻就能点着体验全流程：
+> ```bash
+> .venv/bin/python scripts/seed_interview_demo.py
+> ```
+> （Windows 请把 `.venv/bin/python` 换成 `.\.venv\Scripts\python.exe`）
+
 ---
 
-## 四、核心功能使用指南
+## 三、日常怎么用？（三步轻松上手）
 
-Hermes 网页端采用清晰的三步认知内化流：**资料伴读 → 知识卡片 → 专题输出**。
+打开 `http://127.0.0.1:9119`，左侧导航只有 3 个核心页面，按从上到下的顺序用就对了。
 
-### 1. 资料伴读（输入、精读与解惑）
+### 第一步：在「资料伴读」存文章、读文章
 
-- **导入与新建资料**：点击右上角 **「新建」**，可以直接新建空白笔记、粘贴文章正文，或导入本地 `.md` / `.txt` 文件；通过微信/飞书发来的链接也会先进入「待整理」草稿箱。
-- **原文保真铁律**：所有保存动作都会把原始材料归档到 `_archive/raw/`，默认保存不会让 AI 擅自压缩或改写你的原文。
-- **纸面精读与划词伴读**：
-  - 点击左侧专题目录打开资料，中间为无框 `740px` 舒适阅读区，支持在右上角「视图」中一键切入 **沉浸阅读**。
-  - 在正文中**划选任意一段话**，或在右侧 **「伴读助手」** 直接提问，AI 会结合当前全文与你的历史资料库进行流式解答；需要外部事实时，一键点亮 **「联网搜索」** 即可联合外部网页查证。
-- **一键提炼卡片**：读到有启发的好文，直接点击阅读区顶部的 **「提炼卡片」**，即可生成卡片草稿，并点击提示条里的 **「立即去审阅编辑 →」** 跳转审阅。
+1. **放入资料**：点击右上角 **「新建」**，可以选择「新建知识文件」（直接写或粘贴公众号/网页长文）或「导入 Text / Markdown 文件」。保存后会按专题归入左侧目录。
+2. **舒适精读**：点开任意文章即可在中间纯白纸面阅读；想更专注时，点右上角「视图 → 进入沉浸阅读」全屏阅读。
+3. **划词提问**：读到看不懂的概念或段落，用鼠标**直接划选那段文字**，在右侧「伴读助手」里问它（例如：“用大白话举个例子解释这段”）。
+   - 默认会结合**当前文章 + 你的历史资料库**回答；
+   - 如果需要查最新外部信息，点一下伴读顶部的 **「联网搜索」** 即可同时联网查证。
+4. **提炼卡片**：读完觉得有收获，点击文章顶部的黑色 **「提炼卡片」** 按钮，等待几秒后点击提示条里的 **「立即去审阅编辑 →」**。
 
-### 2. 知识卡片（低认知负担沉淀与挑选）
+### 第二步：在「知识卡片」审阅、编辑和挑选
 
-Hermes 拒绝冗长的六段式 AI 八股模板，每张卡片只保留三个最适合人眼扫读的要素：
-1. **短标题**：一眼识别记忆点；
-2. **一句话结论**：30–60 字直击核心判断；
-3. **易扫读正文**：3–5 条加粗关键词要点 + 必要时的一句轻提醒。
+1. **审阅新卡片**：刚提炼出的卡片会带一个小琥珀圆点排在最前面。点开后右侧会滑出阅读抽屉，你可以看到完整内容：
+   - 觉得措辞不够顺？在抽屉底部直接输入一句指令（比如“再精简一点”、“口语化一点”）点 **「AI 润色」**；
+   - 想自己微调？点右上角 **「编辑」** 直接改标题、一句话结论或正文；
+   - 满意后点 **「确认存入卡片库」**，它就正式成为你的长期知识卡片。
+2. **随时回看与编辑**：已存入的卡片整齐摊开在纸白画廊里，每张卡片都会展示核心结论和 2–3 个正文要点关键词。按顶部的**专题 / 类型 / 排序 / 搜索框**可以快速找卡；点开任何卡片都能看全文、继续编辑，或点底部「来源原文」一键跳回原文章。
+3. **挑卡片进「选题篮」**：鼠标移到画廊卡片右上角，点小圆圈勾选几张你想组合使用的卡片，页面底部会浮现黑色 **选题篮**，点击 **「带着去专题输出 →」**。
 
-- **宽幅纸白画廊**：按专题、卡片类型（`洞察 / 金句`、`方法 / 框架`、`新知 / 概念`、`避坑 / 边界`）、`按最新 / 按常用` 排序与关键词搜索快速浏览。每张卡片会轻柔预览正文要点关键词，不用逐个点开就能快速辨认。
-- **滑出阅读与编辑抽屉**：点击任意待确认草稿或已存卡片，右侧滑出精读抽屉：
-  - 可阅读完整 Markdown 正文、点击底部来源原文跳回「资料伴读」；
-  - 点击 **「编辑」** 直接修改标题、类型、一句话结论与 Markdown 正文；
-  - 待确认草稿还支持在抽屉底部用一句话让 AI 润色（如“再精简一点”、“补一个例子”），满意后点 **「确认存入卡片库」**。
-- **多卡选题篮**：鼠标悬停在画廊卡片右上角勾选多张卡片，底部自动浮现 **选题篮**，点击 **「带着去专题输出 →」** 即可一键把选中的卡片送入下一环节。
+### 第三步：在「专题输出」组合观点、写研究文稿
 
-### 3. 专题输出（跨篇综合与研究成稿）
-
-- **带着卡片开写**：从卡片库送来的卡片会自动挂载在底部一体化输入舱上方，你可以直接让 Hermes 基于这几张卡片梳理专题框架、准备面试回答或对比不同观点。
-- **可控检索模式**：
-  - **仅个人资料库**：严格围绕你的本地资料与卡片推理，适合复盘与整合个人观点；
-  - **联网 + 资料库**：走瘦身研究管线，自动并行检索本地资料与外部网页，在正文中标注 `[K]`（个人知识库）与 `[W]`（联网来源），并在右侧 **「参考依据」** 面板完整列出可点击溯源。
-  - **扫描跨篇关联**：自动发现你最近保存内容中的潜在跨篇选题。
-- **成果回流沉淀**：对某轮高质量输出满意时，可直接点击下方 **「存为笔记」** 或 **「做成卡片」**，让输出重新沉淀为长期资产。
+1. **带着卡片直接开聊**：刚刚挑好的卡片已经自动挂在输入框上方。你可以直接输入想法，比如：
+   - “结合这几张卡片，帮我列一份 5 分钟面试回答框架”
+   - “把这几篇里的不同观点对比一下，指出各自的适用场景”
+2. **按需切换模式**：
+   - **仅个人资料库**：只基于你的个人资料和卡片来梳理，不掺杂外部杂音；
+   - **联网 + 资料库**：自动同时查你的资料库和外部网页，回答里会用 `[K]`（你的资料）和 `[W]`（网页来源）标清出处，点右上角 **「参考依据」** 可以随时核对每条来源；
+   - **扫描跨篇关联**：不知道写什么专题时，点一下它会帮你翻出最近保存内容之间的隐藏联系。
+3. **把好回答存下来**：如果某一轮输出写得特别好，点回答下方的 **「存为笔记」** 或 **「做成卡片」**，就能重新沉淀回资料库或卡片库，形成正向循环。
 
 ---
 
-## 五、数据管理、备份与安全规范
+## 四、进阶玩法（按需开启）
 
-### 1. 你的数据存在哪里？
-
-默认都在 `<workspace>/hermes-custom/data/`（或你在 `config.yaml` 中指定的 `vault.path`）：
-- `captures/*.md`：你的资料笔记（含 YAML frontmatter，可直接用 Obsidian、Typora 或任意 Markdown 编辑器打开）
-- `_archive/raw/*.md`：原始证据存档
-- `captures.db`：SQLite 数据库（存储知识卡片、向量索引、图谱关系、草稿与运行记录）
-
-> **备份建议**：因为知识卡片和图谱的唯一真相源在 `captures.db`，资料正文在 `captures/*.md`，定期备份整个 `data/`（含 `vault/` 与 `captures.db`）即可完整迁移你的个人知识库。
-
-### 2. 开源与自部署安全须知
-
-- **密钥隔离**：`config.yaml`、`.env`、`.env.*`、`data/*.db`、`data/vault/` 均已加入 `.gitignore`。在任何二次开发提交前，请用 `git status` 确认不包含本地配置与个人数据文件。
-- **公网暴露防护**：`127.0.0.1:8000` 与 `127.0.0.1:9119` 默认仅监听本机回环地址。如果你要把服务部署到云服务器并通过域名/反向代理访问：
-  1. **必须**设置高强度随机 `HERMES_API_TOKEN`；
-  2. 通过 `HERMES_API_ALLOWED_HOSTS` 限制允许的 Host 域名；
-  3. 务必在反向代理层启用 HTTPS。
-- **本地数据重置**：如需清空测试数据重新开始，请参考 [docs/local-data-reset-runbook.md](docs/local-data-reset-runbook.md)。
+- **在微信 / 飞书里随时发文章**：如果你希望通勤时在手机上随手发链接或语音给 Hermes，可以在 `hermes-agent-main` 里按微信/飞书配置启动消息网关（`uv run hermes gateway run`）。手机端发的链接会先整理成草稿，回到电脑打开网页端慢慢精读即可。
+- **配合 Obsidian 一起用**：在 `hermes-custom/config.yaml` 中把 `vault.path` 指向你的 Obsidian 仓库目录，Hermes 保存的文章本身就是标准 Markdown 文件，随时可以在 Obsidian 里打开浏览。
+- **备份你的全部知识**：定期把 `hermes-custom/data/` 整个文件夹（里面包含你的文章文件和 `captures.db` 数据库）复制一份备份即可完整保留所有资料、卡片和关联。
 
 ---
 
-## 六、常见问题排查（FAQ）
+## 五、常见问题速查
 
-| 现象 | 排查与解决方法 |
-|---|---|
-| 网页工作台提示 `503` 或无法连接知识库 | 1. 确认端口 `8000` 的 `uvicorn` 服务已启动；<br>2. 检查两端 `HERMES_API_TOKEN` 与 `HERMES_KNOWLEDGE_TOKEN` 是否完全一致；<br>3. 检查 `HERMES_KNOWLEDGE_URL` 是否设为 `http://127.0.0.1:8000`。 |
-| 刚存的文章在语义检索里搜不到 | 检查 `config.yaml` 中的 `qwen.api_key`（DashScope Key）是否已填写；若之前离线写入过，可运行 `scripts/backfill.py` 补建向量索引。 |
-| 专题目录和卡片所属专题显示不一致 | 运行 `python scripts/repair_topics.py --apply --fix-mismatched` 即可按唯一真相源修复。 |
-| 修改了 `hermes-agent-main/web` 前端源码，刷新页面没生效 | 在 `hermes-agent-main/web` 下执行 `npm install && npm run build` 重新生成 `hermes_cli/web_dist`，然后重启 `dashboard` 并在浏览器按 `Ctrl + Shift + R` 强制刷新。 |
-| 如何运行自动化测试验证环境？ | `hermes-custom` 下运行 `pytest tests -q`；更多运维命令见 [RUNBOOK.md](RUNBOOK.md) 与 [ARCHITECTURE.md](ARCHITECTURE.md)。 |
+- **打开网页提示连不上知识库 / 报 503**
+  - 先确认第 3 步的 `8000` 端口终端窗口还在运行；
+  - 再核对 `HERMES_API_TOKEN`（第 3 步）和 `~/.hermes/.env` 里的 `HERMES_KNOWLEDGE_TOKEN`（第 4 步）是不是完全一致（注意不要多空格）。
+- **搜不到刚刚存进去的文章**
+  - 检查 `config.yaml` 里的 `qwen.api_key`（阿里云百炼密钥）是否填写正确；如果是后来才补填的密钥，在 `hermes-custom` 里跑一次 `.venv/bin/python scripts/backfill.py` 即可补齐语义索引。
+- **每次关机重启后怎么再打开？**
+  - 不用重新安装依赖！只需要开两个终端，分别运行第 3 步的 `uvicorn` 启动命令和第 4 步的 `dashboard` 启动命令，然后打开 `http://127.0.0.1:9119` 即可。
+- **希望把服务部署到云服务器远程访问？**
+  - 务必设置高强度的随机 `HERMES_API_TOKEN`，并通过反向代理启用 HTTPS，同时配置 `HERMES_API_ALLOWED_HOSTS` 限制允许访问的域名，切勿把无密码保护的服务直接暴露到公网。
+
+---
+
+> 如果你是开发者，想深入了解系统架构、全部 HTTP 接口清单、测试方法或运维排障脚本，请继续查看 [ARCHITECTURE.md](ARCHITECTURE.md)、[RUNBOOK.md](RUNBOOK.md) 与 [SETUP.md](SETUP.md)。

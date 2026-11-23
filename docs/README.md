@@ -1,8 +1,8 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-17
-verified_against: "e4cfdda (hermes-custom) / ceac73d (hermes-agent-main) + 2026-11-17 working tree"
+last_verified: 2026-11-23
+verified_against: "9e5c752 (hermes-custom) / 115bd27 (hermes-agent-main)"
 ---
 
 # Documentation Index
@@ -25,7 +25,7 @@ Every `docs/*.md` file must appear below; `scripts/check_docs.py` fails otherwis
 - `reading-lifecycle.md` — Reading Session → Capture/Card/Note lifecycle
 - `schema-migrations.md` — schema version history and migration procedure
 - `adr/` — architecture decisions (0001-0004 implemented; 0005 deferred)
-- `folder-write-jobs.md` — opt-in folder-rename worker (not wired to the API)
+- `folder-write-jobs.md` — folder rename API and opt-in worker mode
 - `PRODUCT-REFACTOR-STORY.md` — product narrative / interview material
 - `local-data-reset-runbook.md` — destructive reset procedure
 

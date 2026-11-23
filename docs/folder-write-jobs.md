@@ -1,8 +1,8 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-18
-verified_against: "working tree (fix/kc-data, based on 3e6b974)"
+last_verified: 2026-11-23
+verified_against: "9e5c752 (hermes-custom)"
 ---
 
 # Folder write jobs
@@ -16,8 +16,9 @@ as batch or scheduled work.
 - Supported intent: `rename_folder`.
 - `PATCH /api/library/folders/{path}` has two modes, selected by
   `worker.enabled` in `config.yaml`:
-  - `false` (default): rename synchronously through `rename_topic` +
-    `rename_stored_folder`. No job row is created.
+  - `false` (default): rename synchronously through `rename_topic`, which
+    delegates to `agents.folder_service.rename_folder()` and updates the
+    registry. No job row is created.
   - `true`: submit a `rename_folder` job and wait for the worker
     (`submit_folder_rename_job` + `wait_for_job`). The worker process must
     already be running; see below.
@@ -43,14 +44,14 @@ as batch or scheduled work.
 Windows:
 
 ```powershell
-cd <repos>\hermes-custom
+cd "<repos>\hermes-custom"
 .venv\Scripts\python.exe start_worker.py
 ```
 
 macOS/Linux:
 
 ```bash
-cd <repos>/hermes-custom
+cd "<repos>/hermes-custom"
 .venv/bin/python start_worker.py
 ```
 

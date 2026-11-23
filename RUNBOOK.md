@@ -1,21 +1,21 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-22
-verified_against: "9e44c73 (hermes-custom) + 2026-11-22 working tree"
+last_verified: 2026-11-23
+verified_against: "9e5c752 (hermes-custom) / 115bd27 (hermes-agent-main)"
 ---
 
 # Hermes Knowledge Runbook
 
 > 状态：current  
-> 适用：命令示例以 Windows PowerShell 为准；macOS/Linux 把 `.venv\Scripts\python.exe` 换成 `.venv/bin/python`。
+> 命令示例使用 Windows PowerShell。macOS/Linux 使用 `.venv/bin/python`、正斜杠路径和对应 shell 的环境变量语法。
 > 路径约定：`<repos>` 是同时包含 `hermes-custom` 和 `hermes-agent-main` 的目录。
 
 ## 1. 端口与进程
 
 | 服务 | 默认地址 | 启动方式 |
 |---|---|---|
-| Knowledge API | `http://127.0.0.1:8000` | `uvicorn api.main:create_app --factory` |
+| Knowledge API | `http://127.0.0.1:8000` | `uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000` |
 | Hermes Dashboard | `http://127.0.0.1:9119` | `.venv\Scripts\python.exe -m hermes_cli.main dashboard` |
 | Hermes Gateway | 由平台适配器决定 | `.venv\Scripts\python.exe -m hermes_cli.main gateway run` |
 
@@ -23,36 +23,31 @@ verified_against: "9e44c73 (hermes-custom) + 2026-11-22 working tree"
 
 ## 2. 启动 Knowledge API
 
-```bash
-cd <repos>/hermes-custom
+```powershell
+cd "<repos>\hermes-custom"
+# 推荐在启动前设置令牌
+$env:HERMES_API_TOKEN = "<替换为高强度随机值>"
 .venv\Scripts\python.exe -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-Windows PowerShell：
+在另一个 PowerShell 窗口为 `$env:HERMES_API_TOKEN` 设置相同的值，再执行：
 
 ```powershell
-cd <repos>\hermes-custom
-.venv\Scripts\python.exe -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
+curl.exe --fail-with-body -H "Authorization: Bearer $env:HERMES_API_TOKEN" "http://127.0.0.1:8000/api/health"
 ```
 
-探活：
+响应里的 `status` 应为 `ok`。服务在依赖异常时可能返回 HTTP 200 和 `status: degraded`，此时查看响应中的 `checks`。
 
-```bash
-curl http://127.0.0.1:8000/api/health
-```
+未配置 `HERMES_API_TOKEN` 时，只有回环请求可访问服务，此时探活可以省略 Authorization 请求头。配置令牌后，可用 `HERMES_HEALTH_PUBLIC=1` 允许无凭证的 `GET /api/health`。
 
-默认未配置 `HERMES_API_TOKEN` 时只接受回环请求。需要远程访问时，必须设置高强度随机 token：
-
-```text
-HERMES_API_TOKEN=<random>
-```
-
-监控探活可以设置 `HERMES_HEALTH_PUBLIC=1`，只放行 `GET/HEAD /api/health`。
+远程访问需要配置高强度随机令牌。通过自定义域名访问时，还要在服务侧设置 `HERMES_API_ALLOWED_HOSTS`，列出允许的主机名，用逗号分隔，省略协议和端口。
 
 ## 3. 启动 Runtime
 
-```bash
-cd <repos>/hermes-agent-main
+先按下一节设置 Knowledge HTTP 环境变量，再启动 Gateway 或 Dashboard。首次构建 Dashboard 需要 Node.js 和 npm。
+
+```powershell
+cd "<repos>\hermes-agent-main"
 uv run hermes gateway run
 # 或
 .venv\Scripts\python.exe -m hermes_cli.main gateway run --replace
@@ -60,36 +55,30 @@ uv run hermes gateway run
 
 Dashboard：
 
-```bash
+```powershell
 .venv\Scripts\python.exe -m hermes_cli.main dashboard --no-open
 # http://127.0.0.1:9119
 ```
 
 ## 4. HTTP 模式（生产推荐）
 
-Runtime 侧：
+在启动 Runtime 的 PowerShell 窗口设置：
 
-```text
-HERMES_KNOWLEDGE_URL=http://127.0.0.1:8000
-HERMES_KNOWLEDGE_TOKEN=<same random value as HERMES_API_TOKEN>
+```powershell
+$env:HERMES_KNOWLEDGE_URL = "http://127.0.0.1:8000"
+$env:HERMES_KNOWLEDGE_TOKEN = "<替换为与服务 HERMES_API_TOKEN 相同的值>"
 ```
 
 纯 HTTP 模式只需要上述两个变量（工具调用与 Dashboard 的草稿、卡片详情、时间线、伴读流式转发均已走 HTTP 委托，不需要本地 Knowledge checkout）。
 
-仅在使用 Dashboard「打开本地文件（`open-local`）」或本地开发回退时，才需要额外配置：
+Dashboard「打开本地文件（`open-local`）」需要 Runtime 能访问服务实际使用的 SQLite 和 Vault。以下示例对应 `config.example.yaml`，使用不同路径时以服务配置为准。
 
-```text
-HERMES_KNOWLEDGE_DB=<repos>/hermes-custom/data/captures.db
-HERMES_KNOWLEDGE_VAULT=<repos>/hermes-custom/data/vault
+```powershell
+$env:HERMES_KNOWLEDGE_DB = "<repos>\hermes-custom\data\captures.db"
+$env:HERMES_KNOWLEDGE_VAULT = "$env:USERPROFILE\Hermes\knowledge"
 ```
 
-Knowledge 侧：
-
-```text
-HERMES_API_TOKEN=<same random value>
-```
-
-**两边 token 必须相同。** 一个常见的 503 原因是只设置了 `HERMES_KNOWLEDGE_URL`，没有设置 `HERMES_KNOWLEDGE_TOKEN`，或者服务端没有设置 `HERMES_API_TOKEN`。
+服务启用令牌后，Runtime 缺少令牌或令牌不匹配都会导致上游鉴权失败。仅在回环开发模式且服务未配置令牌时，Runtime 才可省略令牌。
 
 如果预览知识卡片草稿正常、保存提示契约不兼容，检查 Service `/api/health` 的 `contract_version`。Dashboard 保存要求 v2 或以上；未升级的旧服务仍可用于预览。
 
@@ -117,21 +106,15 @@ Hermes Knowledge local-checkout mode is for development only
 
 ## 6. 测试
 
-```bash
-cd <repos>/hermes-custom
-.venv\Scripts\python.exe -m pytest tests -q
-```
-
-Windows：
-
 ```powershell
+cd "<repos>\hermes-custom"
 .venv\Scripts\python.exe -m pytest tests -q
 ```
 
 HTTP-only smoke（真实 API + Runtime 工具，不需要本地 Knowledge checkout；需要同级 `hermes-agent-main`）：
 
-```bash
-cd <repos>/hermes-custom
+```powershell
+cd "<repos>\hermes-custom"
 .venv\Scripts\python.exe scripts\http_only_smoke.py --work-dir .tmp\hermes-http-only
 .venv\Scripts\python.exe scripts\check_docs.py
 .venv\Scripts\python.exe scripts\update_current_state.py --check
@@ -141,12 +124,6 @@ cd <repos>/hermes-custom
 `--strict` 需要同级 `hermes-agent-main`（或 `HERMES_RUNTIME_ROOT`）；缺失时直接失败，不跳过。
 
 跨进程 pipeline（需要同级 `hermes-agent-main`；否则设置 `HERMES_RUNTIME_ROOT`）：
-
-```bash
-.venv\Scripts\python.exe scripts\knowledge_pipeline_e2e.py --work-dir .tmp\hermes-pipeline-e2e
-```
-
-Windows 路径示例：
 
 ```powershell
 .venv\Scripts\python.exe scripts\knowledge_pipeline_e2e.py --work-dir .tmp\hermes-pipeline-e2e
@@ -160,8 +137,8 @@ Windows 路径示例：
 
 Runtime 侧 Knowledge 测试：
 
-```bash
-cd <repos>/hermes-agent-main
+```powershell
+cd "<repos>\hermes-agent-main"
 .venv\Scripts\python.exe -m pytest tests/tools tests/hermes_cli/test_web_server.py -q
 ```
 
@@ -169,20 +146,20 @@ cd <repos>/hermes-agent-main
 
 先 dry-run：
 
-```bash
-cd <repos>/hermes-custom
+```powershell
+cd "<repos>\hermes-custom"
 .venv\Scripts\python.exe scripts\repair_topics.py --config config.yaml
 ```
 
 确认输出后再应用：
 
-```bash
+```powershell
 .venv\Scripts\python.exe scripts\repair_topics.py --config config.yaml --apply
 ```
 
 如果卡片的 `source_theme` 是非 Inbox 的旧值，并且你确认要以来源资料为准：
 
-```bash
+```powershell
 .venv\Scripts\python.exe scripts\repair_topics.py --config config.yaml --apply --fix-mismatched
 ```
 
@@ -208,8 +185,7 @@ dry-run 输出的 `new_storage_root` 必须和 `vault.path` 一致再 apply。
 
 ## 8.1 批量文件夹重命名（opt-in）
 
-`docs/folder-write-jobs.md` 的 worker 只处理 `rename_folder`；HTTP
-`PATCH /api/library/folders` 仍走同步路径。两者不要同时对同一个文件夹操作。
+`PATCH /api/library/folders/{folder_path}` 默认同步改名。设置 `worker.enabled: true` 后，同一个端点会提交 `rename_folder` 作业并等待 worker。先按 [Folder write jobs](docs/folder-write-jobs.md) 启动 worker，避免对仍有待处理作业的同一文件夹再次发起改名。
 
 ## 9. 常见问题
 
@@ -220,7 +196,7 @@ dry-run 输出的 `new_storage_root` 必须和 `vault.path` 一致再 apply。
 1. `HERMES_KNOWLEDGE_URL` 是否设置；
 2. Runtime 的 `HERMES_KNOWLEDGE_TOKEN` 是否等于服务的 `HERMES_API_TOKEN`；
 3. 服务是否监听在 `127.0.0.1:8000`；
-4. 服务 `/api/health` 是否返回 `ok`。
+4. 按第 2 节直接请求 Service 的 `GET /api/health`，确认响应中有 `status: ok`。`/api/knowledge/runtime-check` 在 HTTP 模式下只报告 Runtime 选择的传输方式。
 
 ### 9.2 工具返回 “Hermes Knowledge is not configured”
 
@@ -230,7 +206,7 @@ dry-run 输出的 `new_storage_root` 必须和 `vault.path` 一致再 apply。
 
 ### 9.3 专题筛选/卡片所属专题不对
 
-```bash
+```powershell
 .venv\Scripts\python.exe scripts\repair_topics.py --config config.yaml --apply
 ```
 
@@ -246,7 +222,7 @@ dry-run 输出的 `new_storage_root` 必须和 `vault.path` 一致再 apply。
 - `captures.embedding` 已在 schema v4 删除；
 - 重建索引：
 
-```bash
+```powershell
 .venv\Scripts\python.exe scripts\backfill.py --config config.yaml
 # 只查看：.venv\Scripts\python.exe scripts\backfill.py --config config.yaml --dry-run
 ```

@@ -1,8 +1,8 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-22
-verified_against: "9e44c73 (hermes-custom) + 2026-11-22 working tree"
+last_verified: 2026-11-23
+verified_against: "9e5c752 (hermes-custom) / 115bd27 (hermes-agent-main)"
 ---
 
 # Hermes Knowledge 启动说明
@@ -28,8 +28,8 @@ verified_against: "9e44c73 (hermes-custom) + 2026-11-22 working tree"
 ## 配置 Knowledge
 
 ```bash
-cd <repos>/hermes-custom
-cp config.example.yaml config.yaml
+cd "<repos>/hermes-custom"
+test -f config.yaml || cp config.example.yaml config.yaml
 ```
 
 `config.yaml` 不进 Git。这里放 Knowledge 项目的 LLM key、Qwen / DashScope key、数据库路径、Knowledge File storage 路径。这个文件是本地敏感配置，不要复制到文档、日志、Issue 或提交信息里。
@@ -37,13 +37,15 @@ cp config.example.yaml config.yaml
 ## 启动 Knowledge API
 
 ```bash
-cd <repos>/hermes-custom
+cd "<repos>/hermes-custom"
 .venv/bin/python -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
 默认未配置 `HERMES_API_TOKEN` 时只接受回环地址请求，也不要把该无 token 服务接到对外反向代理后。若必须监听 `0.0.0.0` 或通过代理提供远程访问，请先设置高强度随机 `HERMES_API_TOKEN`，并让客户端通过 `Authorization: Bearer <token>` 发送。
 
-监控探活：`GET /api/health` 默认同样需要 token。要让 k8s/uptime 之类无凭证探针访问，设置 `HERMES_HEALTH_PUBLIC=1`（只放行 GET/HEAD `/api/health`，其余路由仍需 token）；`HERMES_KNOWLEDGE_VERSION` 可覆盖 health 返回的 `version`（默认取 git 短 sha）。
+通过自定义域名访问时，设置 `HERMES_API_ALLOWED_HOSTS`，用逗号分隔允许的主机名，省略协议和端口。服务会在校验令牌前校验请求的 Host。
+
+探活使用 `GET /api/health`。配置服务令牌时，探针默认也要带 Bearer 令牌。若需要无凭证的 GET 探针，可设置 `HERMES_HEALTH_PUBLIC=1`，其余 API 继续校验令牌。未配置服务令牌时，回环地址可直接探活。`HERMES_KNOWLEDGE_VERSION` 可覆盖响应里的 `version`，默认取 Git 短 SHA。
 
 现在这个 API 只挂知识库接口：
 
@@ -53,7 +55,7 @@ cd <repos>/hermes-custom
 快速检查：
 
 ```bash
-cd <repos>/hermes-custom
+cd "<repos>/hermes-custom"
 .venv/bin/python - <<'PY'
 from api.main import create_app
 
@@ -83,7 +85,7 @@ http://127.0.0.1:9119/
 启动方式：
 
 ```bash
-cd <repos>/hermes-agent-main
+cd "<repos>/hermes-agent-main"
 .venv/bin/python -m hermes_cli.main dashboard
 ```
 
@@ -92,7 +94,7 @@ cd <repos>/hermes-agent-main
 ## 启动 Hermes Runtime
 
 ```bash
-cd <repos>/hermes-agent-main
+cd "<repos>/hermes-agent-main"
 uv run hermes gateway run
 ```
 
@@ -106,14 +108,14 @@ runtime 连接两个独立能力项目：
 Knowledge 全量测试：
 
 ```bash
-cd <repos>/hermes-custom
+cd "<repos>/hermes-custom"
 .venv/bin/python -m pytest tests/ -q
 ```
 
 跨进程 Pipeline E2E（真实启动 Knowledge API 和 Hermes Runtime，共用隔离的临时数据库与 Knowledge vault；只用本地 HTTP 服务替代外部 LLM/Embedding 供应商）：
 
 ```bash
-cd <repos>/hermes-custom
+cd "<repos>/hermes-custom"
 .venv/bin/python scripts/knowledge_pipeline_e2e.py --work-dir .tmp/hermes-pipeline-e2e
 ```
 
@@ -122,14 +124,14 @@ cd <repos>/hermes-custom
 Life 测试在独立仓库：
 
 ```bash
-cd <repos>/hermes-life
-<repos>/hermes-custom/.venv/bin/python -m pytest tests/ -q
+cd "<repos>/hermes-life"
+"<repos>/hermes-custom/.venv/bin/python" -m pytest tests/ -q
 ```
 
 runtime 的 Life 工具导入测试：
 
 ```bash
-cd <repos>/hermes-agent-main
+cd "<repos>/hermes-agent-main"
 .venv/bin/python -m pytest tests/tools/test_life_tools_imports.py tests/agent/test_hermes_custom_direct_reply.py -q
 ```
 
