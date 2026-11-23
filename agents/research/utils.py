@@ -198,7 +198,17 @@ def _parse_web_search(raw: str | dict[str, Any]) -> list[dict[str, str]]:
             or ""
         ).strip()
         if url or title or description:
-            results.append({"url": url, "title": title, "description": description})
+            entry: dict[str, Any] = {"url": url, "title": title, "description": description}
+            raw_content = str(item.get("content") or "").strip()
+            if raw_content and item.get("content_is_summary") is False:
+                entry["content"] = raw_content
+                entry["content_is_summary"] = False
+            if item.get("rerank_score") is not None:
+                try:
+                    entry["rerank_score"] = float(item["rerank_score"])
+                except (TypeError, ValueError):
+                    pass
+            results.append(entry)
     return results
 
 

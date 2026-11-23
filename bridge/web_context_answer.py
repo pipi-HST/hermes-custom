@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -16,6 +17,8 @@ from pathlib import Path
 from typing import Any, Callable, Awaitable
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from agents.capture_agent import load_config
 
@@ -53,7 +56,9 @@ WEB_CONTEXT_SUMMARY_CHARS = 800
 WEB_CONTEXT_SURROUNDING_CHARS = 500
 DEFAULT_WEB_CONTEXT_SEARCH_QUERY_TIMEOUT_SECONDS = 18.0
 WEB_CONTEXT_SELECTION_TIMEOUT_SECONDS = 8
-WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS = 35
+WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS = 90
+WEB_CONTEXT_SYNTHESIS_MAX_TOKENS = 20000
+WEB_CONTEXT_SYNTHESIS_RETRY_MAX_TOKENS = 20000
 WEB_CONTEXT_SUMMARY_TIMEOUT_SECONDS = 30
 WEB_CONTEXT_HISTORY_SUMMARY_CHARS = 1000
 WEB_CONTEXT_HISTORY_MESSAGES = 12
@@ -114,6 +119,7 @@ def web_context_answer(
     history_summary_version: int = 0,
     history_overflow: list[dict[str, str]] | None = None,
     force_web: bool = False,
+    channel: str = "",
 ) -> dict[str, Any]:
     started = time.monotonic()
     clean_query = (query or "").strip()
@@ -132,6 +138,25 @@ def web_context_answer(
     history_messages = _normalized_history_messages(history)
     history_summary = _clip_text(str(history_summary or ""), WEB_CONTEXT_HISTORY_SUMMARY_CHARS)
     stage_timings = _empty_web_context_stage_timings()
+
+    if (
+        (channel or "").strip().lower() == "weixin"
+        and normalized_mode in {"local_web", "web_only"}
+        and synthesize_adapter is None
+    ):
+        hosted_result = _try_deepseek_hosted_weixin_answer(
+            query=clean_query,
+            mode=normalized_mode,
+            article_context=article_context,
+            selection_context=selection_context,
+            local_search_adapter=local_search_adapter,
+            progress_callback=progress_callback,
+            warnings=warnings,
+            started=started,
+            stage_timings=stage_timings,
+        )
+        if hosted_result is not None:
+            return hosted_result
 
     if normalized_mode == "current_article_only":
         research_plan = _direct_article_plan(normalized_mode)
@@ -183,48 +208,86 @@ def web_context_answer(
     )
     local_answer = ""
     knowledge_sources: list[dict[str, Any]] = []
-    if use_local and local_search_adapter is not None:
-        local_started = time.monotonic()
-        local_answer, knowledge_sources = local_search_adapter(
-            _local_search_query(clean_query, selection_context, article_context),
-            warnings,
-        )
-        knowledge_sources = _prioritize_article_sources(
-            knowledge_sources,
-            article_context=article_context,
-            selection_context=selection_context,
-        )
-        if use_web:
-            knowledge_sources = filter_local_sources_for_web(
-                knowledge_sources,
-                keep_ids={str(article_context.get("id") or "").strip()},
-                keep_paths={
-                    str(article_context.get("file_path") or article_context.get("path") or "").strip()
-                },
-            )
-        _add_web_context_stage_timing(stage_timings, "local_search_ms", local_started)
-
     candidates: list[dict[str, Any]] = []
     query_statuses: list[dict[str, Any]] = list(skipped_query_statuses)
     web_sources: list[dict[str, Any]] = []
     opened_urls: list[str] = []
     material_plan: dict[str, Any] = {"selected_refs": [], "open_refs": [], "answer_shape": ""}
-    if use_web:
-        search_started = time.monotonic()
-        if not web_queries:
-            web_queries = [clean_query]
-        _progress(progress_callback, "queries_ready", queries=web_queries, query_count=len(web_queries))
-        candidates, executed_statuses = _search_candidates(web_queries, search_adapter, warnings, progress_callback=progress_callback)
-        query_statuses.extend(executed_statuses)
-        _add_web_context_stage_timing(stage_timings, "search_ms", search_started)
 
-        material_plan = _select_materials(
-            clean_query,
-            candidates,
-            local_answer=local_answer,
+    run_local = bool(use_local and local_search_adapter is not None)
+    if use_web and not web_queries:
+        web_queries = [clean_query]
+
+    def _exec_local(local_warnings: list[str]) -> tuple[str, list[dict[str, Any]], float]:
+        local_started = time.monotonic()
+        ans, srcs = local_search_adapter(  # type: ignore[misc]
+            _local_search_query(clean_query, selection_context, article_context),
+            local_warnings,
+        )
+        srcs = _prioritize_article_sources(
+            srcs,
             article_context=article_context,
             selection_context=selection_context,
         )
+        if use_web:
+            srcs = filter_local_sources_for_web(
+                srcs,
+                keep_ids={str(article_context.get("id") or "").strip()},
+                keep_paths={
+                    str(article_context.get("file_path") or article_context.get("path") or "").strip()
+                },
+            )
+        return ans, srcs, local_started
+
+    if run_local and use_web:
+        _progress(progress_callback, "queries_ready", queries=web_queries, query_count=len(web_queries))
+        local_warnings: list[str] = []
+        web_warnings: list[str] = []
+        search_started = time.monotonic()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            local_fut = pool.submit(_exec_local, local_warnings)
+            web_fut = pool.submit(
+                _search_candidates,
+                web_queries,
+                search_adapter,
+                web_warnings,
+                progress_callback=progress_callback,
+            )
+            local_answer, knowledge_sources, local_started = local_fut.result()
+            _add_web_context_stage_timing(stage_timings, "local_search_ms", local_started)
+            candidates, executed_statuses = web_fut.result()
+            _add_web_context_stage_timing(stage_timings, "search_ms", search_started)
+        warnings.extend(local_warnings)
+        warnings.extend(web_warnings)
+        query_statuses.extend(executed_statuses)
+    else:
+        if run_local:
+            local_answer, knowledge_sources, local_started = _exec_local(warnings)
+            _add_web_context_stage_timing(stage_timings, "local_search_ms", local_started)
+        if use_web:
+            search_started = time.monotonic()
+            _progress(progress_callback, "queries_ready", queries=web_queries, query_count=len(web_queries))
+            candidates, executed_statuses = _search_candidates(
+                web_queries,
+                search_adapter,
+                warnings,
+                progress_callback=progress_callback,
+            )
+            query_statuses.extend(executed_statuses)
+            _add_web_context_stage_timing(stage_timings, "search_ms", search_started)
+
+    if use_web:
+        inline_full_count = sum(1 for item in candidates if item.get("extract_status") == "full")
+        if inline_full_count >= 2:
+            material_plan = _fast_select_inline_materials(candidates)
+        else:
+            material_plan = _select_materials(
+                clean_query,
+                candidates,
+                local_answer=local_answer,
+                article_context=article_context,
+                selection_context=selection_context,
+            )
         selected = _sources_by_refs(candidates, material_plan.get("selected_refs") or [])
         if not selected:
             selected = candidates[:WEB_CONTEXT_MAX_MATERIALS]
@@ -457,6 +520,7 @@ async def async_web_context_answer(
     history_summary_version: int = 0,
     history_overflow: list[dict[str, str]] | None = None,
     force_web: bool = False,
+    channel: str = "",
 ) -> dict[str, Any]:
     clean_query = (query or "").strip()
     await _emit(event_callback, "planning_start", path="web_context", mode=_normalize_mode(mode))
@@ -509,6 +573,7 @@ async def async_web_context_answer(
         history_summary_version=history_summary_version,
         history_overflow=history_overflow,
         force_web=force_web,
+        channel=channel,
     )
     if delta_buffer:
         buffered = "".join(delta_buffer)
@@ -871,11 +936,12 @@ def _search_candidates(
     *,
     progress_callback: ProgressCallback | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    run_queries = list(queries[:MAX_WEB_QUERIES])
     candidates: list[dict[str, Any]] = []
     query_statuses: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for search_query in queries[:MAX_WEB_QUERIES]:
-        _progress(progress_callback, "web_query_start", query=search_query)
+
+    def _run_one(search_query: str) -> tuple[str, list[dict[str, Any]] | None, dict[str, Any]]:
         query_started = time.monotonic()
         try:
             raw = _search_with_timeout(search_adapter, search_query, WEB_CONTEXT_RESULTS_PER_QUERY)
@@ -883,7 +949,7 @@ def _search_candidates(
             actual_backend = ""
             if isinstance(raw, dict):
                 actual_backend = str(raw.get("backend") or "").strip()
-            query_status = {
+            status = {
                 "query": search_query,
                 "status": "success",
                 "duration_ms": round((time.monotonic() - query_started) * 1000.0, 3),
@@ -891,15 +957,29 @@ def _search_candidates(
                 "error": "",
                 "backend": actual_backend or current_search_backend(),
             }
+            return search_query, parsed, status
         except Exception as exc:
-            query_status = {
+            status = {
                 "query": search_query,
                 "status": "timeout" if isinstance(exc, TimeoutError) else "failed",
                 "duration_ms": round((time.monotonic() - query_started) * 1000.0, 3),
                 "result_count": 0,
                 "error": str(exc),
             }
-            query_statuses.append(query_status)
+            return search_query, None, status
+
+    for search_query in run_queries:
+        _progress(progress_callback, "web_query_start", query=search_query)
+
+    if len(run_queries) > 1:
+        with ThreadPoolExecutor(max_workers=len(run_queries)) as pool:
+            batch_results = list(pool.map(_run_one, run_queries))
+    else:
+        batch_results = [_run_one(q) for q in run_queries]
+
+    for search_query, parsed, query_status in batch_results:
+        query_statuses.append(query_status)
+        if parsed is None:
             _progress(
                 progress_callback,
                 "web_query_error",
@@ -908,28 +988,37 @@ def _search_candidates(
                 query_status=query_status,
             )
             continue
-        query_statuses.append(query_status)
         for item in parsed:
             url = _clean_web_url(str(item.get("url") or ""))
             key = (url or str(item.get("title") or "")).lower()
             if not key or key in seen:
                 continue
             seen.add(key)
-            candidates.append(
-                {
-                    "ref": f"W{len(candidates) + 1}",
-                    "type": "web",
-                    "id": url or f"web-{len(candidates) + 1}",
-                    "title": str(item.get("title") or url or f"网页来源 {len(candidates) + 1}"),
-                    "url": url,
-                    "domain": _domain(url),
-                    "description": str(item.get("description") or item.get("excerpt") or "").strip(),
-                    "excerpt": str(item.get("description") or item.get("excerpt") or "").strip(),
-                    "query": search_query,
-                    "source_role": "context_material",
-                    "extract_status": "summary",
-                }
+            inline_content = (
+                str(item.get("content") or "").strip()
+                if item.get("content_is_summary") is False
+                else ""
             )
+            has_inline_full = len(inline_content) >= 300
+            desc = str(item.get("description") or item.get("excerpt") or "").strip()
+            candidate: dict[str, Any] = {
+                "ref": f"W{len(candidates) + 1}",
+                "type": "web",
+                "id": url or f"web-{len(candidates) + 1}",
+                "title": str(item.get("title") or url or f"网页来源 {len(candidates) + 1}"),
+                "url": url,
+                "domain": _domain(url),
+                "description": desc,
+                "excerpt": inline_content or desc,
+                "query": search_query,
+                "source_role": "context_material",
+                "extract_status": "full" if has_inline_full else "summary",
+            }
+            if has_inline_full:
+                candidate["content"] = inline_content
+            if item.get("rerank_score") is not None:
+                candidate["rerank_score"] = item["rerank_score"]
+            candidates.append(candidate)
         _progress(
             progress_callback,
             "web_query_done",
@@ -1023,6 +1112,28 @@ def _article_context_prompt_block(article_context: dict[str, Any], *, body_limit
     return "\n".join(lines)
 
 
+def _fast_select_inline_materials(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    """Deterministically rank top candidates when search already returned inline full bodies."""
+    ranked = sorted(
+        enumerate(candidates),
+        key=lambda pair: (
+            0 if pair[1].get("extract_status") == "full" else 1,
+            -float(pair[1].get("rerank_score") or 0.0),
+            pair[0],
+        ),
+    )
+    selected_refs = [
+        str(item.get("ref"))
+        for _idx, item in ranked[:WEB_CONTEXT_MAX_MATERIALS]
+        if item.get("ref")
+    ]
+    return {
+        "selected_refs": selected_refs,
+        "open_refs": [],
+        "answer_shape": "inline_content_fast_path",
+    }
+
+
 def _select_materials(
     query: str,
     candidates: list[dict[str, Any]],
@@ -1097,9 +1208,15 @@ def _material_sources(
     sources: list[dict[str, Any]] = []
     for index, item in enumerate(selected, 1):
         url = _clean_web_url(str(item.get("url") or ""))
-        text = extracted_by_url.get(url) or str(item.get("description") or item.get("excerpt") or "").strip()
+        inline_full = (
+            str(item.get("content") or "").strip()
+            if item.get("extract_status") == "full"
+            else ""
+        )
+        text = extracted_by_url.get(url) or inline_full or str(item.get("description") or item.get("excerpt") or "").strip()
         if not text:
             continue
+        has_full = (url in extracted_by_url) or bool(inline_full)
         sources.append(
             {
                 **item,
@@ -1109,8 +1226,8 @@ def _material_sources(
                 "domain": item.get("domain") or _domain(url),
                 "excerpt": _clip_text(text, 2400),
                 "description": str(item.get("description") or "").strip(),
-                "extract_status": "full" if url in extracted_by_url else "summary",
-                "extract_error": "extract failed" if url in failures and url not in extracted_by_url else "",
+                "extract_status": "full" if has_full else "summary",
+                "extract_error": "extract failed" if url in failures and not has_full else "",
                 "source_role": "context_material",
             }
         )
@@ -1205,13 +1322,34 @@ def _generate_answer(
     )
     try:
         if answer_delta_callback is not None:
-            return _call_text_llm_stream(
-                prompt,
-                timeout_seconds=WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS,
-                answer_delta_callback=answer_delta_callback,
-                reasoning_capture=reasoning_capture,
-            )
-        return _call_text_llm(prompt, timeout_seconds=WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS)
+            try:
+                return _call_text_llm_stream(
+                    prompt,
+                    timeout_seconds=WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS,
+                    answer_delta_callback=answer_delta_callback,
+                    reasoning_capture=reasoning_capture,
+                    max_tokens=WEB_CONTEXT_SYNTHESIS_MAX_TOKENS,
+                )
+            except Exception as stream_exc:
+                if "empty streamed response" not in str(stream_exc).lower():
+                    raise
+                # Reasoning models (e.g. deepseek-flash) can exhaust the stream
+                # token budget inside reasoning_content before emitting content.
+                # Retry once non-streaming with a larger budget before degrading.
+                recovered = _call_text_llm(
+                    prompt,
+                    timeout_seconds=WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS,
+                    max_tokens=WEB_CONTEXT_SYNTHESIS_RETRY_MAX_TOKENS,
+                )
+                if not recovered.strip():
+                    raise stream_exc
+                answer_delta_callback(recovered)
+                return recovered
+        return _call_text_llm(
+            prompt,
+            timeout_seconds=WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS,
+            max_tokens=WEB_CONTEXT_SYNTHESIS_MAX_TOKENS,
+        )
     except Exception as exc:
         warnings.append(f"回答生成失败，已使用材料摘要：{exc}")
         return _fallback_answer(payload)
@@ -1266,15 +1404,31 @@ def _has_existing_answer_material(
     return bool(str(selection_context.get("selected_text") or "").strip())
 
 
+_SCRAPER_BOILERPLATE_RE = re.compile(
+    r"^(?:\s*(?:skip to main content|skip to article|published by:\s*[^\n#]+|published by)\s*)+",
+    re.IGNORECASE,
+)
+
+
+def _clean_fallback_excerpt(text: str) -> str:
+    cleaned = _SCRAPER_BOILERPLATE_RE.sub("", str(text or "").strip())
+    cleaned = re.sub(r"(?:^|\s)#{1,6}\s*", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 def _fallback_answer(payload: dict[str, Any]) -> str:
     lines: list[str] = []
     local_answer = str(payload.get("local_answer") or "").strip()
     if local_answer:
         lines.append(_clip_text(local_answer, 500))
     for source in (payload.get("web_sources") or [])[:4]:
-        text = _clip_text(str(source.get("excerpt") or source.get("description") or ""), 240)
+        raw_text = str(source.get("description") or source.get("excerpt") or "")
+        text = _clip_text(_clean_fallback_excerpt(raw_text), 240)
+        title = str(source.get("title") or "").strip()
         if text:
-            lines.append(f"- {text} [{source.get('ref')}]")
+            prefix = f"**{title}**：" if title and not text.startswith(title) else ""
+            lines.append(f"- {prefix}{text} [{source.get('ref')}]")
     return "\n".join(lines).strip() or "暂时没有足够材料回答这个问题。"
 
 
@@ -1291,12 +1445,12 @@ def _call_text_llm(
     *,
     timeout_seconds: float,
     json_mode: bool = False,
-    max_tokens: int = 1600,
+    max_tokens: int = WEB_CONTEXT_SYNTHESIS_MAX_TOKENS,
 ) -> str:
     config = load_config(str(Path(__file__).resolve().parent.parent / "config.yaml"))
     if not config.llm_api_key:
         raise RuntimeError("LLM API key is not configured")
-    return _call_llm(
+    answer = _call_llm(
         api_key=config.llm_api_key,
         model=config.llm_model,
         base_url=config.llm_base_url or "https://api.deepseek.com",
@@ -1306,6 +1460,9 @@ def _call_text_llm(
         timeout_seconds=timeout_seconds,
         reserve_seconds=0,
     )
+    if not str(answer or "").strip():
+        raise RuntimeError("empty LLM response")
+    return answer
 
 
 def _call_text_llm_stream(
@@ -1314,7 +1471,7 @@ def _call_text_llm_stream(
     timeout_seconds: float,
     answer_delta_callback: AnswerDeltaCallback,
     reasoning_capture: dict[str, Any] | None = None,
-    max_tokens: int = 1600,
+    max_tokens: int = WEB_CONTEXT_SYNTHESIS_MAX_TOKENS,
 ) -> str:
     config = load_config(str(Path(__file__).resolve().parent.parent / "config.yaml"))
     if not config.llm_api_key:
@@ -1323,6 +1480,7 @@ def _call_text_llm_stream(
         "Authorization": f"Bearer {config.llm_api_key}",
         "Content-Type": "application/json",
     }
+    requested_max_tokens = max(1200, min(int(max_tokens or WEB_CONTEXT_SYNTHESIS_MAX_TOKENS), 20000))
     body = {
         "model": config.llm_model,
         "messages": [
@@ -1330,40 +1488,62 @@ def _call_text_llm_stream(
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.2,
-        "max_tokens": max(1200, min(int(max_tokens or 1600), 6000)),
+        "max_tokens": requested_max_tokens,
         "stream": True,
     }
     pieces: list[str] = []
+    last_finish_reason = ""
+    reasoning_chars = 0
     with httpx.Client(timeout=max(1.0, float(timeout_seconds or WEB_CONTEXT_SYNTHESIS_TIMEOUT_SECONDS))) as client:
-        with client.stream(
-            "POST",
-            f"{config.llm_base_url or 'https://api.deepseek.com'}/chat/completions",
-            headers=headers,
-            json=body,
-        ) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                data = line.removeprefix("data:").strip()
-                if not data or data == "[DONE]":
-                    if data == "[DONE]":
-                        break
-                    continue
-                payload = json.loads(data)
-                choice = (payload.get("choices") or [{}])[0]
-                delta_payload = choice.get("delta") or {}
-                reasoning_value = _extract_reasoning_value(delta_payload) or _extract_reasoning_value(choice)
-                if reasoning_value:
-                    _append_reasoning_capture(reasoning_capture, reasoning_value)
-                delta = delta_payload.get("content") or ""
-                if not delta:
-                    continue
-                pieces.append(str(delta))
-                answer_delta_callback(str(delta))
+        def _consume_stream(req_body: dict[str, Any]) -> int:
+            nonlocal last_finish_reason, reasoning_chars
+            with client.stream(
+                "POST",
+                f"{config.llm_base_url or 'https://api.deepseek.com'}/chat/completions",
+                headers=headers,
+                json=req_body,
+            ) as response:
+                if response.status_code in {400, 422} and req_body.get("max_tokens", 0) > 8192:
+                    return response.status_code
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    data = line.removeprefix("data:").strip()
+                    if not data or data == "[DONE]":
+                        if data == "[DONE]":
+                            break
+                        continue
+                    payload = json.loads(data)
+                    choice = (payload.get("choices") or [{}])[0]
+                    if choice.get("finish_reason"):
+                        last_finish_reason = str(choice.get("finish_reason"))
+                    delta_payload = choice.get("delta") or {}
+                    reasoning_value = _extract_reasoning_value(delta_payload) or _extract_reasoning_value(choice)
+                    if reasoning_value:
+                        if isinstance(reasoning_value, str):
+                            reasoning_chars += len(reasoning_value)
+                        _append_reasoning_capture(reasoning_capture, reasoning_value)
+                    delta = delta_payload.get("content") or ""
+                    if not delta:
+                        continue
+                    pieces.append(str(delta))
+                    answer_delta_callback(str(delta))
+            return 200
+
+        status = _consume_stream(body)
+        if status in {400, 422} and body["max_tokens"] > 8192:
+            body["max_tokens"] = 8192
+            _consume_stream(body)
     answer = "".join(pieces).strip()
     if not answer:
-        raise RuntimeError("empty streamed response")
+        detail = []
+        if last_finish_reason:
+            detail.append(f"finish_reason={last_finish_reason}")
+        if reasoning_chars:
+            detail.append(f"reasoning_chars={reasoning_chars}")
+        suffix = f" ({', '.join(detail)})" if detail else ""
+        raise RuntimeError(f"empty streamed response{suffix}")
     return answer
 
 
@@ -1604,3 +1784,175 @@ async def _emit(event_callback: ResearchEventCallback | None, event: str, **kwar
     result = event_callback({"type": event, **kwargs})
     if asyncio.iscoroutine(result):
         await result
+
+
+def _try_deepseek_hosted_weixin_answer(
+    *,
+    query: str,
+    mode: str,
+    article_context: dict[str, Any],
+    selection_context: dict[str, Any],
+    local_search_adapter: LocalSearchAdapter | None,
+    progress_callback: ProgressCallback | None,
+    warnings: list[str],
+    started: float,
+    stage_timings: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Fast Track (Scheme 1) for WeChat: local KB grounding + single-call DeepSeek hosted search."""
+    try:
+        from bridge.deepseek_web_tools import (
+            deepseek_hosted_web_answer,
+            resolve_deepseek_credentials,
+        )
+
+        config = load_config(str(Path(__file__).resolve().parent.parent / "config.yaml"))
+        base_url = str(getattr(config, "llm_base_url", "") or "").strip()
+        if base_url and "deepseek" not in base_url.lower():
+            return None
+        api_key, root = resolve_deepseek_credentials(
+            getattr(config, "llm_api_key", "") or None,
+            base_url or None,
+        )
+        if not api_key:
+            return None
+    except Exception:
+        return None
+
+    knowledge_sources: list[dict[str, Any]] = []
+    local_answer = ""
+    if mode == "local_web" and local_search_adapter is not None:
+        local_started = time.monotonic()
+        try:
+            local_answer, knowledge_sources = local_search_adapter(
+                _local_search_query(query, selection_context, article_context),
+                warnings,
+            )
+            knowledge_sources = _prioritize_article_sources(
+                knowledge_sources,
+                article_context=article_context,
+                selection_context=selection_context,
+            )
+            knowledge_sources = filter_local_sources_for_web(
+                knowledge_sources,
+                keep_ids={str(article_context.get("id") or "").strip()},
+                keep_paths={
+                    str(article_context.get("file_path") or article_context.get("path") or "").strip()
+                },
+            )
+        except Exception as exc:
+            logger.warning("[web_context] weixin hosted local search degraded: %s", exc)
+        finally:
+            _add_web_context_stage_timing(stage_timings, "local_search_ms", local_started)
+
+    prompt_lines = [
+        "你是 Hermes Knowledge 的微信端研究助手，正在手机微信上为用户解答问题。",
+        "请善用内置联网搜索工具获取最新、准确的公开事实与数据，并与下方提供的个人知识库参考资料（如有）自然融合回答。",
+        "重要约束：",
+        "1. 隐私保护：不要把用户个人笔记原句直接发给搜索引擎，只针对公开问题构造精炼搜索词。",
+        "2. 微信手机端排版：禁用 Markdown 表格（|---|）和 # 标题语法；改用**加粗小标题**、短圆点/编号列表与空行分段，逻辑紧凑、直给结论与关键数据。",
+        "3. 来源标注：若引用下方个人资料库内容请标注对应 [K1]/[K2]；公开联网事实直接自然表述即可，不要编造未查到的数字。",
+        f"用户问题：{query}",
+    ]
+    article_title = str(article_context.get("title") or "").strip()
+    article_body = str(article_context.get("body") or article_context.get("excerpt") or "").strip()
+    if article_title or article_body:
+        prompt_lines.append(
+            f"当前正在探讨的文章：《{article_title or '当前材料'}》\n{_clip_text(article_body, 1200)}"
+        )
+    if knowledge_sources:
+        prompt_lines.append("个人知识库相关资料（仅供综合参考，勿原样搜索）：")
+        for idx, src in enumerate(knowledge_sources[:4], 1):
+            ref = str(src.get("ref") or f"K{idx}")
+            title = str(src.get("title") or src.get("path") or ref).strip()
+            snippet = _clip_text(str(src.get("excerpt") or src.get("summary") or "").strip(), 420)
+            prompt_lines.append(f"[{ref}] 《{title}》：{snippet}")
+    elif local_answer:
+        prompt_lines.append(f"本地知识库摘要：{_clip_text(local_answer, 500)}")
+
+    _progress(progress_callback, "web_query_start", query=query)
+    hosted_started = time.monotonic()
+    try:
+        hosted = deepseek_hosted_web_answer(
+            "\n\n".join(prompt_lines),
+            model=str(getattr(config, "llm_model", "") or "deepseek-flash"),
+            max_output_tokens=6000,
+            api_key=api_key,
+            base_url=root,
+            timeout=60.0,
+        )
+    except Exception as exc:
+        logger.warning("[web_context] DeepSeek hosted web search failed, falling back to Scheme 2: %s", exc)
+        return None
+    _add_web_context_stage_timing(stage_timings, "synthesis_ms", hosted_started)
+
+    answer = _remove_process_language(str(hosted.get("answer") or "").strip())
+    if not answer:
+        return None
+
+    web_sources: list[dict[str, Any]] = []
+    for idx, cit in enumerate(hosted.get("citations") or [], 1):
+        url = _clean_web_url(str(cit.get("url") or ""))
+        title = str(cit.get("title") or url or f"网页来源 {idx}").strip()
+        if not url and not title:
+            continue
+        web_sources.append(
+            {
+                "ref": f"W{idx}",
+                "type": "web",
+                "id": url or f"hosted-web-{idx}",
+                "title": title,
+                "url": url,
+                "domain": _domain(url),
+                "description": "",
+                "excerpt": "",
+                "source_role": "hosted_citation",
+                "extract_status": "hosted",
+            }
+        )
+
+    # Append a concise mobile-friendly source list if not already present.
+    if (knowledge_sources or web_sources) and "参考来源" not in answer:
+        footer_items: list[str] = []
+        for idx, src in enumerate(knowledge_sources[:3], 1):
+            ref = str(src.get("ref") or f"K{idx}")
+            title = str(src.get("title") or "").strip()
+            if title:
+                footer_items.append(f"[{ref}] {title}")
+        for src in web_sources[:5]:
+            title = str(src.get("title") or "").strip()
+            if title:
+                footer_items.append(f"[{src['ref']}] {title}")
+        if footer_items:
+            answer = f"{answer}\n\n参考来源：" + "；".join(footer_items)
+
+    total_elapsed_ms = round((time.monotonic() - started) * 1000.0, 3)
+    source_map = [*knowledge_sources, *web_sources]
+    return success_envelope(
+        agent="research",
+        intent="web_context_answer",
+        chat_preview=answer,
+        source_map=source_map,
+        warnings=warnings,
+        meta={
+            "query": query,
+            "mode": mode,
+            "path": "deepseek_hosted_web",
+            "channel": "weixin",
+            "answer": answer,
+            "knowledge_sources": knowledge_sources,
+            "web_sources": web_sources,
+            "sources": source_map,
+            "queries": hosted.get("queries") or [query],
+            "opened_pages": hosted.get("opened_pages") or 0,
+            "stage_timings_ms": stage_timings,
+            "total_elapsed_ms": total_elapsed_ms,
+            "provider_status": {
+                "search_backend": "deepseek_hosted",
+                "used_sources": len(web_sources),
+                "opened_pages": hosted.get("opened_pages") or 0,
+                "total_elapsed_ms": total_elapsed_ms,
+                "stage_timings_ms": stage_timings,
+            },
+            "plan_status": "deepseek_hosted_web",
+        },
+    )

@@ -1,6 +1,7 @@
 """Contract v1 endpoints: ``GET /api/health`` and ``GET /api/knowledge/search``."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -166,6 +167,51 @@ def test_selection_chat_service_builds_item_context(tmp_path, monkeypatch):
     assert response.status_code == 200, response.text
     assert captured["article_context"]["title"] == "Selection source"
     assert captured["query"] == "这是什么？"
+
+
+def test_selection_chat_stream_forwards_answer_deltas(tmp_path, monkeypatch):
+    (tmp_path / "vault").mkdir()
+    app = _make_app(tmp_path)
+    capture_id = _add_capture(
+        str(tmp_path / "captures.db"),
+        tmp_path / "vault",
+        note_name="stream.md",
+        title="Streaming source",
+        story="summary",
+        body="正文内容",
+    )
+    import bridge.research_bridge as research_bridge
+
+    async def fake_answer(**kwargs):
+        on_event = kwargs["event_callback"]
+        await on_event({"type": "answer_delta", "delta": "第一段"})
+        await on_event({"type": "answer_delta", "delta": "第二段"})
+        return {
+            "status": "success",
+            "chat_preview": "第一段第二段",
+            "source_map": [],
+            "warnings": [],
+            "meta": {"mode": kwargs["mode"]},
+        }
+
+    monkeypatch.setattr(research_bridge, "async_web_assist_answer", fake_answer)
+
+    with TestClient(app, client=LOOPBACK) as client:
+        response = client.post(
+            f"/api/knowledge/library/items/capture/{capture_id}/selection-chat/stream",
+            json={"question": "这是什么？", "mode": "local_web"},
+        )
+
+    assert response.status_code == 200, response.text
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [event["event"] for event in events] == ["progress", "progress", "complete"]
+    assert events[0] == {"event": "progress", "type": "answer_delta", "delta": "第一段"}
+    assert events[1] == {"event": "progress", "type": "answer_delta", "delta": "第二段"}
+    assert events[-1]["result"]["chat_preview"] == "第一段第二段"
 
 
 def test_ai_operation_cancel_service_route(tmp_path):

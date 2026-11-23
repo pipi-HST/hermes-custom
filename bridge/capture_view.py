@@ -9,18 +9,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agents.markdown_writer import read_note
+from agents.markdown_writer import note_revision, read_note_snapshot
 
 
 def read_capture_note(vault_path: str | Path, row: dict) -> tuple[dict, str]:
     """Return ``(frontmatter, body)`` for the note the capture row points at."""
+    snapshot = read_capture_note_snapshot(vault_path, row)
+    return snapshot[:2] if snapshot is not None else ({}, "")
+
+
+def read_capture_note_snapshot(vault_path: str | Path, row: dict) -> tuple[dict, str, str] | None:
     file_path = row.get("file_path") or row.get("raw_path") or ""
     if not file_path:
-        return {}, ""
-    note = read_note(Path(vault_path).expanduser(), file_path)
-    if not note:
-        return {}, ""
-    return note
+        return None
+    return read_note_snapshot(Path(vault_path), file_path)
 
 
 def build_capture_view(row: dict, frontmatter: dict, body: str) -> dict:
@@ -44,7 +46,11 @@ def build_capture_view(row: dict, frontmatter: dict, body: str) -> dict:
     }
 
 
-def hydrate_capture(vault_path: str | Path, row: dict) -> dict:
+def hydrate_capture(vault_path: str | Path, row: dict, *, include_revision: bool = False) -> dict:
     """API-shaped capture view used by list/detail/search responses."""
-    frontmatter, body = read_capture_note(vault_path, row)
-    return build_capture_view(row, frontmatter, body)
+    snapshot = read_capture_note_snapshot(vault_path, row)
+    frontmatter, body, raw_text = snapshot if snapshot is not None else ({}, "", "")
+    view = build_capture_view(row, frontmatter, body)
+    if include_revision and snapshot is not None and row.get("file_path"):
+        view["note_revision"] = note_revision(raw_text)
+    return view

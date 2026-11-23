@@ -205,6 +205,29 @@ def run_smoke(work_dir: str | Path | None = None) -> dict[str, Any]:
             search_resp = service.get(
                 "/api/knowledge/search", params={"q": "HTTP-only smoke"}
             )
+            # This Service regression also runs with the previous Runtime while
+            # the two repositories roll forward independently.
+            capture_url = f"/api/captures/{capture_id}"
+            revision = capture_resp.json().get("note_revision") if capture_resp.is_success else None
+            if revision:
+                first_save = service.patch(capture_url, json={
+                    "body": "First saved edit",
+                    "expected_revision": revision,
+                })
+                stale_save = service.patch(capture_url, json={
+                    "body": "Stale edit that must not overwrite",
+                    "expected_revision": revision,
+                })
+                latest = service.get(capture_url)
+                checks.append(_check(
+                    "stale_capture_edit_does_not_overwrite",
+                    first_save.status_code == 200
+                    and stale_save.status_code == 409
+                    and stale_save.json()["detail"]["code"] == "capture_revision_conflict"
+                    and latest.status_code == 200 and latest.json()["body"] == "First saved edit",
+                ))
+            else:
+                checks.append(_check("stale_capture_edit_does_not_overwrite", False, "missing note revision"))
         capture_payload = capture_resp.json() if capture_resp.status_code == 200 else {}
         cards_payload = cards_resp.json() if cards_resp.status_code == 200 else {}
         search_payload = search_resp.json() if search_resp.status_code == 200 else {}

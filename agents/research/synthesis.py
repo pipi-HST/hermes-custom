@@ -264,10 +264,10 @@ def _synthesis_max_tokens(payload: dict[str, Any]) -> int:
     """Determine max tokens based on answer depth."""
     plan = payload.get("research_plan") or {}
     if plan.get("answer_depth") == "detailed":
-        return 5200
+        return 20000
     if plan.get("answer_depth") == "brief":
-        return 2200
-    return 3600
+        return 6000
+    return 16000
 
 
 def _call_llm(
@@ -277,7 +277,7 @@ def _call_llm(
     base_url: str,
     prompt: str,
     json_mode: bool = False,
-    max_tokens: int = 3600,
+    max_tokens: int = 16000,
     timeout_seconds: float = 120,
     reserve_seconds: float = 0,
 ) -> str:
@@ -293,15 +293,27 @@ def _call_llm(
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.2,
-        "max_tokens": max(1200, min(int(max_tokens or 3600), 6000)),
+        "max_tokens": max(1200, min(int(max_tokens or 16000), 20000)),
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
+        if "deepseek" in str(base_url or "").lower():
+            body["thinking"] = {"type": "disabled"}
     stage_timeout = _stage_timeout(float(timeout_seconds or 120), reserve_seconds=reserve_seconds)
     if stage_timeout < 1.0:
         raise TimeoutError("research budget exhausted before LLM request")
     with httpx.Client(timeout=max(1.0, stage_timeout)) as client:
         resp = client.post(f"{base_url}/chat/completions", headers=headers, json=body)
+        if resp.status_code in {400, 422} and "thinking" in body:
+            if not _research_budget_available(1.0):
+                raise TimeoutError("research budget exhausted before LLM thinking retry")
+            body.pop("thinking", None)
+            resp = client.post(f"{base_url}/chat/completions", headers=headers, json=body)
+        if resp.status_code in {400, 422} and body["max_tokens"] > 8192:
+            if not _research_budget_available(1.0):
+                raise TimeoutError("research budget exhausted before LLM token-cap retry")
+            body["max_tokens"] = 8192
+            resp = client.post(f"{base_url}/chat/completions", headers=headers, json=body)
         if json_mode and resp.status_code in {400, 422}:
             if not _research_budget_available(1.0):
                 raise TimeoutError("research budget exhausted before LLM JSON retry")

@@ -15,7 +15,8 @@ from typing import Any
 
 import yaml
 
-from bridge.capture_view import build_capture_view, read_capture_note
+from agents.markdown_writer import note_revision
+from bridge.capture_view import build_capture_view, read_capture_note, read_capture_note_snapshot
 from bridge.folder_store import normalize_folder, visible_folders
 
 PREVIEW_LIMIT = 360
@@ -53,11 +54,20 @@ def capture_library_item(
     *,
     conn=None,
     full: bool = False,
+    include_revision: bool = False,
     indexed_ids: set[str] | None = None,
     garden_counts: dict[str, int] | None = None,
 ) -> dict:
     """Build the dashboard's ``capture`` library item from one capture row."""
-    frontmatter, body = read_capture_note(vault_path, row)
+    revision_fields = {}
+    if include_revision and row.get("file_path"):
+        snapshot = read_capture_note_snapshot(vault_path, row)
+        frontmatter, body = {}, ""
+        if snapshot is not None:
+            frontmatter, body, raw_text = snapshot
+            revision_fields["note_revision"] = note_revision(raw_text)
+    else:
+        frontmatter, body = read_capture_note(vault_path, row)
     data = build_capture_view(row, frontmatter, body)
     capture_id = str(data.get("id") or "")
     file_path = str(data.get("file_path") or "")
@@ -95,6 +105,7 @@ def capture_library_item(
             else _capture_is_indexed(conn, capture_id, data.get("embedding"))
         ),
         "title_source": str(frontmatter.get("title_source") or "").strip(),
+        **revision_fields,
         "garden_card_count": (
             int(garden_counts.get(capture_id, 0))
             if garden_counts is not None
@@ -661,7 +672,7 @@ def get_library_item(conn, vault_path: str | Path, kind: str, item_id: str) -> d
         row = conn.execute("SELECT * FROM captures WHERE id = ?", (item_id,)).fetchone()
         if row is None:
             return None
-        return capture_library_item(vault_path, dict(row), conn=conn, full=True)
+        return capture_library_item(vault_path, dict(row), conn=conn, full=True, include_revision=True)
     if kind == "capture_draft":
         row = conn.execute(
             "SELECT * FROM capture_drafts WHERE id = ?", (item_id,)

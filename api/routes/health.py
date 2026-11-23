@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import APIRouter
 
 KNOWLEDGE_SERVICE_NAME = "hermes-knowledge"
-KNOWLEDGE_CONTRACT_VERSION = 2
+KNOWLEDGE_CONTRACT_VERSION = 3
 
 
 def _service_version() -> str:

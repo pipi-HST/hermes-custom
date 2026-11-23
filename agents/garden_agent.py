@@ -28,53 +28,32 @@ from agents.garden_card_payload import (
 
 logger = logging.getLogger(__name__)
 
-EXTRACT_PROMPT = """分析以下知识库内容，提取一张可复用的 Knowledge Card。
+EXTRACT_PROMPT = """你正在帮用户从原始资料中提炼一张「给人看的、低认知负担」的个人知识卡片。
 
 用户指定卡片类型：{requested_card_kind}
 
 用户生成建议：
 {instruction}
 
-内容：
+原始资料：
 {content_text}
 
-输出 JSON（不要 markdown 代码块）：
+请输出 JSON（不要 markdown 代码块）：
 {{
   "schema_version": "garden_card.v2",
   "card_kind": "viewpoint|fact|method|risk",
-  "title": "观点标题（不要和 one_liner 重复，18字以内）",
-  "claim": "一句话核心判断。必须能独立复用，不依赖上下文。",
-  "confidence": "low|medium|high",
-  "when_to_use": ["具体说明以后什么判断场景可以调用这张卡，不要写泛泛而谈的话"],
-  "core_judgments": [
-    {{
-      "id": "j1",
-      "statement": "核心判断，不要逐篇罗列材料",
-      "reasoning": "为什么这个判断成立",
-      "support": [
-        {{"summary": "支撑这个判断的依据摘要", "source_ids": ["capture_id"]}}
-      ]
-    }}
-  ],
-  "boundaries": ["这张卡不适用的场景、前提或反例"],
-  "action_items": ["接受这个判断后应该做什么检查或动作"],
+  "title": "短标题（14字以内，一眼能看懂、有记忆点，不要复读下面的 claim）",
+  "claim": "一句话核心结论（30-60字，一针见血讲清最值得记住的那件事，不看原文也能懂）",
+  "content_markdown": "150-350字、极易扫读的自然人话 Markdown 正文（JSON 字符串中用 \\n 换行）。禁止写超过 3 句不换行的文字砖！请优先用 3-5 条清晰要点展开，每条采用「- **短关键词**：一句说透做法、逻辑或例子」的写法，让读者 3 秒扫过加粗词就能抓住骨架；如果确有容易踩的坑或关键提醒，可在末尾空一行用「> 一句自然提醒」收尾（不必强凑）。禁止套用“什么时候用 / 核心推理 / 边界与反例 / 行动启发”这类机械八股小标题，不要说正确的废话，不要堆砌术语。",
   "source_ids": ["capture_id"]
 }}
 
 要求：
-- 先提炼一个中心知识对象，再选材料支撑它。
-- 如果用户生成建议里列出了候选卡片，请优先参考其中的标题、类型和角度；但仍需根据材料判断是否成立。
-- 如果用户明确指定卡片类型，card_kind 必须遵循用户指定；否则你自己判断最适合的类型。
-- card_kind 只能是 viewpoint, fact, method, risk。
-- Knowledge Card 不是摘要清单；不要把每篇文章的要点都摊开。
-- core_judgments 保留 2-5 条，每条判断要有 reasoning。
-- support 只服务于对应判断，不要把所有 quote/case/data 堆在一起。
-- when_to_use 保留 2-4 条，必须具体到可执行判断或检查问题，不要写“以后遇到相似问题时可以参考”这类模板句。
-- boundaries 保留 1-4 条，说明误用边界或反例。
-- action_items 保留 1-4 条，说明可以转成什么检查清单、决策规则或设计动作。
-- source_ids 必须对应真实来源，不要把别篇材料的数字或案例合并到同一个来源下。
-- 如果依据混合多篇材料，必须拆到不同 support 条目，不要合并成一条无法追溯的证据。
-- title 是给人扫视的短标题，claim 是完整判断，两者不要复读。"""
+- 只提炼一个最核心、最值得长期复用的知识点，不要做成全文摘要清单。
+- 如果用户明确指定卡片类型，card_kind 必须遵循用户指定；否则从 viewpoint（洞察）、method（方法）、fact（概念）、risk（避坑）中选最贴切的一个。
+- 语言要像一个通透的同行写给自己的私人笔记：克制、准确、有信息密度、说人话，且有呼吸感（短句、分段、加粗关键短语）。
+- content_markdown 里不要重复输出 # 标题 或重复复读 claim。
+- source_ids 必须对应输入中的真实 source_id。"""
 
 JSON_REPAIR_PROMPT = """下面文本本应是一个 JSON 对象，但格式不合法。
 
@@ -206,18 +185,23 @@ class GardenAgent:
         title = title or self._generate_title(extracted, captures)
         extracted["title"] = title
         extracted["related_card_ids"] = links
-        if not extracted.get("when_to_use"):
+        direct_body = str(extracted.get("content_markdown") or extracted.get("body_markdown") or "").strip()
+        if direct_body:
+            extracted["content_markdown"] = direct_body
+        elif not extracted.get("when_to_use"):
             extracted["when_to_use"] = [_card_use_hint(resolved_card_kind)]
         payload = normalize_garden_payload(extracted)
         legacy = project_legacy_fields(payload)
-        markdown = self._build_synthesis_markdown(
-            title, extracted, links, captures, existing_garden_cards,
-            resolved_card_kind,
+        markdown = (
+            direct_body
+            if direct_body
+            else self._build_synthesis_markdown(
+                title, extracted, links, captures, existing_garden_cards,
+                resolved_card_kind,
+            )
         )
         # The draft preview, the committed card and any later migration must
-        # all carry this exact body.  Store it on the payload now instead of
-        # re-rendering a narrower body at commit time (which lost the source
-        # links and the when-to-use hint).
+        # all carry this exact body.
         payload = with_canonical_content_markdown(payload, fallback=markdown)
         markdown = payload["content_markdown"]
 

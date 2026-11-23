@@ -173,6 +173,12 @@ def read_note(
     vault_path: Path, file_path: str
 ) -> tuple[dict, str] | None:
     """Read a note file. Returns ``(frontmatter_dict, body_text)`` or ``None``."""
+    snapshot = read_note_snapshot(vault_path, file_path)
+    return snapshot[:2] if snapshot is not None else None
+
+
+def read_note_snapshot(vault_path: Path, file_path: str) -> tuple[dict, str, str] | None:
+    """Read frontmatter, body, and the exact UTF-8 text from one file snapshot."""
     candidate = Path(file_path)
     if candidate.is_absolute() or ".." in candidate.parts:
         return None
@@ -182,10 +188,14 @@ def read_note(
         full_path.relative_to(resolved_vault)
     except (OSError, ValueError):
         return None
-    if not full_path.exists():
+    try:
+        raw_text = full_path.read_bytes().decode("utf-8")
+    except FileNotFoundError:
         return None
 
-    text = full_path.read_text(encoding="utf-8")
+    # Preserve the parsed view's universal newlines without losing the bytes
+    # needed for the revision and conditional replacement.
+    text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
 
     if text.startswith("---"):
         parts = text.split("---", 2)
@@ -194,11 +204,16 @@ def read_note(
                 frontmatter = yaml.safe_load(parts[1]) or {}
             except yaml.YAMLError:
                 logger.warning("Malformed YAML frontmatter in %s", file_path)
-                return {}, parts[2].strip() if len(parts) > 2 else text
+                return {}, parts[2].strip(), raw_text
             body = parts[2].strip()
-            return frontmatter, body
+            return frontmatter, body, raw_text
 
-    return {}, text
+    return {}, text, raw_text
+
+
+def note_revision(raw_text: str) -> str:
+    """Opaque revision for the entire Markdown file, including frontmatter."""
+    return hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
 
 
 _LINK_SECTION_RE = re.compile(r"^##\s+相关笔记\s*$", re.MULTILINE)

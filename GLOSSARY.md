@@ -1,8 +1,8 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-18
-verified_against: "3e6b974 (hermes-custom) + 2026-11-18 并行修复分支"
+last_verified: 2026-11-22
+verified_against: "9e44c73 (hermes-custom) + 2026-11-22 working tree"
 ---
 
 # Hermes Knowledge Glossary
@@ -26,7 +26,7 @@ verified_against: "3e6b974 (hermes-custom) + 2026-11-18 并行修复分支"
 | 主题视图 | Theme View | `pending_questions`、`knowledge_edges`、`captures.theme_scanned_at` | 按主题聚合的高级视图/扫描结果；不是专题本身 | MOC、主题页（作产品词时） |
 | 知识图谱 | Knowledge Graph | `knowledge_edges` | 卡片、资料、专题之间的关系浏览 | 知识地图 |
 | 知识地图 | Knowledge Map | **deferred 设计稿，无表、无接口** | 未来的导航结构；ADR 0005 为 deferred | 图谱、目录树、当前功能 |
-| 联网研究 | Research | `bridge/research_bridge.py`、`agents/research/*`（基线 `3e6b974` 为 `bridge/research/*`） | 结合本地资料与公开网页回答 | 联网、web QA |
+| 联网研究 | Research | `bridge/research_bridge.py`、`agents/research/*`（`bridge/research/*` 仅为兼容壳） | 结合本地资料与公开网页回答 | 联网、web QA |
 | 复习 | Review | `review_items` | 按复习计划回看知识点 | 每日回顾（可作功能名） |
 | 来源表 | Source Map | `source_map`（结果信封字段，不是表） | 回答附带的分类来源列表 | 引用列表（泛称） |
 | 结果信封 | Agent Result Envelope | `bridge/result_envelope.py` | Agent 返回给 Runtime 的统一结构 | 工具返回、JSON |
@@ -58,7 +58,7 @@ verified_against: "3e6b974 (hermes-custom) + 2026-11-18 并行修复分支"
 | 专题 | `folder_path`、`source_theme`、`knowledge_folders.json` |
 | 主题视图 | `theme_scan`（含候选查看，工具名不是表）、`pending_questions`、`knowledge_edges` |
 | 知识图谱 | `knowledge_edges`、`graph_report` |
-| 联网研究 | `research_with_web`、`research_bridge`、`agents/research/*`（迁移中） |
+| 联网研究 | `research_with_web`、`research_bridge`、`agents/research/*`（`bridge/research/*` 仅为兼容壳） |
 | 复习 | `review_items`、`daily_review` |
 
 ### 旧工具名映射

@@ -1109,7 +1109,7 @@ def _fake_completion(prompt: str) -> str:
             },
             ensure_ascii=False,
         )
-    if "schema_version" in prompt and "Knowledge Card" in prompt:
+    if "schema_version" in prompt and ("Knowledge Card" in prompt or "知识卡片" in prompt):
         source_match = re.search(r"source_id=([A-Za-z0-9_-]+)", prompt)
         source_id = source_match.group(1) if source_match else ""
         return json.dumps(

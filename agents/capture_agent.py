@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 import re
 import sqlite3
+import threading
 import time
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -257,7 +259,31 @@ class LLMResult:
     incomplete: bool = False
 
 
+_CONFIG_CACHE_LOCK = threading.Lock()
+_CONFIG_CACHE: dict[tuple[str, int, int], CaptureConfig] = {}
+
+
+def clear_config_cache() -> None:
+    """Clear the process-local ``load_config`` cache (primarily for tests)."""
+    with _CONFIG_CACHE_LOCK:
+        _CONFIG_CACHE.clear()
+
+
 def load_config(config_path: str = "config.yaml") -> CaptureConfig:
+    cache_key: tuple[str, int, int] | None = None
+    try:
+        resolved = str(Path(config_path).resolve())
+        stat = os.stat(resolved)
+        cache_key = (resolved, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        cache_key = None
+
+    if cache_key is not None:
+        with _CONFIG_CACHE_LOCK:
+            cached = _CONFIG_CACHE.get(cache_key)
+            if cached is not None:
+                return replace(cached)
+
     with open(config_path) as f:
         cfg = yaml.safe_load(f) or {}
     llm = cfg.get("llm", {})
@@ -277,7 +303,7 @@ def load_config(config_path: str = "config.yaml") -> CaptureConfig:
         worker_rename_timeout_seconds = float(worker.get("rename_timeout_seconds", 30.0))
     except (TypeError, ValueError):
         worker_rename_timeout_seconds = 30.0
-    return CaptureConfig(
+    parsed = CaptureConfig(
         llm_api_key=llm.get("api_key", ""),
         llm_provider=llm.get("provider", "openai"),
         llm_model=llm.get("model", "gpt-4o"),
@@ -290,6 +316,15 @@ def load_config(config_path: str = "config.yaml") -> CaptureConfig:
         in {"1", "true", "yes", "on"},
         worker_rename_timeout_seconds=worker_rename_timeout_seconds,
     )
+    if cache_key is not None:
+        with _CONFIG_CACHE_LOCK:
+            # Drop stale stat entries for the same resolved path.
+            stale = [k for k in _CONFIG_CACHE if k[0] == cache_key[0] and k != cache_key]
+            for k in stale:
+                _CONFIG_CACHE.pop(k, None)
+            _CONFIG_CACHE[cache_key] = parsed
+        return replace(parsed)
+    return parsed
 
 
 class CaptureAgent:

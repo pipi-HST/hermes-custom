@@ -1148,3 +1148,216 @@ def test_web_context_answer_local_search_query_without_selection_uses_question()
 
     assert result["chat_preview"] == "Text-to-SQL 是把自然语言转成 SQL。"
     assert local_queries == ["Text-to-SQL 是什么"]
+
+
+def test_synthesize_answer_retries_non_streaming_after_empty_stream(monkeypatch):
+    stream_calls = []
+    fallback_calls = []
+    emitted = []
+
+    def fake_stream(prompt, **kwargs):
+        stream_calls.append(kwargs)
+        raise RuntimeError("empty streamed response (finish_reason=length, reasoning_chars=1600)")
+
+    def fake_text_llm(prompt, **kwargs):
+        fallback_calls.append(kwargs)
+        return "结构化分析框架：用基准年锁定外生锚点 [W1]。"
+
+    monkeypatch.setattr(web_context_answer, "_call_text_llm_stream", fake_stream)
+    monkeypatch.setattr(web_context_answer, "_call_text_llm", fake_text_llm)
+
+    warnings: list[str] = []
+    answer = web_context_answer._generate_answer(
+        {
+            "query": "如何用2012基准年锁定CBD规避内生性？",
+            "mode": "local_web",
+            "web_sources": [{"ref": "W1", "title": "CBD paper", "excerpt": "CBD dynamics"}],
+            "knowledge_sources": [],
+        },
+        warnings,
+        answer_delta_callback=emitted.append,
+    )
+
+    assert answer == "结构化分析框架：用基准年锁定外生锚点 [W1]。"
+    assert warnings == []
+    assert emitted == [answer]
+    assert stream_calls and stream_calls[0]["max_tokens"] == web_context_answer.WEB_CONTEXT_SYNTHESIS_MAX_TOKENS
+    assert fallback_calls and fallback_calls[0]["max_tokens"] == web_context_answer.WEB_CONTEXT_SYNTHESIS_RETRY_MAX_TOKENS
+
+
+def test_fallback_answer_cleans_web_scraper_boilerplate():
+    answer = web_context_answer._fallback_answer(
+        {
+            "web_sources": [
+                {
+                    "ref": "W1",
+                    "title": "CBD Dynamics in Chinese Cities",
+                    "excerpt": "Skip to main contentSkip to article ## Published by: Elsevier ### Highlights We examine CBD development.",
+                }
+            ]
+        }
+    )
+
+    assert "Skip to main content" not in answer
+    assert "Skip to article" not in answer
+    assert "**CBD Dynamics in Chinese Cities**" in answer
+    assert "[W1]" in answer
+
+
+def test_inline_content_fast_path_skips_llm_selection_and_fetch(monkeypatch):
+    patch_research_plan(monkeypatch, queries=["2026 阿里 AI 资本开支", "2026 腾讯 AI 资本开支"])
+    select_called = []
+    extract_called = []
+
+    def fail_if_select(*_args, **_kwargs):
+        select_called.append(True)
+        raise AssertionError("_select_materials should be skipped when search returns inline full content")
+
+    def fail_if_extract(urls):
+        extract_called.append(urls)
+        raise AssertionError("extract_adapter should be skipped when search returns inline full content")
+
+    def fake_search(query, _limit):
+        body = f"{query} 的完整正文分析。" * 45
+        return {
+            "backend": "deepseek",
+            "results": [
+                {
+                    "title": f"{query} 深度报道",
+                    "url": f"https://example.com/{abs(hash(query)) % 10000}",
+                    "description": "短摘要",
+                    "content": body,
+                    "content_is_summary": False,
+                    "rerank_score": 0.92,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(web_context_answer, "_select_materials", fail_if_select)
+
+    result = web_context_answer.web_context_answer(
+        query="对比 2026 阿里和腾讯 AI 资本开支",
+        mode="web_only",
+        search_adapter=fake_search,
+        extract_adapter=fail_if_extract,
+        synthesize_adapter=lambda payload: "阿里与腾讯资本开支对比 [W1][W2]。",
+    )
+
+    assert not select_called
+    assert not extract_called
+    assert result["status"] == "success"
+    assert len(result["meta"]["web_sources"]) == 2
+    assert all(src["extract_status"] == "full" for src in result["meta"]["web_sources"])
+
+
+def test_weixin_channel_uses_deepseek_hosted_web_fast_track(monkeypatch):
+    from types import SimpleNamespace
+    from bridge import deepseek_web_tools
+
+    monkeypatch.setattr(
+        web_context_answer,
+        "load_config",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            llm_api_key="sk-test",
+            llm_base_url="https://api.deepseek.com",
+            llm_model="deepseek-flash",
+        ),
+    )
+    hosted_calls = []
+
+    def fake_hosted(prompt, **kwargs):
+        hosted_calls.append((prompt, kwargs))
+        return {
+            "answer": "**核心结论**：2026年腾讯与阿里资本开支节奏分化，结合个人笔记 [K1] 可见算力投入仍在高位。",
+            "citations": [
+                {"url": "https://news.example.com/q3", "title": "2026 Q3 大厂资本开支对比"},
+            ],
+            "queries": ["2026 阿里 腾讯 资本开支"],
+            "opened_pages": 2,
+            "response_id": "resp_1",
+            "status": "completed",
+        }
+
+    monkeypatch.setattr(deepseek_web_tools, "deepseek_hosted_web_answer", fake_hosted)
+
+    def fake_local(_query, _warnings):
+        return "本地笔记", [{"ref": "K1", "type": "knowledge", "id": "cap-1", "title": "阿里AI财报笔记", "excerpt": "阿里云增速38%"}]
+
+    result = web_context_answer.web_context_answer(
+        query="对比2026阿里和腾讯AI资本开支",
+        mode="local_web",
+        channel="weixin",
+        search_adapter=lambda *_a: (_ for _ in ()).throw(AssertionError("should not run scheme2 search")),
+        extract_adapter=lambda *_a: (_ for _ in ()).throw(AssertionError("should not run scheme2 extract")),
+        local_search_adapter=fake_local,
+    )
+
+    assert len(hosted_calls) == 1
+    assert "阿里云增速38%" in hosted_calls[0][0]
+    assert result["status"] == "success"
+    assert result["meta"]["path"] == "deepseek_hosted_web"
+    assert "参考来源：" in result["chat_preview"]
+    assert "[W1] 2026 Q3 大厂资本开支对比" in result["chat_preview"]
+    assert len(result["meta"]["web_sources"]) == 1
+    assert len(result["meta"]["knowledge_sources"]) == 1
+
+
+def test_weixin_channel_falls_back_to_scheme2_when_hosted_fails(monkeypatch):
+    from types import SimpleNamespace
+    from bridge import deepseek_web_tools
+
+    patch_research_plan(monkeypatch, queries=["阿里AI"])
+    monkeypatch.setattr(
+        web_context_answer,
+        "load_config",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            llm_api_key="sk-test",
+            llm_base_url="https://api.deepseek.com",
+            llm_model="deepseek-flash",
+        ),
+    )
+    monkeypatch.setattr(
+        deepseek_web_tools,
+        "deepseek_hosted_web_answer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("hosted temporarily unavailable")),
+    )
+    monkeypatch.setattr(
+        web_context_answer,
+        "_call_text_llm",
+        lambda *_args, **_kwargs: "已自动回退到方案2并完成回答 [W1]。",
+    )
+
+    def fake_search(_query, _limit):
+        return {
+            "backend": "deepseek",
+            "results": [
+                {
+                    "title": "阿里AI进展",
+                    "url": "https://example.com/ali",
+                    "description": "摘要",
+                    "content": "阿里AI完整正文内容。" * 40,
+                    "content_is_summary": False,
+                    "rerank_score": 0.9,
+                },
+                {
+                    "title": "阿里云增长",
+                    "url": "https://example.com/cloud",
+                    "description": "摘要2",
+                    "content": "阿里云季度增速分析正文。" * 40,
+                    "content_is_summary": False,
+                    "rerank_score": 0.85,
+                },
+            ],
+        }
+
+    result = web_context_answer.web_context_answer(
+        query="阿里AI最新进展",
+        mode="web_only",
+        channel="weixin",
+        search_adapter=fake_search,
+        extract_adapter=lambda _urls: {"results": []},
+    )
+
+    assert result["status"] == "success"
+    assert result["meta"]["path"] == "web_context"
+    assert "自动回退到方案2" in result["chat_preview"]

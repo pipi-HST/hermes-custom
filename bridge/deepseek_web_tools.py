@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 SEARCH_PATH = "/v1/tools/search"
 FETCH_PATH = "/v1/tools/fetch"
+RESPONSES_PATH = "/v1/responses"
 
 
 def _normalize_base_url(base_url: str | None) -> str:
@@ -202,4 +203,90 @@ def deepseek_web_fetch(
         "url": url,
         "title": str(data.get("title") or ""),
         "content": str(data.get("content") or ""),
+    }
+
+
+def deepseek_hosted_web_answer(
+    prompt: str,
+    *,
+    model: str = "deepseek-flash",
+    max_output_tokens: int = 6000,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    timeout: float = 60.0,
+) -> dict[str, Any]:
+    """Run single-turn hosted web search + synthesis via DeepSeek ``/v1/responses``.
+
+    Uses DeepSeek's server-side ``deepseek_web_search`` tool so planning, search,
+    page reading, and synthesis execute inside one round-trip on DeepSeek's backend.
+    """
+    key, root = resolve_deepseek_credentials(api_key, base_url)
+    if not key:
+        raise RuntimeError("no DeepSeek API key configured for hosted web search")
+
+    payload = {
+        "model": (model or "deepseek-flash").strip() or "deepseek-flash",
+        "input": str(prompt or "").strip(),
+        "tools": [{"type": "deepseek_web_search"}],
+        "max_output_tokens": max(1200, min(int(max_output_tokens or 6000), 16000)),
+    }
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(f"{root}{RESPONSES_PATH}", headers=headers, json=payload)
+        response.raise_for_status()
+        data = response.json()
+
+    if not isinstance(data, dict):
+        raise RuntimeError("unexpected non-dict response from DeepSeek /v1/responses")
+
+    text_parts: list[str] = []
+    citations: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    queries: list[str] = []
+    opened_pages = 0
+
+    for item in data.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        itype = item.get("type")
+        if itype == "web_search_call":
+            action = item.get("action") if isinstance(item.get("action"), dict) else {}
+            if action.get("type") == "search":
+                for q in action.get("queries") or []:
+                    q_text = str(q or "").strip()
+                    if q_text and q_text not in queries:
+                        queries.append(q_text)
+            elif action.get("type") == "open_page":
+                opened_pages += 1
+        elif itype == "message":
+            for part in item.get("content") or []:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") in {"output_text", "text"}:
+                    t = str(part.get("text") or "").strip()
+                    if t:
+                        text_parts.append(t)
+                    for ann in part.get("annotations") or []:
+                        if not isinstance(ann, dict):
+                            continue
+                        if ann.get("type") == "url_citation":
+                            url = str(ann.get("url") or "").strip()
+                            title = str(ann.get("title") or url).strip()
+                            if url and url.lower() not in seen_urls:
+                                seen_urls.add(url.lower())
+                                citations.append({"url": url, "title": title})
+
+    answer = "\n\n".join(text_parts).strip()
+    if not answer:
+        raise RuntimeError("empty answer from DeepSeek hosted web search")
+    return {
+        "answer": answer,
+        "citations": citations,
+        "queries": queries,
+        "opened_pages": opened_pages,
+        "response_id": str(data.get("id") or ""),
+        "status": str(data.get("status") or ""),
     }

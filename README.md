@@ -1,8 +1,8 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-18
-verified_against: "3e6b974 (hermes-custom) + 2026-11-18 并行修复分支"
+last_verified: 2026-11-23
+verified_against: "9e44c73 (hermes-custom) + 2026-11-23 working tree"
 ---
 
 # Hermes Knowledge
@@ -45,6 +45,10 @@ Research 是独立研究子系统：入口为 `bridge/research_bridge.py`，实�
 - 推荐部署：Runtime 通过 HTTP 调 Knowledge Service。
 - 本地 checkout 模式（`HERMES_KNOWLEDGE_LOCAL_ROOT`）只用于开发和离线调试。
 - 用户侧只有 Hermes Runtime 原生 Dashboard（`127.0.0.1:9119`）。本仓库旧的 Next.js 自定义 Dashboard 已删除，不再提供 `npm run dev` 入口。
+- 资料伴读右栏「伴读助手」的回答是流式输出：服务端在合成时推送 `answer_delta`，Runtime 通过 `/api/knowledge/library/items/{kind}/{item_id}/selection-chat/stream` 转发，长回答不必等到最后一次性出现。
+- 联网与研究双轨分流：微信端按日常快答 / 资料检索 / DeepSeek 托管极速联网三档分流；Web 专题工作台走瘦身研究管线，保留完整 `[K]`/`[W]` 证据追踪与可归档成稿。
+- 知识卡片采用低认知负担的三要素自然人话结构（短标题 + 一句话结论 + 易扫读 Markdown 要点正文），支持草稿与已存卡片统一全文查看、内联编辑（`GET/PATCH /api/garden/cards/{id}`、`PATCH/POST /api/garden/drafts/{id}`）及多卡选题篮送入「专题输出」。
+- Web Dashboard 已统一为去 AI 化的编辑部纸白视觉体系（`资料伴读` / `知识卡片` / `专题输出`），并在 Runtime 侧通过连接池与异步线程卸载优化了高频读接口响应。
 - 当前仍有一部分 Runtime Dashboard 读路由保留本地回退；见 `ARCHITECTURE.md` 的“当前拆分状态”。
 
 ## 5 分钟启动（Windows）
@@ -84,8 +88,7 @@ HERMES_KNOWLEDGE_TOKEN=<与服务的 HERMES_API_TOKEN 相同的高强度随机�
 
 分批升级时，新 Runtime 可从旧服务预览知识卡片草稿，但通过 Dashboard 保存卡片要求 Service 契约 v2。请先升级 Service，再升级 Runtime。
 
-还需要告诉 Runtime 服务端的 vault / DB 位置（HTTP 模式下这两个变量不是可选的，
-Dashboard 的草稿、卡片详情、时间线读路由仍会用到）：
+纯 HTTP 模式只需要上述 `HERMES_KNOWLEDGE_URL` + `HERMES_KNOWLEDGE_TOKEN`（Dashboard 的草稿、卡片详情、时间线、伴读流式转发均已走 HTTP 委托）。以下两个变量**仅在使用 Dashboard「打开本地文件（`open-local`）」或本地开发回退时才需要配置**：
 
 ```text
 HERMES_KNOWLEDGE_VAULT=<repos>\hermes-custom\data\vault

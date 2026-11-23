@@ -51,54 +51,63 @@ def _service_routes() -> list[tuple[str, str]]:
     return routes
 
 
+def _runtime_route_files() -> list[Path]:
+    candidates = [
+        RUNTIME_ROOT / "hermes_cli" / "web_server.py",
+        RUNTIME_ROOT / "plugins" / "web_knowledge" / "routes.py",
+    ]
+    return [path for path in candidates if path.is_file()]
+
+
 def _runtime_routes() -> list[dict]:
-    path = RUNTIME_ROOT / "hermes_cli" / "web_server.py"
-    if not path.is_file():
+    files = _runtime_route_files()
+    if not files:
         return []
-    tree = ast.parse(path.read_text(encoding="utf-8"))
     routes: list[dict] = []
-    for node in tree.body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        route = ""
-        method = ""
-        for dec in node.decorator_list:
-            if (
-                isinstance(dec, ast.Call)
-                and isinstance(dec.func, ast.Attribute)
-                and dec.func.attr in {"get", "post", "patch", "delete", "put"}
-                and dec.args
-                and isinstance(dec.args[0], ast.Constant)
-                and isinstance(dec.args[0].value, str)
-            ):
-                route = dec.args[0].value
-                method = dec.func.attr.upper()
-        if not route.startswith("/api/knowledge"):
-            continue
-        has_client = any(
-            isinstance(n, ast.Call)
-            and (
-                isinstance(n.func, ast.Name) and n.func.id == "get_client"
-                or isinstance(n.func, ast.Attribute) and n.func.attr == "to_thread"
-                and bool(n.args) and isinstance(n.args[0], ast.Name)
-                and n.args[0].id == "get_client"
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            route = ""
+            method = ""
+            for dec in node.decorator_list:
+                if (
+                    isinstance(dec, ast.Call)
+                    and isinstance(dec.func, ast.Attribute)
+                    and dec.func.attr in {"get", "post", "patch", "delete", "put"}
+                    and dec.args
+                    and isinstance(dec.args[0], ast.Constant)
+                    and isinstance(dec.args[0].value, str)
+                ):
+                    route = dec.args[0].value
+                    method = dec.func.attr.upper()
+            if not route.startswith("/api/knowledge"):
+                continue
+            has_client = any(
+                isinstance(n, ast.Call)
+                and (
+                    isinstance(n.func, ast.Name) and n.func.id == "get_client"
+                    or isinstance(n.func, ast.Attribute) and n.func.attr == "to_thread"
+                    and bool(n.args) and isinstance(n.args[0], ast.Name)
+                    and n.args[0].id == "get_client"
+                )
+                for n in ast.walk(node)
             )
-            for n in ast.walk(node)
-        )
-        local = any(
-            isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Name)
-            and n.func.id in {"_knowledge_conn", "_knowledge_custom_module", "_knowledge_db_path"}
-            for n in ast.walk(node)
-        )
-        routes.append(
-            {
-                "method": method,
-                "route": route,
-                "delegates": has_client,
-                "local": local,
-            }
-        )
+            local = any(
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name)
+                and n.func.id in {"_knowledge_conn", "_knowledge_custom_module", "_knowledge_db_path"}
+                for n in ast.walk(node)
+            )
+            routes.append(
+                {
+                    "method": method,
+                    "route": route,
+                    "delegates": has_client,
+                    "local": local,
+                }
+            )
     return routes
 
 

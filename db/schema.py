@@ -459,6 +459,14 @@ CREATE_CITATION_EVENTS_CARD_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_citation_events_card ON citation_events(card_id)
 """
 
+CREATE_CITATION_EVENTS_RUN_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_citation_events_run ON citation_events(run_id)
+"""
+
+CREATE_CITATION_EVENTS_CITED_AT_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_citation_events_cited_at ON citation_events(cited_at)
+"""
+
 
 def _dict_row(cursor: sqlite3.Cursor, row: tuple) -> dict:
     """Materialise rows as plain dicts at fetch time.
@@ -506,6 +514,13 @@ def init_db(db_path: str) -> sqlite3.Connection:
             conn.execute(ddl)
         if _table_exists(conn, "capture_drafts"):
             _create_capture_draft_indexes(conn)
+        if _table_exists(conn, "citation_events"):
+            for ddl in (
+                CREATE_CITATION_EVENTS_CARD_INDEX,
+                CREATE_CITATION_EVENTS_RUN_INDEX,
+                CREATE_CITATION_EVENTS_CITED_AT_INDEX,
+            ):
+                conn.execute(ddl)
         if capture_search_fts_available(conn):
             try:
                 fts_count = conn.execute(
@@ -560,6 +575,8 @@ def init_db(db_path: str) -> sqlite3.Connection:
         _repair_capture_search_fts_map(conn)
         conn.execute(CREATE_CITATION_EVENTS_TABLE)
         conn.execute(CREATE_CITATION_EVENTS_CARD_INDEX)
+        conn.execute(CREATE_CITATION_EVENTS_RUN_INDEX)
+        conn.execute(CREATE_CITATION_EVENTS_CITED_AT_INDEX)
         conn.execute(CREATE_REVIEW_ITEMS_TABLE)
         _migrate_review_items_table(conn)
         conn.execute(CREATE_READING_SESSIONS_TABLE)

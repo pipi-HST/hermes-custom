@@ -126,6 +126,39 @@ def start_reading_session(
     )
 
 
+READING_EXTRACTED_TEXT_MAX_CHARS = 18000
+
+
+def _extract_reading_url(source_url: str) -> dict[str, Any]:
+    """Read-only URL extraction for temporary reading sessions (never writes capture drafts)."""
+    url = (source_url or "").strip()
+    if not url:
+        return {"ok": False, "title": "", "text": "", "error": ""}
+    try:
+        from agents.extractors.link_extractor import LinkExtractor
+        from agents.extractors.xiaohongshu_extractor import XiaohongshuExtractor
+
+        xhs = XiaohongshuExtractor()
+        extractor = xhs if xhs.can_handle(url) else LinkExtractor()
+        result = extractor.extract(url)
+        text = (getattr(result, "raw_text", "") or "").strip()
+        title = (getattr(result, "title", "") or "").strip()
+        if getattr(result, "extraction_failed", False) or not text:
+            failure = getattr(result, "failure", None)
+            err_msg = getattr(failure, "message", "") if failure is not None else "正文提取为空"
+            return {"ok": False, "title": title, "text": "", "error": err_msg or "正文提取为空"}
+        return {
+            "ok": True,
+            "title": title,
+            "text": text,
+            "final_url": (getattr(result, "source_url", "") or url).strip(),
+            "error": "",
+        }
+    except Exception as exc:
+        logger.debug("Reading URL extraction degraded for %s: %s", url, exc)
+        return {"ok": False, "title": "", "text": "", "error": str(exc)}
+
+
 def _start_reading_session(
     *,
     message: str = "",
@@ -162,8 +195,15 @@ def _start_reading_session(
                     path=capture.get("file_path", ""),
                 )
             )
+    extracted: dict[str, Any] = {"ok": False, "title": "", "text": "", "error": ""}
+    if source_url and not (excerpt or "").strip() and not capture_id:
+        extracted = _extract_reading_url(source_url)
+        if extracted.get("title") and not source_title:
+            source_title = extracted["title"]
     if not source_title:
         source_title = _title_from_message(message) or _title_from_url(source_url)
+    extracted_text = str(extracted.get("text") or "")
+    effective_excerpt = excerpt or extracted_text
     session = repo.create_session(
         source_type=source_type,
         source_id=source_id,
@@ -172,12 +212,29 @@ def _start_reading_session(
         focus=_derive_focus(message),
         meta={
             "initial_message": message,
-            "excerpt_preview": _clip(excerpt, 500),
+            "excerpt_preview": _clip(effective_excerpt, 2000 if extracted_text else 500),
+            "extracted_word_count": len(extracted_text),
             "file_ref": file_ref,
             "image_ref": image_ref,
         },
     )
     preview_title = source_title or source_url or "这份材料"
+    envelope_meta: dict[str, Any] = {
+        "reading_session_id": session["id"],
+        "source_type": source_type,
+        "source_id": source_id,
+        "source_title": source_title,
+        "expires_at": session["expires_at"],
+    }
+    if extracted_text:
+        clipped_text = extracted_text[:READING_EXTRACTED_TEXT_MAX_CHARS]
+        envelope_meta["extracted_ok"] = True
+        envelope_meta["extracted_word_count"] = len(extracted_text)
+        envelope_meta["extracted_truncated"] = len(extracted_text) > READING_EXTRACTED_TEXT_MAX_CHARS
+        envelope_meta["extracted_text"] = clipped_text
+    elif source_url and extracted.get("error"):
+        envelope_meta["extracted_ok"] = False
+        envelope_meta["extraction_error"] = str(extracted["error"])
     return success_envelope(
         agent="reading",
         intent="start_reading_session",
@@ -194,13 +251,7 @@ def _start_reading_session(
             )
         ],
         source_map=source_map,
-        meta={
-            "reading_session_id": session["id"],
-            "source_type": source_type,
-            "source_id": source_id,
-            "source_title": source_title,
-            "expires_at": session["expires_at"],
-        },
+        meta=envelope_meta,
     )
 
 

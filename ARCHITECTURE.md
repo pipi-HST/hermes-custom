@@ -1,17 +1,17 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-18
-verified_against: "3e6b974 (hermes-custom) + 2026-11-18 并行修复分支"
+last_verified: 2026-11-23
+verified_against: "9e44c73 (hermes-custom) + 2026-11-23 working tree"
 ---
 
 # Hermes Knowledge Architecture
 
 > 状态：current
 >
-> 最后核对：2026-11-18
+> 最后核对：2026-11-23
 >
-> 对应代码：`hermes-custom` `3e6b974`（2026-11-18 并行修复分支）
+> 对应代码：`hermes-custom` `9e44c73` + 2026-11-23 工作区
 
 ## 1. 职责边界
 
@@ -125,6 +125,10 @@ Runtime 的 envelope 工具统一通过 `bridge/result_envelope.py` 返回结果
    - AI 可以生成草稿；
    - 不能在没有确认动作的情况下覆盖、修复或删除持久知识。
    - HTTP 知识卡片确认令牌绑定草稿版本；同一事务内消费令牌并保存卡片。草稿修改后必须重新确认。
+   - 资料笔记详情的 `note_revision` 来自显示正文的同一份 Markdown（包括 frontmatter）。
+     Dashboard 保存时通过 `expected_revision` 把编辑绑定到该版本；版本不匹配时返回
+     `409 capture_revision_conflict`，不覆盖磁盘上的内容。两条 Capture PATCH 路由共用版本校验；
+     未传版本的旧 API 客户端仍保持原行为。
    - 伴读增强草稿绑定生成时的资料笔记版本；源文件变更后必须重新生成草稿。替换正文前先保存并登记备份。
    - 专题改名先在 `knowledge_write_jobs` 持久化待处理资料 ID，再改写文件。数据库事务与阶段标记一起提交；重试确认文件已经改名后会补齐索引，不回写用户后来编辑的正文。进程锁释放后，队列 worker 会重新认领被中断的作业。
 
@@ -177,33 +181,26 @@ Theme View 是按主题聚合的高级视图/扫描结果，不是专题本身�
 
 ## 8. 当前拆分状态（诚实版）
 
+> 路由数、表数与测试数由脚本生成，以 `docs/INVENTORY.md` 和 `docs/CURRENT-STATE.md` 为唯一准绳，本节不再手写静态数字。
+
 已完成：
 
-- Knowledge Service 有完整 FastAPI 读写接口，当前生成清单为 61 条服务路由（见 `docs/INVENTORY.md`）。
-- Runtime 的 42 条 knowledge 路由中，40 条在 HTTP 模式下有服务端路径（38 条直接 `get_client()` 委托；`garden-drafts/preview` 转调；`automation-boundaries` 是只读观测端点），只有 `open-local` 和 `runtime-check` 是显式 local-only；这 40 条里有 36 条仍保留 local SQL/module 回退。
-- Dashboard 的草稿、卡片详情、时间线、依赖读形状已在 Service 实现，Runtime 路由优先走 HTTP 委托。
-- `synthesize_garden` 已改走统一 `call_custom_bridge`。
-- HTTP-only 模式下 `_knowledge_custom_root()` 不再直接 503。
-- Topic 重命名统一到 `agents.folder_service.rename_folder()`，Markdown、SQL 镜像、卡片专题和 registry 一次提交。
-- 提供 `repair_topics.py`。
+- Knowledge Service 已提供完整 FastAPI 读写与流式接口（精确路由清单见 `docs/INVENTORY.md`）。
+- Runtime 的 knowledge 路由在 HTTP 模式下均优先走服务端委托（`get_client()` / `call_custom_bridge`），仅 `open-local` 为本机文件语义的 local-only；`runtime-check` 在 HTTP 模式下返回 HTTP 健康状态，不依赖本地 checkout。
+- Dashboard 的草稿列表/详情、卡片列表/详情与内联编辑（`GET/PATCH /api/garden/cards/{card_id}`、`PATCH /api/garden/drafts/{draft_id}`、`POST /api/garden/drafts/{draft_id}/revise`）、时间线（`object-events`）、依赖查询均已在 Service 实现并通过 HTTP 委托；Runtime 侧已接入进程级 `httpx.Client` 连接池与 `asyncio.to_thread` 卸载以消除主循环阻塞；纯 HTTP 模式只需 `HERMES_KNOWLEDGE_URL` + `HERMES_KNOWLEDGE_TOKEN`。
+- 联网检索已按入口分流：微信端按三档分流（日常 8s 快答 + DeepSeek 托管极速联网），Web 专题工作台走瘦身研究管线并保留 `[K]`/`[W]` 证据面板。
+- 知识卡片提炼提示词与接口已收敛为三要素易扫读格式（短标题 + 一句话结论 + 分点加粗 Markdown 正文）；Web Dashboard 三个核心页面（`资料伴读` / `知识卡片` / `专题输出`）已统一升级为去 AI 化的编辑部纸白视觉体系，支持宽幅画廊挑选、滑出阅读编辑抽屉与底部选题篮送入专题输出。
+- HTTP 模式的 `selection-chat/stream` 已支持通过 SSE 实时转发服务端的 `answer_delta` 与研究 `progress` 事件（仅在对接尚未升级流式端点的旧服务时自动回退为单次阻塞调用）。
+- `synthesize_garden` 已改走统一 `call_custom_bridge`；HTTP-only 模式下 `_knowledge_custom_root()` 不再直接 503。
+- Topic 重命名统一到 `agents.folder_service.rename_folder()`，Markdown、SQL 镜像、卡片专题和 registry 一次提交；提供 `repair_topics.py`。
+- 前端 `web/src/` 已将旧词“知识库 / 花园 / 主题页 / MOC”清零并统一收敛为“资料库 / 知识卡片 / 专题”。
+- 2026-11-17 起 schema v4 已删除 `captures.embedding`、`captures.review_*` 和 garden v1 镜像列；复习调度只读 `review_items`，归档只读 `captures.archived_at`；卡片正文以 `garden_cards.payload_json.content_markdown` 为唯一真相（`content_markdown` 列仅为派生缓存），历史漂移用 `scripts/repair_garden_content.py --apply` 修复。
 
 仍未完成（已知技术债，不是“设计如此”）：
 
-- `open-local` 仍然只能是 local-only：它的语义是打开用户本机文件；`runtime-check` 也只检查本地 checkout。
-- `web_server.py` 仍有约 32 处 `_knowledge_custom_module`，以及 9 条直接 SQL 写语句（草稿 intent、capture 时间戳、`capture_metadata` upsert、`garden_cards.source_theme`、`review_items` 删除、`garden_drafts` 丢弃等）。
-- HTTP 模式跑工具不需要本地 checkout，但 Dashboard 的草稿、卡片详情、时间线读路由仍会读 `HERMES_KNOWLEDGE_DB` / `HERMES_KNOWLEDGE_VAULT`。这是已知例外，不是推荐生产形态。
+- `open-local` 仍然只能是 local-only：它的语义是调用本机系统打开本地 Markdown 文件，因此仅该按钮依赖 `HERMES_KNOWLEDGE_DB` / `HERMES_KNOWLEDGE_VAULT`。
+- Knowledge Dashboard 路由已从 `hermes_cli/web_server.py` 抽离到 `plugins/web_knowledge/routes.py`（`web_server.py` 只保留注册调用与兼容导出），但其内部仍保留 dev-only 本地回退分支（`_knowledge_custom_module` 与本地 SQL 写路径，仅在未配置 `HERMES_KNOWLEDGE_URL` 时触发；明细见 `docs/INVENTORY.md` 与 `hermes-agent-main/docs/fork-upstream.md`）。
 - **local fallback 仅 dev-only，不是生产部署方案。** 不要把 `HERMES_KNOWLEDGE_LOCAL_ROOT` 当成部署开关。
-- UI 仍混用“知识库/资料库”等旧词，术语清扫未覆盖前端全部文案。
-
-2026-11-17 已补齐：selection chat、capture revise、runtime-check、AI cancel 的 HTTP 路径；
-schema v4 删除了 `captures.embedding`、`captures.review_*` 和 garden v1 镜像列。
-复习调度只读 `review_items`，Capture 归档只读 `captures.archived_at`。卡片正文以
-`garden_cards.payload_json.content_markdown` 为唯一真相；`garden_cards.content_markdown`
-只是派生缓存（payload 缺失时才回退），写入时由
-`agents/garden_card_payload.py` 生成同一个值，历史漂移用
-`scripts/repair_garden_content.py --apply` 修复。
-
-HTTP 模式的 selection-chat stream 目前返回 `start` + 完整 `complete`，不转发逐阶段 progress；逐阶段 progress 仍属于本地回退路径。
 
 新代码不要继续扩大这些例外。
 

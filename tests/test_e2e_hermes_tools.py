@@ -16,12 +16,21 @@ import json
 import os
 import sys
 import importlib
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-sys.path.insert(0, "/Users/pipi/hermes-custom")
-HERMES_DIR = "/Users/pipi/Downloads/hermes-agent-main"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+HERMES_DIR = str(
+    Path(
+        os.environ.get(
+            "HERMES_RUNTIME_ROOT", str(PROJECT_ROOT.parent / "hermes-agent-main")
+        )
+    ).expanduser()
+)
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 @pytest.fixture(autouse=True)
@@ -177,10 +186,12 @@ def test_hermes_theme_scan_schema():
 
 def test_hermes_life_tools_not_exposed_to_personal_assistant():
     _skip_if_no_hermes()
-    tools = _get_hermes_tools()
+    _get_hermes_tools()
+    from toolsets import resolve_toolset
 
-    assert "record_life_event" not in tools
-    assert "life_tick" not in tools
+    exposed = set(resolve_toolset("personal-assistant"))
+    assert "record_life_event" not in exposed
+    assert "life_tick" not in exposed
 
 
 def test_runtime_prompt_does_not_route_life_records():

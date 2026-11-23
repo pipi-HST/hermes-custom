@@ -13,10 +13,16 @@ import yaml
 from agents.capture_agent import CaptureConfig
 from agents.embedder import Embedder
 from agents.library_agent import LibraryAgent
-from agents.markdown_writer import read_note
+from agents.markdown_writer import note_revision, read_note, read_note_snapshot
 from agents.outliner import Outliner
 from bridge.capture_view import hydrate_capture as _hydrate_capture
-from bridge.knowledge_write_service import KnowledgeWriteService, MarkdownWriteRequest, markdown_write_lock
+from bridge.capture_view import build_capture_view
+from bridge.knowledge_write_service import (
+    KnowledgeWriteService,
+    MarkdownVersionConflict,
+    MarkdownWriteRequest,
+    markdown_write_lock,
+)
 from db.concurrency import transaction
 from db.repo import CaptureRepo
 
@@ -28,6 +34,7 @@ class UpdateCaptureRequest(BaseModel):
     body: str = ""
     title: str = ""
     folder_path: Optional[str] = None
+    expected_revision: str | None = None
 
 
 class ReviseCaptureNoteRequest(BaseModel):
@@ -89,7 +96,7 @@ def create_capture_router(
         item = repo.get_by_id(capture_id)
         if item is None:
             raise HTTPException(status_code=404, detail="not found")
-        return _strip_binary(_hydrate_capture(vault, item))
+        return _strip_binary(_hydrate_capture(vault, item, include_revision=True))
 
     @router.patch("/captures/{capture_id}")
     def update_capture(
@@ -105,6 +112,7 @@ def create_capture_router(
             body=body.body,
             title=body.title,
             folder_path=body.folder_path,
+            expected_revision=body.expected_revision,
             background_tasks=background_tasks,
         )
 
@@ -203,6 +211,16 @@ def _capture_revision_prompt(
 """
 
 
+def _capture_revision_conflict() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "capture_revision_conflict",
+            "message": "资料笔记已在别处修改，当前编辑未保存。",
+        },
+    )
+
+
 def apply_capture_update(
     repo: CaptureRepo,
     vault: Path,
@@ -212,6 +230,7 @@ def apply_capture_update(
     body: str = "",
     title: str = "",
     folder_path: str | None = None,
+    expected_revision: str | None = None,
     background_tasks: BackgroundTasks | None = None,
 ) -> dict:
     """Shared implementation of ``PATCH /captures/{id}`` and library updates."""
@@ -223,11 +242,15 @@ def apply_capture_update(
         file_path = str(item.get("file_path") or "")
         if not file_path:
             raise HTTPException(status_code=400, detail="capture has no editable note")
-        note = read_note(vault, file_path)
+        note = read_note_snapshot(vault, file_path)
         if note is None:
+            if expected_revision is not None:
+                raise _capture_revision_conflict()
             raise HTTPException(status_code=404, detail="资料笔记文件不存在")
 
-        frontmatter, current_body = note
+        frontmatter, current_body, raw_text = note
+        if expected_revision is not None and note_revision(raw_text) != expected_revision:
+            raise _capture_revision_conflict()
         updated_body = (body or current_body or "").strip()
         if not updated_body:
             raise HTTPException(status_code=400, detail="body cannot be empty")
@@ -238,16 +261,21 @@ def apply_capture_update(
             frontmatter["folder_path"] = folder_path.strip() or "Inbox"
         frontmatter["word_count"] = len(updated_body)
 
-        write_result = KnowledgeWriteService(vault).write_markdown_artifact(
-            MarkdownWriteRequest(
-                kind="capture_note",
-                relative_path=file_path,
-                content=_render_markdown(frontmatter, updated_body),
-                db_object_id=capture_id,
-                db_table="captures",
-                requires_backup=True,
+        content = _render_markdown(frontmatter, updated_body)
+        try:
+            write_result = KnowledgeWriteService(vault).write_markdown_artifact(
+                MarkdownWriteRequest(
+                    kind="capture_note",
+                    relative_path=file_path,
+                    content=content,
+                    db_object_id=capture_id,
+                    db_table="captures",
+                    requires_backup=True,
+                ),
+                expected_previous=raw_text,
             )
-        )
+        except MarkdownVersionConflict as exc:
+            raise _capture_revision_conflict() from exc
         repo.log_change(
             "capture",
             capture_id,
@@ -256,6 +284,8 @@ def apply_capture_update(
             new_value="updated via capture API",
             source="api",
         )
+        saved_item = build_capture_view(repo.get_by_id(capture_id) or item, frontmatter, updated_body)
+        saved_item["note_revision"] = note_revision(content)
     # Library maintenance calls an LLM with a 120s timeout. Keep it off the
     # request path so it cannot block every other API call.
     if background_tasks is not None:
@@ -271,7 +301,7 @@ def apply_capture_update(
         "file_path": file_path,
         "backup_path": write_result.backup_path,
         "library_postprocess": {"status": "queued"},
-        "item": _strip_binary(_hydrate_capture(vault, repo.get_by_id(capture_id) or item)),
+        "item": _strip_binary(saved_item),
     }
 
 

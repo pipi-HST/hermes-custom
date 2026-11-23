@@ -556,10 +556,11 @@ def test_step1_prompt_requires_precise_single_source_materials(mock_call):
     )
 
     prompt = mock_call.call_args.args[0]
-    assert "support 只服务于对应判断" in prompt
-    assert "source_ids 必须对应真实来源" in prompt
-    assert "混合多篇材料" in prompt
-    assert "source_ids 必须对应" in prompt
+    assert "source_ids" in prompt
+    assert "content_markdown" in prompt
+    assert "真实 source_id" in prompt
+    assert "[source_id=cap1]" in prompt
+    assert "[source_id=cap2]" in prompt
 
 
 @patch("agents.garden_agent.GardenAgent._call_llm")

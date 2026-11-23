@@ -1,8 +1,8 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-18
-verified_against: "3e6b974 (hermes-custom) + 2026-11-18 并行修复分支"
+last_verified: 2026-11-22
+verified_against: "9e44c73 (hermes-custom) + 2026-11-22 working tree"
 ---
 
 # Hermes Knowledge Runbook
@@ -72,14 +72,16 @@ Runtime 侧：
 ```text
 HERMES_KNOWLEDGE_URL=http://127.0.0.1:8000
 HERMES_KNOWLEDGE_TOKEN=<same random value as HERMES_API_TOKEN>
+```
+
+纯 HTTP 模式只需要上述两个变量（工具调用与 Dashboard 的草稿、卡片详情、时间线、伴读流式转发均已走 HTTP 委托，不需要本地 Knowledge checkout）。
+
+仅在使用 Dashboard「打开本地文件（`open-local`）」或本地开发回退时，才需要额外配置：
+
+```text
 HERMES_KNOWLEDGE_DB=<repos>/hermes-custom/data/captures.db
 HERMES_KNOWLEDGE_VAULT=<repos>/hermes-custom/data/vault
 ```
-
-HTTP 模式跑工具不需要本地 Knowledge checkout；但 Dashboard 的少数读路由
-（草稿列表、卡片详情、时间线）仍会直读 `HERMES_KNOWLEDGE_DB` /
-`HERMES_KNOWLEDGE_VAULT`。这是已知例外，不是推荐生产形态；纯远程部署前必须让
-这两个路径与服务端一致，否则这些页面会 404。
 
 Knowledge 侧：
 
@@ -90,6 +92,10 @@ HERMES_API_TOKEN=<same random value>
 **两边 token 必须相同。** 一个常见的 503 原因是只设置了 `HERMES_KNOWLEDGE_URL`，没有设置 `HERMES_KNOWLEDGE_TOKEN`，或者服务端没有设置 `HERMES_API_TOKEN`。
 
 如果预览知识卡片草稿正常、保存提示契约不兼容，检查 Service `/api/health` 的 `contract_version`。Dashboard 保存要求 v2 或以上；未升级的旧服务仍可用于预览。
+
+Dashboard 保存资料笔记要求 Service 契约 v3 或以上，升级时先更新 Knowledge Service。
+如果提示笔记已在别处修改，当前编辑会留在页面里；可在另一个标签页打开最新版，
+在新页面合并后再保存，不要直接刷新有未保存内容的页面。
 
 如果专题改名中途失败，修复报错后用相同的旧名和新名重试。不要手工清理 `rename_folder_journal` 记录：它记录了待补齐索引的资料，以及数据库是否已经提交。启用队列时，重启 worker 会自动接手上一进程未完成的作业。
 
@@ -244,6 +250,20 @@ dry-run 输出的 `new_storage_root` 必须和 `vault.path` 一致再 apply。
 .venv\Scripts\python.exe scripts\backfill.py --config config.yaml
 # 只查看：.venv\Scripts\python.exe scripts\backfill.py --config config.yaml --dry-run
 ```
+
+### 9.6 资料伴读生成 AI 建议返回 502 `timed out`
+
+`POST /api/tools/capture_bridge/create_editable_capture_draft`（资料伴读 → 生成 AI 建议，`organize=true`）
+会同步调用 LLM；约 7k 字的长文实测 30–60 秒，超过 Runtime 默认的 30 秒客户端超时，界面显示
+`502 ... failed: timed out`。服务端通常仍会完成并留下草稿，刷新即可看到。
+
+Runtime 侧调大超时后重启 Dashboard：
+
+```text
+HERMES_KNOWLEDGE_TIMEOUT=180
+```
+
+（与 `HERMES_KNOWLEDGE_URL` 放在同一处，例如 `~/.hermes/.env`。）
 
 ## 10. 备份
 

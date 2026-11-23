@@ -581,3 +581,35 @@ def test_answer_enhancement_includes_and_checks_original_body(
         note = enhancement_source.read_text(encoding="utf-8")
         assert "原正文" in note
         assert "来自回答的补充" in note
+
+
+def test_start_reading_session_extracts_url_without_creating_capture_draft(reading_config):
+    from bridge import reading_bridge
+
+    fake_extracted = {
+        "ok": True,
+        "title": "阿里终于看到回头钱了",
+        "text": "阿里投资的 AI 独角兽既贡献投资收益，又成为阿里云算力客户。",
+        "final_url": "https://mp.weixin.qq.com/s/demo",
+        "error": "",
+    }
+    with (
+        patch.object(reading_bridge, "load_config", return_value=reading_config),
+        patch.object(reading_bridge, "_extract_reading_url", return_value=fake_extracted),
+    ):
+        reading_bridge._config = None
+        reading_bridge._repo = None
+        result = reading_bridge.start_reading_session(
+            message="",
+            source_url="https://mp.weixin.qq.com/s/demo",
+        )
+
+    assert result["status"] == "success"
+    assert result["meta"]["source_title"] == "阿里终于看到回头钱了"
+    assert result["meta"]["extracted_ok"] is True
+    assert "阿里云算力客户" in result["meta"]["extracted_text"]
+    assert result["meta"]["extracted_word_count"] == len(fake_extracted["text"])
+
+    conn = init_db(reading_config.db_path)
+    assert conn.execute("SELECT count(*) FROM reading_sessions").fetchone()[0] == 1
+    assert conn.execute("SELECT count(*) FROM capture_drafts").fetchone()[0] == 0

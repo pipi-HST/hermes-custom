@@ -1,8 +1,8 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-18
-verified_against: "3e6b974 (hermes-custom) + 2026-11-18 并行修复分支"
+last_verified: 2026-11-22
+verified_against: "9e44c73 (hermes-custom) + 2026-11-22 working tree"
 ---
 
 # Hermes Knowledge 启动说明
@@ -96,10 +96,10 @@ cd <repos>/hermes-agent-main
 uv run hermes gateway run
 ```
 
-runtime 会从两个地方加载能力：
+runtime 连接两个独立能力项目：
 
-- Knowledge 工具：`<repos>/hermes-custom`
-- Life 工具：`<repos>/hermes-life`
+- Knowledge（生产推荐 HTTP 模式）：配置 `HERMES_KNOWLEDGE_URL=http://127.0.0.1:8000` 与 `HERMES_KNOWLEDGE_TOKEN=<与服务 HERMES_API_TOKEN 相同>`；仅本地离线调试时才使用 `HERMES_KNOWLEDGE_LOCAL_ROOT=<repos>/hermes-custom`（不要与 URL 同时设置）
+- Life（可选独立仓库）：`<repos>/hermes-life`
 
 ## 测试
 
@@ -114,7 +114,7 @@ cd <repos>/hermes-custom
 
 ```bash
 cd <repos>/hermes-custom
-.venv/bin/python scripts/knowledge_pipeline_e2e.py --work-dir /tmp/hermes-pipeline-e2e
+.venv/bin/python scripts/knowledge_pipeline_e2e.py --work-dir .tmp/hermes-pipeline-e2e
 ```
 
 该报告逐项验证 Capture、Runtime 已保存可见性、Reading、Knowledge Card、RAG、Theme、Review、Canvas 和 Knowledge Graph。返回 `ok: true` 只表示所有阶段合同、数据库状态、Markdown 产物及下游对象均通过，不以单个函数返回 `success` 作为通过标准。

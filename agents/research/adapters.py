@@ -126,6 +126,7 @@ def _default_web_search(query: str, limit: int) -> str | dict[str, Any]:
             results = deepseek_web_search(
                 query,
                 limit=limit,
+                need_content=True,
                 api_key=api_key,
                 base_url=base_url,
             )

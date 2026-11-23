@@ -38,6 +38,9 @@ class TestToolHandlerToAgent:
 
     @pytest.fixture(autouse=True)
     def isolate_bridge(self, monkeypatch):
+        monkeypatch.delenv("HERMES_KNOWLEDGE_URL", raising=False)
+        monkeypatch.delenv("HERMES_KNOWLEDGE_TOKEN", raising=False)
+        monkeypatch.setenv("HERMES_KNOWLEDGE_LOCAL_ROOT", str(PROJECT_ROOT))
         with tempfile.TemporaryDirectory() as tmp:
             from agents.capture_agent import CaptureAgent, CaptureConfig
             from agents.extractors.text_extractor import TextExtractor

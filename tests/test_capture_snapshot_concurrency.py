@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from agents.capture_agent import CaptureAgent, CaptureConfig
 from agents.library_agent import LibraryAgent
-from api.routes.captures import apply_capture_update
+from api.routes.captures import apply_capture_update, create_capture_router
 from api.routes.library import create_library_router
 from db.reading_repo import ReadingRepo
 from db.repo import CaptureDraftRepo, CaptureRepo
@@ -25,6 +25,7 @@ def capture(tmp_path):
     # Use another connection, as the API and a worker can do.
     api_conn = init_db(agent.config.db_path)
     app = FastAPI()
+    app.include_router(create_capture_router(CaptureRepo(api_conn), agent.config.vault_path))
     app.include_router(create_library_router(
         CaptureRepo(api_conn),
         CaptureDraftRepo(api_conn),
@@ -41,6 +42,72 @@ def capture(tmp_path):
 
 def _draft(agent):
     return agent.create_editable_draft("original body", title="original title", organize=False)
+
+
+@pytest.mark.parametrize("route", ["/captures/{id}", "/library/items/capture/{id}"])
+def test_late_editor_cannot_overwrite_another_save(capture, monkeypatch, route):
+    agent, client = capture
+    monkeypatch.setattr("api.routes.captures._maintain_capture_after_edit", lambda *_: {})
+    vault = Path(agent.config.vault_path)
+    path = vault / "captures/note.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    capture_id = agent.repo.insert(file_path="captures/note.md")["id"]
+    path.write_bytes(b"---\r\ntitle: Original\r\n---\r\n\r\nOriginal body\r\n")
+    url = route.format(id=capture_id)
+    read_url = f"/library/items/capture/{capture_id}"
+    first = client.get(read_url).json()["item"]
+    second = client.get(read_url).json()["item"]
+    assert first["note_revision"] == second["note_revision"]
+    assert client.get(f"/captures/{capture_id}").json()["note_revision"] == second["note_revision"]
+
+    saved = client.patch(url, json={"body": "First edit", "expected_revision": first["note_revision"]})
+    assert saved.status_code == 200
+    saved_revision = saved.json()["item"]["note_revision"]
+    assert saved_revision != first["note_revision"]
+    before_conflict = path.read_bytes()
+    backup_dir = vault / "_archive" / "write_backups"
+    before_backups = sorted(backup_dir.rglob("*.md"))
+    assert len(before_backups) == 1
+
+    stale = client.patch(url, json={"body": "Second edit", "expected_revision": second["note_revision"]})
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "capture_revision_conflict"
+    assert path.read_bytes() == before_conflict
+    assert sorted(backup_dir.rglob("*.md")) == before_backups
+
+    # A metadata-only change outside Hermes also invalidates an open editor.
+    path.write_bytes(before_conflict.replace(b"Original", b"Edited in another app"))
+    stale = client.patch(url, json={"body": "Second edit", "expected_revision": saved_revision})
+    assert stale.status_code == 409
+    latest = client.get(read_url).json()["item"]
+    assert latest["title"] == "Edited in another app"
+    assert latest["body"] == "First edit"
+    assert client.patch(url, json={"body": "Second edit", "expected_revision": latest["note_revision"]}).status_code == 200
+
+
+def test_capture_save_rechecks_snapshot_before_replacement(capture, monkeypatch):
+    from bridge import knowledge_write_service
+
+    agent, client = capture
+    vault = Path(agent.config.vault_path)
+    path = vault / "captures/note.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"Original body")
+    capture_id = agent.repo.insert(file_path="captures/note.md")["id"]
+    url = f"/captures/{capture_id}"
+    revision = client.get(url).json()["note_revision"]
+    original_write = knowledge_write_service._atomic_write_text
+
+    def external_edit_before_replace(target, content, *, before_replace=None):
+        if target == path:
+            path.write_bytes(b"New version from another editor")
+        return original_write(target, content, before_replace=before_replace)
+
+    monkeypatch.setattr(knowledge_write_service, "_atomic_write_text", external_edit_before_replace)
+    response = client.patch(url, json={"body": "Stale text", "expected_revision": revision})
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "capture_revision_conflict"
+    assert path.read_bytes() == b"New version from another editor"
 
 
 @pytest.mark.parametrize("route", ["/library/items/capture_draft/", "/capture-drafts/"])

@@ -24,12 +24,18 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from agents.garden_agent import get_garden_draft, is_open_garden_draft
+from agents.garden_agent import (
+    get_garden_draft,
+    is_open_garden_draft,
+    update_garden_card,
+    update_garden_draft,
+)
 from agents.garden_card_payload import (
     normalize_garden_payload,
     parse_payload_json,
     payload_from_row,
     project_legacy_fields,
+    render_garden_card_body,
 )
 from api.routes._confirmation import issue_confirmation_token, require_confirmation_token
 from bridge.capture_view import read_capture_note
@@ -55,6 +61,42 @@ class GardenDraftRequest(BaseModel):
 
 class GardenDraftCommitRequest(BaseModel):
     confirmation_token: str = Field(default="", max_length=200)
+
+
+class GardenDraftUpdateRequest(BaseModel):
+    title: str | None = None
+    card_kind: str | None = None
+    claim: str | None = None
+    markdown: str | None = None
+    when_to_use: list[str] | None = None
+    core_judgments: list[dict[str, Any]] | None = None
+    boundaries: list[str] | None = None
+    action_items: list[str] | None = None
+
+
+class GardenCardUpdateRequest(BaseModel):
+    title: str | None = None
+    card_kind: str | None = None
+    claim: str | None = None
+    markdown: str | None = None
+    source_theme: str | None = None
+
+
+class GardenDraftReviseRequest(BaseModel):
+    instruction: str = Field(..., min_length=1, max_length=2000)
+
+
+def _draft_view(row) -> dict[str, Any]:
+    item = dict(row)
+    payload = payload_from_row(item)
+    item["payload"] = payload
+    item["one_liner"] = payload["claim"]
+    body = str(payload.get("content_markdown") or item.get("markdown") or "").strip()
+    if not body:
+        body = render_garden_card_body(payload).strip()
+    item["markdown"] = body
+    item["content_markdown"] = body
+    return item
 
 
 def create_garden_router(
@@ -119,12 +161,68 @@ def create_garden_router(
                    LIMIT ?""",
                 (limit,),
             ).fetchall()
-        items = []
-        for row in rows:
-            item = dict(row)
-            item["one_liner"] = payload_from_row(item)["claim"]
-            items.append(item)
+        items = [_draft_view(row) for row in rows]
         return {"items": items, "total": len(items)}
+
+    @router.patch("/garden/drafts/{draft_id}")
+    def patch_garden_draft(draft_id: str, body: GardenDraftUpdateRequest):
+        draft = get_garden_draft(capture_repo, draft_id)
+        if draft is None:
+            raise HTTPException(status_code=404, detail="garden draft not found")
+        if not is_open_garden_draft(draft):
+            raise HTTPException(status_code=409, detail="garden draft is no longer open")
+        merged = dict(payload_from_row(draft))
+        if body.title is not None and body.title.strip():
+            merged["title"] = body.title.strip()[:80]
+        if body.card_kind is not None and body.card_kind.strip():
+            merged["card_kind"] = body.card_kind.strip()
+        if body.claim is not None:
+            merged["claim"] = body.claim.strip()
+        if body.when_to_use is not None:
+            merged["when_to_use"] = [str(x).strip() for x in body.when_to_use if str(x).strip()]
+        if body.core_judgments is not None:
+            merged["core_judgments"] = body.core_judgments
+        if body.boundaries is not None:
+            merged["boundaries"] = [str(x).strip() for x in body.boundaries if str(x).strip()]
+        if body.action_items is not None:
+            merged["action_items"] = [str(x).strip() for x in body.action_items if str(x).strip()]
+        if body.markdown is not None:
+            merged["content_markdown"] = body.markdown.strip()
+        else:
+            merged["content_markdown"] = render_garden_card_body(merged).strip()
+        updated = update_garden_draft(
+            capture_repo,
+            draft_id,
+            {
+                "title": merged["title"],
+                "card_kind": merged["card_kind"],
+                "one_liner": merged["claim"],
+                "payload": merged,
+                "markdown": merged["content_markdown"],
+            },
+        )
+        if updated is None:
+            raise HTTPException(status_code=409, detail="garden draft is no longer open")
+        return {"ok": True, "item": _draft_view(updated)}
+
+    @router.post("/garden/drafts/{draft_id}/revise")
+    def revise_garden_draft(draft_id: str, body: GardenDraftReviseRequest):
+        from bridge import garden_bridge
+
+        draft = get_garden_draft(capture_repo, draft_id)
+        if draft is None:
+            raise HTTPException(status_code=404, detail="garden draft not found")
+        if not is_open_garden_draft(draft):
+            raise HTTPException(status_code=409, detail="garden draft is no longer open")
+        result = garden_bridge.revise_garden_draft(
+            draft_id=draft_id,
+            instruction=body.instruction.strip(),
+            context=_context(),
+        )
+        updated = get_garden_draft(capture_repo, draft_id)
+        if isinstance(result, dict) and updated is not None:
+            result = {**result, "item": _draft_view(updated)}
+        return result
 
     @router.post("/garden/drafts/{draft_id}/confirmation")
     def issue_garden_draft_confirmation(draft_id: str):
@@ -223,6 +321,58 @@ def create_garden_router(
         items = [_card_view(capture_repo.conn, vault, row) for row in rows]
         return {"items": items, "total": len(items)}
 
+    @router.get("/garden/cards/{card_id}")
+    def get_garden_card(card_id: str):
+        row = capture_repo.conn.execute(
+            "SELECT * FROM garden_cards WHERE id = ?",
+            (card_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="garden card not found")
+        return {"card": _card_view(capture_repo.conn, vault, row)}
+
+    @router.patch("/garden/cards/{card_id}")
+    def patch_garden_card(card_id: str, body: GardenCardUpdateRequest):
+        row = capture_repo.conn.execute(
+            "SELECT * FROM garden_cards WHERE id = ?",
+            (card_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="garden card not found")
+        merged = dict(payload_from_row(row))
+        if body.title is not None and body.title.strip():
+            merged["title"] = body.title.strip()[:80]
+        if body.card_kind is not None and body.card_kind.strip():
+            merged["card_kind"] = body.card_kind.strip()
+        if body.claim is not None:
+            merged["claim"] = body.claim.strip()
+        if body.markdown is not None:
+            merged["content_markdown"] = body.markdown.strip()
+        updated = update_garden_card(
+            capture_repo,
+            card_id,
+            {
+                "title": merged["title"],
+                "card_kind": merged["card_kind"],
+                "one_liner": merged["claim"],
+                "payload": merged,
+                "markdown": merged.get("content_markdown", ""),
+            },
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="garden card not found")
+        if body.source_theme is not None:
+            with transaction(capture_repo.conn):
+                capture_repo.conn.execute(
+                    "UPDATE garden_cards SET source_theme = ? WHERE id = ?",
+                    (body.source_theme.strip(), card_id),
+                )
+        fresh = capture_repo.conn.execute(
+            "SELECT * FROM garden_cards WHERE id = ?",
+            (card_id,),
+        ).fetchone()
+        return {"ok": True, "card": _card_view(capture_repo.conn, vault, fresh)}
+
     @router.delete("/garden/cards/{card_id}")
     def delete_garden_card(card_id: str):
         from bridge import garden_bridge
@@ -246,6 +396,7 @@ def _card_view(conn, vault_path: Path, row) -> dict:
     kind = str(payload.get("card_kind") or data.get("card_kind") or "viewpoint").strip()
     if kind not in CARD_KINDS:
         kind = "viewpoint"
+    body = str(payload.get("content_markdown") or data.get("content_markdown") or "").strip()
     return {
         "id": str(data.get("id") or ""),
         "title": payload.get("title") or data.get("title") or "未命名卡片",
@@ -255,11 +406,12 @@ def _card_view(conn, vault_path: Path, row) -> dict:
         "updated_at": str(data.get("updated_at") or ""),
         "created_at": str(data.get("created_at") or ""),
         "file_path": "",
-        "markdown": "",
+        "markdown": body,
+        "content_markdown": body,
+        "payload": payload,
         "source_theme": str(
             data.get("source_theme") or raw_payload.get("source_theme") or ""
         ),
-        "content_markdown": str(payload.get("content_markdown") or ""),
         "core_arguments": legacy["core_arguments"],
         "knowledge_links": legacy["knowledge_links"],
         "key_materials": legacy["key_materials"],

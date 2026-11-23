@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from agents.knowledge_graph import KnowledgeGraphService
@@ -69,6 +72,32 @@ class LibrarySelectionChatRequest(BaseModel):
     history_summary_version: int = 0
     history_overflow: list[dict[str, str]] = []
     force_web: bool = False
+
+
+class ResearchStreamRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    mode: str = "local_web"
+    article_context: dict[str, Any] | None = None
+    selection_context: dict[str, Any] | None = None
+    export_file: bool = False
+    force_web: bool = False
+    channel: str = ""
+
+
+def _sse_event(event: dict[str, Any]) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+
+
+def _supports_event_callback(func: Any) -> bool:
+    """True when ``func`` accepts the research ``event_callback`` keyword."""
+    try:
+        parameters = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+    return "event_callback" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
 
 
 def create_knowledge_router(
@@ -288,6 +317,126 @@ def create_knowledge_router(
         except TypeError:
             # Old checkouts expose only the sync facade.
             return await asyncio.to_thread(web_assist_answer, **kwargs)
+
+    @router.post("/knowledge/library/items/{kind}/{item_id}/selection-chat/stream")
+    async def selection_chat_stream(
+        kind: str,
+        item_id: str,
+        body: LibrarySelectionChatRequest,
+        request: Request,
+    ):
+        """SSE variant of ``selection-chat``.
+
+        Token deltas (``answer_delta``) and research progress are forwarded as
+        they happen so the dashboard sidebar can render the answer while the
+        synthesis LLM is still writing.  Without this route the caller only
+        sees the finished answer after 20-60 seconds.
+        """
+        from bridge.research_bridge import async_web_assist_answer, web_assist_answer
+
+        kwargs = _selection_chat_kwargs(kind, item_id, body)
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        async def on_event(event: dict[str, Any]) -> None:
+            await queue.put({"event": "progress", **event})
+
+        async def run_answer() -> None:
+            try:
+                if _supports_event_callback(async_web_assist_answer):
+                    result = await async_web_assist_answer(
+                        **kwargs, event_callback=on_event
+                    )
+                else:
+                    # Old checkouts expose only the sync facade, which cannot
+                    # stream: the caller still gets the final answer.
+                    result = await asyncio.to_thread(web_assist_answer, **kwargs)
+                await queue.put({"event": "complete", "result": result})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - the stream reports failures
+                await queue.put({"event": "error", "message": str(exc)})
+
+        task = asyncio.create_task(run_answer())
+
+        async def event_stream():
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        continue
+                    yield _sse_event(event)
+                    if event.get("event") in {"complete", "error"}:
+                        break
+            finally:
+                if not task.done():
+                    task.cancel()
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @router.post("/knowledge/research/stream")
+    async def research_stream(body: ResearchStreamRequest, request: Request):
+        """SSE variant of ``research_with_web`` forwarding progress and answer deltas."""
+        from bridge.research_bridge import async_web_assist_answer, web_assist_answer
+
+        kwargs: dict[str, Any] = {
+            "query": body.query,
+            "mode": body.mode,
+            "article_context": body.article_context,
+            "selection_context": body.selection_context,
+            "export_file": body.export_file,
+            "force_web": body.force_web,
+        }
+        if body.channel:
+            kwargs["channel"] = body.channel
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        async def on_event(event: dict[str, Any]) -> None:
+            await queue.put({"event": "progress", **event})
+
+        async def run_research() -> None:
+            try:
+                if _supports_event_callback(async_web_assist_answer):
+                    result = await async_web_assist_answer(
+                        **kwargs, event_callback=on_event
+                    )
+                else:
+                    result = await asyncio.to_thread(web_assist_answer, **kwargs)
+                await queue.put({"event": "complete", "result": result})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - the stream reports failures
+                await queue.put({"event": "error", "message": str(exc)})
+
+        task = asyncio.create_task(run_research())
+
+        async def event_stream():
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        continue
+                    yield _sse_event(event)
+                    if event.get("event") in {"complete", "error"}:
+                        break
+            finally:
+                if not task.done():
+                    task.cancel()
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @router.get("/knowledge/garden-cards")
     def list_garden_cards(limit: int = Query(default=50, le=200)):

@@ -684,6 +684,7 @@ async def async_web_assist_answer(
     history_summary_version: int = 0,
     history_overflow: list[dict[str, str]] | None = None,
     force_web: bool = False,
+    channel: str = "",
 ) -> dict[str, Any]:
     """Async product-default web assist answer for dashboard callers."""
     result = await _async_web_context_answer(
@@ -701,6 +702,7 @@ async def async_web_assist_answer(
         history_summary_version=history_summary_version,
         history_overflow=history_overflow,
         force_web=force_web,
+        channel=channel,
     )
     result["intent"] = "web_assist_answer"
     return _record_web_answer_ledger(result, query)

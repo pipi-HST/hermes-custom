@@ -61,6 +61,7 @@ class LibraryItemUpdateRequest(BaseModel):
     folder_path: str | None = None
     folder_suggestion: dict[str, Any] | None = None
     card_suggestion: dict[str, Any] | None = None
+    expected_revision: str | None = None
 
 
 class LibraryFolderCreateRequest(BaseModel):
@@ -207,6 +208,7 @@ def create_library_router(
                 body=body.body or "",
                 title=body.title,
                 folder_path=body.folder_path,
+                expected_revision=body.expected_revision,
                 background_tasks=background_tasks,
             )
             return {"ok": True, "item": result["item"]}
