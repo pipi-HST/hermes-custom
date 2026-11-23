@@ -7,9 +7,9 @@ verified_against: "9e5c752 (hermes-custom) / 115bd27 (hermes-agent-main)"
 
 # Hermes Knowledge
 
-> **第一次部署与使用？请先阅读完整图文/命令指南：[USER-GUIDE.md](USER-GUIDE.md)**（涵盖双仓库安装、密钥安全配置、三步学习闭环玩法与 FAQ）。
+> **快速上手（3 步一键启动）**：请先看 **[USER-GUIDE.md](USER-GUIDE.md)** —— 只需克隆本仓库、填一份 `.env`、运行 `.\start.ps1`（Windows）或 `./start.sh`（macOS/Linux），脚本会自动拉取配套网页运行时并一键启动。
 
-Hermes Knowledge 是 Hermes 的**知识库能力层**：把微信、飞书、网页、文件里的材料，变成可确认的草稿、可检索的资料笔记、可复用的知识卡片，以及可追溯的来源。
+Hermes Knowledge 是 Hermes 的**知识库能力层**：把微信、飞书、网页、文件里的材料，变成可确认的草稿、可检索的资料笔记、可复用的知识卡片，以及可追溯的来源。配套运行时基于 Nous Research 开源的 Hermes Agent（MIT License）定制。
 
 它不是一个独立的聊天机器人。用户始终从 Hermes Runtime 进入；Runtime 负责消息、工具注册和 Dashboard，Knowledge 负责知识库业务和存储。
 

@@ -51,129 +51,59 @@ Hermes 把学习拆成最顺手的三步：
 
 ---
 
-## 二、4 步安装并启动（约 10 分钟）
+## 二、3 步一键安装并启动（约 5 分钟）
 
-Hermes 由两个仓库配合工作，把它们放到同一个文件夹里即可：
-- **`hermes-custom`**：负责存资料、提炼卡片和搜索的「知识大脑」；
-- **`hermes-agent-main`**：提供打开浏览器就能用的「网页工作台」（以及可选的微信/飞书消息接入）。
+你只需要下载 **这一个仓库**、填 **一份 `.env` 文件**、运行 **一条启动命令**——首次运行时，脚本会自动帮你拉取配套网页运行时、装好依赖、生成本地安全口令并打开浏览器。
 
-### 第 1 步：下载代码
+### 第 1 步：下载项目
 
-在终端里选一个你常用的目录（下面用 `hermes-app` 举例），执行：
+打开终端（Windows 用 PowerShell，macOS 用「终端」），执行：
 
 ```bash
-mkdir hermes-app
-cd hermes-app
-
 git clone https://github.com/pipi-HST/hermes-custom.git
-git clone https://github.com/pipi-HST/hermes-agent-main.git
+cd hermes-custom
 ```
 
-### 第 2 步：填好你的密钥配置
+### 第 2 步：填好你的密钥（只需改 1 个文件）
 
-进入 `hermes-custom`，复制一份配置模板为 `config.yaml`：
-
-- **Windows（PowerShell）**：
-  ```powershell
-  cd hermes-custom
-  copy config.example.yaml config.yaml
-  ```
-- **macOS / Linux**：
-  ```bash
-  cd hermes-custom
-  cp config.example.yaml config.yaml
-  ```
-
-用记事本、VS Code 或任意编辑器打开刚生成的 `config.yaml`，只需改下面几行：
-
-```yaml
-llm:
-  provider: openai
-  model: deepseek-v4-pro              # 也可以用 deepseek-chat
-  base_url: "https://api.deepseek.com"
-  api_key: "把这里换成你的DeepSeek密钥"
-
-qwen:
-  api_key: "把这里换成你的阿里云百炼密钥（暂时没有可先留空）"
-
-database:
-  path: "./data/captures.db"          # 默认即可，不需要改
-
-vault:
-  path: "./data/vault"                # 你的笔记存放位置，也可以改成你的 Obsidian 目录
-```
-
-保存并关闭文件。
-
-### 第 3 步：启动「知识大脑」（端口 8000）
-
-在当前 `hermes-custom` 终端窗口里，依次执行安装依赖和启动命令：
+复制一份 `.env.example` 为 `.env`：
 
 - **Windows（PowerShell）**：
   ```powershell
-  py -3.12 -m venv .venv
-  .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-
-  # 设置本地口令（和第 4 步保持一致即可）
-  $env:HERMES_API_TOKEN = "换成你自己编的本地口令"
-  .\.venv\Scripts\python.exe -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
+  copy .env.example .env
   ```
 - **macOS / Linux**：
   ```bash
-  python3.12 -m venv .venv
-  .venv/bin/python -m pip install -r requirements.txt
-
-  export HERMES_API_TOKEN="换成你自己编的本地口令"
-  .venv/bin/python -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
+  cp .env.example .env
   ```
 
-看到屏幕打印出 **`Uvicorn running on http://127.0.0.1:8000`** 就启动成功了！**保持这个窗口开着，不要关闭。**
-
-### 第 4 步：启动「网页工作台」（端口 9119）
-
-**新开一个终端窗口**，进入 `hermes-agent-main` 安装并启动界面：
-
-- **Windows（PowerShell）**：
-  ```powershell
-  cd hermes-app\hermes-agent-main
-  py -3.12 -m venv .venv
-  .\.venv\Scripts\python.exe -m pip install -e ".[web]"
-  ```
-- **macOS / Linux**：
-  ```bash
-  cd hermes-app/hermes-agent-main
-  python3.12 -m venv .venv
-  .venv/bin/python -m pip install -e ".[web]"
-  ```
-
-接着在你的用户主目录下创建或编辑 `~/.hermes/.env` 文件（Windows 路径通常是 `C:\Users\<你的用户名>\.hermes\.env`），写入以下 4 行并保存：
+用记事本、VS Code 或任意编辑器打开 `.env`，把你的密钥填进去并保存（其余项保持默认即可）：
 
 ```env
-HERMES_KNOWLEDGE_URL=http://127.0.0.1:8000
-HERMES_KNOWLEDGE_TOKEN=换成与第3步完全一致的本地口令
-OPENAI_API_KEY=把这里换成你的DeepSeek密钥
-OPENAI_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_API_KEY=把这里换成你的DeepSeek密钥
+DASHSCOPE_API_KEY=把这里换成你的阿里云百炼密钥（暂时没有可先留空）
 ```
 
-最后启动网页工作台：
+> 本地安全口令 `HERMES_API_TOKEN` 和后台配置文件 `config.yaml` 都会在下一步由启动脚本**自动生成与同步**，你完全不用手动配置。
+
+### 第 3 步：一键启动
 
 - **Windows（PowerShell）**：
   ```powershell
-  .\.venv\Scripts\python.exe -m hermes_cli.main dashboard
+  .\start.ps1
   ```
 - **macOS / Linux**：
   ```bash
-  .venv/bin/python -m hermes_cli.main dashboard
+  chmod +x start.sh
+  ./start.sh
   ```
 
-打开浏览器访问 **`http://127.0.0.1:9119`**，就能看到干净清爽的 Hermes 工作台了！
+首次启动会自动下载配套网页运行时并安装 Python 依赖（约 1–3 分钟，之后再启动只需几秒）。看到提示后浏览器会自动打开 **`http://127.0.0.1:9119`**，就可以直接开始用了！按一次 `Ctrl + C` 即可同时关闭所有服务。
 
 > **想先体验一下效果？**
-> 在 `hermes-custom` 目录运行一次下面这行命令，会自动导入 6 篇示例文章和 9 张示例卡片，立刻就能点着体验全流程：
-> ```bash
-> .venv/bin/python scripts/seed_interview_demo.py
-> ```
-> （Windows 请把 `.venv/bin/python` 换成 `.\.venv\Scripts\python.exe`）
+> 在项目目录运行下面这行命令，会自动导入 6 篇示例文章和 9 张示例卡片，立刻就能点着体验全流程：
+> - Windows：`.\.runtime\hermes-agent-main\.venv\Scripts\python.exe scripts\seed_interview_demo.py`
+> - macOS / Linux：`./.runtime/hermes-agent-main/.venv/bin/python scripts/seed_interview_demo.py`
 
 ---
 
@@ -223,15 +153,18 @@ OPENAI_BASE_URL=https://api.deepseek.com/v1
 ## 五、常见问题速查
 
 - **打开网页提示连不上知识库 / 报 503**
-  - 先确认第 3 步的 `8000` 端口终端窗口还在运行；
-  - 再核对 `HERMES_API_TOKEN`（第 3 步）和 `~/.hermes/.env` 里的 `HERMES_KNOWLEDGE_TOKEN`（第 4 步）是不是完全一致（注意不要多空格）。
+  - 先确认终端里的启动脚本没有报错退出，且本机 `8000` 和 `9119` 端口没有被其他程序占用；
+  - 重新运行一次 `.\start.ps1`（或 `./start.sh`），脚本会自动校验并同步两端配置。
 - **搜不到刚刚存进去的文章**
-  - 检查 `config.yaml` 里的 `qwen.api_key`（阿里云百炼密钥）是否填写正确；如果是后来才补填的密钥，在 `hermes-custom` 里跑一次 `.venv/bin/python scripts/backfill.py` 即可补齐语义索引。
+  - 检查 `.env` 里的 `DASHSCOPE_API_KEY`（阿里云百炼密钥）是否填写正确；如果是后来才补填的密钥，重启一次脚本后再运行 `scripts/backfill.py` 即可补齐语义索引。
 - **每次关机重启后怎么再打开？**
-  - 不用重新安装依赖！只需要开两个终端，分别运行第 3 步的 `uvicorn` 启动命令和第 4 步的 `dashboard` 启动命令，然后打开 `http://127.0.0.1:9119` 即可。
+  - 不用重新安装依赖！直接在 `hermes-custom` 目录再次运行 `.\start.ps1`（Windows）或 `./start.sh`（macOS/Linux），几秒后就能打开 `http://127.0.0.1:9119`。
 - **希望把服务部署到云服务器远程访问？**
-  - 务必设置高强度的随机 `HERMES_API_TOKEN`，并通过反向代理启用 HTTPS，同时配置 `HERMES_API_ALLOWED_HOSTS` 限制允许访问的域名，切勿把无密码保护的服务直接暴露到公网。
+  - 请在 `.env` 里使用高强度的随机 `HERMES_API_TOKEN`（首次启动已自动生成），并通过反向代理启用 HTTPS，同时配置 `HERMES_API_ALLOWED_HOSTS` 限制允许访问的域名，切勿把无密码保护的服务直接暴露到公网。
 
 ---
 
-> 如果你是开发者，想深入了解系统架构、全部 HTTP 接口清单、测试方法或运维排障脚本，请继续查看 [ARCHITECTURE.md](ARCHITECTURE.md)、[RUNBOOK.md](RUNBOOK.md) 与 [SETUP.md](SETUP.md)。
+## 六、开源致谢与开发者文档
+
+- 配套运行时与网页框架基于 [Nous Research / Hermes Agent](https://github.com/NousResearch/hermes-agent)（MIT License）二次定制，已完整保留原仓库协议与版权声明。
+- 如果你是开发者，想深入了解系统架构、全部 HTTP 接口清单、测试方法或运维排障脚本，请继续查看 [ARCHITECTURE.md](ARCHITECTURE.md)、[RUNBOOK.md](RUNBOOK.md) 与 [SETUP.md](SETUP.md)。

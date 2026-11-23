@@ -7,6 +7,7 @@ __pycache__/
 .venv/
 venv/
 env/
+.runtime/
 
 config.yaml
 config.yaml.*
