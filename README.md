@@ -169,6 +169,7 @@ cd "<repos>\hermes-agent-main"
 
 | 文档 | 用途 |
 |---|---|
+| `USER-GUIDE.md` | 面向用户的 3 步一键安装与日常使用指南 |
 | `README.md` | 本页：是什么、怎么启动 |
 | `ARCHITECTURE.md` | 当前架构、数据所有权、写路径规则 |
 | `GLOSSARY.md` | 中英术语、代码名、历史名 |
@@ -183,3 +184,8 @@ cd "<repos>\hermes-agent-main"
 | `docs/history/` | 历史交接、旧计划、旧设计；**不要当运行手册** |
 
 历史 `HANDOFF.md` 已移到 `docs/history/HANDOFF-2026-05.md`。根目录的 `HANDOFF.md` 只是指向本页的占位。
+
+## License
+
+本项目采用 [MIT License](LICENSE) 开源（Copyright (c) 2026 pipi-HST）。
+配套运行时仓库 `hermes-agent-main` 基于 [Nous Research / Hermes Agent](https://github.com/NousResearch/hermes-agent)（MIT License）定制，已完整保留原协议与版权声明。
