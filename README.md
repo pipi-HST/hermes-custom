@@ -2,10 +2,12 @@
 status: current
 owner: knowledge-service
 last_verified: 2026-11-23
-verified_against: "9e44c73 (hermes-custom) + 2026-11-23 working tree"
+verified_against: "9e5c752 (hermes-custom) / 115bd27 (hermes-agent-main)"
 ---
 
 # Hermes Knowledge
+
+> **第一次部署与使用？请先阅读完整图文/命令指南：[USER-GUIDE.md](USER-GUIDE.md)**（涵盖双仓库安装、密钥安全配置、三步学习闭环玩法与 FAQ）。
 
 Hermes Knowledge 是 Hermes 的**知识库能力层**：把微信、飞书、网页、文件里的材料，变成可确认的草稿、可检索的资料笔记、可复用的知识卡片，以及可追溯的来源。
 
@@ -47,7 +49,7 @@ Research 是独立研究子系统：入口为 `bridge/research_bridge.py`，实�
 - 用户侧只有 Hermes Runtime 原生 Dashboard（`127.0.0.1:9119`）。本仓库旧的 Next.js 自定义 Dashboard 已删除，不再提供 `npm run dev` 入口。
 - 资料伴读右栏「伴读助手」的回答是流式输出：服务端在合成时推送 `answer_delta`，Runtime 通过 `/api/knowledge/library/items/{kind}/{item_id}/selection-chat/stream` 转发，长回答不必等到最后一次性出现。
 - 联网与研究双轨分流：微信端按日常快答 / 资料检索 / DeepSeek 托管极速联网三档分流；Web 专题工作台走瘦身研究管线，保留完整 `[K]`/`[W]` 证据追踪与可归档成稿。
-- 知识卡片采用低认知负担的三要素自然人话结构（短标题 + 一句话结论 + 易扫读 Markdown 要点正文），支持草稿与已存卡片统一全文查看、内联编辑（`GET/PATCH /api/garden/cards/{id}`、`PATCH/POST /api/garden/drafts/{id}`）及多卡选题篮送入「专题输出」。
+- 知识卡片采用低认知负担的三要素自然人话结构（短标题 + 一句话结论 + 易扫读 Markdown 要点正文），支持草稿与已存卡片统一全文查看、内联编辑及多卡选题篮送入「专题输出」。已存卡片用 `GET/PATCH /api/garden/cards/{id}` 查看和编辑。草稿用 `PATCH /api/garden/drafts/{id}` 直接编辑，用 `POST /api/garden/drafts/{id}/revise` 让 AI 按指令改写。
 - Web Dashboard 已统一为去 AI 化的编辑部纸白视觉体系（`资料伴读` / `知识卡片` / `专题输出`），并在 Runtime 侧通过连接池与异步线程卸载优化了高频读接口响应。
 - 当前仍有一部分 Runtime Dashboard 读路由保留本地回退；见 `ARCHITECTURE.md` 的“当前拆分状态”。
 
@@ -55,44 +57,42 @@ Research 是独立研究子系统：入口为 `bridge/research_bridge.py`，实�
 
 ### 1. Knowledge Service
 
+把示例中的 `<repos>` 换成两个仓库的共同父目录。以下命令使用 PowerShell。
+
 ```powershell
-cd <repos>\hermes-custom
+cd "<repos>\hermes-custom"
 py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
-copy config.example.yaml config.yaml   # 仅首次；已有 config.yaml 不要覆盖
+if (-not (Test-Path config.yaml)) { Copy-Item config.example.yaml config.yaml }
 # 编辑 config.yaml：填 LLM / DashScope key、vault、database 路径
+$env:HERMES_API_TOKEN = "<替换为高强度随机值>"
 .venv\Scripts\python.exe -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-探活：`GET http://127.0.0.1:8000/api/health`。
+在另一个终端探活时，请带上同一个 Bearer 令牌。查看响应里的 `status`，正常为 `ok`。完整命令见 [运行手册](RUNBOOK.md)。
 
 ### 2. Hermes Runtime
 
-首次运行先装依赖（Runtime 不在本仓库，需要单独 checkout）：
+Runtime 在独立仓库。首次从源码构建 Dashboard 需要 PATH 上的 Node.js 和 npm，已有前端构建产物时可用 `--skip-build` 启动。在另一个 PowerShell 窗口安装依赖，再设置 HTTP 地址和令牌，最后启动 Dashboard。
 
 ```powershell
-cd <repos>\hermes-agent-main
+cd "<repos>\hermes-agent-main"
 uv sync --extra web          # 或：py -3.12 -m venv .venv; .venv\Scripts\python.exe -m pip install -e ".[web]"
+$env:HERMES_KNOWLEDGE_URL = "http://127.0.0.1:8000"
+$env:HERMES_KNOWLEDGE_TOKEN = "<替换为与服务 HERMES_API_TOKEN 相同的值>"
 .venv\Scripts\python.exe -m hermes_cli.main dashboard --no-open
 # 打开 http://127.0.0.1:9119
 ```
 
-HTTP 模式是推荐部署方式，要在**启动 Dashboard 之前**设置：
-
-```text
-HERMES_KNOWLEDGE_URL=http://127.0.0.1:8000
-HERMES_KNOWLEDGE_TOKEN=<与服务的 HERMES_API_TOKEN 相同的高强度随机值>
-```
-
-服务侧设置 `HERMES_API_TOKEN=<同一个值>`；改完 token 要重启服务。两边值必须一致。
+修改服务令牌后，更新 Runtime 的令牌并重启对应进程。
 
 分批升级时，新 Runtime 可从旧服务预览知识卡片草稿，但通过 Dashboard 保存卡片要求 Service 契约 v2。请先升级 Service，再升级 Runtime。
 
-纯 HTTP 模式只需要上述 `HERMES_KNOWLEDGE_URL` + `HERMES_KNOWLEDGE_TOKEN`（Dashboard 的草稿、卡片详情、时间线、伴读流式转发均已走 HTTP 委托）。以下两个变量**仅在使用 Dashboard「打开本地文件（`open-local`）」或本地开发回退时才需要配置**：
+Dashboard 的草稿、卡片详情、时间线和伴读流式转发走 HTTP。使用「打开本地文件（`open-local`）」时，Runtime 需要能访问服务实际使用的 SQLite 和 Vault。按 `config.yaml` 的 `database.path` 和 `vault.path` 填写，以下示例对应 `config.example.yaml` 的默认值。
 
-```text
-HERMES_KNOWLEDGE_VAULT=<repos>\hermes-custom\data\vault
-HERMES_KNOWLEDGE_DB=<repos>\hermes-custom\data\captures.db
+```powershell
+$env:HERMES_KNOWLEDGE_VAULT = "$env:USERPROFILE\Hermes\knowledge"
+$env:HERMES_KNOWLEDGE_DB = "<repos>\hermes-custom\data\captures.db"
 ```
 
 ### 3. 本地开发模式（可选）
@@ -108,7 +108,7 @@ HERMES_KNOWLEDGE_LOCAL_ROOT=<repos>\hermes-custom
 
 ## 第一条 capture → card → RAG
 
-服务起来后（HTTP 模式需带 `Authorization: Bearer <token>`）：
+以下示例使用 Bash。先在当前终端设置与服务一致的 `HERMES_API_TOKEN`，并在每一步用上一步返回的实际 ID 或确认令牌替换占位值。
 
 ```bash
 # 1. 建 capture 草稿（content 换成你的材料）
@@ -117,9 +117,9 @@ curl -X POST http://127.0.0.1:8000/api/capture-drafts \
   -d '{"content":"MCP 把工具发现与调用契约标准化。","source_type":"text"}'
 
 # 2. 生成确认 token，再用它提交
-curl -X POST http://127.0.0.1:8000/api/capture-drafts/<draft_id>/confirmation \
+curl -X POST "http://127.0.0.1:8000/api/capture-drafts/<draft_id>/confirmation" \
   -H "Authorization: Bearer $HERMES_API_TOKEN"
-curl -X POST http://127.0.0.1:8000/api/capture-drafts/<draft_id>/commit \
+curl -X POST "http://127.0.0.1:8000/api/capture-drafts/<draft_id>/commit" \
   -H "Authorization: Bearer $HERMES_API_TOKEN" -H "Content-Type: application/json" \
   -d '{"confirmation_token":"<token>"}'
 
@@ -129,9 +129,9 @@ curl -X POST http://127.0.0.1:8000/api/garden/drafts \
   -d '{"capture_ids":["<capture_id>"]}'
 
 # 4. 确认卡片草稿后再提交
-curl -X POST http://127.0.0.1:8000/api/garden/drafts/<draft_id>/confirmation \
+curl -X POST "http://127.0.0.1:8000/api/garden/drafts/<draft_id>/confirmation" \
   -H "Authorization: Bearer $HERMES_API_TOKEN"
-curl -X POST http://127.0.0.1:8000/api/garden/drafts/<draft_id>/commit \
+curl -X POST "http://127.0.0.1:8000/api/garden/drafts/<draft_id>/commit" \
   -H "Authorization: Bearer $HERMES_API_TOKEN" -H "Content-Type: application/json" \
   -d '{"confirmation_token":"<token>"}'
 
@@ -146,7 +146,7 @@ curl "http://127.0.0.1:8000/api/knowledge/search?q=MCP" \
 
 ```powershell
 # 全量
-cd <repos>\hermes-custom
+cd "<repos>\hermes-custom"
 .venv\Scripts\python.exe -m pytest tests -q
 
 # HTTP-only smoke（临时 DB/vault；需要同级 hermes-agent-main；建议指定 work-dir）
@@ -161,7 +161,7 @@ $env:HERMES_RUNTIME_ROOT = "<repos>\hermes-agent-main"
 .venv\Scripts\python.exe scripts\architecture_inventory.py --check --strict
 
 # Runtime 侧 Knowledge 相关
-cd <repos>\hermes-agent-main
+cd "<repos>\hermes-agent-main"
 .venv\Scripts\python.exe -m pytest tests\tools tests\hermes_cli\test_web_server.py -q
 ```
 
