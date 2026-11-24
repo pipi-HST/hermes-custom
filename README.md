@@ -1,191 +1,203 @@
 ---
 status: current
 owner: knowledge-service
-last_verified: 2026-11-23
-verified_against: "9e5c752 (hermes-custom) / 115bd27 (hermes-agent-main)"
+last_verified: 2026-11-24
+verified_against: "aa94b60 (hermes-custom) / fcad2ff (hermes-agent-main)"
 ---
 
 # Hermes Knowledge
 
-> **快速上手（3 步一键启动）**：请先看 **[USER-GUIDE.md](USER-GUIDE.md)** —— 只需克隆本仓库、填一份 `.env`、运行 `.\start.ps1`（Windows）或 `./start.sh`（macOS/Linux），脚本会自动拉取配套网页运行时并一键启动。
+**拒绝「收藏 = 学会」。把每一次碎片阅读，真正沉淀成可回看、可组合、可溯源的个人判断。**
 
-Hermes Knowledge 是 Hermes 的**知识库能力层**：把微信、飞书、网页、文件里的材料，变成可确认的草稿、可检索的资料笔记、可复用的知识卡片，以及可追溯的来源。配套运行时基于 Nous Research 开源的 Hermes Agent（MIT License）定制。
+Hermes Knowledge 是一款**本地优先（Local-First）的个人 AI 认知内化工作台**。它不追求炫技式的复杂 AI 面板，而是用安静克制的「编辑部纸白」阅读体验，带你走完从输入到输出的完整闭环：**资料伴读 → 知识卡片 → 专题输出**。
 
-它不是一个独立的聊天机器人。用户始终从 Hermes Runtime 进入；Runtime 负责消息、工具注册和 Dashboard，Knowledge 负责知识库业务和存储。
+[核心特色](#核心特色) · [为什么不一样](#为什么选择-hermes) · [3 步下载安装](#3-步下载与一键启动) · [日常怎么用](#3-分钟上手体验) · [详细使用手册](USER-GUIDE.md) · [架构与开发文档](#开发者与架构专区)
 
-## 两个仓库，一个入口
+---
 
-| 仓库 | 作用 |
-|---|---|
-| `hermes-custom`（本仓库） | Capture、Library / Topic、Reading、RAG、Theme、Knowledge Card、Review、Canvas、Research、Librarian、Answer、Knowledge Graph、Folder write jobs、Run ledger、Knowledge API、SQLite / Knowledge File 存储 |
-| `hermes-agent-main` | 微信 / 飞书网关、工具注册、主 Agent、用户侧原生 Dashboard（默认 `127.0.0.1:9119`） |
-| `hermes-life`（可选） | Life Assistant；不在本仓库，未配置时 Life 工具会返回明确的错误信封 |
+## 为什么选择 Hermes？
+
+大多数人在用笔记软件和 AI 工具时，都会卡在同一个死循环里：**收藏夹塞满了几百篇好文，AI 总结看了一遍就忘，真到写方案、做分享、准备面试时，脑子里依然一片空白。**
+
+Hermes 从底层设计上反其道而行：
+
+| 常见痛点 | 传统收藏夹 / 普通 AI 笔记 | Hermes Knowledge 的做法 |
+|---|---|---|
+| **一保存就被乱删改** | AI 自动把万字长文压成几百字干瘪摘要，关键案例和数据全丢了 | **原文 100% 保真铁律**：原始文章独立归档，绝不擅自删改你的一字一句 |
+| **读不懂懒得往下看** | 遇到陌生概念要切去搜索，打断阅读心流 | **划词流式伴读**：鼠标划选任意段落即刻发问，自动串联你的历史笔记与联网查证 |
+| **卡片写成八股没人看** | 强行套「边界 / 反例 / 行动启发」六段式 AI 模板，越存越累 | **3 秒扫读人话卡片**：只留「短标题 + 一句话结论 + 3–5 条加粗要点」，支持一句话让 AI 润色或随手改 |
+| **写东西时找不到素材** | 对着空白聊天框瞎聊，分不清哪句是自己存的、哪句是模型编的 | **画廊挑卡 → 选题篮成稿**：像逛画廊一样挑几张卡片送去写作，每句结论标清 `[K]` 本地依据与 `[W]` 网页出处 |
+| **界面繁琐、数据锁云端** | 满屏紫渐变图标与复杂配置，笔记被锁在第三方平台 | **编辑部纸白美学 + 纯本地存储**：所有文章都是标准 `.md` 文件，随时可用 Obsidian 直接打开 |
+
+---
+
+## 核心特色
 
 ```text
-微信 / 飞书 / Web
-        |
-        v
-Hermes Runtime（gateway / tools / dashboard）
-        |
-        | HTTP（生产推荐）
-        v
-Hermes Knowledge Service（FastAPI，默认 127.0.0.1:8000）
-        |
-        +-- Capture / Library & Topic / Reading / RAG / Theme / Card / Review
-        +-- Canvas / Research / Librarian / Answer / Knowledge Graph
-        +-- Folder write jobs / Run ledger
-        +-- SQLite：卡片、主题、复习、运行记录
-        +-- Knowledge Files：captures/*.md、_archive/raw/*.md
-        +-- 专题注册表：<vault>/.hermes/knowledge_folders.json
+  手机微信 / 网页导入             读透一篇                    沉淀一张                     串成一篇
+ ┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐
+ │   原始资料保真    │ ───▶ │     资料伴读      │ ───▶ │     知识卡片      │ ───▶ │     专题输出      │
+ │  绝不偷偷压缩原文  │      │ 纸面精读 + 划词问 │      │ 宽幅画廊 + 选题篮 │      │ 带着卡片写研究稿 │
+ └──────────────────┘      └──────────────────┘      └──────────────────┘      └──────────────────┘
 ```
 
-Research 是独立研究子系统：入口为 `bridge/research_bridge.py`，实现代码在 `agents/research/`（planner / synthesis / evidence / orchestration，约 8800 行）。`bridge/research/` 只保留兼容薄壳，新研究逻辑只写 `agents/research/`。
+- **去 AI 味的「编辑部纸白」工作台**
+  全站统一温润纸白画布与炭黑墨水排版，没有花哨彩条与冗余工程参数。`740px` 黄金中文阅读行宽 + 一键全屏沉浸阅读，让你重新爱上读长文。
+- **真正降低认知负担的知识卡片库**
+  卡片沉淀不是为了“再建一个收藏夹”，而是为了将来用的时候**挑得出来**。宽幅多列画廊一眼扫过核心结论与加粗关键词；点开右侧滑出精读抽屉，草稿与已存卡片都能看全文、随时改、一键跳回原文章。
+- **微信轻输入 + 网页重整理（双端协同）**
+  通勤路上刷到公众号好文或突发灵感，随手发给微信/飞书机器人生成待审草稿（日常快答、资料检索、DeepSeek 极速联网三档自动分流）；回到电脑前打开网页端从容精读与内化。
+- **有据可查的跨篇专题研究**
+  在卡片画廊勾选几张不同文章里提炼出的卡片，底部自动浮现**选题篮**，一键带入「专题输出」。支持「仅个人资料库」与「联网 + 资料库」一键切换，好回答还能反手存回新笔记或新卡片，越用越厚实。
 
-## 当前状态
+---
 
-- Knowledge 全量测试：收集数见 `docs/CURRENT-STATE.md`；维护者环境最近一次全量运行 exit 0。
-- 推荐部署：Runtime 通过 HTTP 调 Knowledge Service。
-- 本地 checkout 模式（`HERMES_KNOWLEDGE_LOCAL_ROOT`）只用于开发和离线调试。
-- 用户侧只有 Hermes Runtime 原生 Dashboard（`127.0.0.1:9119`）。本仓库旧的 Next.js 自定义 Dashboard 已删除，不再提供 `npm run dev` 入口。
-- 资料伴读右栏「伴读助手」的回答是流式输出：服务端在合成时推送 `answer_delta`，Runtime 通过 `/api/knowledge/library/items/{kind}/{item_id}/selection-chat/stream` 转发，长回答不必等到最后一次性出现。
-- 联网与研究双轨分流：微信端按日常快答 / 资料检索 / DeepSeek 托管极速联网三档分流；Web 专题工作台走瘦身研究管线，保留完整 `[K]`/`[W]` 证据追踪与可归档成稿。
-- 知识卡片采用低认知负担的三要素自然人话结构（短标题 + 一句话结论 + 易扫读 Markdown 要点正文），支持草稿与已存卡片统一全文查看、内联编辑及多卡选题篮送入「专题输出」。已存卡片用 `GET/PATCH /api/garden/cards/{id}` 查看和编辑。草稿用 `PATCH /api/garden/drafts/{id}` 直接编辑，用 `POST /api/garden/drafts/{id}/revise` 让 AI 按指令改写。
-- Web Dashboard 已统一为去 AI 化的编辑部纸白视觉体系（`资料伴读` / `知识卡片` / `专题输出`），并在 Runtime 侧通过连接池与异步线程卸载优化了高频读接口响应。
-- 当前仍有一部分 Runtime Dashboard 读路由保留本地回退；见 `ARCHITECTURE.md` 的“当前拆分状态”。
+## 3 步下载与一键启动
 
-## 5 分钟启动（Windows）
+无需繁琐配置——只需下载 **这一个仓库**、填 **一份 `.env` 密钥**、运行 **一条启动命令**。首次运行时脚本会自动拉取配套网页端、配好 Python 环境并打开浏览器。
 
-### 1. Knowledge Service
+### 准备工作
 
-把示例中的 `<repos>` 换成两个仓库的共同父目录。以下命令使用 PowerShell。
+1. 电脑已安装 **[Python 3.12+](https://www.python.org/downloads/)**（Windows 安装时请勾选 `Add Python to PATH`）和 **[Git](https://git-scm.com/downloads)**。
+2. 准备一个 **[DeepSeek API Key](https://platform.deepseek.com/)**（必填，用于伴读问答、提炼卡片与联网研究）；推荐同时准备一个 **[阿里云百炼 DashScope Key](https://bailian.console.aliyun.com/)**（用于语义向量检索与图片/语音识别，暂不填也能跑）。
+
+### 第 1 步：下载项目
+
+打开终端（Windows 打开 PowerShell，macOS 打开「终端」）：
+
+```bash
+git clone https://github.com/pipi-HST/hermes-custom.git
+cd hermes-custom
+```
+
+### 第 2 步：填入你的 API Key
+
+复制配置模板为 `.env`（该文件已被 `.gitignore` 严格排除，不会上传泄露）：
 
 ```powershell
+# Windows (PowerShell)
+copy .env.example .env
+```
+
+```bash
+# macOS / Linux
+cp .env.example .env
+```
+
+用记事本或任意编辑器打开 `.env`，填入你的密钥并保存：
+
+```env
+DEEPSEEK_API_KEY=把这里换成你的DeepSeek密钥
+DASHSCOPE_API_KEY=把这里换成你的阿里云百炼密钥（没有可先留空）
+```
+
+### 第 3 步：一键启动
+
+```powershell
+# Windows (PowerShell)
+.\start.ps1
+```
+
+```bash
+# macOS / Linux
+chmod +x start.sh && ./start.sh
+```
+
+首次运行会自动下载配套网页运行时并安装依赖（约 1–3 分钟，之后每次启动只需几秒）。就绪后浏览器会自动打开 **`http://127.0.0.1:9119`**，按一次 `Ctrl + C` 即可同时关闭所有后台服务。
+
+> **想零成本先看完整效果？**
+> 首次启动完成后，运行下面一行命令即可导入内置体验包（含 **6 篇深度文章 + 9 张精选知识卡片 + 3 个专题**），打开网页就能直接体验划词伴读、画廊挑卡与专题输出：
+> - Windows：`.\.runtime\hermes-agent-main\.venv\Scripts\python.exe scripts\seed_interview_demo.py`
+> - macOS / Linux：`./.runtime/hermes-agent-main/.venv/bin/python scripts/seed_interview_demo.py`
+
+---
+
+## 3 分钟上手体验
+
+打开 `http://127.0.0.1:9119` 后，顺着左侧仅有的三个页面往下走：
+
+1. **去「资料伴读」读一篇好文**：点右上角「新建」粘贴一篇文章或导入 `.md` 文件。鼠标划选文中任意一段话问右侧伴读助手；读完点顶部的黑色 **「提炼卡片」** 按钮。
+2. **去「知识卡片」收下你的洞察**：点开刚生成的琥珀点草稿卡，滑出抽屉看全文——可以自己在底部输入一句“再精简一点”让 AI 润色，也可以点「编辑」手改，满意后存入卡片库。
+3. **去「专题输出」串珠成链**：在画廊右上角勾几张卡片放进底部悬浮**选题篮**，点 **「带着去专题输出 →」**，让它结合你的卡片库与联网搜索写出一篇结构化专题稿。
+
+想要查看更详尽的功能技巧、Obsidian 共用目录配置、微信/飞书机器人接入与常见问题解答，请阅读：**[Hermes Knowledge 完整用户指南 (USER-GUIDE.md)](USER-GUIDE.md)**。
+
+---
+
+## 数据归属与隐私安全
+
+- **100% 本地可控**：你的所有文章都保存在本地 `data/vault/captures/*.md`，卡片与关联保存在本地 `data/captures.db`，备份时只需复制整个 `data/` 文件夹。
+- **密钥零外泄**：`.env` 与 `config.yaml` 仅保存在你的本机，启动脚本会自动生成高强度本地随机口令保护本地端口，且绝不在日志中打印密钥。
+
+---
+
+## 开发者与架构专区
+
+<details>
+<summary><strong>展开查看：双仓系统架构、手动分步调试、API 契约与自动化测试命令</strong></summary>
+
+### 1. 系统职责边界
+
+Hermes 采用「运行时 + 知识服务」解耦设计（一键脚本 `start.ps1` / `start.sh` 会在底层自动协调两者）：
+
+- **`hermes-custom`（本仓库，默认 `127.0.0.1:8000`）**：负责 Capture、Library / Topic、Reading、RAG、Theme、Knowledge Card、Review、Canvas、Research（`agents/research/` 独立子系统）、Librarian、Answer、Knowledge Graph、Run ledger 与 SQLite / Markdown 双存储一致性。
+- **`hermes-agent-main`（配套运行时，默认 `127.0.0.1:9119`）**：负责原生 Web Dashboard、主 Agent 调度、工具注册及微信/飞书网关。
+
+### 2. 开发者手动分步启动（调试用）
+
+```powershell
+# 终端 1：启动 Knowledge Service (8000)
 cd "<repos>\hermes-custom"
 py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 if (-not (Test-Path config.yaml)) { Copy-Item config.example.yaml config.yaml }
-# 编辑 config.yaml：填 LLM / DashScope key、vault、database 路径
-$env:HERMES_API_TOKEN = "<替换为高强度随机值>"
+$env:HERMES_API_TOKEN = "<随机口令>"
 .venv\Scripts\python.exe -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000
-```
 
-在另一个终端探活时，请带上同一个 Bearer 令牌。查看响应里的 `status`，正常为 `ok`。完整命令见 [运行手册](RUNBOOK.md)。
-
-### 2. Hermes Runtime
-
-Runtime 在独立仓库。首次从源码构建 Dashboard 需要 PATH 上的 Node.js 和 npm，已有前端构建产物时可用 `--skip-build` 启动。在另一个 PowerShell 窗口安装依赖，再设置 HTTP 地址和令牌，最后启动 Dashboard。
-
-```powershell
+# 终端 2：启动 Hermes Runtime Dashboard (9119)
 cd "<repos>\hermes-agent-main"
-uv sync --extra web          # 或：py -3.12 -m venv .venv; .venv\Scripts\python.exe -m pip install -e ".[web]"
+uv sync --extra web
 $env:HERMES_KNOWLEDGE_URL = "http://127.0.0.1:8000"
-$env:HERMES_KNOWLEDGE_TOKEN = "<替换为与服务 HERMES_API_TOKEN 相同的值>"
+$env:HERMES_KNOWLEDGE_TOKEN = "<与上面一致的随机口令>"
 .venv\Scripts\python.exe -m hermes_cli.main dashboard --no-open
-# 打开 http://127.0.0.1:9119
 ```
 
-修改服务令牌后，更新 Runtime 的令牌并重启对应进程。
-
-分批升级时，新 Runtime 可从旧服务预览知识卡片草稿，但通过 Dashboard 保存卡片要求 Service 契约 v2。请先升级 Service，再升级 Runtime。
-
-Dashboard 的草稿、卡片详情、时间线和伴读流式转发走 HTTP。使用「打开本地文件（`open-local`）」时，Runtime 需要能访问服务实际使用的 SQLite 和 Vault。按 `config.yaml` 的 `database.path` 和 `vault.path` 填写，以下示例对应 `config.example.yaml` 的默认值。
+### 3. 运行测试与架构校验
 
 ```powershell
-$env:HERMES_KNOWLEDGE_VAULT = "$env:USERPROFILE\Hermes\knowledge"
-$env:HERMES_KNOWLEDGE_DB = "<repos>\hermes-custom\data\captures.db"
-```
-
-### 3. 本地开发模式（可选）
-
-不启动 HTTP 服务，让 Runtime 直接 import 本仓库：
-
-```text
-HERMES_KNOWLEDGE_LOCAL_ROOT=<repos>\hermes-custom
-# 不要同时设置 HERMES_KNOWLEDGE_URL
-```
-
-这是开发回退路径，不是生产推荐路径。
-
-## 第一条 capture → card → RAG
-
-以下示例使用 Bash。先在当前终端设置与服务一致的 `HERMES_API_TOKEN`，并在每一步用上一步返回的实际 ID 或确认令牌替换占位值。
-
-```bash
-# 1. 建 capture 草稿（content 换成你的材料）
-curl -X POST http://127.0.0.1:8000/api/capture-drafts \
-  -H "Authorization: Bearer $HERMES_API_TOKEN" -H "Content-Type: application/json" \
-  -d '{"content":"MCP 把工具发现与调用契约标准化。","source_type":"text"}'
-
-# 2. 生成确认 token，再用它提交
-curl -X POST "http://127.0.0.1:8000/api/capture-drafts/<draft_id>/confirmation" \
-  -H "Authorization: Bearer $HERMES_API_TOKEN"
-curl -X POST "http://127.0.0.1:8000/api/capture-drafts/<draft_id>/commit" \
-  -H "Authorization: Bearer $HERMES_API_TOKEN" -H "Content-Type: application/json" \
-  -d '{"confirmation_token":"<token>"}'
-
-# 3. 从资料生成卡片草稿（默认不落库）
-curl -X POST http://127.0.0.1:8000/api/garden/drafts \
-  -H "Authorization: Bearer $HERMES_API_TOKEN" -H "Content-Type: application/json" \
-  -d '{"capture_ids":["<capture_id>"]}'
-
-# 4. 确认卡片草稿后再提交
-curl -X POST "http://127.0.0.1:8000/api/garden/drafts/<draft_id>/confirmation" \
-  -H "Authorization: Bearer $HERMES_API_TOKEN"
-curl -X POST "http://127.0.0.1:8000/api/garden/drafts/<draft_id>/commit" \
-  -H "Authorization: Bearer $HERMES_API_TOKEN" -H "Content-Type: application/json" \
-  -d '{"confirmation_token":"<token>"}'
-
-# 5. RAG 检索（应能命中刚才的资料）
-curl "http://127.0.0.1:8000/api/knowledge/search?q=MCP" \
-  -H "Authorization: Bearer $HERMES_API_TOKEN"
-```
-
-不想用 curl 就在 Dashboard 里操作：资料伴读 → 新建/提交 → 知识卡片 → 专题输出。
-
-## 测试
-
-```powershell
-# 全量
 cd "<repos>\hermes-custom"
+# 全量单元测试与集成测试（1400+ 用例）
 .venv\Scripts\python.exe -m pytest tests -q
 
-# HTTP-only smoke（临时 DB/vault；需要同级 hermes-agent-main；建议指定 work-dir）
-.venv\Scripts\python.exe scripts\http_only_smoke.py --work-dir .tmp\hermes-http-only
-
-# 跨进程 pipeline（会启动真实 API；外部 LLM 用本地假服务替代）
-# 需要同级 hermes-agent-main checkout；不在同级时设置 HERMES_RUNTIME_ROOT
+# 跨进程端到端流水线验收
 $env:HERMES_RUNTIME_ROOT = "<repos>\hermes-agent-main"
 .venv\Scripts\python.exe scripts\knowledge_pipeline_e2e.py --work-dir .tmp\hermes-pipeline-e2e
 
-# 架构清单（--strict 需要 Runtime checkout；缺失会失败而不是跳过）
+# 架构路由清单与文档一致性检查
 .venv\Scripts\python.exe scripts\architecture_inventory.py --check --strict
-
-# Runtime 侧 Knowledge 相关
-cd "<repos>\hermes-agent-main"
-.venv\Scripts\python.exe -m pytest tests\tools tests\hermes_cli\test_web_server.py -q
+.venv\Scripts\python.exe scripts\check_docs.py
 ```
 
-## 文档入口
+### 4. 工程文档导航
 
-| 文档 | 用途 |
+| 文档 | 内容说明 |
 |---|---|
-| `USER-GUIDE.md` | 面向用户的 3 步一键安装与日常使用指南 |
-| `README.md` | 本页：是什么、怎么启动 |
-| `ARCHITECTURE.md` | 当前架构、数据所有权、写路径规则 |
-| `GLOSSARY.md` | 中英术语、代码名、历史名 |
-| `RUNBOOK.md` | 启停、排障、重置、修复 |
-| `AGENTS.md` | 给 AI Agent / 开发者的硬规则 |
-| `CONTEXT.md` | 产品工作流与领域语言 |
-| `docs/adr/` | 已确认的架构决策 |
-| `docs/PRODUCT-REFACTOR-STORY.md` | 产品叙事与面试口径 |
-| `docs/CODE-REVIEW-V3.md` | 2026-11-16 的代码评审快照 |
-| `docs/CURRENT-STATE.md` | 自动生成的测试数/表数/commit |
-| `docs/README.md` | 文档索引：Current / Historical |
-| `docs/history/` | 历史交接、旧计划、旧设计；**不要当运行手册** |
+| [USER-GUIDE.md](USER-GUIDE.md) | 面向用户的完整安装、特色场景与日常使用手册 |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 子系统边界、数据唯一真相源、单写入口规则 |
+| [RUNBOOK.md](RUNBOOK.md) | 服务启停、排障、数据重置与索引修复脚本 |
+| [SETUP.md](SETUP.md) | 多仓库开发配置与网关会话清理说明 |
+| [GLOSSARY.md](GLOSSARY.md) | 产品术语、代码字段与历史命名对照表 |
+| [CONTEXT.md](CONTEXT.md) | 领域模型与工作流定义 |
+| [AGENTS.md](AGENTS.md) | 面向协作开发与 AI Agent 的工程红线 |
+| [docs/PRODUCT-REFACTOR-STORY.md](docs/PRODUCT-REFACTOR-STORY.md) | 产品设计演进故事与核心取舍复盘 |
+| [docs/CURRENT-STATE.md](docs/CURRENT-STATE.md) | 自动生成的测试数、路由数与数据表快照 |
+| [docs/README.md](docs/README.md) | 全部当前文档与历史归档索引（`HANDOFF.md` 见 `docs/history/HANDOFF-2026-05.md`） |
 
-历史 `HANDOFF.md` 已移到 `docs/history/HANDOFF-2026-05.md`。根目录的 `HANDOFF.md` 只是指向本页的占位。
+</details>
+
+---
 
 ## License
 
 本项目采用 [MIT License](LICENSE) 开源（Copyright (c) 2026 pipi-HST）。
-配套运行时仓库 `hermes-agent-main` 基于 [Nous Research / Hermes Agent](https://github.com/NousResearch/hermes-agent)（MIT License）定制，已完整保留原协议与版权声明。
+配套运行时仓库 `hermes-agent-main` 基于 [Nous Research / Hermes Agent](https://github.com/NousResearch/hermes-agent)（MIT License）二次定制，已完整保留原协议与版权声明。
